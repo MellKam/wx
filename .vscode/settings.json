@@ -1,5 +1,5 @@
 {
 	"[typescript]": {
-		"editor.defaultFormatter": "denoland.vscode-deno"
+		"editor.defaultFormatter": "esbenp.prettier-vscode"
 	}
 }

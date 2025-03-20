@@ -4,7 +4,8 @@
     "jsr:@std/assert@*": "1.0.11",
     "jsr:@std/assert@^1.0.10": "1.0.11",
     "jsr:@std/internal@^1.0.5": "1.0.5",
-    "jsr:@std/testing@*": "1.0.9"
+    "jsr:@std/testing@*": "1.0.9",
+    "npm:zod@*": "3.24.2"
   },
   "jsr": {
     "@std/assert@1.0.9": {
@@ -31,6 +32,11 @@
         "jsr:@std/assert@^1.0.10",
         "jsr:@std/internal"
       ]
+    }
+  },
+  "npm": {
+    "zod@3.24.2": {
+      "integrity": "sha512-lY7CDW43ECgW9u1TcT3IoXHflywfVqDYze4waEz812jR/bZ8FHDsl7pFQoSZTz5N+2NqRXs8GBwnAwo3ZNxqhQ=="
     }
   }
 }
