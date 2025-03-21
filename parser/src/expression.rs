@@ -1,42 +1,69 @@
 use crate::{Token, TokenKind, TokenValue};
 use std::{collections::HashMap, iter::Peekable, slice::Iter};
-use string_interner::symbol;
+use string_interner::symbol::SymbolU32;
+
+#[derive(Debug, PartialEq)]
+pub struct IntExpression {
+    pub value: i64,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct FloatExpression {
+    pub value: f64,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct StringExpression {
+    pub value: SymbolU32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct IdentifierExpression {
+    pub value: SymbolU32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct UnaryExpression {
+    pub operator: Token,
+    pub operand: Box<Expression>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct BinaryExpression {
+    pub left: Box<Expression>,
+    pub operator: Token,
+    pub right: Box<Expression>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct AssignmentExpression {
+    pub left: Box<Expression>,
+    pub right: Box<Expression>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct CallExpression {
+    pub callee: Box<Expression>,
+    pub arguments: Vec<Expression>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct MemberExpression {
+    pub object: Box<Expression>,
+    pub property: Box<Expression>,
+}
 
 #[derive(Debug, PartialEq)]
 pub enum ExpressionKind {
-    Int {
-        value: i64,
-    },
-    Float {
-        value: f64,
-    },
-    String {
-        value: symbol::SymbolU32,
-    },
-    Identifier {
-        value: symbol::SymbolU32,
-    },
-    Unary {
-        operator: Token,
-        operand: Box<Expression>,
-    },
-    Binary {
-        left: Box<Expression>,
-        operator: Token,
-        right: Box<Expression>,
-    },
-    Assignment {
-        left: Box<Expression>,
-        right: Box<Expression>,
-    },
-    Call {
-        callee: Box<Expression>,
-        arguments: Vec<Expression>,
-    },
-    Member {
-        object: Box<Expression>,
-        property: Box<Expression>,
-    },
+    Int(IntExpression),
+    Float(FloatExpression),
+    String(StringExpression),
+    Identifier(IdentifierExpression),
+    Unary(UnaryExpression),
+    Binary(BinaryExpression),
+    Assignment(AssignmentExpression),
+    Call(CallExpression),
+    Member(MemberExpression),
 }
 
 #[derive(Debug, PartialEq)]
@@ -202,7 +229,7 @@ fn parse_int_expression(
 
     if let TokenValue::Int(value) = token.value {
         return Ok(Expression {
-            kind: ExpressionKind::Int { value },
+            kind: ExpressionKind::Int(IntExpression { value }),
             start: token.start,
             end: token.end,
         });
@@ -222,7 +249,7 @@ fn parse_float_expression(
 
     if let TokenValue::Float(value) = token.value {
         return Ok(Expression {
-            kind: ExpressionKind::Float { value },
+            kind: ExpressionKind::Float(FloatExpression { value }),
             start: token.start,
             end: token.end,
         });
@@ -242,7 +269,7 @@ fn parse_identifier_expression(
 
     if let TokenValue::String(value) = token.value {
         return Ok(Expression {
-            kind: ExpressionKind::Identifier { value },
+            kind: ExpressionKind::Identifier(IdentifierExpression { value }),
             start: token.start,
             end: token.end,
         });
@@ -262,7 +289,7 @@ fn parse_string_expression(
 
     if let TokenValue::String(value) = token.value {
         return Ok(Expression {
-            kind: ExpressionKind::String { value },
+            kind: ExpressionKind::String(StringExpression { value }),
             start: token.start,
             end: token.end,
         });
@@ -280,10 +307,10 @@ fn parse_unary_expression(
     let end = right.end;
 
     Ok(Expression {
-        kind: ExpressionKind::Unary {
+        kind: ExpressionKind::Unary(UnaryExpression {
             operator: operator.clone(),
             operand: Box::new(right),
-        },
+        }),
         start: operator.start,
         end,
     })
@@ -319,11 +346,11 @@ fn parse_binary_expression(
     let end = right.end;
 
     Ok(Expression {
-        kind: ExpressionKind::Binary {
+        kind: ExpressionKind::Binary(BinaryExpression {
             left: Box::new(left),
             operator: operator.clone(),
             right: Box::new(right),
-        },
+        }),
         start,
         end,
     })
@@ -341,10 +368,10 @@ fn parse_assignment_expression(
     let end = right.end;
 
     Ok(Expression {
-        kind: ExpressionKind::Assignment {
+        kind: ExpressionKind::Assignment(AssignmentExpression {
             left: Box::new(left),
             right: Box::new(right),
-        },
+        }),
         start,
         end,
     })
@@ -379,10 +406,10 @@ fn parse_call_expression(
     let end = close_paren.end;
 
     Ok(Expression {
-        kind: ExpressionKind::Call {
+        kind: ExpressionKind::Call(CallExpression {
             callee: Box::new(left),
             arguments,
-        },
+        }),
         start,
         end,
     })
@@ -400,10 +427,10 @@ fn parse_member_expression(
     let end = property.end;
 
     Ok(Expression {
-        kind: ExpressionKind::Member {
+        kind: ExpressionKind::Member(MemberExpression {
             object: Box::new(left),
             property: Box::new(property),
-        },
+        }),
         start,
         end,
     })
@@ -429,7 +456,7 @@ mod tests {
         assert_eq!(
             result,
             Ok(Expression {
-                kind: ExpressionKind::Int { value: 42 },
+                kind: ExpressionKind::Int(IntExpression { value: 42 }),
                 start: 0,
                 end: 2
             })
@@ -450,7 +477,7 @@ mod tests {
         assert_eq!(
             result,
             Ok(Expression {
-                kind: ExpressionKind::Float { value: 42.0 },
+                kind: ExpressionKind::Float(FloatExpression { value: 42.0 }),
                 start: 0,
                 end: 4
             })
@@ -473,7 +500,7 @@ mod tests {
         assert_eq!(
             result,
             Ok(Expression {
-                kind: ExpressionKind::Identifier { value: symbol },
+                kind: ExpressionKind::Identifier(IdentifierExpression { value: symbol }),
                 start: 0,
                 end: 3
             })
@@ -508,9 +535,9 @@ mod tests {
         assert_eq!(
             result,
             Ok(Expression {
-                kind: ExpressionKind::Binary {
+                kind: ExpressionKind::Binary(BinaryExpression {
                     left: Box::new(Expression {
-                        kind: ExpressionKind::Int { value: 2 },
+                        kind: ExpressionKind::Int(IntExpression { value: 2 }),
                         start: 0,
                         end: 1
                     }),
@@ -521,11 +548,11 @@ mod tests {
                         end: 2
                     },
                     right: Box::new(Expression {
-                        kind: ExpressionKind::Int { value: 2 },
+                        kind: ExpressionKind::Int(IntExpression { value: 2 }),
                         start: 2,
                         end: 3
                     }),
-                },
+                }),
                 start: 0,
                 end: 3
             })

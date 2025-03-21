@@ -1,5 +1,6 @@
 mod expression;
 mod lexer;
+mod statement;
 mod unescape;
 
 pub use expression::*;
