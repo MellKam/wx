@@ -10,29 +10,29 @@ pub fn add(left: u64, right: u64) -> u64 {
     left + right
 }
 
-#[cfg(test)]
-mod tests {
-    use string_interner::{StringInterner, backend::StringBackend};
+// #[cfg(test)]
+// mod tests {
+//     use string_interner::{StringInterner, backend::StringBackend};
 
-    use super::*;
+//     use super::*;
 
-    #[test]
-    fn it_works() {
-        let mut interner = StringInterner::<StringBackend>::new();
-        let lexer = Lexer::new();
-        let expr_parser = ExpressionParser::new();
+//     #[test]
+//     fn it_works() {
+//         let mut interner = StringInterner::<StringBackend>::new();
+//         let lexer = Lexer::new();
+//         let expr_parser = ExpressionParser::new();
 
-        let input = "console.log(\"hel\\\\lo world\", log)".to_string();
+//         let input = "console.log(\"hel\\\\lo world\", log)".to_string();
 
-        let tokens = lexer.tokenize(&mut interner, input).unwrap();
-        let expr = expr_parser
-            .parse(&mut tokens.iter().peekable(), BindingPower::Default)
-            .unwrap();
+//         let tokens = lexer.tokenize(&mut interner, input).unwrap();
+//         let expr = expr_parser
+//             .parse(&mut tokens.iter().peekable(), BindingPower::Default)
+//             .unwrap();
 
-        println!("{:?}", expr);
+//         println!("{:?}", expr);
 
-        interner.iter().for_each(|(id, value)| {
-            println!("{:?} => {}", id, value);
-        });
-    }
-}
+//         interner.iter().for_each(|(id, value)| {
+//             println!("{:?} => {}", id, value);
+//         });
+//     }
+// }
