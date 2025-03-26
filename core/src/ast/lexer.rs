@@ -134,79 +134,19 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn consume_number(&mut self, start: usize) -> TokenWithSpan {
-        let mut end = start + 1;
-        let mut seen_dot = false;
-
-        while let Some((_, char)) = self.chars.peek() {
-            match *char {
-                '0'..='9' => {}
-                '.' => {
-                    if seen_dot {
-                        break;
-                    } else {
-                        seen_dot = true;
-                    }
-                }
-                _ => break,
-            }
-
-            end += 1;
-            self.chars.next();
-        }
-
-        TokenWithSpan {
-            kind: if seen_dot { Token::Float } else { Token::Int },
-            span: Range { start, end },
-        }
-    }
-
-    fn consume_string(&mut self, start: usize) -> Result<TokenWithSpan, LexerErrorWithSpan> {
-        let mut end = start + 1;
-        let mut escaped = false;
-
-        while let Some((_, char)) = self.chars.next() {
-            end += char.len_utf8();
-            if escaped {
-                escaped = false;
-            } else if char == '\\' {
-                escaped = true;
-            } else if char == '"' {
-                return Ok(TokenWithSpan {
-                    kind: Token::String,
-                    span: Range { start, end },
-                });
-            }
-        }
-
-        Err(LexerErrorWithSpan {
-            kind: LexerError::UnterminatedString,
-            span: Range { start, end },
-        })
-    }
-
-    fn consume_identifier(&mut self, start: usize) -> Range<usize> {
-        let mut end = start + 1;
-        while let Some((_, char)) = self.chars.peek() {
-            if !char.is_ascii_alphabetic() && !char.is_ascii_digit() && *char != '_' {
-                break;
-            }
-            end += 1;
-            self.chars.next();
-        }
-
-        Range { start, end }
-    }
+    // pub fn expect(&mut self, token: Token) {
+    //     match self.next() {}
+    // }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum LexerError {
     UnexpectedCharacter,
     UnterminatedString,
     NonAsciiIdentifier,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LexerErrorWithSpan {
     pub span: Range<usize>,
     pub kind: LexerError,
@@ -221,239 +161,132 @@ impl Iterator for Lexer<'_> {
             (start, char) = self.chars.next()?;
         }
 
-        let token = match char {
-            '+' => TokenWithSpan {
-                kind: Token::Plus,
+        let with_span = move |token: Token, length: usize| -> Option<Self::Item> {
+            Some(Ok(TokenWithSpan {
+                kind: token,
                 span: Range {
                     start,
-                    end: start + 1,
+                    end: start + length,
                 },
-            },
-            '-' => TokenWithSpan {
-                kind: Token::Minus,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            '*' => TokenWithSpan {
-                kind: Token::Star,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            '/' => TokenWithSpan {
-                kind: Token::Slash,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            '%' => TokenWithSpan {
-                kind: Token::Percent,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            ':' => TokenWithSpan {
-                kind: Token::Colon,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            ';' => TokenWithSpan {
-                kind: Token::Semicolon,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            ',' => TokenWithSpan {
-                kind: Token::Comma,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            '.' => TokenWithSpan {
-                kind: Token::Dot,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            '(' => TokenWithSpan {
-                kind: Token::LeftParen,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            ')' => TokenWithSpan {
-                kind: Token::RightParen,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            '[' => TokenWithSpan {
-                kind: Token::LeftSquare,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            ']' => TokenWithSpan {
-                kind: Token::RightSquare,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            '{' => TokenWithSpan {
-                kind: Token::LeftBrace,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
-            '}' => TokenWithSpan {
-                kind: Token::RightBrace,
-                span: Range {
-                    start,
-                    end: start + 1,
-                },
-            },
+            }))
+        };
+
+        match char {
+            '+' => return with_span(Token::Plus, 1),
+            '-' => return with_span(Token::Minus, 1),
+            '*' => return with_span(Token::Star, 1),
+            '/' => return with_span(Token::Slash, 1),
+            '%' => return with_span(Token::Percent, 1),
+            ':' => return with_span(Token::Colon, 1),
+            ';' => return with_span(Token::Semicolon, 1),
+            ',' => return with_span(Token::Comma, 1),
+            '.' => return with_span(Token::Dot, 1),
+            '(' => return with_span(Token::LeftParen, 1),
+            ')' => return with_span(Token::RightParen, 1),
+            '[' => return with_span(Token::LeftSquare, 1),
+            ']' => return with_span(Token::RightSquare, 1),
+            '{' => return with_span(Token::LeftBrace, 1),
+            '}' => return with_span(Token::RightBrace, 1),
             '=' => match self.chars.peek() {
                 Some((_, '=')) => {
                     self.chars.next();
-                    TokenWithSpan {
-                        kind: Token::EqualEqual,
-                        span: Range {
-                            start,
-                            end: start + 2,
-                        },
-                    }
+                    return with_span(Token::EqualEqual, 2);
                 }
-                _ => TokenWithSpan {
-                    kind: Token::Equal,
-                    span: Range {
-                        start,
-                        end: start + 1,
-                    },
-                },
+                _ => return with_span(Token::Equal, 1),
             },
             '!' => match self.chars.peek() {
                 Some((_, '=')) => {
                     self.chars.next();
-                    TokenWithSpan {
-                        kind: Token::BangEqual,
-                        span: Range {
-                            start,
-                            end: start + 2,
-                        },
-                    }
+                    return with_span(Token::BangEqual, 2);
                 }
-                _ => TokenWithSpan {
-                    kind: Token::Bang,
-                    span: Range {
-                        start,
-                        end: start + 1,
-                    },
-                },
+                _ => return with_span(Token::Bang, 1),
             },
             '<' => match self.chars.peek() {
                 Some((_, '=')) => {
                     self.chars.next();
-                    TokenWithSpan {
-                        kind: Token::LessEqual,
-                        span: Range {
-                            start,
-                            end: start + 2,
-                        },
-                    }
+                    return with_span(Token::LessEqual, 2);
                 }
-                _ => TokenWithSpan {
-                    kind: Token::LeftAngle,
-                    span: Range {
-                        start,
-                        end: start + 1,
-                    },
-                },
+                _ => return with_span(Token::LeftAngle, 1),
             },
             '>' => match self.chars.peek() {
                 Some((_, '=')) => {
                     self.chars.next();
-                    TokenWithSpan {
-                        kind: Token::GreaterEqual,
-                        span: Range {
-                            start,
-                            end: start + 2,
-                        },
-                    }
+                    return with_span(Token::GreaterEqual, 2);
                 }
-                _ => TokenWithSpan {
-                    kind: Token::RightAngle,
-                    span: Range {
-                        start,
-                        end: start + 1,
-                    },
-                },
+                _ => return with_span(Token::RightAngle, 1),
             },
             '&' => match self.chars.peek() {
                 Some((_, '&')) => {
                     self.chars.next();
-                    TokenWithSpan {
-                        kind: Token::AmperAmper,
-                        span: Range {
-                            start,
-                            end: start + 2,
-                        },
-                    }
+                    return with_span(Token::AmperAmper, 2);
                 }
-                _ => TokenWithSpan {
-                    kind: Token::Amper,
-                    span: Range {
-                        start,
-                        end: start + 1,
-                    },
-                },
+                _ => return with_span(Token::Amper, 1),
             },
             '|' => match self.chars.peek() {
                 Some((_, '|')) => {
                     self.chars.next();
-                    TokenWithSpan {
-                        kind: Token::VbarVbar,
-                        span: Range {
-                            start,
-                            end: start + 2,
-                        },
+                    return with_span(Token::VbarVbar, 2);
+                }
+                _ => return with_span(Token::Vbar, 1),
+            },
+            '"' => {
+                let mut end = start + 1;
+                let mut escaped = false;
+
+                while let Some((_, char)) = self.chars.next() {
+                    end += char.len_utf8();
+                    if escaped {
+                        escaped = false;
+                    } else if char == '\\' {
+                        escaped = true;
+                    } else if char == '"' {
+                        return Some(Ok(TokenWithSpan {
+                            kind: Token::String,
+                            span: Range { start, end },
+                        }));
                     }
                 }
-                _ => TokenWithSpan {
-                    kind: Token::Vbar,
-                    span: Range {
-                        start,
-                        end: start + 1,
-                    },
-                },
-            },
-            '"' => match self.consume_string(start) {
-                Ok(token) => token,
-                Err(err) => return Some(Err(err)),
-            },
-            '0'..='9' => self.consume_number(start),
-            'A'..='Z' | 'a'..='z' | '_' => {
-                let span = self.consume_identifier(start);
-                let token =
-                    Token::is_keyword(&self.source[span.clone()]).unwrap_or(Token::Identifier);
-                TokenWithSpan { kind: token, span }
+
+                return Some(Err(LexerErrorWithSpan {
+                    kind: LexerError::UnterminatedString,
+                    span: Range { start, end },
+                }));
             }
-            // if char is non-ascii, peek the next char and check if it's also non-ascii
-            // do this until we find a ascii char, return NonAsciiIdentifier error with span
+            '0'..='9' => {
+                let mut end = start + 1;
+                let mut seen_dot = false;
+
+                while let Some((_, char)) = self.chars.peek() {
+                    match *char {
+                        '0'..='9' => {}
+                        '.' if !seen_dot => seen_dot = true,
+                        _ => break,
+                    }
+
+                    end += char.len_utf8();
+                    self.chars.next();
+                }
+
+                return Some(Ok(TokenWithSpan {
+                    kind: if seen_dot { Token::Float } else { Token::Int },
+                    span: Range { start, end },
+                }));
+            }
+            'A'..='Z' | 'a'..='z' | '_' => {
+                let mut end = start + 1;
+                while let Some((_, char)) = self.chars.peek() {
+                    if !char.is_ascii_alphabetic() && !char.is_ascii_digit() && *char != '_' {
+                        break;
+                    }
+                    end += 1;
+                    self.chars.next();
+                }
+
+                return Some(Ok(TokenWithSpan {
+                    kind: Token::is_keyword(&self.source[start..end]).unwrap_or(Token::Identifier),
+                    span: Range { start, end },
+                }));
+            }
             char if !char.is_ascii() => {
                 let mut end = start + char.len_utf8();
                 while let Some((_, char)) = self.chars.peek() {
@@ -478,9 +311,7 @@ impl Iterator for Lexer<'_> {
                     },
                 }));
             }
-        };
-
-        return Some(Ok(token));
+        }
     }
 }
 

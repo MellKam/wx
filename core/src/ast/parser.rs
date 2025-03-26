@@ -163,11 +163,13 @@ impl Ast {
 #[derive(Debug, Clone, PartialEq, PartialOrd)]
 pub enum BindingPower {
     Default,
+    Comma,
     Assignment,
     Logical,
     Relational,
     Additive,
     Multiplicative,
+    Unary,
     Call,
     Member,
     Primary,
@@ -230,22 +232,19 @@ impl<'a> Parser<'a> {
             _ => return Err("enexpected end of input".to_string()),
         };
 
-        let nud_handler = match Parser::nud_lookup(token.kind) {
-            Some(handler) => handler,
+        let (nud_handler, _) = match Parser::nud_lookup(token.kind) {
+            Some(result) => result,
             None => return Err("nud handler not found".to_string()),
         };
         let mut left = nud_handler(self).unwrap();
 
         while let Some(Ok(token)) = self.lexer.peek() {
-            let led_handler = match Parser::led_lookup(token.kind.clone()) {
-                Some(handler) => handler,
+            let (led_handler, operator_binding_power) = match Parser::led_lookup(token.kind.clone())
+            {
+                Some((_, bp)) if bp < min_binding_power => break,
+                Some((handler, bp)) => (handler, bp),
                 None => break,
             };
-
-            let operator_binding_power = Parser::bp_lookup(token.kind.clone());
-            if operator_binding_power <= min_binding_power {
-                break;
-            }
 
             left = led_handler(self, left, operator_binding_power).unwrap();
         }
@@ -253,34 +252,36 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    fn nud_lookup(token: Token) -> Option<NudHandler> {
+    fn nud_lookup(token: Token) -> Option<(NudHandler, BindingPower)> {
         match token {
-            Token::Int => Some(parse_int_expression),
-            Token::Float => Some(parse_float_expression),
-            Token::Identifier => Some(parse_identifier_expression),
+            Token::Int => Some((parse_int_expression, BindingPower::Primary)),
+            Token::Float => Some((parse_float_expression, BindingPower::Primary)),
+            Token::Identifier => Some((parse_identifier_expression, BindingPower::Primary)),
+            Token::LeftParen => Some((parse_grouping_expression, BindingPower::Default)),
+            Token::Minus | Token::Bang => Some((parse_unary_expression, BindingPower::Unary)),
             _ => None,
         }
     }
 
-    fn led_lookup(token: Token) -> Option<LedHandler> {
-        todo!()
-    }
-
-    fn bp_lookup(token: Token) -> BindingPower {
+    fn led_lookup(token: Token) -> Option<(LedHandler, BindingPower)> {
         match token {
-            Token::Plus | Token::Minus => BindingPower::Additive,
-            Token::Star | Token::Slash => BindingPower::Multiplicative,
+            Token::Plus | Token::Minus => Some((parse_binary_expression, BindingPower::Additive)),
+            Token::Star | Token::Slash | Token::Percent => {
+                Some((parse_binary_expression, BindingPower::Multiplicative))
+            }
             Token::EqualEqual
             | Token::BangEqual
             | Token::LeftAngle
             | Token::LessEqual
             | Token::RightAngle
-            | Token::GreaterEqual => BindingPower::Relational,
-            Token::Equal => BindingPower::Assignment,
-            Token::AmperAmper | Token::VbarVbar => BindingPower::Logical,
-            Token::Dot => BindingPower::Member,
-            Token::LeftParen => BindingPower::Call,
-            _ => BindingPower::Default,
+            | Token::GreaterEqual => Some((parse_binary_expression, BindingPower::Relational)),
+            Token::VbarVbar | Token::AmperAmper => {
+                Some((parse_binary_expression, BindingPower::Logical))
+            }
+            Token::Equal => Some((parse_assignment_expression, BindingPower::Assignment)),
+            Token::LeftParen => Some((parse_call_expression, BindingPower::Call)),
+            Token::Dot => Some((parse_member_expression, BindingPower::Member)),
+            _ => None,
         }
     }
 }
@@ -369,5 +370,129 @@ fn parse_grouping_expression(parser: &mut Parser) -> Result<ExpressionId, String
         return Err("expected right parenthesis".to_string());
     }
 
+    Ok(expression_id)
+}
+
+fn parse_unary_expression(parser: &mut Parser) -> Result<ExpressionId, String> {
+    let operator = parser.lexer.next().unwrap().unwrap();
+    let operator_kind = match operator.kind {
+        Token::Minus => UnaryOperationKind::Minus,
+        Token::Bang => UnaryOperationKind::Not,
+        _ => return Err("expected unary operator".to_string()),
+    };
+
+    let operand = parser.parse_expression(BindingPower::Primary)?;
+
+    let expression_id = parser
+        .ast
+        .add_expression(ExpressionKind::Unary(UnaryExpression {
+            operator: UnaryOperator {
+                kind: operator_kind,
+                span: operator.span.clone(),
+            },
+            operand,
+        }));
+
+    Ok(expression_id)
+}
+
+fn parse_binary_expression(
+    parser: &mut Parser,
+    left: ExpressionId,
+    bp: BindingPower,
+) -> Result<ExpressionId, String> {
+    let operator = parser.lexer.next().unwrap().unwrap();
+    let operator_kind = match operator.kind {
+        Token::Plus => BinaryOperationKind::Plus,
+        Token::Minus => BinaryOperationKind::Minus,
+        Token::Star => BinaryOperationKind::Multiply,
+        Token::Slash => BinaryOperationKind::Divide,
+        Token::Percent => BinaryOperationKind::Modulo,
+        Token::EqualEqual => BinaryOperationKind::Equals,
+        Token::BangEqual => BinaryOperationKind::NotEquals,
+        Token::LeftAngle => BinaryOperationKind::LessThan,
+        Token::LessEqual => BinaryOperationKind::LessThanOrEqual,
+        Token::RightAngle => BinaryOperationKind::GreaterThan,
+        Token::GreaterEqual => BinaryOperationKind::GreaterThanOrEqual,
+        _ => return Err("expected binary operator".to_string()),
+    };
+
+    let right = parser.parse_expression(bp)?;
+    let expression_id = parser
+        .ast
+        .add_expression(ExpressionKind::Binary(BinaryExpression {
+            left,
+            right,
+            operator: BinaryOperator {
+                kind: operator_kind,
+                span: operator.span.clone(),
+            },
+        }));
+    Ok(expression_id)
+}
+
+fn parse_assignment_expression(
+    parser: &mut Parser,
+    left: ExpressionId,
+    bp: BindingPower,
+) -> Result<ExpressionId, String> {
+    let operator = parser.lexer.next().unwrap().unwrap();
+    if operator.kind != Token::Equal {
+        return Err("expected assignment operator".to_string());
+    }
+
+    let right = parser.parse_expression(bp)?;
+    let expression_id =
+        parser
+            .ast
+            .add_expression(ExpressionKind::Assignment(AssignmentExpression {
+                left,
+                right,
+            }));
+    Ok(expression_id)
+}
+
+fn parse_call_expression(
+    parser: &mut Parser,
+    callee: ExpressionId,
+    _: BindingPower,
+) -> Result<ExpressionId, String> {
+    let _ = parser.lexer.next();
+    let mut arguments = Vec::new();
+    loop {
+        let token = parser.lexer.peek().clone().unwrap().clone().unwrap();
+        if token.kind == Token::RightParen {
+            let _ = parser.lexer.next();
+            break;
+        }
+
+        let argument = parser.parse_expression(BindingPower::Primary)?;
+        arguments.push(argument);
+
+        let token = parser.lexer.peek().clone().unwrap().clone().unwrap();
+        if token.kind == Token::Comma {
+            let _ = parser.lexer.next();
+        }
+    }
+
+    let expression_id = parser
+        .ast
+        .add_expression(ExpressionKind::Call(CallExpression { callee, arguments }));
+    Ok(expression_id)
+}
+
+fn parse_member_expression(
+    parser: &mut Parser,
+    object: ExpressionId,
+    _: BindingPower,
+) -> Result<ExpressionId, String> {
+    let _ = parser.lexer.next();
+    let property = parser.parse_expression(BindingPower::Primary)?;
+    let expression_id = parser
+        .ast
+        .add_expression(ExpressionKind::Member(MemberExpression {
+            object,
+            property,
+        }));
     Ok(expression_id)
 }
