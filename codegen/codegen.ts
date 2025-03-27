@@ -7,8 +7,8 @@ import {
 	type IdentifierExpression,
 	type IntExpression,
 	type UnaryExpression,
-} from "../core/expressions.ts";
-import { TokenKind, TokenName } from "../core/lexer.ts";
+} from "../compiler/expressions.ts";
+import { TokenKind, TokenName } from "../compiler/lexer.ts";
 import {
 	StatementKind,
 	type ExpressionStatement,
@@ -16,7 +16,7 @@ import {
 	type ReturnValueStatement,
 	type Statement,
 	type VariableDefinitionStatement,
-} from "../core/statements.ts";
+} from "../compiler/statements.ts";
 import { encodeULEB128 } from "./leb128.ts";
 
 const Section = {

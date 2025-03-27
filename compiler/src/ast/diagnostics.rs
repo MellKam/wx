@@ -1,5 +1,7 @@
 use std::{cell::RefCell, ops::Range, rc::Rc};
 
+use super::lexer::{Token, TokenKind};
+
 #[derive(Clone, Debug)]
 pub enum DiagnosticKind {
     Error,
@@ -16,6 +18,33 @@ pub struct Diagnostic {
 #[derive(Debug)]
 pub struct DiagnosticStore {
     pub diagnostics: Vec<Diagnostic>,
+}
+
+impl DiagnosticStore {
+    pub fn new() -> Self {
+        Self {
+            diagnostics: Vec::new(),
+        }
+    }
+
+    pub fn reporn_unexpected_token(&mut self, expected: TokenKind, token: Token) {
+        self.diagnostics.push(Diagnostic {
+            message: format!(
+                "Unexpected token `{}`, expected `{}`.",
+                token.kind, expected
+            ),
+            span: token.span,
+            kind: DiagnosticKind::Error,
+        });
+    }
+
+    pub fn report_invalid_unary_operator(&mut self, token: Token) {
+        self.diagnostics.push(Diagnostic {
+            message: format!("Invalid unary operator `{}`.", token.kind),
+            span: token.span,
+            kind: DiagnosticKind::Error,
+        });
+    }
 }
 
 pub type DiagnosticStoreCell = Rc<RefCell<DiagnosticStore>>;
