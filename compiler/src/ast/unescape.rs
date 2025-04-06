@@ -59,4 +59,10 @@ mod tests {
         let result = unescape("hello\\nworld");
         assert_eq!(result, Ok("hello\nworld".to_string()));
     }
+
+    #[test]
+    fn it_works_with_invalid_char() {
+        let result = unescape("hello\\\"world");
+        assert_eq!(result, Ok("hello\"world".to_string()));
+    }
 }
