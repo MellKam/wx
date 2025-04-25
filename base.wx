@@ -1,0 +1,30 @@
+# Function definition
+fn (a: i32, b: i32): i32 { ... }
+
+# Function declaration
+fn (a: i32, b: i32): i32;
+
+# Block expression
+{ ... }
+block: i32 { ... }
+block X { ... }
+block X: i32 { ... }
+
+# Match expression
+match x {
+  x if x > 5 => let x =5,
+  _ => 8
+}
+
+# variable definition 
+mut x: i64 = 5;
+const y: i32 = 8;
+
+impl Into<i32, u32> {
+  fn cast(self: i32): u32 {
+    
+  } 
+} 
+
+const z = x / y.(u32);
+

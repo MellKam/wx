@@ -1,6 +1,0 @@
-{
-	"compilerOptions": {
-		"noUncheckedIndexedAccess": true,
-		"verbatimModuleSyntax": true
-	}
-}

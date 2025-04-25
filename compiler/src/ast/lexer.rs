@@ -3,23 +3,12 @@ use std::rc::Rc;
 use std::{self};
 
 use super::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticsBag};
+use super::span::TextSpan;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Radix {
-    Binary = 2,
-    Octal = 8,
-    Decimal = 10,
-    Hexadecimal = 16,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
-    Int {
-        radix: Radix,
-    },
-    Float {
-        radix: Radix,
-    },
+    Int,
+    Float,
     Char {
         terminated: bool,
     },
@@ -48,9 +37,9 @@ pub enum TokenKind {
     /// `]`
     CloseBracket,
     /// `<`
-    Less,
+    OpenAngle,
     /// `>`
-    Greater,
+    CloseAngle,
     /// `=`
     Eq,
     /// `!`
@@ -72,7 +61,7 @@ pub enum TokenKind {
     /// `==`
     EqEq,
     /// `!=`
-    NotEq,
+    BangEq,
     /// `<=`
     LessEq,
     /// `>=`
@@ -86,15 +75,9 @@ pub enum TokenKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Span {
-    pub start: u32,
-    pub end: u32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
-    pub span: Span,
+    pub span: TextSpan,
 }
 
 pub struct Lexer<'a> {
@@ -117,7 +100,7 @@ impl<'a> Lexer<'a> {
     pub fn next(&mut self) -> Token {
         let start = self.chars.as_str().len();
         let token_kind = match self.chars.next().unwrap_or(EOF_CHAR) {
-            '\t' | '\n' | '\x0C' | '\r' | ' ' => self.consume_whitespace(),
+            '\t' | '\n' | '\r' | ' ' => self.consume_whitespace(),
             '0'..='9' => self.consume_number(),
             'A'..='Z' | 'a'..='z' | '_' => self.consume_identifier(),
             ';' => TokenKind::SemiColon,
@@ -129,11 +112,11 @@ impl<'a> Lexer<'a> {
             '}' => TokenKind::CloseBrace,
             '[' => TokenKind::OpenBracket,
             ']' => TokenKind::CloseBracket,
-            '<' => self.consume_and_check('=', TokenKind::LessEq, TokenKind::Less),
-            '>' => self.consume_and_check('=', TokenKind::GreaterEq, TokenKind::Greater),
+            '<' => self.consume_and_check('=', TokenKind::LessEq, TokenKind::OpenAngle),
+            '>' => self.consume_and_check('=', TokenKind::GreaterEq, TokenKind::CloseAngle),
             ':' => TokenKind::Colon,
             '=' => self.consume_and_check('=', TokenKind::EqEq, TokenKind::Eq),
-            '!' => self.consume_and_check('=', TokenKind::NotEq, TokenKind::Bang),
+            '!' => self.consume_and_check('=', TokenKind::BangEq, TokenKind::Bang),
             '-' => TokenKind::Minus,
             '&' => TokenKind::Amper,
             '|' => TokenKind::Vbar,
@@ -149,7 +132,7 @@ impl<'a> Lexer<'a> {
 
         let token = Token {
             kind: token_kind,
-            span: Span {
+            span: TextSpan {
                 start: self.offset as u32,
                 end: (self.offset + length) as u32,
             },
@@ -248,12 +231,8 @@ impl<'a> Lexer<'a> {
         }
 
         match seen_dot {
-            true => TokenKind::Float {
-                radix: Radix::Decimal,
-            },
-            false => TokenKind::Int {
-                radix: Radix::Decimal,
-            },
+            true => TokenKind::Float,
+            false => TokenKind::Int,
         }
     }
 
@@ -289,12 +268,12 @@ impl<'l> BufferedLexer<'l> {
 
     pub fn next_expect(&mut self, expected: TokenKind) -> Option<Token> {
         let token = self.next();
-        match token.kind.clone() {
+        match token.kind {
             kind if kind == expected => return Some(token),
             TokenKind::Eof => {
                 self.diagnostics.borrow_mut().diagnostics.push(Diagnostic {
-                    message: format!("Unexpected end of input, expected `{:#?}`.", expected),
-                    span: token.span.clone(),
+                    message: format!("unexpected end of input, expected `{:#?}`.", expected),
+                    span: token.span,
                     kind: DiagnosticKind::Error,
                 });
                 return None;
@@ -302,10 +281,10 @@ impl<'l> BufferedLexer<'l> {
             _ => {
                 self.diagnostics.borrow_mut().diagnostics.push(Diagnostic {
                     message: format!(
-                        "Unexpected token `{:#?}`, expected `{:#?}`.",
+                        "unexpected token `{:#?}`, expected `{:#?}`",
                         token.kind, expected
                     ),
-                    span: token.span.clone(),
+                    span: token.span,
                     kind: DiagnosticKind::Error,
                 });
                 return None;
@@ -324,7 +303,7 @@ impl<'l> BufferedLexer<'l> {
                 TokenKind::Whitespace => continue,
                 TokenKind::Unknown => {
                     self.diagnostics.borrow_mut().diagnostics.push(Diagnostic {
-                        message: format!("Unknown token at position {}.", token.span.start),
+                        message: "unknown token".to_string(),
                         span: token.span,
                         kind: DiagnosticKind::Error,
                     });
@@ -351,7 +330,7 @@ impl<'l> BufferedLexer<'l> {
 mod tests {
     use super::*;
 
-    fn assert_token(token: Token, kind: TokenKind, span: Span) {
+    fn assert_token(token: Token, kind: TokenKind, span: TextSpan) {
         assert_eq!(token, Token { kind, span });
     }
 
@@ -359,50 +338,48 @@ mod tests {
     fn should_lex_numbers() {
         let mut lexer = Lexer::new("1 + 2.5 - 3.");
 
+        assert_token(lexer.next(), TokenKind::Int, TextSpan { start: 0, end: 1 });
         assert_token(
             lexer.next(),
-            TokenKind::Int {
-                radix: Radix::Decimal,
-            },
-            Span { start: 0, end: 1 },
+            TokenKind::Whitespace,
+            TextSpan { start: 1, end: 2 },
+        );
+        assert_token(lexer.next(), TokenKind::Plus, TextSpan { start: 2, end: 3 });
+        assert_token(
+            lexer.next(),
+            TokenKind::Whitespace,
+            TextSpan { start: 3, end: 4 },
+        );
+        assert_token(
+            lexer.next(),
+            TokenKind::Float,
+            TextSpan { start: 4, end: 7 },
         );
         assert_token(
             lexer.next(),
             TokenKind::Whitespace,
-            Span { start: 1, end: 2 },
-        );
-        assert_token(lexer.next(), TokenKind::Plus, Span { start: 2, end: 3 });
-        assert_token(
-            lexer.next(),
-            TokenKind::Whitespace,
-            Span { start: 3, end: 4 },
+            TextSpan { start: 7, end: 8 },
         );
         assert_token(
             lexer.next(),
-            TokenKind::Float {
-                radix: Radix::Decimal,
-            },
-            Span { start: 4, end: 7 },
+            TokenKind::Minus,
+            TextSpan { start: 8, end: 9 },
         );
         assert_token(
             lexer.next(),
             TokenKind::Whitespace,
-            Span { start: 7, end: 8 },
-        );
-        assert_token(lexer.next(), TokenKind::Minus, Span { start: 8, end: 9 });
-        assert_token(
-            lexer.next(),
-            TokenKind::Whitespace,
-            Span { start: 9, end: 10 },
+            TextSpan { start: 9, end: 10 },
         );
         assert_token(
             lexer.next(),
-            TokenKind::Float {
-                radix: Radix::Decimal,
-            },
-            Span { start: 10, end: 12 },
+            TokenKind::Float,
+            TextSpan { start: 10, end: 12 },
         );
-        assert_token(lexer.next(), TokenKind::Eof, Span { start: 12, end: 12 });
+        assert_token(
+            lexer.next(),
+            TokenKind::Eof,
+            TextSpan { start: 12, end: 12 },
+        );
     }
 
     #[test]
@@ -412,29 +389,33 @@ mod tests {
         assert_token(
             lexer.next(),
             TokenKind::Identifier,
-            Span { start: 0, end: 3 },
+            TextSpan { start: 0, end: 3 },
         );
         assert_token(
             lexer.next(),
             TokenKind::Whitespace,
-            Span { start: 3, end: 4 },
+            TextSpan { start: 3, end: 4 },
         );
         assert_token(
             lexer.next(),
             TokenKind::Identifier,
-            Span { start: 4, end: 7 },
+            TextSpan { start: 4, end: 7 },
         );
         assert_token(
             lexer.next(),
             TokenKind::Whitespace,
-            Span { start: 7, end: 8 },
+            TextSpan { start: 7, end: 8 },
         );
         assert_token(
             lexer.next(),
             TokenKind::Identifier,
-            Span { start: 8, end: 12 },
+            TextSpan { start: 8, end: 12 },
         );
-        assert_token(lexer.next(), TokenKind::Eof, Span { start: 12, end: 12 });
+        assert_token(
+            lexer.next(),
+            TokenKind::Eof,
+            TextSpan { start: 12, end: 12 },
+        );
     }
 
     #[test]
@@ -444,15 +425,19 @@ mod tests {
         assert_token(
             lexer.next(),
             TokenKind::String { terminated: true },
-            Span { start: 0, end: 15 },
+            TextSpan { start: 0, end: 15 },
         );
-        assert_token(lexer.next(), TokenKind::Eof, Span { start: 15, end: 15 });
+        assert_token(
+            lexer.next(),
+            TokenKind::Eof,
+            TextSpan { start: 15, end: 15 },
+        );
     }
 
     #[test]
     fn should_handle_empty_input() {
         let mut lexer = Lexer::new("");
-        assert_token(lexer.next(), TokenKind::Eof, Span { start: 0, end: 0 });
+        assert_token(lexer.next(), TokenKind::Eof, TextSpan { start: 0, end: 0 });
     }
 
     #[test]
@@ -461,7 +446,7 @@ mod tests {
         assert_token(
             lexer.next(),
             TokenKind::String { terminated: false },
-            Span { start: 0, end: 6 },
+            TextSpan { start: 0, end: 6 },
         );
     }
 }

@@ -4,18 +4,24 @@ use string_interner::symbol::SymbolU32;
 mod diagnostics;
 mod lexer;
 mod parser;
+mod printer;
+mod span;
 mod unescape;
 
-#[derive(Debug, Clone, PartialEq)]
+pub use diagnostics::*;
+pub use parser::*;
+pub use span::*;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExprId(u32);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StmtId(u32);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ItemId(u32);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOperator {
     /// Sign inversion `-x`
     Invert,
@@ -23,17 +29,25 @@ pub enum UnaryOperator {
     Negate,
 }
 
-impl UnaryOperator {
-    fn from_token(kind: lexer::TokenKind) -> Option<Self> {
+impl TryFrom<TokenKind> for UnaryOperator {
+    type Error = ();
+
+    fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
         match kind {
-            TokenKind::Minus => Some(UnaryOperator::Invert),
-            TokenKind::Bang => Some(UnaryOperator::Negate),
-            _ => None,
+            TokenKind::Minus => Ok(UnaryOperator::Invert),
+            TokenKind::Bang => Ok(UnaryOperator::Negate),
+            _ => Err(()),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BindingType {
+    Mutable,
+    Const,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinaryOperator {
     Assign,
     // Arithmetic
@@ -51,22 +65,24 @@ pub enum BinaryOperator {
     GreaterEq,
 }
 
-impl BinaryOperator {
-    fn from_token(kind: TokenKind) -> Option<Self> {
+impl TryFrom<TokenKind> for BinaryOperator {
+    type Error = ();
+
+    fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
         match kind {
-            TokenKind::Eq => Some(BinaryOperator::Assign),
-            TokenKind::Plus => Some(BinaryOperator::Add),
-            TokenKind::Minus => Some(BinaryOperator::Subtract),
-            TokenKind::Star => Some(BinaryOperator::Multiply),
-            TokenKind::Slash => Some(BinaryOperator::Divide),
-            TokenKind::Percent => Some(BinaryOperator::Remainder),
-            TokenKind::EqEq => Some(BinaryOperator::Eq),
-            TokenKind::NotEq => Some(BinaryOperator::NotEq),
-            TokenKind::Less => Some(BinaryOperator::Less),
-            TokenKind::LessEq => Some(BinaryOperator::LessEq),
-            TokenKind::Greater => Some(BinaryOperator::Greater),
-            TokenKind::GreaterEq => Some(BinaryOperator::GreaterEq),
-            _ => None,
+            TokenKind::Eq => Ok(BinaryOperator::Assign),
+            TokenKind::Plus => Ok(BinaryOperator::Add),
+            TokenKind::Minus => Ok(BinaryOperator::Subtract),
+            TokenKind::Star => Ok(BinaryOperator::Multiply),
+            TokenKind::Slash => Ok(BinaryOperator::Divide),
+            TokenKind::Percent => Ok(BinaryOperator::Remainder),
+            TokenKind::EqEq => Ok(BinaryOperator::Eq),
+            TokenKind::BangEq => Ok(BinaryOperator::NotEq),
+            TokenKind::OpenAngle => Ok(BinaryOperator::Less),
+            TokenKind::LessEq => Ok(BinaryOperator::LessEq),
+            TokenKind::CloseAngle => Ok(BinaryOperator::Greater),
+            TokenKind::GreaterEq => Ok(BinaryOperator::GreaterEq),
+            _ => Err(()),
         }
     }
 }
@@ -76,12 +92,12 @@ pub enum ExprKind {
     Int {
         value: i64,
     },
-    Float {
-        value: f64,
-    },
-    String {
-        symbol: SymbolU32,
-    },
+    // Float {
+    //     value: f64,
+    // },
+    // String {
+    //     symbol: SymbolU32,
+    // },
     Identifier {
         symbol: SymbolU32,
     },
@@ -94,33 +110,27 @@ pub enum ExprKind {
         right: ExprId,
         operator: BinaryOperator,
     },
-    Assignment {
-        left: ExprId,
-        right: ExprId,
-    },
-    Call {
-        callee: ExprId,
-        arguments: Vec<ExprId>,
-    },
-    Member {
-        object: ExprId,
-        property: SymbolU32,
-    },
+    // Call {
+    //     callee: ExprId,
+    //     arguments: Vec<ExprId>,
+    // },
+    // Member {
+    //     object: ExprId,
+    //     property: SymbolU32,
+    // },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
-    id: ExprId,
-    kind: ExprKind,
+    pub kind: ExprKind,
+    pub span: TextSpan,
+    pub id: ExprId,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum StmtKind {
     Expression {
         expr: ExprId,
-    },
-    Block {
-        statements: Vec<StmtId>,
     },
     ConstDefinition {
         name: SymbolU32,
@@ -141,14 +151,31 @@ pub enum StmtKind {
 pub struct Statement {
     pub id: StmtId,
     pub kind: StmtKind,
+    pub span: TextSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FunctionParam {
+    pub id: SymbolU32,
+    pub ty: SymbolU32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionSignature {
+    pub id: SymbolU32,
+    pub params: Vec<FunctionParam>,
+    pub result: Option<SymbolU32>,
+    pub span: TextSpan,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemKind {
-    Function {
-        name: SymbolU32,
-        params: Vec<(SymbolU32, SymbolU32)>,
-        body: StmtId,
+    FunctionDefinition {
+        signature: FunctionSignature,
+        body: Vec<StmtId>,
+    },
+    FunctionDeclaration {
+        signature: FunctionSignature,
     },
 }
 
@@ -156,13 +183,14 @@ pub enum ItemKind {
 pub struct Item {
     pub id: ItemId,
     pub kind: ItemKind,
+    pub span: TextSpan,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Ast {
-    expressions: Vec<Expression>,
-    statements: Vec<Statement>,
-    items: Vec<Item>,
+    pub expressions: Vec<Expression>,
+    pub statements: Vec<Statement>,
+    pub items: Vec<Item>,
 }
 
 impl Ast {
@@ -174,76 +202,33 @@ impl Ast {
         }
     }
 
-    pub fn add_expression(&mut self, kind: ExprKind) -> ExprId {
+    pub fn push_expr(&mut self, kind: ExprKind, span: TextSpan) -> ExprId {
         let id = ExprId(self.expressions.len() as u32);
-        self.expressions.push(Expression {
-            id: id.clone(),
-            kind,
-        });
+        self.expressions.push(Expression { kind, span, id });
         return id;
     }
 
-    pub fn get_expression(&self, id: ExprId) -> Option<&Expression> {
+    pub fn get_expr(&self, id: ExprId) -> Option<&Expression> {
         self.expressions.get(id.0 as usize)
     }
 
-    pub fn add_statement(&mut self, kind: StmtKind) -> StmtId {
+    pub fn push_stmt(&mut self, kind: StmtKind, span: TextSpan) -> StmtId {
         let id = StmtId(self.statements.len() as u32);
-        self.statements.push(Statement {
-            id: id.clone(),
-            kind,
-        });
+        self.statements.push(Statement { id, kind, span });
         return id;
     }
 
-    pub fn get_statement(&self, id: StmtId) -> Option<&Statement> {
+    pub fn get_stmt(&self, id: StmtId) -> Option<&Statement> {
         self.statements.get(id.0 as usize)
     }
 
-    pub fn add_item(&mut self, kind: ItemKind) -> ItemId {
+    pub fn push_item(&mut self, kind: ItemKind, span: TextSpan) -> ItemId {
         let id = ItemId(self.items.len() as u32);
-        self.items.push(Item {
-            id: id.clone(),
-            kind,
-        });
+        self.items.push(Item { id, kind, span });
         return id;
     }
 
     pub fn get_item(&self, id: ItemId) -> Option<&Item> {
         self.items.get(id.0 as usize)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use string_interner::symbol::SymbolU32;
-
-    use super::parser::Parser;
-
-    #[test]
-    fn basic() {
-        let mut parser = Parser::new(
-            "
-        fn add(a: i32, b: i32) {
-            return a + b;
-        }
-
-        fn main() {
-            const x: i32 = 5;
-            gweo y: i32 = 10;
-            const result: i32 = add(x, y);
-            println(result);
-        }
-        ",
-        );
-        let result = parser.parse();
-
-        println!("{:?}", result);
-        println!("{:#?}", parser.ast);
-        println!("{:#?}", parser.diagnostics.borrow().diagnostics);
-        // println!(
-        //     "{:#?}",
-        //     parser.interner.iter().collect::<Vec<(SymbolU32, &str)>>()
-        // );
     }
 }
