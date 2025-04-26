@@ -208,7 +208,7 @@ impl<'source> Parser<'source> {
             let token = self.lexer.peek();
 
             let (led_handler, operator_binding_power) = match Parser::led_lookup(token.kind) {
-                Some((_, bp)) if bp < min_binding_power => break,
+                Some((_, bp)) if bp <= min_binding_power => break,
                 Some((handler, bp)) => (handler, bp),
                 None => break,
             };

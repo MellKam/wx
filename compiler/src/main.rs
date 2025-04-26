@@ -1,11 +1,13 @@
 use ast::{Diagnostic, DiagnosticKind, Parser, SpanMultilinePrinter, SpanSingleLinePrinter};
 use hir::builder::HIRBuilder;
+use mir::builder::MIRBuilder;
 use owo_colors::OwoColorize;
 
 use crate::ast::SpanPrinter;
 
 mod ast;
 mod hir;
+mod mir;
 
 pub fn print_diagnostic(source: &str, diagnostic: &Diagnostic) {
     let mut printer = SpanSingleLinePrinter::default();
@@ -22,9 +24,8 @@ pub fn print_diagnostic(source: &str, diagnostic: &Diagnostic) {
 
 fn main() {
     let source = r#"
-        fn main(): i32 {
-            mut x: i32 = 2;
-            return x;
+        fn main(a: i64): i64 {
+            return 2 * 5 * a - 2;
         }
     "#;
     let mut parser = Parser::new(source);
@@ -33,7 +34,10 @@ fn main() {
     for diagnostic in parser.diagnostics.borrow().diagnostics.iter() {
         print_diagnostic(source, diagnostic);
     }
+    // println!("{:#?}", parser.ast);
 
-    let hir = HIRBuilder::new(&parser.ast, &parser.interner).build();
+    let hir = HIRBuilder::build(&parser.ast, &parser.interner);
     println!("{:#?}", hir);
+    let mir = MIRBuilder::build(&hir);
+    println!("{:#?}", mir);
 }

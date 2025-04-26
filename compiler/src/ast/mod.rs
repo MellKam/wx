@@ -25,8 +25,8 @@ pub struct ItemId(u32);
 pub enum UnaryOperator {
     /// Sign inversion `-x`
     Invert,
-    /// Logical negation `!x`
-    Negate,
+    // /// Logical negation `!x`
+    // Negate,
 }
 
 impl TryFrom<TokenKind> for UnaryOperator {
@@ -35,7 +35,7 @@ impl TryFrom<TokenKind> for UnaryOperator {
     fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
         match kind {
             TokenKind::Minus => Ok(UnaryOperator::Invert),
-            TokenKind::Bang => Ok(UnaryOperator::Negate),
+            // TokenKind::Bang => Ok(UnaryOperator::Negate),
             _ => Err(()),
         }
     }
