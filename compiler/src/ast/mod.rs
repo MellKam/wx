@@ -1,3 +1,4 @@
+use diagnostics::TextSpan;
 use lexer::TokenKind;
 use string_interner::symbol::SymbolU32;
 
@@ -5,12 +6,10 @@ mod diagnostics;
 mod lexer;
 mod parser;
 mod printer;
-mod span;
 mod unescape;
 
 pub use diagnostics::*;
 pub use parser::*;
-pub use span::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExprId(u32);
@@ -156,15 +155,15 @@ pub struct Statement {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FunctionParam {
-    pub id: SymbolU32,
+    pub name: SymbolU32,
     pub ty: SymbolU32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
-    pub id: SymbolU32,
+    pub name: SymbolU32,
     pub params: Vec<FunctionParam>,
-    pub result: Option<SymbolU32>,
+    pub output: Option<SymbolU32>,
     pub span: TextSpan,
 }
 

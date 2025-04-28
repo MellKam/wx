@@ -1,7 +1,6 @@
 use core::panic;
 
-use crate::hir::{self, RuntimeType};
-use crate::{ast, mir};
+use crate::{ast, hir, mir};
 
 pub struct MIRBuilder {
     mir: mir::MIR,
@@ -30,48 +29,59 @@ impl MIRBuilder {
 
     fn build_function(function: &hir::Function) -> mir::Function {
         mir::Function {
+            name: function.name,
+            param_count: function
+                .locals
+                .iter()
+                .filter(|local| local.binding == hir::BindingType::Param)
+                .count() as u32,
             locals: function
                 .locals
                 .iter()
-                .map(|local| mir::Local {
-                    index: mir::LocalIndex(local.index.0),
-                    ty: mir::Type::from(local.ty),
-                })
+                .map(|local| mir::Type::from(local.ty))
                 .collect(),
             output: vec![mir::Type::from(function.result)],
             body: function
                 .body
                 .iter()
-                .map(|stmt| MIRBuilder::build_expression_from_statement(stmt))
+                .filter_map(|stmt| MIRBuilder::build_expression_from_statement(stmt))
                 .collect(),
         }
     }
 
-    fn build_expression_from_statement(stmt: &hir::Statement) -> mir::Expression {
+    fn build_expression_from_statement(stmt: &hir::Statement) -> Option<mir::Expression> {
         use hir::Statement::*;
         match stmt {
             Local { index, ty, expr } => {
-                let local_index = mir::LocalIndex(index.0);
-                let kind = mir::ExprKind::Assign {
-                    index: local_index,
-                    value: Box::new(MIRBuilder::build_expression(expr, *ty)),
-                };
-                mir::Expression {
-                    kind,
-                    ty: mir::Type::from(*ty),
+                let local_index = index.0;
+                let value = MIRBuilder::build_expression(expr, *ty);
+                match value.kind {
+                    mir::ExprKind::Int { value: num } if num == 0 => return None,
+                    _ => {
+                        return Some(mir::Expression {
+                            kind: mir::ExprKind::Assign {
+                                index: local_index,
+                                value: Box::new(value),
+                            },
+                            ty: mir::Type::from(*ty),
+                        });
+                    }
                 }
             }
-            Expr { ty, expr } => MIRBuilder::build_expression(expr, *ty),
-            Return { ty, expr } => mir::Expression {
+            Expr { ty, expr } => Some(MIRBuilder::build_expression(expr, *ty)),
+            Return { ty, expr } => Some(mir::Expression {
                 kind: mir::ExprKind::Return {
                     value: Box::new(MIRBuilder::build_expression(expr, *ty)),
                 },
                 ty: mir::Type::from(*ty),
-            },
+            }),
         }
     }
 
-    fn build_expression(expr: &hir::Expression, expected_type: RuntimeType) -> mir::Expression {
+    fn build_expression(
+        expr: &hir::Expression,
+        expected_type: hir::RuntimeType,
+    ) -> mir::Expression {
         match expr.ty {
             hir::Type::Comptime(hir::ComptimeType::Int) => {
                 let value = MIRBuilder::build_comptime_int_expression(&expr.kind);
@@ -91,8 +101,7 @@ impl MIRBuilder {
                 MIRBuilder::build_runtime_unary_expression(operator, &operand, expected_type)
             }
             hir::ExprKind::Local(index) => {
-                let local_index = mir::LocalIndex(index.0);
-                let kind = mir::ExprKind::Local { index: local_index };
+                let kind = mir::ExprKind::Local { index: index.0 };
                 mir::Expression {
                     kind,
                     ty: mir::Type::from(expected_type),
@@ -131,28 +140,66 @@ impl MIRBuilder {
         rhs: &hir::Expression,
         expected_type: hir::RuntimeType,
     ) -> mir::Expression {
-        let left = MIRBuilder::build_expression(lhs, expected_type);
-        let right = MIRBuilder::build_expression(rhs, expected_type);
+        match operator {
+            ast::BinaryOperator::Add => {
+                let left = MIRBuilder::build_expression(lhs, expected_type);
+                let right = MIRBuilder::build_expression(rhs, expected_type);
 
-        let kind = match operator {
-            ast::BinaryOperator::Add => mir::ExprKind::Add {
-                left: Box::new(left),
-                right: Box::new(right),
-            },
-            ast::BinaryOperator::Subtract => mir::ExprKind::Sub {
-                left: Box::new(left),
-                right: Box::new(right),
-            },
-            ast::BinaryOperator::Multiply => mir::ExprKind::Mul {
-                left: Box::new(left),
-                right: Box::new(right),
-            },
+                mir::Expression {
+                    kind: mir::ExprKind::Add {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ty: mir::Type::from(expected_type),
+                }
+            }
+            ast::BinaryOperator::Subtract => {
+                let left = MIRBuilder::build_expression(lhs, expected_type);
+                let right = MIRBuilder::build_expression(rhs, expected_type);
+
+                mir::Expression {
+                    kind: mir::ExprKind::Sub {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ty: mir::Type::from(expected_type),
+                }
+            }
+            ast::BinaryOperator::Multiply => {
+                let left = MIRBuilder::build_expression(lhs, expected_type);
+                let right = MIRBuilder::build_expression(rhs, expected_type);
+
+                mir::Expression {
+                    kind: mir::ExprKind::Mul {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ty: mir::Type::from(expected_type),
+                }
+            }
+            ast::BinaryOperator::Assign => {
+                let local_index = match lhs.kind {
+                    hir::ExprKind::Local(index) => index.0,
+                    _ => panic!("expected local index"),
+                };
+
+                let value = MIRBuilder::build_expression(
+                    rhs,
+                    match lhs.ty {
+                        hir::Type::Runtime(ty) => ty,
+                        _ => panic!("left side of assignment must have a know runtime type"),
+                    },
+                );
+
+                return mir::Expression {
+                    kind: mir::ExprKind::Assign {
+                        index: local_index,
+                        value: Box::new(value),
+                    },
+                    ty: mir::Type::from(expected_type),
+                };
+            }
             _ => todo!("unimplemented operator"),
-        };
-
-        mir::Expression {
-            kind,
-            ty: mir::Type::from(expected_type),
         }
     }
 

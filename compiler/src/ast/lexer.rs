@@ -2,76 +2,162 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::{self};
 
-use super::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticsBag};
-use super::span::TextSpan;
+use super::diagnostics::{Diagnostic, DiagnosticKind, TextSpan};
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TokenTag {
+    Int,
+    Float,
+    Char,
+    String,
+    Identifier,
+    Colon,
+    SemiColon,
+    Comma,
+    Dot,
+    OpenParen,
+    CloseParen,
+    OpenBrace,
+    CloseBrace,
+    OpenBracket,
+    CloseBracket,
+    OpenAngle,
+    CloseAngle,
+    Eq,
+    Bang,
+    Minus,
+    Amper,
+    Vbar,
+    Plus,
+    Star,
+    Slash,
+    Percent,
+    EqEq,
+    BangEq,
+    LessEq,
+    GreaterEq,
+    Whitespace,
+    Unknown,
+    Eof,
+}
+
+impl std::fmt::Display for TokenTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use TokenTag::*;
+        let text = match self {
+            Int => "<int>",
+            Float => "<float>",
+            Char => "<char>",
+            String => "<string>",
+            Identifier => "<identifier>",
+            Colon => ":",
+            SemiColon => ";",
+            Comma => ",",
+            Dot => ".",
+            OpenParen => "(",
+            CloseParen => ")",
+            OpenBrace => "{",
+            CloseBrace => "}",
+            OpenBracket => "[",
+            CloseBracket => "]",
+            OpenAngle => "<",
+            CloseAngle => ">",
+            Eq => "=",
+            Bang => "!",
+            Minus => "-",
+            Amper => "&",
+            Vbar => "|",
+            Plus => "+",
+            Star => "*",
+            Slash => "/",
+            Percent => "%",
+            EqEq => "==",
+            BangEq => "!=",
+            LessEq => "<=",
+            GreaterEq => ">=",
+            Whitespace => "<whitespace>",
+            Unknown => "<unknown>",
+            Eof => "<eof>",
+        };
+        write!(f, "{}", text)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     Int,
     Float,
-    Char {
-        terminated: bool,
-    },
-    String {
-        terminated: bool,
-    },
+    Char { terminated: bool },
+    String { terminated: bool },
     Identifier,
-    /// `:`
     Colon,
-    /// `;`
     SemiColon,
-    /// `,`
     Comma,
-    /// `.`
     Dot,
-    /// `(`
     OpenParen,
-    /// `)`
     CloseParen,
-    /// `{`
     OpenBrace,
-    /// `}`
     CloseBrace,
-    /// `[`
     OpenBracket,
-    /// `]`
     CloseBracket,
-    /// `<`
     OpenAngle,
-    /// `>`
     CloseAngle,
-    /// `=`
     Eq,
-    /// `!`
     Bang,
-    /// `-`
     Minus,
-    /// `&`
     Amper,
-    /// `|`
     Vbar,
-    /// `+`
     Plus,
-    /// `*`
     Star,
-    /// `/`
     Slash,
-    /// `%`
     Percent,
-    /// `==`
     EqEq,
-    /// `!=`
     BangEq,
-    /// `<=`
     LessEq,
-    /// `>=`
     GreaterEq,
-    /// Any whitespace character sequence.
     Whitespace,
-    /// Unknown token, not expected by the lexer, e.g. "№"
     Unknown,
-    /// End of input
     Eof,
+}
+
+impl TokenKind {
+    pub fn tag(&self) -> TokenTag {
+        match self {
+            TokenKind::Int => TokenTag::Int,
+            TokenKind::Float => TokenTag::Float,
+            TokenKind::Char { .. } => TokenTag::Char,
+            TokenKind::String { .. } => TokenTag::String,
+            TokenKind::Identifier => TokenTag::Identifier,
+            TokenKind::Colon => TokenTag::Colon,
+            TokenKind::SemiColon => TokenTag::SemiColon,
+            TokenKind::Comma => TokenTag::Comma,
+            TokenKind::Dot => TokenTag::Dot,
+            TokenKind::OpenParen => TokenTag::OpenParen,
+            TokenKind::CloseParen => TokenTag::CloseParen,
+            TokenKind::OpenBrace => TokenTag::OpenBrace,
+            TokenKind::CloseBrace => TokenTag::CloseBrace,
+            TokenKind::OpenBracket => TokenTag::OpenBracket,
+            TokenKind::CloseBracket => TokenTag::CloseBracket,
+            TokenKind::OpenAngle => TokenTag::OpenAngle,
+            TokenKind::CloseAngle => TokenTag::CloseAngle,
+            TokenKind::Eq => TokenTag::Eq,
+            TokenKind::Bang => TokenTag::Bang,
+            TokenKind::Minus => TokenTag::Minus,
+            TokenKind::Amper => TokenTag::Amper,
+            TokenKind::Vbar => TokenTag::Vbar,
+            TokenKind::Plus => TokenTag::Plus,
+            TokenKind::Star => TokenTag::Star,
+            TokenKind::Slash => TokenTag::Slash,
+            TokenKind::Percent => TokenTag::Percent,
+            TokenKind::EqEq => TokenTag::EqEq,
+            TokenKind::BangEq => TokenTag::BangEq,
+            TokenKind::LessEq => TokenTag::LessEq,
+            TokenKind::GreaterEq => TokenTag::GreaterEq,
+            TokenKind::Whitespace => TokenTag::Whitespace,
+            TokenKind::Unknown => TokenTag::Unknown,
+            TokenKind::Eof => TokenTag::Eof,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,7 +169,6 @@ pub struct Token {
 pub struct Lexer<'a> {
     chars: std::str::Chars<'a>,
     offset: usize,
-    peeked: Option<Token>,
 }
 
 const EOF_CHAR: char = '\0';
@@ -93,7 +178,6 @@ impl<'a> Lexer<'a> {
         Lexer {
             chars: input.chars(),
             offset: 0,
-            peeked: None,
         }
     }
 
@@ -251,14 +335,14 @@ impl<'a> Lexer<'a> {
     }
 }
 
-pub struct BufferedLexer<'l> {
-    lexer: Lexer<'l>,
-    diagnostics: Rc<RefCell<DiagnosticsBag>>,
+pub struct PeekableLexer<'a> {
+    lexer: Lexer<'a>,
+    diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
     peeked: Option<Token>,
 }
 
-impl<'l> BufferedLexer<'l> {
-    pub fn new(lexer: Lexer<'l>, diagnostics: Rc<RefCell<DiagnosticsBag>>) -> Self {
+impl<'a> PeekableLexer<'a> {
+    pub fn new(lexer: Lexer<'a>, diagnostics: Rc<RefCell<Vec<Diagnostic>>>) -> Self {
         Self {
             lexer,
             diagnostics,
@@ -266,24 +350,21 @@ impl<'l> BufferedLexer<'l> {
         }
     }
 
-    pub fn next_expect(&mut self, expected: TokenKind) -> Option<Token> {
+    pub fn next_expect(&mut self, expected: TokenTag) -> Option<Token> {
         let token = self.next();
-        match token.kind {
-            kind if kind == expected => return Some(token),
-            TokenKind::Eof => {
-                self.diagnostics.borrow_mut().diagnostics.push(Diagnostic {
-                    message: format!("unexpected end of input, expected `{:#?}`.", expected),
+        match token.kind.tag() {
+            tag if tag == expected => return Some(token),
+            TokenTag::Eof => {
+                self.diagnostics.borrow_mut().push(Diagnostic {
+                    message: format!("unexpected end of input, expected '{}'", expected),
                     span: token.span,
                     kind: DiagnosticKind::Error,
                 });
                 return None;
             }
-            _ => {
-                self.diagnostics.borrow_mut().diagnostics.push(Diagnostic {
-                    message: format!(
-                        "unexpected token `{:#?}`, expected `{:#?}`",
-                        token.kind, expected
-                    ),
+            tag => {
+                self.diagnostics.borrow_mut().push(Diagnostic {
+                    message: format!("unexpected token '{}', expected '{}'", tag, expected),
                     span: token.span,
                     kind: DiagnosticKind::Error,
                 });
@@ -297,19 +378,29 @@ impl<'l> BufferedLexer<'l> {
             return token;
         }
 
+        let mut unknown_span: Option<TextSpan> = None;
         loop {
             let token = self.lexer.next();
             match token.kind {
                 TokenKind::Whitespace => continue,
                 TokenKind::Unknown => {
-                    self.diagnostics.borrow_mut().diagnostics.push(Diagnostic {
-                        message: "unknown token".to_string(),
-                        span: token.span,
-                        kind: DiagnosticKind::Error,
-                    });
+                    unknown_span = match unknown_span {
+                        Some(span) => Some(TextSpan::combine(span, token.span)),
+                        None => Some(token.span),
+                    };
                     continue;
                 }
-                _ => return token,
+                _ => {
+                    match unknown_span {
+                        Some(span) => self.diagnostics.borrow_mut().push(Diagnostic {
+                            message: "unknown token".to_string(),
+                            span,
+                            kind: DiagnosticKind::Error,
+                        }),
+                        None => {}
+                    }
+                    return token;
+                }
             }
         }
     }
@@ -320,7 +411,7 @@ impl<'l> BufferedLexer<'l> {
             None => {
                 let token = self.next();
                 self.peeked = Some(token.clone());
-                return token.clone();
+                return token;
             }
         }
     }

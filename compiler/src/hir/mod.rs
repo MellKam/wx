@@ -1,5 +1,7 @@
 pub mod builder;
 
+use string_interner::symbol::SymbolU32;
+
 use crate::ast::{BinaryOperator, UnaryOperator};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -116,8 +118,9 @@ pub enum BindingType {
     Const,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Local {
+    pub name: SymbolU32,
     pub index: LocalIndex,
     pub ty: RuntimeType,
     pub binding: BindingType,
@@ -125,6 +128,7 @@ pub struct Local {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
+    pub name: SymbolU32,
     pub locals: Vec<Local>,
     pub result: RuntimeType,
     pub body: Vec<Statement>,

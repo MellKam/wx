@@ -33,16 +33,11 @@ struct FunctionContext {
     result: hir::RuntimeType,
 }
 
-enum BuilderType {
-    Runtime(hir::Type),
-    Comptime(hir::ComptimeType),
-}
-
 impl FunctionContext {
     #[inline]
     fn lookup_local(&self, symbol: SymbolU32) -> Option<hir::Local> {
         let local_index = self.local_lookup.get(&symbol).copied()?;
-        self.locals.get(local_index.0 as usize).copied()
+        self.locals.get(local_index.0 as usize).cloned()
     }
 
     #[inline]
@@ -54,6 +49,7 @@ impl FunctionContext {
     ) -> hir::LocalIndex {
         let local_index = hir::LocalIndex(self.locals.len() as u32);
         self.locals.push(hir::Local {
+            name: id,
             index: local_index,
             ty,
             binding,
@@ -81,7 +77,7 @@ impl<'a> HIRBuilder<'a> {
             match &item.kind {
                 ast::ItemKind::FunctionDefinition { signature, .. } => {
                     let index = hir::FunctionIndex(builder.function_lookup.len() as u32);
-                    builder.function_lookup.insert(signature.id, index);
+                    builder.function_lookup.insert(signature.name, index);
                 }
                 _ => panic!("Expected function definition"),
             }
@@ -107,7 +103,7 @@ impl<'a> HIRBuilder<'a> {
         signature: &ast::FunctionSignature,
         body: &Vec<ast::StmtId>,
     ) -> hir::Function {
-        let result = match signature.result {
+        let result = match signature.output {
             Some(ty) => try_from_symbol_to_runtime_type(&self.interner, ty).expect("invalid type"),
             None => hir::RuntimeType::Unit,
         };
@@ -120,7 +116,7 @@ impl<'a> HIRBuilder<'a> {
 
         for param in signature.params.iter() {
             ctx.push_local(
-                param.id,
+                param.name,
                 try_from_symbol_to_runtime_type(&self.interner, param.ty).expect("invalid type"),
                 hir::BindingType::Param,
             );
@@ -133,6 +129,7 @@ impl<'a> HIRBuilder<'a> {
         }
 
         hir::Function {
+            name: signature.name,
             locals: ctx.locals,
             result,
             body: hir_body,
@@ -230,7 +227,7 @@ impl<'a> HIRBuilder<'a> {
             hir::ExprKind::Local(index) => index,
             _ => panic!("left side of assignment must be a local variable"),
         };
-        let local = match ctx.locals.get(local_index.0 as usize).copied() {
+        let local = match ctx.locals.get(local_index.0 as usize) {
             Some(local) => local,
             None => panic!("can't assing to undeclared variable"),
         };
