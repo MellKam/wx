@@ -1,6 +1,1 @@
-(module
-  (func (export "add") (param i32 i32) (result i32)
-    (local.get 0)
-    (local.get 1)
-    (i32.add)
-    (return)))
+(module(func(export"add")(param i32 i32)(result i32)(i32.const -353)(return)))

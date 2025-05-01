@@ -1,11 +1,10 @@
-use diagnostics::TextSpan;
+use codespan::Span;
 use lexer::TokenKind;
 use string_interner::symbol::SymbolU32;
 
 mod diagnostics;
 mod lexer;
 mod parser;
-mod printer;
 mod unescape;
 
 pub use diagnostics::*;
@@ -97,6 +96,9 @@ pub enum ExprKind {
     // String {
     //     symbol: SymbolU32,
     // },
+    Return {
+        value: ExprId,
+    },
     Identifier {
         symbol: SymbolU32,
     },
@@ -122,7 +124,7 @@ pub enum ExprKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
     pub kind: ExprKind,
-    pub span: TextSpan,
+    pub span: Span,
     pub id: ExprId,
 }
 
@@ -141,16 +143,13 @@ pub enum StmtKind {
         ty: SymbolU32,
         value: ExprId,
     },
-    Return {
-        value: ExprId,
-    },
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Statement {
     pub id: StmtId,
     pub kind: StmtKind,
-    pub span: TextSpan,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -164,7 +163,7 @@ pub struct FunctionSignature {
     pub name: SymbolU32,
     pub params: Vec<FunctionParam>,
     pub output: Option<SymbolU32>,
-    pub span: TextSpan,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -182,7 +181,7 @@ pub enum ItemKind {
 pub struct Item {
     pub id: ItemId,
     pub kind: ItemKind,
-    pub span: TextSpan,
+    pub span: Span,
 }
 
 #[derive(Debug, PartialEq)]
@@ -201,7 +200,7 @@ impl Ast {
         }
     }
 
-    pub fn push_expr(&mut self, kind: ExprKind, span: TextSpan) -> ExprId {
+    pub fn push_expr(&mut self, kind: ExprKind, span: Span) -> ExprId {
         let id = ExprId(self.expressions.len() as u32);
         self.expressions.push(Expression { kind, span, id });
         return id;
@@ -211,7 +210,7 @@ impl Ast {
         self.expressions.get(id.0 as usize)
     }
 
-    pub fn push_stmt(&mut self, kind: StmtKind, span: TextSpan) -> StmtId {
+    pub fn push_stmt(&mut self, kind: StmtKind, span: Span) -> StmtId {
         let id = StmtId(self.statements.len() as u32);
         self.statements.push(Statement { id, kind, span });
         return id;
@@ -221,7 +220,7 @@ impl Ast {
         self.statements.get(id.0 as usize)
     }
 
-    pub fn push_item(&mut self, kind: ItemKind, span: TextSpan) -> ItemId {
+    pub fn push_item(&mut self, kind: ItemKind, span: Span) -> ItemId {
         let id = ItemId(self.items.len() as u32);
         self.items.push(Item { id, kind, span });
         return id;

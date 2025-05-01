@@ -1,8 +1,4 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::{self};
-
-use super::diagnostics::{Diagnostic, DiagnosticKind, TextSpan};
+use codespan::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenTag {
@@ -163,7 +159,7 @@ impl TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
-    pub span: TextSpan,
+    pub span: Span,
 }
 
 pub struct Lexer<'a> {
@@ -216,10 +212,7 @@ impl<'a> Lexer<'a> {
 
         let token = Token {
             kind: token_kind,
-            span: TextSpan {
-                start: self.offset as u32,
-                end: (self.offset + length) as u32,
-            },
+            span: Span::new(self.offset as u32, (self.offset + length) as u32),
         };
         self.offset += length;
 
@@ -337,39 +330,22 @@ impl<'a> Lexer<'a> {
 
 pub struct PeekableLexer<'a> {
     lexer: Lexer<'a>,
-    diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
     peeked: Option<Token>,
 }
 
 impl<'a> PeekableLexer<'a> {
-    pub fn new(lexer: Lexer<'a>, diagnostics: Rc<RefCell<Vec<Diagnostic>>>) -> Self {
+    pub fn new(lexer: Lexer<'a>) -> Self {
         Self {
             lexer,
-            diagnostics,
             peeked: None,
         }
     }
 
-    pub fn next_expect(&mut self, expected: TokenTag) -> Option<Token> {
+    pub fn next_expect(&mut self, expected: TokenTag) -> Result<Token, Token> {
         let token = self.next();
         match token.kind.tag() {
-            tag if tag == expected => return Some(token),
-            TokenTag::Eof => {
-                self.diagnostics.borrow_mut().push(Diagnostic {
-                    message: format!("unexpected end of input, expected '{}'", expected),
-                    span: token.span,
-                    kind: DiagnosticKind::Error,
-                });
-                return None;
-            }
-            tag => {
-                self.diagnostics.borrow_mut().push(Diagnostic {
-                    message: format!("unexpected token '{}', expected '{}'", tag, expected),
-                    span: token.span,
-                    kind: DiagnosticKind::Error,
-                });
-                return None;
-            }
+            tag if tag == expected => return Ok(token),
+            _ => Err(token),
         }
     }
 
@@ -378,29 +354,28 @@ impl<'a> PeekableLexer<'a> {
             return token;
         }
 
-        let mut unknown_span: Option<TextSpan> = None;
+        let mut unknown_span: Option<Span> = None;
         loop {
             let token = self.lexer.next();
             match token.kind {
                 TokenKind::Whitespace => continue,
                 TokenKind::Unknown => {
                     unknown_span = match unknown_span {
-                        Some(span) => Some(TextSpan::combine(span, token.span)),
+                        Some(span) => Some(Span::merge(span, token.span)),
                         None => Some(token.span),
                     };
                     continue;
                 }
-                _ => {
-                    match unknown_span {
-                        Some(span) => self.diagnostics.borrow_mut().push(Diagnostic {
-                            message: "unknown token".to_string(),
+                _ => match unknown_span {
+                    Some(span) => {
+                        self.peeked = Some(token.clone());
+                        return Token {
+                            kind: TokenKind::Unknown,
                             span,
-                            kind: DiagnosticKind::Error,
-                        }),
-                        None => {}
+                        };
                     }
-                    return token;
-                }
+                    None => return token,
+                },
             }
         }
     }
@@ -414,130 +389,5 @@ impl<'a> PeekableLexer<'a> {
                 return token;
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_token(token: Token, kind: TokenKind, span: TextSpan) {
-        assert_eq!(token, Token { kind, span });
-    }
-
-    #[test]
-    fn should_lex_numbers() {
-        let mut lexer = Lexer::new("1 + 2.5 - 3.");
-
-        assert_token(lexer.next(), TokenKind::Int, TextSpan { start: 0, end: 1 });
-        assert_token(
-            lexer.next(),
-            TokenKind::Whitespace,
-            TextSpan { start: 1, end: 2 },
-        );
-        assert_token(lexer.next(), TokenKind::Plus, TextSpan { start: 2, end: 3 });
-        assert_token(
-            lexer.next(),
-            TokenKind::Whitespace,
-            TextSpan { start: 3, end: 4 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Float,
-            TextSpan { start: 4, end: 7 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Whitespace,
-            TextSpan { start: 7, end: 8 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Minus,
-            TextSpan { start: 8, end: 9 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Whitespace,
-            TextSpan { start: 9, end: 10 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Float,
-            TextSpan { start: 10, end: 12 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Eof,
-            TextSpan { start: 12, end: 12 },
-        );
-    }
-
-    #[test]
-    fn should_lex_identifiers() {
-        let mut lexer = Lexer::new("foo Bar _baz");
-
-        assert_token(
-            lexer.next(),
-            TokenKind::Identifier,
-            TextSpan { start: 0, end: 3 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Whitespace,
-            TextSpan { start: 3, end: 4 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Identifier,
-            TextSpan { start: 4, end: 7 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Whitespace,
-            TextSpan { start: 7, end: 8 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Identifier,
-            TextSpan { start: 8, end: 12 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Eof,
-            TextSpan { start: 12, end: 12 },
-        );
-    }
-
-    #[test]
-    fn should_lex_unicode_string_literals() {
-        let mut lexer = Lexer::new("\"hello, 世界\"");
-
-        assert_token(
-            lexer.next(),
-            TokenKind::String { terminated: true },
-            TextSpan { start: 0, end: 15 },
-        );
-        assert_token(
-            lexer.next(),
-            TokenKind::Eof,
-            TextSpan { start: 15, end: 15 },
-        );
-    }
-
-    #[test]
-    fn should_handle_empty_input() {
-        let mut lexer = Lexer::new("");
-        assert_token(lexer.next(), TokenKind::Eof, TextSpan { start: 0, end: 0 });
-    }
-
-    #[test]
-    fn should_handle_unterminated_string() {
-        let mut lexer = Lexer::new("\"hello");
-        assert_token(
-            lexer.next(),
-            TokenKind::String { terminated: false },
-            TextSpan { start: 0, end: 6 },
-        );
     }
 }

@@ -1,15 +1,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use codespan::Span;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
-use super::diagnostics::{Diagnostic, DiagnosticKind, TextSpan};
+use super::diagnostics::Diagnostic;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind, TokenTag};
 use super::{
-    Ast, BinaryOperator, BindingType, ExprId, ExprKind, FunctionParam, FunctionSignature, ItemId,
-    ItemKind, StmtId, StmtKind, UnaryOperator,
+    Ast, BinaryOperator, BindingType, ExprId, ExprKind, FunctionParam, FunctionSignature,
+    InvalidIntegerLiteralDiagnostic, InvalidStatementDiagnostic, ItemId, ItemKind,
+    MissingClosingParenDiagnostic, MissingFunctionBodyDiagnostic,
+    MissingStatementDelimiterDiagnostic, StmtId, StmtKind, UnaryOperator,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
@@ -84,7 +87,6 @@ impl Keyword {
 
 type NudHandler = fn(parser: &mut Parser) -> Option<ExprId>;
 type LedHandler = fn(parser: &mut Parser, left: ExprId, bp: BindingPower) -> Option<ExprId>;
-type StmtHandler = fn(parser: &mut Parser) -> Option<StmtId>;
 type ItemHandler = fn(parser: &mut Parser) -> Option<ItemId>;
 
 pub struct Parser<'a> {
@@ -92,7 +94,7 @@ pub struct Parser<'a> {
     lexer: PeekableLexer<'a>,
     interner: &'a mut StringInterner<StringBackend>,
     diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
-    pub ast: Ast,
+    ast: Ast,
 }
 
 impl<'a> Parser<'a> {
@@ -101,7 +103,7 @@ impl<'a> Parser<'a> {
         diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
         interner: &'a mut StringInterner<StringBackend>,
     ) -> Ast {
-        let lexer: PeekableLexer<'a> = PeekableLexer::new(Lexer::new(source), diagnostics.clone());
+        let lexer: PeekableLexer<'a> = PeekableLexer::new(Lexer::new(source));
 
         let mut parser = Self {
             source,
@@ -125,6 +127,25 @@ impl<'a> Parser<'a> {
         parser.ast
     }
 
+    fn parse_item(&mut self) -> Option<ItemId> {
+        let item_handler = self.item_lookup()?;
+        let item_id = item_handler(self)?;
+        Some(item_id)
+    }
+
+    fn item_lookup(&mut self) -> Option<ItemHandler> {
+        let token = self.lexer.peek();
+        let symbol = match token.kind {
+            TokenKind::Identifier => self.get_identifier_symbol(token)?,
+            _ => return None,
+        };
+
+        match Keyword::try_from_symbol(&self.interner, symbol) {
+            Some(Keyword::Fn) => Some(Parser::parse_function_definition),
+            _ => None,
+        }
+    }
+
     fn parse_statement(&mut self) -> Option<StmtId> {
         match self.stmt_lookup() {
             Some(stmt_handler) => {
@@ -135,17 +156,19 @@ impl<'a> Parser<'a> {
                         let _ = self.lexer.next();
                     }
                     _ => {
-                        self.diagnostics.borrow_mut().push(Diagnostic {
-                            message: "expected `;` after statement".to_string(),
-                            span: self.ast.get_stmt(stmt_id).unwrap().span,
-                            kind: DiagnosticKind::Error,
-                        });
+                        let stmt = self.ast.get_stmt(stmt_id).unwrap();
+                        self.diagnostics.borrow_mut().push(
+                            MissingStatementDelimiterDiagnostic {
+                                position: stmt.span.end(),
+                            }
+                            .into(),
+                        );
                     }
                 }
                 return Some(stmt_id);
             }
             None => {}
-        }
+        };
 
         let first_token = self.lexer.peek();
         if first_token.kind == TokenKind::SemiColon {
@@ -158,21 +181,38 @@ impl<'a> Parser<'a> {
             None => {}
         };
 
+        let mut last_token_span = self.lexer.peek().span;
         loop {
             match self.lexer.peek().kind {
                 TokenKind::SemiColon | TokenKind::CloseBrace | TokenKind::Eof => break,
                 _ => {
-                    let _ = self.lexer.next();
+                    let token = self.lexer.next();
+                    last_token_span = token.span;
                     continue;
                 }
             }
         }
-        self.diagnostics.borrow_mut().push(Diagnostic {
-            message: "unable to parse statement".to_string(),
-            span: TextSpan::new(first_token.span.start, self.lexer.peek().span.end),
-            kind: DiagnosticKind::Error,
-        });
+        self.diagnostics.borrow_mut().push(
+            InvalidStatementDiagnostic {
+                span: Span::merge(first_token.span, last_token_span),
+            }
+            .into(),
+        );
         return None;
+    }
+
+    fn stmt_lookup(&mut self) -> Option<fn(&mut Parser) -> Option<StmtId>> {
+        let token = self.lexer.peek();
+        let symbol = match token.kind {
+            TokenKind::Identifier => self.get_identifier_symbol(token.clone())?,
+            _ => return None,
+        };
+
+        match Keyword::try_from_symbol(&self.interner, symbol) {
+            Some(Keyword::Const) => Some(Parser::parse_variable_definition),
+            Some(Keyword::Mut) => Some(Parser::parse_variable_definition),
+            _ => return None,
+        }
     }
 
     fn parse_expression_statement(&mut self) -> Option<StmtId> {
@@ -181,11 +221,8 @@ impl<'a> Parser<'a> {
             None => return None,
         };
 
-        match self.lexer.peek() {
-            Token {
-                kind: TokenKind::SemiColon,
-                ..
-            } => {
+        match self.lexer.peek().kind.tag() {
+            TokenTag::SemiColon => {
                 let _ = self.lexer.next();
                 let expr = self.ast.get_expr(expr_id).unwrap();
                 let stmt_id = self
@@ -194,10 +231,7 @@ impl<'a> Parser<'a> {
 
                 Some(stmt_id)
             }
-            Token {
-                kind: TokenKind::CloseBrace,
-                ..
-            } => {
+            TokenTag::CloseBrace => {
                 let expr = self.ast.get_expr(expr_id).unwrap();
                 let stmt_id = self
                     .ast
@@ -206,11 +240,12 @@ impl<'a> Parser<'a> {
                 Some(stmt_id)
             }
             _ => {
-                self.diagnostics.borrow_mut().push(Diagnostic {
-                    message: "expected `;` after expression".to_string(),
-                    span: self.ast.get_expr(expr_id).unwrap().span,
-                    kind: DiagnosticKind::Error,
-                });
+                self.diagnostics.borrow_mut().push(
+                    MissingStatementDelimiterDiagnostic {
+                        position: self.ast.get_expr(expr_id).unwrap().span.end(),
+                    }
+                    .into(),
+                );
 
                 let expr = self.ast.get_expr(expr_id).unwrap();
                 let stmt_id = self
@@ -222,15 +257,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_item(&mut self) -> Option<ItemId> {
-        let item_handler = self.item_lookup()?;
-        let item_id = item_handler(self)?;
-        Some(item_id)
-    }
-
-    fn parse_expression(&mut self, min_binding_power: BindingPower) -> Option<ExprId> {
+    fn parse_expression(&mut self, limit_bp: BindingPower) -> Option<ExprId> {
         let token = self.lexer.peek();
-        let nud_handler = match Parser::nud_lookup(token.kind.clone()) {
+        let nud_handler = match self.nud_lookup(token.clone()) {
             Some((nud_handler, _)) => nud_handler,
             None => return None,
         };
@@ -239,30 +268,34 @@ impl<'a> Parser<'a> {
         loop {
             let token = self.lexer.peek();
 
-            let (led_handler, operator_binding_power) = match Parser::led_lookup(token.kind) {
-                Some((_, bp)) if bp <= min_binding_power => break,
+            let (led_handler, operator_bp) = match Parser::led_lookup(token.kind) {
+                Some((_, bp)) if bp <= limit_bp => break,
                 Some((handler, bp)) => (handler, bp),
                 None => break,
             };
 
-            left = led_handler(self, left, operator_binding_power)?;
+            left = led_handler(self, left, operator_bp)?;
         }
         Some(left)
     }
 
-    fn nud_lookup(token: TokenKind) -> Option<(NudHandler, BindingPower)> {
-        match token {
-            TokenKind::Int { .. } => Some((Parser::parse_int_expression, BindingPower::Primary)),
+    fn nud_lookup(&mut self, token: Token) -> Option<(NudHandler, BindingPower)> {
+        match token.kind.tag() {
+            TokenTag::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
             // TokenKind::Float { .. } => Some((parse_float_expression, BindingPower::Primary)),
             // TokenKind::String { .. } => Some((parse_string_expression, BindingPower::Primary)),
             // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
-            TokenKind::Identifier => {
-                Some((Parser::parse_identifier_expression, BindingPower::Primary))
+            TokenTag::Identifier => {
+                let symbol = self.get_identifier_symbol(token.clone())?;
+                match Keyword::try_from_symbol(&self.interner, symbol) {
+                    Some(Keyword::Return) => {
+                        Some((Parser::parse_return_statement, BindingPower::Primary))
+                    }
+                    _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
+                }
             }
-            TokenKind::OpenParen => {
-                Some((Parser::parse_grouping_expression, BindingPower::Default))
-            }
-            TokenKind::Minus | TokenKind::Bang => {
+            TokenTag::OpenParen => Some((Parser::parse_grouping_expression, BindingPower::Default)),
+            TokenTag::Minus | TokenTag::Bang => {
                 Some((Parser::parse_unary_expression, BindingPower::Unary))
             }
             _ => None,
@@ -312,34 +345,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn stmt_lookup(&mut self) -> Option<StmtHandler> {
-        let token = self.lexer.peek();
-        let symbol = match token.kind {
-            // TokenKind::OpenBrace => return Some(parse_block_statement),
-            TokenKind::Identifier => self.get_identifier_symbol(token.clone())?,
-            _ => return None,
-        };
-
-        match Keyword::try_from_symbol(&self.interner, symbol) {
-            Some(Keyword::Const) => Some(Parser::parse_variable_definition),
-            Some(Keyword::Mut) => Some(Parser::parse_variable_definition),
-            Some(Keyword::Return) => Some(Parser::parse_return_statement),
-            _ => return None,
-        }
-    }
-
-    fn item_lookup(&mut self) -> Option<ItemHandler> {
-        let token = self.lexer.peek();
-        let symbol = self.get_identifier_symbol(token)?;
-        match Keyword::try_from_symbol(&self.interner, symbol) {
-            Some(Keyword::Fn) => Some(Parser::parse_function_definition),
-            _ => None,
-        }
-    }
-
     fn parse_identifier_expression(parser: &mut Parser) -> Option<ExprId> {
         let token = parser.lexer.next();
-        let text = token.span.get_text(parser.source)?;
+        let text = parser
+            .source
+            .get(token.span.start().to_usize()..token.span.end().to_usize())?;
         let symbol = parser.interner.get_or_intern(text);
 
         let expr_id = parser
@@ -357,14 +367,14 @@ impl<'a> Parser<'a> {
             _ => unreachable!(),
         };
 
-        let name = parser.lexer.next_expect(TokenTag::Identifier)?;
+        let name = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
         let name_symbol = parser.get_identifier_symbol(name)?;
 
-        let _ = parser.lexer.next_expect(TokenTag::Colon)?;
-        let type_token = parser.lexer.next_expect(TokenTag::Identifier)?;
+        let _ = parser.lexer.next_expect(TokenTag::Colon).ok()?;
+        let type_token = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
         let type_symbol = parser.get_identifier_symbol(type_token)?;
 
-        let _ = parser.lexer.next_expect(TokenTag::Eq)?;
+        let _ = parser.lexer.next_expect(TokenTag::Eq).ok()?;
         let value = parser.parse_expression(BindingPower::Default)?;
         let value_expr = parser.ast.get_expr(value).unwrap();
 
@@ -381,41 +391,41 @@ impl<'a> Parser<'a> {
                     value,
                 },
             },
-            TextSpan::combine(binding_type_token.span, value_expr.span),
+            Span::merge(binding_type_token.span, value_expr.span),
         );
         Some(stmt_id)
     }
 
-    fn parse_return_statement(parser: &mut Parser) -> Option<StmtId> {
+    fn parse_return_statement(parser: &mut Parser) -> Option<ExprId> {
         let return_keyword = parser.lexer.next();
         let value = parser.parse_expression(BindingPower::Default)?;
         let value_expr = parser.ast.get_expr(value).unwrap();
 
-        let stmt_id = parser.ast.push_stmt(
-            StmtKind::Return { value },
-            TextSpan::combine(return_keyword.span, value_expr.span),
+        let stmt_id = parser.ast.push_expr(
+            ExprKind::Return { value },
+            Span::merge(return_keyword.span, value_expr.span),
         );
         Some(stmt_id)
     }
 
     fn parse_grouping_expression(parser: &mut Parser) -> Option<ExprId> {
-        let _ = parser.lexer.next();
+        let open_paren = parser.lexer.next();
         let inner_expr_id = parser.parse_expression(BindingPower::Default)?;
 
-        match parser.lexer.peek() {
-            Token {
-                kind: TokenKind::CloseParen,
-                ..
-            } => {
+        match parser.lexer.peek().kind {
+            TokenKind::CloseParen => {
                 let _ = parser.lexer.next();
                 Some(inner_expr_id)
             }
-            token => {
-                parser.diagnostics.borrow_mut().push(Diagnostic {
-                    message: "expected closing parenthesis ')'".to_string(),
-                    span: token.span,
-                    kind: DiagnosticKind::Error,
-                });
+            _ => {
+                let expr = parser.ast.get_expr(inner_expr_id).unwrap();
+                parser.diagnostics.borrow_mut().push(
+                    MissingClosingParenDiagnostic {
+                        opening_paren: open_paren.span,
+                        expected_closing_paren_position: expr.span.end(),
+                    }
+                    .into(),
+                );
                 None
             }
         }
@@ -436,7 +446,7 @@ impl<'a> Parser<'a> {
                 operator: operator_kind,
                 operand: operand_id,
             },
-            TextSpan::combine(operator.span, operand.span),
+            Span::merge(operator.span, operand.span),
         );
         Some(expr_id)
     }
@@ -462,14 +472,16 @@ impl<'a> Parser<'a> {
                 right: right_id,
                 operator: operator_kind,
             },
-            TextSpan::combine(left_expr.span, right_expr.span),
+            Span::merge(left_expr.span, right_expr.span),
         );
         Some(expr_id)
     }
 
     fn parse_int_expression(parser: &mut Parser) -> Option<ExprId> {
         let token = parser.lexer.next();
-        let text = token.span.get_text(parser.source)?;
+        let text = parser
+            .source
+            .get(token.span.start().to_usize()..token.span.end().to_usize())?;
 
         let value = match token.kind {
             TokenKind::Int => text.parse::<i64>().ok(),
@@ -479,11 +491,12 @@ impl<'a> Parser<'a> {
         let expr = match value {
             Some(value) => ExprKind::Int { value },
             None => {
-                parser.diagnostics.borrow_mut().push(Diagnostic {
-                    message: "invalid integer literal".to_string(),
-                    span: token.span,
-                    kind: DiagnosticKind::Error,
-                });
+                parser.diagnostics.borrow_mut().push(
+                    InvalidIntegerLiteralDiagnostic {
+                        span: token.span.clone(),
+                    }
+                    .into(),
+                );
 
                 ExprKind::Int { value: 0 }
             }
@@ -496,7 +509,9 @@ impl<'a> Parser<'a> {
     fn get_identifier_symbol(&mut self, token: Token) -> Option<SymbolU32> {
         match token.kind {
             TokenKind::Identifier => {
-                let text = token.span.get_text(self.source)?;
+                let text = self
+                    .source
+                    .get(token.span.start().to_usize()..token.span.end().to_usize())?;
                 Some(self.interner.get_or_intern(text))
             }
             _ => None,
@@ -504,10 +519,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_function_signature(parser: &mut Parser) -> Option<FunctionSignature> {
-        let name_token = parser.lexer.next_expect(TokenTag::Identifier)?;
+        let name_token = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
         let name_symbol = parser.get_identifier_symbol(name_token.clone())?;
 
-        let _ = parser.lexer.next_expect(TokenTag::OpenParen)?;
+        let _ = parser.lexer.next_expect(TokenTag::OpenParen).ok()?;
         let mut params = Vec::new();
         loop {
             let token = parser.lexer.peek();
@@ -515,11 +530,11 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            let param_name_token = parser.lexer.next_expect(TokenTag::Identifier)?;
+            let param_name_token = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
             let param_name_symbol = parser.get_identifier_symbol(param_name_token)?;
 
-            let _ = parser.lexer.next_expect(TokenTag::Colon)?;
-            let param_type = parser.lexer.next_expect(TokenTag::Identifier)?;
+            let _ = parser.lexer.next_expect(TokenTag::Colon).ok()?;
+            let param_type = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
             let param_type_symbol = parser.get_identifier_symbol(param_type)?;
 
             params.push(FunctionParam {
@@ -537,7 +552,7 @@ impl<'a> Parser<'a> {
         match parser.lexer.peek().kind {
             TokenKind::Colon => {
                 let _ = parser.lexer.next();
-                let return_type_token = parser.lexer.next_expect(TokenTag::Identifier)?;
+                let return_type_token = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
                 let return_type_symbol =
                     Parser::get_identifier_symbol(parser, return_type_token.clone())?;
 
@@ -545,14 +560,14 @@ impl<'a> Parser<'a> {
                     name: name_symbol,
                     params,
                     output: Some(return_type_symbol),
-                    span: TextSpan::combine(name_token.span, return_type_token.span),
+                    span: Span::merge(name_token.span, return_type_token.span),
                 })
             }
             _ => Some(FunctionSignature {
                 name: name_symbol,
                 params,
                 output: None,
-                span: TextSpan::combine(name_token.span, close_paren.span),
+                span: Span::merge(name_token.span, close_paren.span),
             }),
         }
     }
@@ -561,7 +576,7 @@ impl<'a> Parser<'a> {
         let fn_keyword = parser.lexer.next();
         let signature = Parser::parse_function_signature(parser)?;
 
-        let item_span = TextSpan::combine(fn_keyword.span, signature.span);
+        let item_span = Span::merge(fn_keyword.span, signature.span);
         let item_id = parser
             .ast
             .push_item(ItemKind::FunctionDeclaration { signature }, item_span);
@@ -577,11 +592,12 @@ impl<'a> Parser<'a> {
                 let _ = parser.lexer.next();
             }
             _ => {
-                parser.diagnostics.borrow_mut().push(Diagnostic {
-                    message: "Expected `{` after function signature".to_string(),
-                    span: TextSpan::combine(fn_keyword.span, signature.span),
-                    kind: DiagnosticKind::Error,
-                });
+                parser.diagnostics.borrow_mut().push(
+                    MissingFunctionBodyDiagnostic {
+                        span: Span::merge(fn_keyword.span, signature.span),
+                    }
+                    .into(),
+                );
 
                 return None;
             }
@@ -607,7 +623,7 @@ impl<'a> Parser<'a> {
         let close_brace = parser.lexer.next();
         let item_id = parser.ast.push_item(
             ItemKind::FunctionDefinition { signature, body },
-            TextSpan::combine(fn_keyword.span, close_brace.span),
+            Span::merge(fn_keyword.span, close_brace.span),
         );
 
         Some(item_id)

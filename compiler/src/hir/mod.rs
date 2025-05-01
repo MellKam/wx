@@ -25,6 +25,7 @@ impl RuntimeType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ComptimeType {
     Int,
+    Never,
 }
 
 impl ComptimeType {
@@ -32,6 +33,7 @@ impl ComptimeType {
     pub fn resolve(left: ComptimeType, right: ComptimeType) -> Result<ComptimeType, ()> {
         match (left, right) {
             (ComptimeType::Int, ComptimeType::Int) => Ok(ComptimeType::Int),
+            _ => Err(()),
         }
     }
 }
