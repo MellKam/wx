@@ -7,64 +7,76 @@ use string_interner::symbol::SymbolU32;
 
 use crate::{ast, hir};
 
-pub struct HIRBuilder<'a> {
+pub struct Builder<'a> {
     ast: &'a ast::Ast,
     interner: &'a StringInterner<StringBackend<SymbolU32>>,
-    function_lookup: HashMap<SymbolU32, hir::FunctionIndex>,
+    function_lookup: HashMap<SymbolU32, (hir::FunctionIndex, hir::FunctionSignature)>,
     hir: hir::HIR,
-}
-
-fn try_from_symbol_to_runtime_type(
-    interner: &StringInterner<StringBackend<SymbolU32>>,
-    symbol: SymbolU32,
-) -> Option<hir::RuntimeType> {
-    match interner.resolve(symbol)? {
-        "()" => Some(hir::RuntimeType::Unit),
-        "i32" => Some(hir::RuntimeType::I32),
-        "i64" => Some(hir::RuntimeType::I64),
-        _ => None,
-    }
 }
 
 #[derive(Debug)]
 struct FunctionContext {
-    locals: Vec<hir::Local>,
-    local_lookup: HashMap<SymbolU32, hir::LocalIndex>,
-    result: hir::RuntimeType,
+    pub signature: hir::FunctionSignature,
+    pub locals: Vec<hir::Local>,
+    pub local_lookup: HashMap<SymbolU32, hir::LocalIndex>,
+}
+
+impl From<hir::FunctionSignature> for FunctionContext {
+    fn from(signature: hir::FunctionSignature) -> Self {
+        let locals: Vec<hir::Local> = signature
+            .params
+            .iter()
+            .map(|param| hir::Local {
+                name: param.name,
+                ty: param.ty,
+                mutability: hir::Mutability::Const,
+            })
+            .collect();
+
+        let mut local_lookup = HashMap::new();
+        for (index, param) in locals.iter().enumerate() {
+            local_lookup.insert(param.name, index as hir::LocalIndex);
+        }
+
+        FunctionContext {
+            signature,
+            locals,
+            local_lookup,
+        }
+    }
 }
 
 impl FunctionContext {
     #[inline]
     fn lookup_local(&self, symbol: SymbolU32) -> Option<hir::Local> {
         let local_index = self.local_lookup.get(&symbol).copied()?;
-        self.locals.get(local_index.0 as usize).cloned()
+        self.locals.get(local_index as usize).cloned()
     }
 
     #[inline]
     fn push_local(
         &mut self,
-        id: SymbolU32,
-        ty: hir::RuntimeType,
-        binding: hir::BindingType,
+        name: SymbolU32,
+        ty: hir::Type,
+        mutability: hir::Mutability,
     ) -> hir::LocalIndex {
-        let local_index = hir::LocalIndex(self.locals.len() as u32);
         self.locals.push(hir::Local {
-            name: id,
-            index: local_index,
+            name,
             ty,
-            binding,
+            mutability,
         });
-        self.local_lookup.insert(id, local_index);
-        local_index
+        let index = self.locals.len() as hir::LocalIndex;
+        self.local_lookup.insert(name, index);
+        index
     }
 }
 
-impl<'a> HIRBuilder<'a> {
+impl<'a> Builder<'a> {
     pub fn build(
         ast: &'a ast::Ast,
         interner: &'a StringInterner<StringBackend<SymbolU32>>,
     ) -> hir::HIR {
-        let mut builder = HIRBuilder {
+        let mut builder = Builder {
             ast,
             interner,
             function_lookup: HashMap::new(),
@@ -76,20 +88,28 @@ impl<'a> HIRBuilder<'a> {
         for item in builder.ast.items.iter() {
             match &item.kind {
                 ast::ItemKind::FunctionDefinition { signature, .. } => {
-                    let index = hir::FunctionIndex(builder.function_lookup.len() as u32);
-                    builder.function_lookup.insert(signature.name, index);
+                    builder.function_lookup.insert(
+                        signature.name,
+                        (
+                            builder.function_lookup.len() as hir::FunctionIndex,
+                            builder.convert_function_signature(signature),
+                        ),
+                    );
                 }
-                _ => panic!("Expected function definition"),
+                _ => {}
             }
         }
 
         for item in builder.ast.items.iter() {
             match &item.kind {
-                ast::ItemKind::FunctionDefinition { signature, body } => {
-                    builder
-                        .hir
-                        .functions
-                        .push(builder.build_function(signature, body));
+                ast::ItemKind::FunctionDefinition { body, signature } => {
+                    let (_, hir_signature) = builder.function_lookup.get(&signature.name).unwrap();
+
+                    builder.hir.functions.push(builder.build_function(
+                        signature.name,
+                        hir_signature,
+                        body,
+                    ));
                 }
                 _ => panic!("Expected function definition"),
             }
@@ -98,41 +118,91 @@ impl<'a> HIRBuilder<'a> {
         builder.hir
     }
 
-    fn build_function(
+    fn convert_function_signature(
         &self,
         signature: &ast::FunctionSignature,
+    ) -> hir::FunctionSignature {
+        let params = signature
+            .params
+            .iter()
+            .map(|param| {
+                let text = self.interner.resolve(param.ty).expect("invalid type");
+                let ty = hir::Type::try_from(text).expect("invalid type");
+                match ty {
+                    hir::Type::ComptimeInt | hir::Type::Unit | hir::Type::Never => {
+                        panic!("invalid param type")
+                    }
+                    _ => {}
+                }
+
+                hir::FunctionParam {
+                    name: param.name,
+                    ty,
+                }
+            })
+            .collect();
+
+        let result = match signature.output {
+            Some(ty) => {
+                let text = self.interner.resolve(ty).expect("invalid type");
+                hir::Type::try_from(text).expect("invalid type")
+            }
+            None => hir::Type::Unit,
+        };
+
+        hir::FunctionSignature { params, result }
+    }
+
+    fn build_function(
+        &self,
+        name: SymbolU32,
+        signature: &hir::FunctionSignature,
         body: &Vec<ast::StmtId>,
     ) -> hir::Function {
-        let result = match signature.output {
-            Some(ty) => try_from_symbol_to_runtime_type(&self.interner, ty).expect("invalid type"),
-            None => hir::RuntimeType::Unit,
-        };
+        let mut ctx = FunctionContext::from(signature.clone());
 
-        let mut ctx = FunctionContext {
-            locals: Vec::with_capacity(signature.params.len()),
-            local_lookup: HashMap::with_capacity(signature.params.len()),
-            result,
-        };
-
-        for param in signature.params.iter() {
-            ctx.push_local(
-                param.name,
-                try_from_symbol_to_runtime_type(&self.interner, param.ty).expect("invalid type"),
-                hir::BindingType::Param,
-            );
-        }
-
-        let mut hir_body: Vec<hir::Statement> = Vec::with_capacity(body.len());
-        for stmt in body.iter() {
-            let stmt = self.ast.get_stmt(*stmt).expect("invalid statement");
-            hir_body.push(self.build_statement(&mut ctx, stmt));
-        }
+        let body = body
+            .iter()
+            .map(|stmt_id| {
+                let stmt = self.ast.get_stmt(*stmt_id).expect("invalid statement");
+                self.build_statement(&mut ctx, stmt)
+            })
+            .collect();
 
         hir::Function {
-            name: signature.name,
-            locals: ctx.locals,
-            result,
-            body: hir_body,
+            name,
+            locals: ctx.locals[ctx.signature.params.len()..].to_vec(),
+            signature: ctx.signature,
+            body,
+        }
+    }
+
+    fn build_declaration_statement(
+        &self,
+        ctx: &mut FunctionContext,
+        name: SymbolU32,
+        ty: SymbolU32,
+        value: ast::ExprId,
+        mutability: hir::Mutability,
+    ) -> hir::Statement {
+        match ctx.local_lookup.get(&name).copied() {
+            Some(_) => panic!("variable already defined"),
+            None => {}
+        }
+
+        let value_expr = self.build_expression(ctx, value);
+        let binding_type = hir::Type::try_from(self.interner.resolve(ty).expect("invalid type"))
+            .expect("invalid type");
+        match value_expr.ty.can_coerce_into(binding_type) {
+            Ok(_) => {}
+            Err(_) => panic!("type mismatch in assignment"),
+        };
+
+        let local_index = ctx.push_local(name, binding_type, mutability);
+
+        hir::Statement::Local {
+            index: local_index,
+            expr: value_expr,
         }
     }
 
@@ -143,162 +213,105 @@ impl<'a> HIRBuilder<'a> {
     ) -> hir::Statement {
         match statement.kind {
             ast::StmtKind::Expression { expr } => {
-                let hir_expr = self.build_expression(ctx, expr);
-                let ty = match hir_expr.ty {
-                    hir::Type::Comptime(_) => panic!("unused comptime expression"),
-                    hir::Type::Runtime(ty) => ty,
-                };
-                match ty {
-                    hir::RuntimeType::Unit => {}
-                    _ => panic!("expression value me be consumed"),
+                let expr = self.build_expression(ctx, expr);
+                match expr.ty {
+                    hir::Type::Unit => {}
+                    hir::Type::Never => {}
+                    _ => panic!("value must be consumed or dropped"),
                 }
-                hir::Statement::Expr {
-                    ty: hir::RuntimeType::Unit,
-                    expr: hir_expr,
-                }
+                hir::Statement::Expr { expr }
             }
             ast::StmtKind::ConstDefinition { name, ty, value } => {
-                match ctx.local_lookup.get(&name).copied() {
-                    Some(_) => panic!("variable already defined"),
-                    None => {}
-                }
-
-                let hir_expr = self.build_expression(ctx, value);
-                let local_type =
-                    try_from_symbol_to_runtime_type(&self.interner, ty).expect("invalid type");
-                match hir::Type::resolve(hir::Type::Runtime(local_type), hir_expr.ty) {
-                    Ok(_) => {}
-                    Err(_) => panic!("type mismatch in const definition"),
-                }
-
-                let local_index = ctx.push_local(name, local_type, hir::BindingType::Const);
-
-                hir::Statement::Local {
-                    index: local_index,
-                    ty: local_type,
-                    expr: hir_expr,
-                }
+                self.build_declaration_statement(ctx, name, ty, value, hir::Mutability::Const)
             }
             ast::StmtKind::MutableDefinition { name, ty, value } => {
-                match ctx.local_lookup.get(&name).copied() {
-                    Some(_) => panic!("variable already defined"),
-                    None => {}
-                }
+                self.build_declaration_statement(ctx, name, ty, value, hir::Mutability::Mutable)
+            }
+            ast::StmtKind::Assignment { name, value } => {
+                let name = match self.ast.get_expr(name).expect("invalid expression").kind {
+                    ast::ExprKind::Identifier { symbol } => symbol,
+                    _ => panic!("left side of assignment must be a local variable"),
+                };
 
-                let hir_expr = self.build_expression(ctx, value);
-                let local_type =
-                    try_from_symbol_to_runtime_type(&self.interner, ty).expect("invalid type");
-                match hir::Type::resolve(hir::Type::Runtime(local_type), hir_expr.ty) {
+                let local_index = match ctx.local_lookup.get(&name).copied() {
+                    Some(index) => index,
+                    None => panic!("variable not defined"),
+                };
+
+                let value_expr = self.build_expression(ctx, value);
+                let local = match ctx.locals.get(local_index as usize) {
+                    Some(local) => local,
+                    None => panic!("can't assign to undeclared variable"),
+                };
+
+                match local.mutability {
+                    hir::Mutability::Mutable => {}
+                    hir::Mutability::Const => panic!("can't assign to const variable"),
+                }
+                match value_expr.ty.can_coerce_into(local.ty.into()) {
                     Ok(_) => {}
-                    Err(_) => panic!("type mismatch in const definition"),
-                }
+                    Err(_) => panic!("type mismatch in assignment"),
+                };
 
-                let local_index = ctx.push_local(name, local_type, hir::BindingType::Mutable);
-                hir::Statement::Local {
+                hir::Statement::Assign {
                     index: local_index,
-                    ty: local_type,
-                    expr: hir_expr,
+                    expr: value_expr,
                 }
             }
             ast::StmtKind::Return { value } => {
-                let hir_expr = self.build_expression(ctx, value);
-                match hir::Type::resolve(hir::Type::Runtime(ctx.result), hir_expr.ty) {
+                let value_expr = self.build_expression(ctx, value);
+                match value_expr.ty.can_coerce_into(ctx.signature.result) {
                     Ok(_) => {}
-                    Err(_) => panic!("type mismatch in return statement"),
+                    Err(_) => panic!("type mismatch in assignment"),
                 };
-                hir::Statement::Return {
-                    ty: ctx.result,
-                    expr: hir_expr,
-                }
+
+                hir::Statement::Return { expr: value_expr }
             }
-        }
-    }
-
-    fn build_assignment_expr(
-        &self,
-        ctx: &mut FunctionContext,
-        left: ast::ExprId,
-        right: ast::ExprId,
-    ) -> hir::Expression {
-        let left = self.build_expression(ctx, left);
-        let right = self.build_expression(ctx, right);
-
-        let local_index = match left.kind {
-            hir::ExprKind::Local(index) => index,
-            _ => panic!("left side of assignment must be a local variable"),
-        };
-        let local = match ctx.locals.get(local_index.0 as usize) {
-            Some(local) => local,
-            None => panic!("can't assing to undeclared variable"),
-        };
-
-        match local.binding {
-            hir::BindingType::Mutable => {}
-            hir::BindingType::Param => panic!("can't assign to parameter"),
-            hir::BindingType::Const => panic!("can't assign to const variable"),
-        }
-        match hir::Type::resolve(left.ty, right.ty) {
-            Ok(_) => {}
-            Err(_) => panic!("type mismatch in assignment"),
-        }
-
-        hir::Expression {
-            kind: hir::ExprKind::Binary {
-                operator: ast::BinaryOperator::Assign,
-                lhs: Box::new(left),
-                rhs: Box::new(right),
-            },
-            ty: hir::Type::Runtime(hir::RuntimeType::Unit),
         }
     }
 
     fn build_expression(&self, ctx: &mut FunctionContext, expr_id: ast::ExprId) -> hir::Expression {
-        let expr = self.ast.get_expr(expr_id).expect("Invalid expression");
+        let expr = self.ast.get_expr(expr_id).expect("invalid expression");
         match expr.kind.clone() {
             ast::ExprKind::Int { value } => hir::Expression {
                 kind: hir::ExprKind::Int(value),
-                ty: hir::Type::Comptime(hir::ComptimeType::Int),
+                ty: hir::Type::ComptimeInt,
             },
             ast::ExprKind::Identifier { symbol } => {
-                let local = match ctx.lookup_local(symbol) {
+                let local_index = match ctx.local_lookup.get(&symbol).copied() {
+                    Some(index) => index,
+                    None => panic!("undeclared binding"),
+                };
+                let local = match ctx.locals.get(local_index as usize).cloned() {
                     Some(local) => local,
-                    None => panic!("undeclared variable"),
+                    None => panic!("undeclared binding"),
                 };
                 hir::Expression {
-                    kind: hir::ExprKind::Local(local.index),
-                    ty: hir::Type::Runtime(local.ty),
+                    kind: hir::ExprKind::Local(local_index as hir::LocalIndex),
+                    ty: local.ty.into(),
                 }
             }
             ast::ExprKind::Binary {
                 left: left_id,
                 right: right_id,
                 operator,
-            } => {
-                match operator {
-                    ast::BinaryOperator::Assign => {
-                        return self.build_assignment_expr(ctx, left_id, right_id);
-                    }
-                    _ => {}
-                }
-                let left = self.build_expression(ctx, left_id);
-                let right = self.build_expression(ctx, right_id);
-
-                let result = match hir::Type::resolve(left.ty, right.ty) {
-                    Ok(ty) => ty,
-                    _ => panic!("type mismatch in binary expression"),
-                };
-
-                hir::Expression {
-                    kind: hir::ExprKind::Binary {
-                        operator: operator.clone(),
-                        lhs: Box::new(left),
-                        rhs: Box::new(right),
-                    },
-                    ty: result,
-                }
-            }
+            } => Builder::build_binary_expression(
+                operator,
+                self.build_expression(ctx, left_id),
+                self.build_expression(ctx, right_id),
+            ),
             ast::ExprKind::Unary { operator, operand } => {
-                let operand = self.build_expression(ctx, operand);
+                Builder::build_unary_expression(operator, self.build_expression(ctx, operand))
+            }
+        }
+    }
+
+    fn build_unary_expression(
+        operator: ast::UnaryOperator,
+        operand: hir::Expression,
+    ) -> hir::Expression {
+        match operand.ty {
+            hir::Type::ComptimeInt | hir::Type::I32 | hir::Type::I64 => {
                 let ty = operand.ty;
                 hir::Expression {
                     kind: hir::ExprKind::Unary {
@@ -308,6 +321,33 @@ impl<'a> HIRBuilder<'a> {
                     ty,
                 }
             }
+            _ => panic!("can't apply unary operator to this type"),
+        }
+    }
+
+    fn build_binary_expression(
+        operator: ast::BinaryOperator,
+        left: hir::Expression,
+        right: hir::Expression,
+    ) -> hir::Expression {
+        let ty = match (left.ty, right.ty) {
+            (hir::Type::ComptimeInt, hir::Type::ComptimeInt) => hir::Type::ComptimeInt,
+            (hir::Type::ComptimeInt, hir::Type::I32 | hir::Type::I64) => right.ty,
+            (hir::Type::I32 | hir::Type::I64, hir::Type::ComptimeInt) => left.ty,
+            (hir::Type::I32 | hir::Type::I64, hir::Type::I32 | hir::Type::I64) => left.ty,
+            (hir::Type::Never, _) | (_, hir::Type::Never) => hir::Type::Never,
+            _ => {
+                panic!("type mismatch in binary expression");
+            }
+        };
+
+        hir::Expression {
+            kind: hir::ExprKind::Binary {
+                operator,
+                lhs: Box::new(left),
+                rhs: Box::new(right),
+            },
+            ty,
         }
     }
 }

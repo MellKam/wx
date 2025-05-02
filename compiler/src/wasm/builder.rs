@@ -31,29 +31,20 @@ impl<'a> WASMBuilder<'a> {
             functions.push(wasm::Function {
                 name: interner.resolve(function.name).unwrap(),
                 locals: function
-                    .locals
-                    .as_slice()
-                    .get(function.param_count as usize..)
-                    .unwrap_or(&[])
+                    .params()
                     .iter()
-                    .map(|local| wasm::ValueType::try_from(*local).unwrap())
+                    .map(|local| wasm::Local {
+                        name: interner.resolve(local.name).unwrap(),
+                        ty: wasm::ValueType::try_from(local.ty).unwrap(),
+                    })
                     .collect(),
-                param_count: function.param_count,
-                signature: function
-                    .locals
-                    .as_slice()
-                    .get(0..function.param_count as usize)
-                    .unwrap_or(&[])
-                    .iter()
-                    .map(|local| wasm::ValueType::try_from(*local).unwrap())
-                    .chain(
-                        function
-                            .output
-                            .iter()
-                            .map(|ty| wasm::ValueType::try_from(*ty).unwrap())
-                            .clone(),
-                    )
-                    .collect(),
+                param_count: function.param_count as u32,
+                result: match function.result {
+                    mir::Type::I32 => Some(wasm::ValueType::I32),
+                    mir::Type::I64 => Some(wasm::ValueType::I64),
+                    mir::Type::Unit => None,
+                    _ => unreachable!(),
+                },
                 instructions,
             });
         }

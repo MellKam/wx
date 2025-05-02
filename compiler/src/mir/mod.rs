@@ -7,23 +7,26 @@ pub struct MIR {
     pub functions: Vec<Function>,
 }
 
+pub type LocalIndex = u32;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Type {
-    Unit,
     I32,
     I64,
+    Unit,
+    Never,
 }
 
 #[derive(Debug)]
 pub enum ExprKind {
     Local {
-        index: u32,
+        index: LocalIndex,
     },
     Int {
         value: i64,
     },
     Assign {
-        index: u32,
+        index: LocalIndex,
         value: Box<Expression>,
     },
     Add {
@@ -53,10 +56,22 @@ pub struct Expression {
 }
 
 #[derive(Debug)]
+pub struct Local {
+    pub name: SymbolU32,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
 pub struct Function {
     pub name: SymbolU32,
-    pub param_count: u32,
-    pub locals: Vec<Type>,
-    pub output: Vec<Type>,
+    pub param_count: usize,
+    pub locals: Vec<Local>,
+    pub result: Type,
     pub body: Vec<Expression>,
+}
+
+impl Function {
+    pub fn params(&self) -> &[Local] {
+        self.locals.get(0..self.param_count).unwrap_or(&[])
+    }
 }

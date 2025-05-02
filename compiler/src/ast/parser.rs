@@ -6,7 +6,7 @@ use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
-use super::diagnostics::Diagnostic;
+use super::diagnostics::DiagnosticKind;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind, TokenTag};
 use super::{
     Ast, BinaryOperator, BindingType, ExprId, ExprKind, FunctionParam, FunctionSignature,
@@ -19,7 +19,6 @@ use super::{
 pub enum BindingPower {
     Default,
     Comma,
-    Assignment,
     Logical,
     Relational,
     Additive,
@@ -44,7 +43,6 @@ impl From<BinaryOperator> for BindingPower {
             BinaryOperator::Greater => BindingPower::Relational,
             BinaryOperator::LessEq => BindingPower::Relational,
             BinaryOperator::GreaterEq => BindingPower::Relational,
-            BinaryOperator::Assign => BindingPower::Assignment,
         }
     }
 }
@@ -85,22 +83,18 @@ impl Keyword {
     }
 }
 
-type NudHandler = fn(parser: &mut Parser) -> Option<ExprId>;
-type LedHandler = fn(parser: &mut Parser, left: ExprId, bp: BindingPower) -> Option<ExprId>;
-type ItemHandler = fn(parser: &mut Parser) -> Option<ItemId>;
-
 pub struct Parser<'a> {
     source: &'a str,
     lexer: PeekableLexer<'a>,
     interner: &'a mut StringInterner<StringBackend>,
-    diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
+    diagnostics: Rc<RefCell<Vec<DiagnosticKind>>>,
     ast: Ast,
 }
 
 impl<'a> Parser<'a> {
     pub fn parse(
         source: &'a str,
-        diagnostics: Rc<RefCell<Vec<Diagnostic>>>,
+        diagnostics: Rc<RefCell<Vec<DiagnosticKind>>>,
         interner: &'a mut StringInterner<StringBackend>,
     ) -> Ast {
         let lexer: PeekableLexer<'a> = PeekableLexer::new(Lexer::new(source));
@@ -133,7 +127,7 @@ impl<'a> Parser<'a> {
         Some(item_id)
     }
 
-    fn item_lookup(&mut self) -> Option<ItemHandler> {
+    fn item_lookup(&mut self) -> Option<fn(parser: &mut Parser) -> Option<ItemId>> {
         let token = self.lexer.peek();
         let symbol = match token.kind {
             TokenKind::Identifier => self.get_identifier_symbol(token)?,
@@ -211,6 +205,7 @@ impl<'a> Parser<'a> {
         match Keyword::try_from_symbol(&self.interner, symbol) {
             Some(Keyword::Const) => Some(Parser::parse_variable_definition),
             Some(Keyword::Mut) => Some(Parser::parse_variable_definition),
+            Some(Keyword::Return) => Some(Parser::parse_return_statement),
             _ => return None,
         }
     }
@@ -222,6 +217,21 @@ impl<'a> Parser<'a> {
         };
 
         match self.lexer.peek().kind.tag() {
+            TokenTag::Eq => {
+                let _ = self.lexer.next();
+                let value = self.parse_expression(BindingPower::Default)?;
+                let value_expr = self.ast.get_expr(value).unwrap();
+                let name_expr = self.ast.get_expr(expr_id).unwrap();
+                let stmt_id = self.ast.push_stmt(
+                    StmtKind::Assignment {
+                        name: expr_id,
+                        value,
+                    },
+                    Span::merge(name_expr.span, value_expr.span),
+                );
+
+                Some(stmt_id)
+            }
             TokenTag::SemiColon => {
                 let _ = self.lexer.next();
                 let expr = self.ast.get_expr(expr_id).unwrap();
@@ -279,20 +289,17 @@ impl<'a> Parser<'a> {
         Some(left)
     }
 
-    fn nud_lookup(&mut self, token: Token) -> Option<(NudHandler, BindingPower)> {
+    fn nud_lookup(
+        &mut self,
+        token: Token,
+    ) -> Option<(fn(parser: &mut Parser) -> Option<ExprId>, BindingPower)> {
         match token.kind.tag() {
             TokenTag::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
             // TokenKind::Float { .. } => Some((parse_float_expression, BindingPower::Primary)),
             // TokenKind::String { .. } => Some((parse_string_expression, BindingPower::Primary)),
             // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
             TokenTag::Identifier => {
-                let symbol = self.get_identifier_symbol(token.clone())?;
-                match Keyword::try_from_symbol(&self.interner, symbol) {
-                    Some(Keyword::Return) => {
-                        Some((Parser::parse_return_statement, BindingPower::Primary))
-                    }
-                    _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
-                }
+                Some((Parser::parse_identifier_expression, BindingPower::Primary))
             }
             TokenTag::OpenParen => Some((Parser::parse_grouping_expression, BindingPower::Default)),
             TokenTag::Minus | TokenTag::Bang => {
@@ -302,7 +309,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn led_lookup(token: TokenKind) -> Option<(LedHandler, BindingPower)> {
+    fn led_lookup(
+        token: TokenKind,
+    ) -> Option<(
+        fn(parser: &mut Parser, left: ExprId, bp: BindingPower) -> Option<ExprId>,
+        BindingPower,
+    )> {
         match token {
             TokenKind::Plus | TokenKind::Minus => {
                 Some((Parser::parse_binary_expression, BindingPower::Additive))
@@ -322,7 +334,6 @@ impl<'a> Parser<'a> {
             // TokenKind::VbarVbar | TokenKind::AmperAmper => {
             //     Some((parse_binary_expression, BindingPower::Logical))
             // }
-            TokenKind::Eq => Some((Parser::parse_binary_expression, BindingPower::Assignment)),
             // TokenKind::OpenParen => Some((parse_call_expression, BindingPower::Call)),
             // TokenKind::Dot => Some((parse_member_expression, BindingPower::Member)),
             _ => None,
@@ -396,13 +407,13 @@ impl<'a> Parser<'a> {
         Some(stmt_id)
     }
 
-    fn parse_return_statement(parser: &mut Parser) -> Option<ExprId> {
+    fn parse_return_statement(parser: &mut Parser) -> Option<StmtId> {
         let return_keyword = parser.lexer.next();
         let value = parser.parse_expression(BindingPower::Default)?;
         let value_expr = parser.ast.get_expr(value).unwrap();
 
-        let stmt_id = parser.ast.push_expr(
-            ExprKind::Return { value },
+        let stmt_id = parser.ast.push_stmt(
+            StmtKind::Return { value },
             Span::merge(return_keyword.span, value_expr.span),
         );
         Some(stmt_id)

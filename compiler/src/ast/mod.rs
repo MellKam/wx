@@ -47,7 +47,6 @@ pub enum BindingType {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinaryOperator {
-    Assign,
     // Arithmetic
     Add,
     Subtract,
@@ -68,7 +67,6 @@ impl TryFrom<TokenKind> for BinaryOperator {
 
     fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
         match kind {
-            TokenKind::Eq => Ok(BinaryOperator::Assign),
             TokenKind::Plus => Ok(BinaryOperator::Add),
             TokenKind::Minus => Ok(BinaryOperator::Subtract),
             TokenKind::Star => Ok(BinaryOperator::Multiply),
@@ -96,9 +94,6 @@ pub enum ExprKind {
     // String {
     //     symbol: SymbolU32,
     // },
-    Return {
-        value: ExprId,
-    },
     Identifier {
         symbol: SymbolU32,
     },
@@ -133,6 +128,10 @@ pub enum StmtKind {
     Expression {
         expr: ExprId,
     },
+    Assignment {
+        name: ExprId,
+        value: ExprId,
+    },
     ConstDefinition {
         name: SymbolU32,
         ty: SymbolU32,
@@ -141,6 +140,9 @@ pub enum StmtKind {
     MutableDefinition {
         name: SymbolU32,
         ty: SymbolU32,
+        value: ExprId,
+    },
+    Return {
         value: ExprId,
     },
 }

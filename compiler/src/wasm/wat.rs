@@ -120,14 +120,8 @@ impl Encode for wasm::Function<'_> {
             0 => {}
             _ => {
                 sink.push_str("(param ");
-                for (index, param) in self
-                    .signature
-                    .get(0..self.param_count as usize)
-                    .unwrap()
-                    .iter()
-                    .enumerate()
-                {
-                    param.encode(sink);
+                for (index, param) in self.params().iter().enumerate() {
+                    param.ty.encode(sink);
                     match index {
                         index if index as u32 + 1 == self.param_count => {}
                         _ => sink.push_str(" "),
@@ -137,35 +131,22 @@ impl Encode for wasm::Function<'_> {
             }
         }
 
-        match self.signature.len() as u32 - self.param_count {
-            0 => {}
-            _ => {
+        match self.result {
+            Some(ty) => {
                 sink.push_str("(result ");
-                for (index, result) in self
-                    .signature
-                    .get(self.param_count as usize..)
-                    .unwrap()
-                    .iter()
-                    .enumerate()
-                {
-                    result.encode(sink);
-                    match index {
-                        index
-                            if index as u32 + 1
-                                == self.signature.len() as u32 - self.param_count => {}
-                        _ => sink.push_str(" "),
-                    }
-                }
+                ty.encode(sink);
                 sink.push_str(")");
             }
+            None => {}
         }
 
-        match self.locals.len() {
+        let locals = self.locals.get(..self.param_count as usize).unwrap_or(&[]);
+        match locals.len() {
             0 => {}
             _ => {
                 sink.push_str("(local ");
-                for local in &self.locals {
-                    local.encode(sink);
+                for local in locals {
+                    local.ty.encode(sink);
                     sink.push_str(" ");
                 }
                 sink.push_str(")");

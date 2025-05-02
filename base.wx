@@ -28,3 +28,35 @@ impl Into<i32, u32> {
 
 const z = x / y.(u32);
 
+never | int
+
+fn start(): never {
+  const x: i32 = match true {
+    true => return 5, // never
+    false => 5, // int
+  }
+
+  const x: never = match true {
+    true => return 5, // never
+    false => return 8, // never
+  };
+
+  match true {
+    true => return 5, // never
+    false => return 8, // never
+  };
+
+  return unit;
+
+  loop {
+    noop;
+  };
+}
+
+
+fn bar(): i32 {
+  cosnt x = 25
+
+  _ = start();
+  return x
+}

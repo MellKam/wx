@@ -136,42 +136,36 @@ enum SectionId {
     Data = 11,
 }
 
-struct FunctionSignature<'a> {
-    param_count: u32,
-    signature: &'a [wasm::ValueType],
+struct FunctionSignature {
+    params: Vec<wasm::ValueType>,
+    result: Option<wasm::ValueType>,
 }
 
-struct TypeSection<'a> {
-    signatures: Vec<FunctionSignature<'a>>,
+struct TypeSection {
+    signatures: Vec<FunctionSignature>,
 }
 
-impl<'a> Encode for FunctionSignature<'a> {
+impl Encode for FunctionSignature {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(0x60); // Function type
 
-        let param_count = self.param_count as u32;
+        let param_count = self.params.len() as u32;
         param_count.encode(sink);
-        for param in self
-            .signature
-            .get(0..self.param_count as usize)
-            .unwrap_or(&[])
-        {
+        for param in self.params.iter() {
             param.encode(sink);
         }
 
-        let result_count = self.signature.len() as u32 - self.param_count;
-        result_count.encode(sink);
-        for result in self
-            .signature
-            .get(self.param_count as usize..)
-            .unwrap_or(&[])
-        {
-            result.encode(sink);
+        match self.result {
+            Some(result) => {
+                sink.push(1);
+                result.encode(sink);
+            }
+            None => {}
         }
     }
 }
 
-impl<'a> Encode for TypeSection<'a> {
+impl Encode for TypeSection {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(SectionId::Type as u8);
 
@@ -253,18 +247,18 @@ impl Encode for ExportSection<'_> {
     }
 }
 
-struct FunctionBody {
-    locals: Box<[wasm::ValueType]>,
+struct FunctionBody<'a> {
+    locals: Box<[wasm::Local<'a>]>,
     instructions: Box<[wasm::Instruction]>,
 }
 
-impl Encode for FunctionBody {
+impl<'a> Encode for FunctionBody<'a> {
     fn encode(&self, sink: &mut Vec<u8>) {
         let mut body_content: Vec<u8> = Vec::new();
 
         let mut grouped_locals: HashMap<wasm::ValueType, u32> = HashMap::new();
         for local in self.locals.iter() {
-            *grouped_locals.entry(*local).or_insert(0) += 1;
+            *grouped_locals.entry(local.ty).or_insert(0) += 1;
         }
 
         let local_groups_count = grouped_locals.len() as u32;
@@ -285,11 +279,11 @@ impl Encode for FunctionBody {
     }
 }
 
-struct CodeSection {
-    functions: Vec<FunctionBody>,
+struct CodeSection<'a> {
+    functions: Vec<FunctionBody<'a>>,
 }
 
-impl Encode for CodeSection {
+impl<'a> Encode for CodeSection<'a> {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(SectionId::Code as u8);
 
@@ -320,8 +314,8 @@ impl WASMEncoder {
                 .functions
                 .iter()
                 .map(|function| FunctionSignature {
-                    param_count: function.param_count,
-                    signature: function.signature.as_slice(),
+                    params: function.params().iter().map(|local| local.ty).collect(),
+                    result: function.result,
                 })
                 .collect(),
         }

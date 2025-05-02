@@ -1,12 +1,11 @@
 use codespan::{ByteIndex, Span};
-use codespan_reporting::diagnostic::{Diagnostic as CodespanDiagnostic, Label, Severity};
+use codespan_reporting::diagnostic::{Diagnostic, Label};
 
 pub trait Report {
-    const SEVERITY: Severity;
-    fn report(&self) -> CodespanDiagnostic<()>;
+    fn report(&self) -> Diagnostic<()>;
 }
 
-pub enum Diagnostic {
+pub enum DiagnosticKind {
     UnknownToken(UnknownTokenDiagnostic),
     UnexpectedEof(UnexpectedEofDiagnostic),
     MissingStatementDelimiter(MissingStatementDelimiterDiagnostic),
@@ -16,18 +15,16 @@ pub enum Diagnostic {
     MissingFunctionBody(MissingFunctionBodyDiagnostic),
 }
 
-impl Report for Diagnostic {
-    const SEVERITY: Severity = Severity::Error;
-
-    fn report(&self) -> CodespanDiagnostic<()> {
+impl Report for DiagnosticKind {
+    fn report(&self) -> Diagnostic<()> {
         match self {
-            Diagnostic::UnknownToken(diagnostic) => diagnostic.report(),
-            Diagnostic::UnexpectedEof(diagnostic) => diagnostic.report(),
-            Diagnostic::MissingStatementDelimiter(diagnostic) => diagnostic.report(),
-            Diagnostic::InvalidStatement(diagnostic) => diagnostic.report(),
-            Diagnostic::MisssingClosingParen(diagnostic) => diagnostic.report(),
-            Diagnostic::InvalidIntegerLiteral(diagnostic) => diagnostic.report(),
-            Diagnostic::MissingFunctionBody(diagnostic) => diagnostic.report(),
+            DiagnosticKind::UnknownToken(diagnostic) => diagnostic.report(),
+            DiagnosticKind::UnexpectedEof(diagnostic) => diagnostic.report(),
+            DiagnosticKind::MissingStatementDelimiter(diagnostic) => diagnostic.report(),
+            DiagnosticKind::InvalidStatement(diagnostic) => diagnostic.report(),
+            DiagnosticKind::MisssingClosingParen(diagnostic) => diagnostic.report(),
+            DiagnosticKind::InvalidIntegerLiteral(diagnostic) => diagnostic.report(),
+            DiagnosticKind::MissingFunctionBody(diagnostic) => diagnostic.report(),
         }
     }
 }
@@ -37,18 +34,16 @@ pub struct UnknownTokenDiagnostic {
 }
 
 impl Report for UnknownTokenDiagnostic {
-    const SEVERITY: Severity = Severity::Error;
-
-    fn report(&self) -> CodespanDiagnostic<()> {
-        CodespanDiagnostic::new(Self::SEVERITY)
+    fn report(&self) -> Diagnostic<()> {
+        Diagnostic::error()
             .with_message("unknown token")
             .with_label(Label::primary((), self.span))
     }
 }
 
-impl Into<Diagnostic> for UnknownTokenDiagnostic {
-    fn into(self) -> Diagnostic {
-        Diagnostic::UnknownToken(self)
+impl Into<DiagnosticKind> for UnknownTokenDiagnostic {
+    fn into(self) -> DiagnosticKind {
+        DiagnosticKind::UnknownToken(self)
     }
 }
 
@@ -57,18 +52,16 @@ pub struct UnexpectedEofDiagnostic {
 }
 
 impl Report for UnexpectedEofDiagnostic {
-    const SEVERITY: Severity = Severity::Error;
-
-    fn report(&self) -> CodespanDiagnostic<()> {
-        CodespanDiagnostic::new(Self::SEVERITY)
+    fn report(&self) -> Diagnostic<()> {
+        Diagnostic::error()
             .with_message("unexpected end of file")
             .with_label(Label::primary((), self.span))
     }
 }
 
-impl Into<Diagnostic> for UnexpectedEofDiagnostic {
-    fn into(self) -> Diagnostic {
-        Diagnostic::UnexpectedEof(self)
+impl Into<DiagnosticKind> for UnexpectedEofDiagnostic {
+    fn into(self) -> DiagnosticKind {
+        DiagnosticKind::UnexpectedEof(self)
     }
 }
 
@@ -77,10 +70,8 @@ pub struct MissingStatementDelimiterDiagnostic {
 }
 
 impl Report for MissingStatementDelimiterDiagnostic {
-    const SEVERITY: Severity = Severity::Error;
-
-    fn report(&self) -> CodespanDiagnostic<()> {
-        CodespanDiagnostic::new(Self::SEVERITY)
+    fn report(&self) -> Diagnostic<()> {
+        Diagnostic::error()
             .with_message("missing statement delimiter")
             .with_label(
                 Label::primary((), self.position.to_usize()..self.position.to_usize())
@@ -89,9 +80,9 @@ impl Report for MissingStatementDelimiterDiagnostic {
     }
 }
 
-impl Into<Diagnostic> for MissingStatementDelimiterDiagnostic {
-    fn into(self) -> Diagnostic {
-        Diagnostic::MissingStatementDelimiter(self)
+impl Into<DiagnosticKind> for MissingStatementDelimiterDiagnostic {
+    fn into(self) -> DiagnosticKind {
+        DiagnosticKind::MissingStatementDelimiter(self)
     }
 }
 
@@ -100,18 +91,16 @@ pub struct InvalidStatementDiagnostic {
 }
 
 impl Report for InvalidStatementDiagnostic {
-    const SEVERITY: Severity = Severity::Error;
-
-    fn report(&self) -> CodespanDiagnostic<()> {
-        CodespanDiagnostic::new(Self::SEVERITY)
+    fn report(&self) -> Diagnostic<()> {
+        Diagnostic::error()
             .with_message("invalid statement")
             .with_label(Label::primary((), self.span))
     }
 }
 
-impl Into<Diagnostic> for InvalidStatementDiagnostic {
-    fn into(self) -> Diagnostic {
-        Diagnostic::InvalidStatement(self)
+impl Into<DiagnosticKind> for InvalidStatementDiagnostic {
+    fn into(self) -> DiagnosticKind {
+        DiagnosticKind::InvalidStatement(self)
     }
 }
 
@@ -121,10 +110,8 @@ pub struct MissingClosingParenDiagnostic {
 }
 
 impl Report for MissingClosingParenDiagnostic {
-    const SEVERITY: Severity = Severity::Error;
-
-    fn report(&self) -> CodespanDiagnostic<()> {
-        CodespanDiagnostic::new(Self::SEVERITY)
+    fn report(&self) -> Diagnostic<()> {
+        Diagnostic::error()
             .with_message("missing closing parenthesis")
             .with_label(
                 Label::primary(
@@ -144,9 +131,9 @@ impl Report for MissingClosingParenDiagnostic {
     }
 }
 
-impl Into<Diagnostic> for MissingClosingParenDiagnostic {
-    fn into(self) -> Diagnostic {
-        Diagnostic::MisssingClosingParen(self)
+impl Into<DiagnosticKind> for MissingClosingParenDiagnostic {
+    fn into(self) -> DiagnosticKind {
+        DiagnosticKind::MisssingClosingParen(self)
     }
 }
 
@@ -155,18 +142,16 @@ pub struct InvalidIntegerLiteralDiagnostic {
 }
 
 impl Report for InvalidIntegerLiteralDiagnostic {
-    const SEVERITY: Severity = Severity::Error;
-
-    fn report(&self) -> CodespanDiagnostic<()> {
-        CodespanDiagnostic::new(Self::SEVERITY)
+    fn report(&self) -> Diagnostic<()> {
+        Diagnostic::error()
             .with_message("invalid integer literal")
             .with_label(Label::primary((), self.span))
     }
 }
 
-impl Into<Diagnostic> for InvalidIntegerLiteralDiagnostic {
-    fn into(self) -> Diagnostic {
-        Diagnostic::InvalidIntegerLiteral(self)
+impl Into<DiagnosticKind> for InvalidIntegerLiteralDiagnostic {
+    fn into(self) -> DiagnosticKind {
+        DiagnosticKind::InvalidIntegerLiteral(self)
     }
 }
 
@@ -175,17 +160,15 @@ pub struct MissingFunctionBodyDiagnostic {
 }
 
 impl Report for MissingFunctionBodyDiagnostic {
-    const SEVERITY: Severity = Severity::Error;
-
-    fn report(&self) -> CodespanDiagnostic<()> {
-        CodespanDiagnostic::new(Self::SEVERITY)
+    fn report(&self) -> Diagnostic<()> {
+        Diagnostic::error()
             .with_message("missing function body, expected opening brace `{`")
             .with_label(Label::primary((), self.span))
     }
 }
 
-impl Into<Diagnostic> for MissingFunctionBodyDiagnostic {
-    fn into(self) -> Diagnostic {
-        Diagnostic::MissingFunctionBody(self)
+impl Into<DiagnosticKind> for MissingFunctionBodyDiagnostic {
+    fn into(self) -> DiagnosticKind {
+        DiagnosticKind::MissingFunctionBody(self)
     }
 }

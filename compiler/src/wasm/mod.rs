@@ -39,12 +39,24 @@ pub enum ValueType {
 }
 
 #[derive(Debug, Clone)]
+pub struct Local<'a> {
+    name: &'a str,
+    ty: ValueType,
+}
+
+#[derive(Debug, Clone)]
 pub struct Function<'a> {
     name: &'a str,
     param_count: u32,
-    signature: Vec<ValueType>,
-    locals: Vec<ValueType>,
+    locals: Vec<Local<'a>>,
+    result: Option<ValueType>,
     instructions: Vec<Instruction>,
+}
+
+impl Function<'_> {
+    pub fn params(&self) -> &[Local] {
+        self.locals.get(..self.param_count as usize).unwrap_or(&[])
+    }
 }
 
 #[derive(Debug)]

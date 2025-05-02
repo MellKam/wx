@@ -7,7 +7,7 @@ use ast::{Parser, Report};
 use codespan_reporting::files::SimpleFile;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-use hir::builder::HIRBuilder;
+use hir::builder::Builder;
 use indoc::indoc;
 use mir::builder::MIRBuilder;
 use string_interner::StringInterner;
@@ -22,7 +22,8 @@ mod wasm;
 fn main() {
     let source = indoc! { r#"
         fn add(a: i32, b: i32): i32 {
-            return a a;
+            mut c: i64 = 2;
+            return a + b + b;
         }
     "# };
 
@@ -41,8 +42,8 @@ fn main() {
     }
     // println!("{:#?}", ast);
 
-    let hir = HIRBuilder::build(&ast, &interner);
-    // println!("{:#?}", hir);
+    let hir = Builder::build(&ast, &interner);
+    println!("{:#?}", hir);
     let mir = MIRBuilder::build(&hir);
     println!("{:#?}", mir);
     let wasm = WASMBuilder::build(&mir, &interner);

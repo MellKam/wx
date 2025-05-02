@@ -1,74 +1,46 @@
 pub mod builder;
 
+use std::str;
+
 use string_interner::symbol::SymbolU32;
 
 use crate::ast::{BinaryOperator, UnaryOperator};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum RuntimeType {
-    Unit,
+pub enum Type {
     I32,
     I64,
-}
-
-impl RuntimeType {
-    #[inline]
-    pub fn resolve(left: RuntimeType, right: RuntimeType) -> Result<RuntimeType, ()> {
-        match (left, right) {
-            (RuntimeType::I32, RuntimeType::I32) => Ok(RuntimeType::I32),
-            (RuntimeType::I64, RuntimeType::I64) => Ok(RuntimeType::I64),
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ComptimeType {
-    Int,
+    Unit,
     Never,
+    ComptimeInt,
 }
 
-impl ComptimeType {
-    #[inline]
-    pub fn resolve(left: ComptimeType, right: ComptimeType) -> Result<ComptimeType, ()> {
-        match (left, right) {
-            (ComptimeType::Int, ComptimeType::Int) => Ok(ComptimeType::Int),
+impl TryFrom<&str> for Type {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "i32" => Ok(Type::I32),
+            "i64" => Ok(Type::I64),
+            "never" => Ok(Type::Never),
+            "()" => Ok(Type::Unit),
             _ => Err(()),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Type {
-    Runtime(RuntimeType),
-    Comptime(ComptimeType),
 }
 
 impl Type {
-    pub fn resolve(left: Type, right: Type) -> Result<Type, ()> {
-        use Type::*;
-        match (left, right) {
-            (Runtime(left), Runtime(right)) => RuntimeType::resolve(left, right).map(Runtime),
-            (Comptime(left), Comptime(right)) => ComptimeType::resolve(left, right).map(Comptime),
-            (Runtime(left), Comptime(right)) => match (left, right) {
-                (RuntimeType::I32, ComptimeType::Int) => Ok(Runtime(RuntimeType::I32)),
-                (RuntimeType::I64, ComptimeType::Int) => Ok(Runtime(RuntimeType::I64)),
-                _ => Err(()),
-            },
-            (Comptime(left), Runtime(right)) => match (left, right) {
-                (ComptimeType::Int, RuntimeType::I32) => Ok(Runtime(RuntimeType::I32)),
-                (ComptimeType::Int, RuntimeType::I64) => Ok(Runtime(RuntimeType::I64)),
-                _ => Err(()),
-            },
+    pub fn can_coerce_into(self, other: Self) -> Result<(), ()> {
+        match (self, other) {
+            (Type::ComptimeInt, Type::I32 | Type::I64) => Ok(()),
+            _ if self == other => Ok(()),
+            _ => Err(()),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FunctionIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LocalIndex(pub u32);
+pub type LocalIndex = u32;
+pub type FunctionIndex = u32;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HIR {
@@ -77,19 +49,10 @@ pub struct HIR {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
-    Return {
-        ty: RuntimeType,
-        expr: Expression,
-    },
-    Expr {
-        ty: RuntimeType,
-        expr: Expression,
-    },
-    Local {
-        index: LocalIndex,
-        ty: RuntimeType,
-        expr: Expression,
-    },
+    Return { expr: Expression },
+    Expr { expr: Expression },
+    Assign { index: LocalIndex, expr: Expression },
+    Local { index: LocalIndex, expr: Expression },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -114,8 +77,7 @@ pub enum ExprKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BindingType {
-    Param,
+pub enum Mutability {
     Mutable,
     Const,
 }
@@ -123,15 +85,26 @@ pub enum BindingType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Local {
     pub name: SymbolU32,
-    pub index: LocalIndex,
-    pub ty: RuntimeType,
-    pub binding: BindingType,
+    pub ty: Type,
+    pub mutability: Mutability,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionParam {
+    pub name: SymbolU32,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionSignature {
+    pub params: Vec<FunctionParam>,
+    pub result: Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub name: SymbolU32,
+    pub signature: FunctionSignature,
     pub locals: Vec<Local>,
-    pub result: RuntimeType,
     pub body: Vec<Statement>,
 }
