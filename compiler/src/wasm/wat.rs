@@ -45,6 +45,13 @@ impl Encode for wasm::Instruction {
             wasm::Instruction::Return => {
                 sink.push_str("return");
             }
+            wasm::Instruction::Drop => {
+                sink.push_str("drop");
+            }
+            wasm::Instruction::Call { index } => {
+                sink.push_str("call ");
+                index.encode(sink);
+            }
             wasm::Instruction::I32Const { value } => {
                 sink.push_str("i32.const ");
                 value.encode(sink);
@@ -140,7 +147,7 @@ impl Encode for wasm::Function<'_> {
             None => {}
         }
 
-        let locals = self.locals.get(..self.param_count as usize).unwrap_or(&[]);
+        let locals = self.locals();
         match locals.len() {
             0 => {}
             _ => {

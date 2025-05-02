@@ -21,9 +21,23 @@ mod wasm;
 
 fn main() {
     let source = indoc! { r#"
+        // This is a comment
         fn add(a: i32, b: i32): i32 {
-            mut c: i64 = 2;
-            return a + b + b;
+            return a + b;
+        }
+
+        fn main(): i32 {
+            // every value must be used or dropped
+            _ = add(2, 2); 
+
+            // const for deeply immutable values
+            const result: i32 = add(2, 2);
+
+            // mut for mutable values
+            mut x: i32 = 0;
+            x = x + 5;
+
+            return result;
         }
     "# };
 
@@ -37,15 +51,16 @@ fn main() {
 
     let writer = StandardStream::stderr(ColorChoice::Always);
     let config = codespan_reporting::term::Config::default();
+    // println!("Diagnostics: {:#?}", diagnostics.borrow());
     for diagnostic in diagnostics.borrow().iter() {
         let _ = term::emit(&mut writer.lock(), &config, &file, &diagnostic.report()).unwrap();
     }
     // println!("{:#?}", ast);
 
     let hir = Builder::build(&ast, &interner);
-    println!("{:#?}", hir);
+    // println!("{:#?}", hir);
     let mir = MIRBuilder::build(&hir);
-    println!("{:#?}", mir);
+    // println!("{:#?}", mir);
     let wasm = WASMBuilder::build(&mir, &interner);
     let mut file = std::fs::File::create("out.wat").unwrap();
     file.write(wasm.encode_wat().as_bytes()).unwrap();
@@ -53,7 +68,7 @@ fn main() {
     let bytecode = WASMEncoder::encode(&wasm);
     let mut file = std::fs::File::create("out.wasm").unwrap();
     file.write(&bytecode).unwrap();
-    println!("Wrote {} bytes to out.wasm", bytecode.len());
+    // println!("Wrote {} bytes to out.wasm", bytecode.len());
 
     let duration = start_time.elapsed();
     println!("Time taken to parse source to MIR: {:?}", duration);

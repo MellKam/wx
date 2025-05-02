@@ -5,6 +5,7 @@ pub trait Report {
     fn report(&self) -> Diagnostic<()>;
 }
 
+#[derive(Debug)]
 pub enum DiagnosticKind {
     UnknownToken(UnknownTokenDiagnostic),
     UnexpectedEof(UnexpectedEofDiagnostic),
@@ -13,6 +14,7 @@ pub enum DiagnosticKind {
     MisssingClosingParen(MissingClosingParenDiagnostic),
     InvalidIntegerLiteral(InvalidIntegerLiteralDiagnostic),
     MissingFunctionBody(MissingFunctionBodyDiagnostic),
+    ReservedIdentifier(ReservedIdentifierDiagnostic),
 }
 
 impl Report for DiagnosticKind {
@@ -25,10 +27,12 @@ impl Report for DiagnosticKind {
             DiagnosticKind::MisssingClosingParen(diagnostic) => diagnostic.report(),
             DiagnosticKind::InvalidIntegerLiteral(diagnostic) => diagnostic.report(),
             DiagnosticKind::MissingFunctionBody(diagnostic) => diagnostic.report(),
+            DiagnosticKind::ReservedIdentifier(diagnostic) => diagnostic.report(),
         }
     }
 }
 
+#[derive(Debug)]
 pub struct UnknownTokenDiagnostic {
     pub span: Span,
 }
@@ -47,6 +51,7 @@ impl Into<DiagnosticKind> for UnknownTokenDiagnostic {
     }
 }
 
+#[derive(Debug)]
 pub struct UnexpectedEofDiagnostic {
     pub span: Span,
 }
@@ -65,6 +70,7 @@ impl Into<DiagnosticKind> for UnexpectedEofDiagnostic {
     }
 }
 
+#[derive(Debug)]
 pub struct MissingStatementDelimiterDiagnostic {
     pub position: ByteIndex,
 }
@@ -86,6 +92,7 @@ impl Into<DiagnosticKind> for MissingStatementDelimiterDiagnostic {
     }
 }
 
+#[derive(Debug)]
 pub struct InvalidStatementDiagnostic {
     pub span: Span,
 }
@@ -104,6 +111,7 @@ impl Into<DiagnosticKind> for InvalidStatementDiagnostic {
     }
 }
 
+#[derive(Debug)]
 pub struct MissingClosingParenDiagnostic {
     pub opening_paren: Span,
     pub expected_closing_paren_position: ByteIndex,
@@ -137,6 +145,7 @@ impl Into<DiagnosticKind> for MissingClosingParenDiagnostic {
     }
 }
 
+#[derive(Debug)]
 pub struct InvalidIntegerLiteralDiagnostic {
     pub span: Span,
 }
@@ -155,6 +164,7 @@ impl Into<DiagnosticKind> for InvalidIntegerLiteralDiagnostic {
     }
 }
 
+#[derive(Debug)]
 pub struct MissingFunctionBodyDiagnostic {
     pub span: Span,
 }
@@ -170,5 +180,24 @@ impl Report for MissingFunctionBodyDiagnostic {
 impl Into<DiagnosticKind> for MissingFunctionBodyDiagnostic {
     fn into(self) -> DiagnosticKind {
         DiagnosticKind::MissingFunctionBody(self)
+    }
+}
+
+#[derive(Debug)]
+pub struct ReservedIdentifierDiagnostic {
+    pub span: Span,
+}
+
+impl Report for ReservedIdentifierDiagnostic {
+    fn report(&self) -> Diagnostic<()> {
+        Diagnostic::error()
+            .with_message("reserved identifier")
+            .with_label(Label::primary((), self.span))
+    }
+}
+
+impl Into<DiagnosticKind> for ReservedIdentifierDiagnostic {
+    fn into(self) -> DiagnosticKind {
+        DiagnosticKind::ReservedIdentifier(self)
     }
 }

@@ -54,6 +54,13 @@ impl Encode for wasm::Instruction {
             wasm::Instruction::Return => {
                 sink.push(0x0F);
             }
+            &wasm::Instruction::Call { index } => {
+                sink.push(0x10);
+                index.encode(sink);
+            }
+            wasm::Instruction::Drop => {
+                sink.push(0x1A);
+            }
             wasm::Instruction::I32Const { value } => {
                 sink.push(0x41);
                 value.encode(sink);

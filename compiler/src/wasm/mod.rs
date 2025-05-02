@@ -7,6 +7,8 @@ pub enum Instruction {
     LocalGet { index: u32 },
     LocalSet { index: u32 },
     Return,
+    Drop,
+    Call { index: u32 },
 
     I32Const { value: i32 },
     I64Const { value: i64 },
@@ -56,6 +58,10 @@ pub struct Function<'a> {
 impl Function<'_> {
     pub fn params(&self) -> &[Local] {
         self.locals.get(..self.param_count as usize).unwrap_or(&[])
+    }
+
+    pub fn locals(&self) -> &[Local] {
+        self.locals.get(self.param_count as usize..).unwrap_or(&[])
     }
 }
 

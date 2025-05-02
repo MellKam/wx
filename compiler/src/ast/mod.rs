@@ -1,5 +1,5 @@
 use codespan::Span;
-use lexer::TokenKind;
+use lexer::{TokenKind, TokenTag};
 use string_interner::symbol::SymbolU32;
 
 mod diagnostics;
@@ -47,6 +47,7 @@ pub enum BindingType {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinaryOperator {
+    Assign,
     // Arithmetic
     Add,
     Subtract,
@@ -62,22 +63,23 @@ pub enum BinaryOperator {
     GreaterEq,
 }
 
-impl TryFrom<TokenKind> for BinaryOperator {
+impl TryFrom<TokenTag> for BinaryOperator {
     type Error = ();
 
-    fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
-        match kind {
-            TokenKind::Plus => Ok(BinaryOperator::Add),
-            TokenKind::Minus => Ok(BinaryOperator::Subtract),
-            TokenKind::Star => Ok(BinaryOperator::Multiply),
-            TokenKind::Slash => Ok(BinaryOperator::Divide),
-            TokenKind::Percent => Ok(BinaryOperator::Remainder),
-            TokenKind::EqEq => Ok(BinaryOperator::Eq),
-            TokenKind::BangEq => Ok(BinaryOperator::NotEq),
-            TokenKind::OpenAngle => Ok(BinaryOperator::Less),
-            TokenKind::LessEq => Ok(BinaryOperator::LessEq),
-            TokenKind::CloseAngle => Ok(BinaryOperator::Greater),
-            TokenKind::GreaterEq => Ok(BinaryOperator::GreaterEq),
+    fn try_from(tag: TokenTag) -> Result<Self, Self::Error> {
+        match tag {
+            TokenTag::Plus => Ok(BinaryOperator::Add),
+            TokenTag::Minus => Ok(BinaryOperator::Subtract),
+            TokenTag::Star => Ok(BinaryOperator::Multiply),
+            TokenTag::Slash => Ok(BinaryOperator::Divide),
+            TokenTag::Percent => Ok(BinaryOperator::Remainder),
+            TokenTag::EqEq => Ok(BinaryOperator::Eq),
+            TokenTag::BangEq => Ok(BinaryOperator::NotEq),
+            TokenTag::OpenAngle => Ok(BinaryOperator::Less),
+            TokenTag::LessEq => Ok(BinaryOperator::LessEq),
+            TokenTag::CloseAngle => Ok(BinaryOperator::Greater),
+            TokenTag::GreaterEq => Ok(BinaryOperator::GreaterEq),
+            TokenTag::Eq => Ok(BinaryOperator::Assign),
             _ => Err(()),
         }
     }
@@ -106,10 +108,10 @@ pub enum ExprKind {
         right: ExprId,
         operator: BinaryOperator,
     },
-    // Call {
-    //     callee: ExprId,
-    //     arguments: Vec<ExprId>,
-    // },
+    Call {
+        callee: ExprId,
+        arguments: Vec<ExprId>,
+    },
     // Member {
     //     object: ExprId,
     //     property: SymbolU32,
@@ -128,18 +130,14 @@ pub enum StmtKind {
     Expression {
         expr: ExprId,
     },
-    Assignment {
-        name: ExprId,
-        value: ExprId,
-    },
     ConstDefinition {
         name: SymbolU32,
-        ty: SymbolU32,
+        ty: Option<SymbolU32>,
         value: ExprId,
     },
     MutableDefinition {
         name: SymbolU32,
-        ty: SymbolU32,
+        ty: Option<SymbolU32>,
         value: ExprId,
     },
     Return {

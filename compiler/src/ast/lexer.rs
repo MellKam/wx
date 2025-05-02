@@ -11,6 +11,7 @@ pub enum TokenTag {
     SemiColon,
     Comma,
     Dot,
+    Comment,
     OpenParen,
     CloseParen,
     OpenBrace,
@@ -46,6 +47,7 @@ impl std::fmt::Display for TokenTag {
             Char => "<char>",
             String => "<string>",
             Identifier => "<identifier>",
+            Comment => "<comment>",
             Colon => ":",
             SemiColon => ";",
             Comma => ",",
@@ -87,6 +89,7 @@ pub enum TokenKind {
     String { terminated: bool },
     Identifier,
     Colon,
+    Comment,
     SemiColon,
     Comma,
     Dot,
@@ -127,6 +130,7 @@ impl TokenKind {
             TokenKind::Colon => TokenTag::Colon,
             TokenKind::SemiColon => TokenTag::SemiColon,
             TokenKind::Comma => TokenTag::Comma,
+            TokenKind::Comment => TokenTag::Comment,
             TokenKind::Dot => TokenTag::Dot,
             TokenKind::OpenParen => TokenTag::OpenParen,
             TokenKind::CloseParen => TokenTag::CloseParen,
@@ -192,6 +196,7 @@ impl<'a> Lexer<'a> {
             '}' => TokenKind::CloseBrace,
             '[' => TokenKind::OpenBracket,
             ']' => TokenKind::CloseBracket,
+            '/' => self.consume_comment_or_slash(),
             '<' => self.consume_and_check('=', TokenKind::LessEq, TokenKind::OpenAngle),
             '>' => self.consume_and_check('=', TokenKind::GreaterEq, TokenKind::CloseAngle),
             ':' => TokenKind::Colon,
@@ -279,6 +284,27 @@ impl<'a> Lexer<'a> {
         TokenKind::Char { terminated }
     }
 
+    fn consume_comment_or_slash(&mut self) -> TokenKind {
+        let mut peeker = self.chars.clone();
+        match peeker.next().unwrap_or(EOF_CHAR) {
+            '/' => {
+                _ = self.chars.next();
+            }
+            _ => return TokenKind::Slash,
+        }
+
+        while let Some(char) = peeker.next() {
+            match char {
+                '\n' | EOF_CHAR => break,
+                _ => {
+                    _ = self.chars.next();
+                }
+            }
+        }
+
+        TokenKind::Comment
+    }
+
     fn consume_whitespace(&mut self) -> TokenKind {
         let mut peeker = self.chars.clone();
         while let Some(ch) = peeker.next() {
@@ -359,6 +385,7 @@ impl<'a> PeekableLexer<'a> {
             let token = self.lexer.next();
             match token.kind {
                 TokenKind::Whitespace => continue,
+                TokenKind::Comment => continue,
                 TokenKind::Unknown => {
                     unknown_span = match unknown_span {
                         Some(span) => Some(Span::merge(span, token.span)),

@@ -7,20 +7,31 @@ pub struct MIR {
     pub functions: Vec<Function>,
 }
 
+pub type FunctionIndex = u32;
 pub type LocalIndex = u32;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+pub struct FunctionType {
+    pub params: Vec<Type>,
+    pub result: Box<Type>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Type {
     I32,
     I64,
     Unit,
     Never,
+    Function(FunctionType),
 }
 
 #[derive(Debug)]
 pub enum ExprKind {
     Local {
         index: LocalIndex,
+    },
+    Function {
+        index: FunctionIndex,
     },
     Int {
         value: i64,
@@ -41,11 +52,15 @@ pub enum ExprKind {
         left: Box<Expression>,
         right: Box<Expression>,
     },
-    Negate {
-        operand: Box<Expression>,
-    },
     Return {
         value: Box<Expression>,
+    },
+    Drop {
+        value: Box<Expression>,
+    },
+    Call {
+        callee: FunctionIndex,
+        arguments: Vec<Expression>,
     },
 }
 

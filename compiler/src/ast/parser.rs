@@ -12,13 +12,15 @@ use super::{
     Ast, BinaryOperator, BindingType, ExprId, ExprKind, FunctionParam, FunctionSignature,
     InvalidIntegerLiteralDiagnostic, InvalidStatementDiagnostic, ItemId, ItemKind,
     MissingClosingParenDiagnostic, MissingFunctionBodyDiagnostic,
-    MissingStatementDelimiterDiagnostic, StmtId, StmtKind, UnaryOperator,
+    MissingStatementDelimiterDiagnostic, ReservedIdentifierDiagnostic, StmtId, StmtKind,
+    UnaryOperator,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum BindingPower {
     Default,
     Comma,
+    Assignment,
     Logical,
     Relational,
     Additive,
@@ -43,6 +45,7 @@ impl From<BinaryOperator> for BindingPower {
             BinaryOperator::Greater => BindingPower::Relational,
             BinaryOperator::LessEq => BindingPower::Relational,
             BinaryOperator::GreaterEq => BindingPower::Relational,
+            BinaryOperator::Assign => BindingPower::Assignment,
         }
     }
 }
@@ -60,25 +63,21 @@ pub enum Keyword {
     Return,
 }
 
-impl Keyword {
-    fn try_from_symbol(
-        interner: &StringInterner<StringBackend>,
-        symbol: SymbolU32,
-    ) -> Option<Self> {
-        match interner.resolve(symbol) {
-            Some(keyword) => match keyword {
-                "const" => Some(Keyword::Const),
-                "mut" => Some(Keyword::Mut),
-                "fn" => Some(Keyword::Fn),
-                "loop" => Some(Keyword::Loop),
-                "break" => Some(Keyword::Break),
-                "continue" => Some(Keyword::Continue),
-                "_" => Some(Keyword::Underscore),
-                "match" => Some(Keyword::Match),
-                "return" => Some(Keyword::Return),
-                _ => None,
-            },
-            None => None,
+impl TryFrom<&str> for Keyword {
+    type Error = ();
+
+    fn try_from(text: &str) -> Result<Self, Self::Error> {
+        match text {
+            "const" => Ok(Keyword::Const),
+            "mut" => Ok(Keyword::Mut),
+            "fn" => Ok(Keyword::Fn),
+            "loop" => Ok(Keyword::Loop),
+            "break" => Ok(Keyword::Break),
+            "continue" => Ok(Keyword::Continue),
+            "_" => Ok(Keyword::Underscore),
+            "match" => Ok(Keyword::Match),
+            "return" => Ok(Keyword::Return),
+            _ => Err(()),
         }
     }
 }
@@ -134,8 +133,8 @@ impl<'a> Parser<'a> {
             _ => return None,
         };
 
-        match Keyword::try_from_symbol(&self.interner, symbol) {
-            Some(Keyword::Fn) => Some(Parser::parse_function_definition),
+        match Keyword::try_from(self.interner.resolve(symbol)?) {
+            Ok(Keyword::Fn) => Some(Parser::parse_function_definition),
             _ => None,
         }
     }
@@ -202,10 +201,10 @@ impl<'a> Parser<'a> {
             _ => return None,
         };
 
-        match Keyword::try_from_symbol(&self.interner, symbol) {
-            Some(Keyword::Const) => Some(Parser::parse_variable_definition),
-            Some(Keyword::Mut) => Some(Parser::parse_variable_definition),
-            Some(Keyword::Return) => Some(Parser::parse_return_statement),
+        match Keyword::try_from(self.interner.resolve(symbol)?) {
+            Ok(Keyword::Const) => Some(Parser::parse_variable_definition),
+            Ok(Keyword::Mut) => Some(Parser::parse_variable_definition),
+            Ok(Keyword::Return) => Some(Parser::parse_return_statement),
             _ => return None,
         }
     }
@@ -217,31 +216,8 @@ impl<'a> Parser<'a> {
         };
 
         match self.lexer.peek().kind.tag() {
-            TokenTag::Eq => {
-                let _ = self.lexer.next();
-                let value = self.parse_expression(BindingPower::Default)?;
-                let value_expr = self.ast.get_expr(value).unwrap();
-                let name_expr = self.ast.get_expr(expr_id).unwrap();
-                let stmt_id = self.ast.push_stmt(
-                    StmtKind::Assignment {
-                        name: expr_id,
-                        value,
-                    },
-                    Span::merge(name_expr.span, value_expr.span),
-                );
-
-                Some(stmt_id)
-            }
             TokenTag::SemiColon => {
                 let _ = self.lexer.next();
-                let expr = self.ast.get_expr(expr_id).unwrap();
-                let stmt_id = self
-                    .ast
-                    .push_stmt(StmtKind::Expression { expr: expr_id }, expr.span);
-
-                Some(stmt_id)
-            }
-            TokenTag::CloseBrace => {
                 let expr = self.ast.get_expr(expr_id).unwrap();
                 let stmt_id = self
                     .ast
@@ -315,26 +291,27 @@ impl<'a> Parser<'a> {
         fn(parser: &mut Parser, left: ExprId, bp: BindingPower) -> Option<ExprId>,
         BindingPower,
     )> {
-        match token {
-            TokenKind::Plus | TokenKind::Minus => {
+        match token.tag() {
+            TokenTag::Plus | TokenTag::Minus => {
                 Some((Parser::parse_binary_expression, BindingPower::Additive))
             }
-            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some((
+            TokenTag::Star | TokenTag::Slash | TokenTag::Percent => Some((
                 Parser::parse_binary_expression,
                 BindingPower::Multiplicative,
             )),
-            TokenKind::EqEq
-            | TokenKind::BangEq
-            | TokenKind::OpenAngle
-            | TokenKind::LessEq
-            | TokenKind::CloseAngle
-            | TokenKind::GreaterEq => {
+            TokenTag::Eq => Some((Parser::parse_binary_expression, BindingPower::Assignment)),
+            TokenTag::EqEq
+            | TokenTag::BangEq
+            | TokenTag::OpenAngle
+            | TokenTag::LessEq
+            | TokenTag::CloseAngle
+            | TokenTag::GreaterEq => {
                 Some((Parser::parse_binary_expression, BindingPower::Relational))
             }
             // TokenKind::VbarVbar | TokenKind::AmperAmper => {
             //     Some((parse_binary_expression, BindingPower::Logical))
             // }
-            // TokenKind::OpenParen => Some((parse_call_expression, BindingPower::Call)),
+            TokenTag::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
             // TokenKind::Dot => Some((parse_member_expression, BindingPower::Member)),
             _ => None,
         }
@@ -372,18 +349,30 @@ impl<'a> Parser<'a> {
     fn parse_variable_definition(parser: &mut Parser) -> Option<StmtId> {
         let binding_type_token = parser.lexer.next();
         let binding_type_symbol = parser.get_identifier_symbol(binding_type_token.clone())?;
-        let binding_type = match Keyword::try_from_symbol(&parser.interner, binding_type_symbol) {
-            Some(Keyword::Const) => BindingType::Const,
-            Some(Keyword::Mut) => BindingType::Mutable,
+        let binding_type = match Keyword::try_from(parser.interner.resolve(binding_type_symbol)?) {
+            Ok(Keyword::Const) => BindingType::Const,
+            Ok(Keyword::Mut) => BindingType::Mutable,
             _ => unreachable!(),
         };
 
         let name = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
-        let name_symbol = parser.get_identifier_symbol(name)?;
+        let name_symbol = parser.get_identifier_symbol(name.clone())?;
+        match Keyword::try_from(parser.interner.resolve(name_symbol)?) {
+            Ok(_) => parser
+                .diagnostics
+                .borrow_mut()
+                .push(ReservedIdentifierDiagnostic { span: name.span }.into()),
+            Err(_) => {}
+        }
 
-        let _ = parser.lexer.next_expect(TokenTag::Colon).ok()?;
-        let type_token = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
-        let type_symbol = parser.get_identifier_symbol(type_token)?;
+        let type_symbol = match parser.lexer.peek().kind.tag() {
+            TokenTag::Colon => {
+                let _ = parser.lexer.next();
+                let type_token = parser.lexer.next_expect(TokenTag::Identifier).ok()?;
+                Some(parser.get_identifier_symbol(type_token)?)
+            }
+            _ => None,
+        };
 
         let _ = parser.lexer.next_expect(TokenTag::Eq).ok()?;
         let value = parser.parse_expression(BindingPower::Default)?;
@@ -468,7 +457,7 @@ impl<'a> Parser<'a> {
         bp: BindingPower,
     ) -> Option<ExprId> {
         let operator = parser.lexer.next();
-        let operator_kind = match BinaryOperator::try_from(operator.kind) {
+        let operator_kind = match BinaryOperator::try_from(operator.kind.tag()) {
             Ok(operator) => operator,
             Err(_) => unreachable!(),
         };
@@ -639,6 +628,38 @@ impl<'a> Parser<'a> {
 
         Some(item_id)
     }
+
+    fn parse_call_expression(
+        parser: &mut Parser,
+        callee: ExprId,
+        _: BindingPower,
+    ) -> Option<ExprId> {
+        let _ = parser.lexer.next();
+        let mut arguments = Vec::new();
+        loop {
+            let token = parser.lexer.peek();
+            if token.kind == TokenKind::CloseParen {
+                break;
+            }
+
+            let argument = parser.parse_expression(BindingPower::Comma)?;
+            arguments.push(argument);
+
+            let token = parser.lexer.peek();
+            if token.kind == TokenKind::Comma {
+                let _ = parser.lexer.next();
+            }
+        }
+
+        let close_paren = parser.lexer.next();
+
+        let callee_expr = parser.ast.get_expr(callee).unwrap();
+        let expr_id = parser.ast.push_expr(
+            ExprKind::Call { callee, arguments },
+            Span::merge(callee_expr.span, close_paren.span),
+        );
+        Some(expr_id)
+    }
 }
 
 // fn parse_float_expression(parser: &mut Parser) -> Option<ExprId> {
@@ -712,31 +733,6 @@ impl<'a> Parser<'a> {
 //     let symbol = parser.interner.get_or_intern(unescaped);
 
 //     let expr_id = parser.ast.add_expression(ExprKind::String { symbol });
-//     Some(expr_id)
-// }
-
-// fn parse_call_expression(parser: &mut Parser, callee: ExprId, _:
-// BindingPower) -> Option<ExprId> {     let _ = parser.lexer.next();
-//     let mut arguments = Vec::new();
-//     loop {
-//         let token = parser.lexer.peek();
-//         if token.kind == TokenKind::CloseParen {
-//             let _ = parser.lexer.next();
-//             break;
-//         }
-
-//         let argument = parser.parse_expression(BindingPower::Comma)?;
-//         arguments.push(argument);
-
-//         let token = parser.lexer.peek();
-//         if token.kind == TokenKind::Comma {
-//             let _ = parser.lexer.next();
-//         }
-//     }
-
-//     let expr_id = parser
-//         .ast
-//         .add_expression(ExprKind::Call { callee, arguments });
 //     Some(expr_id)
 // }
 
