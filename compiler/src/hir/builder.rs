@@ -81,7 +81,7 @@ impl hir::FunctionType {
             })
             .collect();
 
-        let result = match signature.output {
+        let result = match signature.result {
             Some(ty) => {
                 let text = interner.resolve(ty).expect("invalid type");
                 hir::PrimitiveType::try_from(text).expect("invalid type")
@@ -110,13 +110,13 @@ impl<'a> Builder<'a> {
 
         for item in builder.ast.items.iter() {
             match &item.kind {
-                ast::ItemKind::FunctionDefinition { signature, .. } => {
+                ast::ItemKind::FunctionDefinition(def) => {
                     let index = builder.functions.len() as hir::FunctionIndex;
                     builder.functions.push(hir::FunctionType::from_signature(
                         builder.interner,
-                        &signature,
+                        &def.signature,
                     ));
-                    builder.function_lookup.insert(signature.name, index);
+                    builder.function_lookup.insert(def.signature.name, index);
                 }
                 _ => {}
             }
@@ -124,11 +124,8 @@ impl<'a> Builder<'a> {
 
         for item in builder.ast.items.iter() {
             match &item.kind {
-                ast::ItemKind::FunctionDefinition { body, signature } => {
-                    builder
-                        .hir
-                        .functions
-                        .push(builder.build_function(signature, body));
+                ast::ItemKind::FunctionDefinition(def) => {
+                    builder.hir.functions.push(builder.build_function(def));
                 }
                 _ => panic!("Expected function definition"),
             }
@@ -137,19 +134,20 @@ impl<'a> Builder<'a> {
         builder.hir
     }
 
-    fn build_function(
-        &self,
-        signature: &ast::FunctionSignature,
-        body: &Vec<ast::StmtId>,
-    ) -> hir::Function {
-        let func_index = self.function_lookup.get(&signature.name).copied().unwrap();
+    fn build_function(&self, def: &ast::FunctionDefinition) -> hir::Function {
+        let func_index = self
+            .function_lookup
+            .get(&def.signature.name)
+            .copied()
+            .unwrap();
         let func_type = self
             .functions
             .get(func_index as usize)
             .expect("invalid function index");
-        let mut scope = BlockScope::from_function_signature(self.interner, &signature);
+        let mut scope = BlockScope::from_function_signature(self.interner, &def.signature);
 
-        let body = body
+        let body = def
+            .body
             .iter()
             .map(|stmt_id| {
                 let stmt = self.ast.get_stmt(*stmt_id).expect("invalid statement");
@@ -158,7 +156,8 @@ impl<'a> Builder<'a> {
             .collect();
 
         hir::Function {
-            name: signature.name,
+            export: def.export.is_some(),
+            name: def.signature.name,
             signature: func_type.clone(),
             locals: scope.locals,
             body,

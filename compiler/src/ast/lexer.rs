@@ -384,8 +384,7 @@ impl<'a> PeekableLexer<'a> {
         loop {
             let token = self.lexer.next();
             match token.kind {
-                TokenKind::Whitespace => continue,
-                TokenKind::Comment => continue,
+                TokenKind::Whitespace | TokenKind::Comment => continue,
                 TokenKind::Unknown => {
                     unknown_span = match unknown_span {
                         Some(span) => Some(Span::merge(span, token.span)),

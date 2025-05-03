@@ -112,6 +112,7 @@ pub struct Local {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
+    pub export: bool,
     pub name: SymbolU32,
     pub signature: FunctionType,
     pub locals: Vec<Local>,

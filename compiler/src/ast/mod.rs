@@ -10,14 +10,9 @@ mod unescape;
 pub use diagnostics::*;
 pub use parser::*;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ExprId(u32);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StmtId(u32);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ItemId(u32);
+pub type ExprId = u32;
+pub type StmtId = u32;
+pub type ItemId = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOperator {
@@ -37,12 +32,6 @@ impl TryFrom<TokenKind> for UnaryOperator {
             _ => Err(()),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BindingType {
-    Mutable,
-    Const,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -162,19 +151,21 @@ pub struct FunctionParam {
 pub struct FunctionSignature {
     pub name: SymbolU32,
     pub params: Vec<FunctionParam>,
-    pub output: Option<SymbolU32>,
+    pub result: Option<SymbolU32>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct FunctionDefinition {
+    pub export: Option<Span>,
+    pub signature: FunctionSignature,
+    pub body: Vec<StmtId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ItemKind {
-    FunctionDefinition {
-        signature: FunctionSignature,
-        body: Vec<StmtId>,
-    },
-    FunctionDeclaration {
-        signature: FunctionSignature,
-    },
+    FunctionDefinition(FunctionDefinition),
+    FunctionDeclaration { signature: FunctionSignature },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,32 +192,42 @@ impl Ast {
     }
 
     pub fn push_expr(&mut self, kind: ExprKind, span: Span) -> ExprId {
-        let id = ExprId(self.expressions.len() as u32);
+        let id = self.expressions.len() as ExprId;
         self.expressions.push(Expression { kind, span, id });
         return id;
     }
 
     pub fn get_expr(&self, id: ExprId) -> Option<&Expression> {
-        self.expressions.get(id.0 as usize)
+        self.expressions.get(id as usize)
     }
 
     pub fn push_stmt(&mut self, kind: StmtKind, span: Span) -> StmtId {
-        let id = StmtId(self.statements.len() as u32);
+        let id = self.statements.len() as StmtId;
         self.statements.push(Statement { id, kind, span });
         return id;
     }
 
     pub fn get_stmt(&self, id: StmtId) -> Option<&Statement> {
-        self.statements.get(id.0 as usize)
+        self.statements.get(id as usize)
     }
 
     pub fn push_item(&mut self, kind: ItemKind, span: Span) -> ItemId {
-        let id = ItemId(self.items.len() as u32);
+        let id = self.items.len() as ItemId;
         self.items.push(Item { id, kind, span });
         return id;
     }
 
     pub fn get_item(&self, id: ItemId) -> Option<&Item> {
-        self.items.get(id.0 as usize)
+        self.items.get(id as usize)
+    }
+
+    pub fn set_item(&mut self, id: ItemId, cb: impl FnOnce(&mut Item)) -> Result<(), ()> {
+        match self.items.get_mut(id as usize) {
+            Some(item) => {
+                cb(item);
+                Ok(())
+            }
+            None => Err(()),
+        }
     }
 }

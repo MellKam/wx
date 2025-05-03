@@ -9,7 +9,7 @@ use string_interner::symbol::SymbolU32;
 use super::diagnostics::DiagnosticKind;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind, TokenTag};
 use super::{
-    Ast, BinaryOperator, BindingType, ExprId, ExprKind, FunctionParam, FunctionSignature,
+    Ast, BinaryOperator, ExprId, ExprKind, FunctionDefinition, FunctionParam, FunctionSignature,
     InvalidIntegerLiteralDiagnostic, InvalidStatementDiagnostic, ItemId, ItemKind,
     MissingClosingParenDiagnostic, MissingFunctionBodyDiagnostic,
     MissingStatementDelimiterDiagnostic, ReservedIdentifierDiagnostic, StmtId, StmtKind,
@@ -29,6 +29,12 @@ pub enum BindingPower {
     Call,
     Member,
     Primary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mutability {
+    Mutable,
+    Const,
 }
 
 impl From<BinaryOperator> for BindingPower {
@@ -52,6 +58,7 @@ impl From<BinaryOperator> for BindingPower {
 
 #[derive(Debug, Clone)]
 pub enum Keyword {
+    Export,
     Const,
     Mut,
     Fn,
@@ -68,6 +75,7 @@ impl TryFrom<&str> for Keyword {
 
     fn try_from(text: &str) -> Result<Self, Self::Error> {
         match text {
+            "export" => Ok(Keyword::Export),
             "const" => Ok(Keyword::Const),
             "mut" => Ok(Keyword::Mut),
             "fn" => Ok(Keyword::Fn),
@@ -121,22 +129,39 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_item(&mut self) -> Option<ItemId> {
-        let item_handler = self.item_lookup()?;
-        let item_id = item_handler(self)?;
-        Some(item_id)
-    }
-
-    fn item_lookup(&mut self) -> Option<fn(parser: &mut Parser) -> Option<ItemId>> {
         let token = self.lexer.peek();
         let symbol = match token.kind {
             TokenKind::Identifier => self.get_identifier_symbol(token)?,
             _ => return None,
         };
 
-        match Keyword::try_from(self.interner.resolve(symbol)?) {
-            Ok(Keyword::Fn) => Some(Parser::parse_function_definition),
-            _ => None,
-        }
+        let item_handler: fn(parser: &mut Parser) -> Option<ItemId> =
+            match Keyword::try_from(self.interner.resolve(symbol)?) {
+                Ok(Keyword::Fn) => Parser::parse_function_definition,
+                Ok(Keyword::Export) => Parser::parse_exported_function_definition,
+                _ => return None,
+            };
+
+        let item_id = item_handler(self)?;
+        Some(item_id)
+    }
+
+    fn parse_exported_function_definition(parser: &mut Parser) -> Option<ItemId> {
+        let export_keyword = parser.lexer.next();
+        let item_id = Parser::parse_function_definition(parser)?;
+
+        parser
+            .ast
+            .set_item(item_id, |item| match &mut item.kind {
+                ItemKind::FunctionDefinition(def) => {
+                    def.export = Some(export_keyword.span);
+                    item.span = Span::merge(export_keyword.span, item.span);
+                }
+                _ => unreachable!(),
+            })
+            .unwrap();
+
+        Some(item_id)
     }
 
     fn parse_statement(&mut self) -> Option<StmtId> {
@@ -350,8 +375,8 @@ impl<'a> Parser<'a> {
         let binding_type_token = parser.lexer.next();
         let binding_type_symbol = parser.get_identifier_symbol(binding_type_token.clone())?;
         let binding_type = match Keyword::try_from(parser.interner.resolve(binding_type_symbol)?) {
-            Ok(Keyword::Const) => BindingType::Const,
-            Ok(Keyword::Mut) => BindingType::Mutable,
+            Ok(Keyword::Const) => Mutability::Const,
+            Ok(Keyword::Mut) => Mutability::Mutable,
             _ => unreachable!(),
         };
 
@@ -380,12 +405,12 @@ impl<'a> Parser<'a> {
 
         let stmt_id = parser.ast.push_stmt(
             match binding_type {
-                BindingType::Const => StmtKind::ConstDefinition {
+                Mutability::Const => StmtKind::ConstDefinition {
                     name: name_symbol,
                     ty: type_symbol,
                     value,
                 },
-                BindingType::Mutable => StmtKind::MutableDefinition {
+                Mutability::Mutable => StmtKind::MutableDefinition {
                     name: name_symbol,
                     ty: type_symbol,
                     value,
@@ -559,14 +584,14 @@ impl<'a> Parser<'a> {
                 Some(FunctionSignature {
                     name: name_symbol,
                     params,
-                    output: Some(return_type_symbol),
+                    result: Some(return_type_symbol),
                     span: Span::merge(name_token.span, return_type_token.span),
                 })
             }
             _ => Some(FunctionSignature {
                 name: name_symbol,
                 params,
-                output: None,
+                result: None,
                 span: Span::merge(name_token.span, close_paren.span),
             }),
         }
@@ -622,7 +647,11 @@ impl<'a> Parser<'a> {
 
         let close_brace = parser.lexer.next();
         let item_id = parser.ast.push_item(
-            ItemKind::FunctionDefinition { signature, body },
+            ItemKind::FunctionDefinition(FunctionDefinition {
+                export: None,
+                signature,
+                body,
+            }),
             Span::merge(fn_keyword.span, close_brace.span),
         );
 

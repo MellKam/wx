@@ -54,7 +54,7 @@ impl Encode for wasm::Instruction {
             wasm::Instruction::Return => {
                 sink.push(0x0F);
             }
-            &wasm::Instruction::Call { index } => {
+            wasm::Instruction::Call { index } => {
                 sink.push(0x10);
                 index.encode(sink);
             }
@@ -343,6 +343,7 @@ impl WASMEncoder {
                 .functions
                 .iter()
                 .enumerate()
+                .filter(|(_, function)| function.export)
                 .map(|(index, function)| ExportFunction {
                     name: function.name,
                     index: index as u32,
@@ -356,7 +357,7 @@ impl WASMEncoder {
                 .functions
                 .iter()
                 .map(|function| FunctionBody {
-                    locals: function.locals.clone().into(),
+                    locals: Box::from(function.locals()),
                     instructions: function.instructions.clone().into(),
                 })
                 .collect(),

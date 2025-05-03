@@ -26,7 +26,7 @@ fn main() {
             return a + b;
         }
 
-        fn main(): i32 {
+        export fn main(): i32 {
             // every value must be used or dropped
             _ = add(2, 2); 
 
@@ -68,7 +68,7 @@ fn main() {
     let bytecode = WASMEncoder::encode(&wasm);
     let mut file = std::fs::File::create("out.wasm").unwrap();
     file.write(&bytecode).unwrap();
-    // println!("Wrote {} bytes to out.wasm", bytecode.len());
+    println!("Wrote {} bytes to out.wasm", bytecode.len());
 
     let duration = start_time.elapsed();
     println!("Time taken to parse source to MIR: {:?}", duration);

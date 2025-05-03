@@ -4,6 +4,10 @@ pub trait Encode {
     fn encode(&self, sink: &mut String);
 }
 
+pub trait EncodeWithContext {
+    fn encode_with_context(&self, sink: &mut String, module: &wasm::Module, func_index: usize);
+}
+
 impl Encode for i32 {
     fn encode(&self, sink: &mut String) {
         sink.push_str(self.to_string().as_str());
@@ -31,16 +35,30 @@ impl Encode for wasm::ValueType {
     }
 }
 
-impl Encode for wasm::Instruction {
-    fn encode(&self, sink: &mut String) {
+impl EncodeWithContext for wasm::Instruction {
+    fn encode_with_context(&self, sink: &mut String, module: &wasm::Module, func_index: usize) {
         match self {
             wasm::Instruction::LocalGet { index } => {
-                sink.push_str("local.get ");
-                index.encode(sink);
+                sink.push_str("local.get $");
+                let local = module
+                    .functions
+                    .get(func_index)
+                    .unwrap()
+                    .locals
+                    .get(*index as usize)
+                    .unwrap();
+                sink.push_str(local.name);
             }
             wasm::Instruction::LocalSet { index } => {
-                sink.push_str("local.set ");
-                index.encode(sink);
+                sink.push_str("local.set $");
+                let local = module
+                    .functions
+                    .get(func_index)
+                    .unwrap()
+                    .locals
+                    .get(*index as usize)
+                    .unwrap();
+                sink.push_str(local.name);
             }
             wasm::Instruction::Return => {
                 sink.push_str("return");
@@ -49,8 +67,9 @@ impl Encode for wasm::Instruction {
                 sink.push_str("drop");
             }
             wasm::Instruction::Call { index } => {
-                sink.push_str("call ");
-                index.encode(sink);
+                sink.push_str("call $");
+                let func = module.functions.get(*index as usize).unwrap();
+                sink.push_str(func.name);
             }
             wasm::Instruction::I32Const { value } => {
                 sink.push_str("i32.const ");
@@ -118,23 +137,26 @@ impl Encode for wasm::Instruction {
     }
 }
 
-impl Encode for wasm::Function<'_> {
-    fn encode(&self, sink: &mut String) {
-        sink.push_str("(func");
-        sink.push_str(format!("(export\"{}\")", self.name).as_str());
+impl EncodeWithContext for wasm::Function<'_> {
+    fn encode_with_context(&self, sink: &mut String, module: &wasm::Module, func_index: usize) {
+        sink.push_str(format!("(func ${}", self.name).as_str());
+        match self.export {
+            true => {
+                sink.push_str(format!("(export\"{}\")", self.name).as_str());
+            }
+            false => {}
+        }
 
         match self.param_count {
             0 => {}
             _ => {
-                sink.push_str("(param ");
-                for (index, param) in self.params().iter().enumerate() {
+                for param in self.params().iter() {
+                    sink.push_str("(param $");
+                    sink.push_str(param.name);
+                    sink.push_str(" ");
                     param.ty.encode(sink);
-                    match index {
-                        index if index as u32 + 1 == self.param_count => {}
-                        _ => sink.push_str(" "),
-                    }
+                    sink.push_str(")");
                 }
-                sink.push_str(")");
             }
         }
 
@@ -151,18 +173,19 @@ impl Encode for wasm::Function<'_> {
         match locals.len() {
             0 => {}
             _ => {
-                sink.push_str("(local ");
                 for local in locals {
-                    local.ty.encode(sink);
+                    sink.push_str("(local $");
+                    sink.push_str(local.name);
                     sink.push_str(" ");
+                    local.ty.encode(sink);
+                    sink.push_str(")");
                 }
-                sink.push_str(")");
             }
         }
 
         for instruction in &self.instructions {
             sink.push_str("(");
-            instruction.encode(sink);
+            instruction.encode_with_context(sink, module, func_index);
             sink.push_str(")");
         }
         sink.push_str(")");
@@ -173,8 +196,8 @@ impl wasm::Module<'_> {
     pub fn encode_wat(&self) -> String {
         let mut sink = String::new();
         sink.push_str("(module");
-        for function in &self.functions {
-            function.encode(&mut sink);
+        for (index, func) in self.functions.iter().enumerate() {
+            func.encode_with_context(&mut sink, self, index);
         }
         sink.push_str(")");
         sink

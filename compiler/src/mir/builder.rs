@@ -45,6 +45,7 @@ impl MIRBuilder {
 
     fn build_function(function: &hir::Function) -> mir::Function {
         mir::Function {
+            export: function.export,
             name: function.name,
             param_count: function.signature.params.len(),
             locals: function

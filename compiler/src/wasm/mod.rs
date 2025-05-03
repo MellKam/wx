@@ -48,6 +48,7 @@ pub struct Local<'a> {
 
 #[derive(Debug, Clone)]
 pub struct Function<'a> {
+    export: bool,
     name: &'a str,
     param_count: u32,
     locals: Vec<Local<'a>>,

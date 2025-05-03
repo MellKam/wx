@@ -4,9 +4,7 @@ use string_interner::backend::StringBackend;
 use super::Instruction;
 use crate::{mir, wasm};
 
-pub struct WASMBuilder<'a> {
-    wasm: wasm::Module<'a>,
-}
+pub struct WASMBuilder {}
 
 impl TryFrom<mir::Type> for wasm::ValueType {
     type Error = ();
@@ -21,8 +19,11 @@ impl TryFrom<mir::Type> for wasm::ValueType {
     }
 }
 
-impl<'a> WASMBuilder<'a> {
-    pub fn build(mir: &mir::MIR, interner: &'a StringInterner<StringBackend>) -> wasm::Module<'a> {
+impl WASMBuilder {
+    pub fn build<'a>(
+        mir: &mir::MIR,
+        interner: &'a StringInterner<StringBackend>,
+    ) -> wasm::Module<'a> {
         let mut functions = Vec::new();
         for function in &mir.functions {
             let mut instructions = Vec::new();
@@ -30,6 +31,7 @@ impl<'a> WASMBuilder<'a> {
                 WASMBuilder::build_expression(&mut instructions, expr)
             }
             functions.push(wasm::Function {
+                export: function.export,
                 name: interner.resolve(function.name).unwrap(),
                 locals: function
                     .locals

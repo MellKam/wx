@@ -83,6 +83,7 @@ pub struct Function {
     pub locals: Vec<Local>,
     pub result: Type,
     pub body: Vec<Expression>,
+    pub export: bool,
 }
 
 impl Function {
