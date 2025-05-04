@@ -1,17 +1,18 @@
 use codespan::Span;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TokenTag {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenKind {
     Int,
     Float,
-    Char,
-    String,
+    Char { terminated: bool },
+    String { terminated: bool },
     Identifier,
     Colon,
+    Comment,
+    ColonColon,
     SemiColon,
     Comma,
     Dot,
-    Comment,
     OpenParen,
     CloseParen,
     OpenBrace,
@@ -38,17 +39,18 @@ pub enum TokenTag {
     Eof,
 }
 
-impl std::fmt::Display for TokenTag {
+impl std::fmt::Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use TokenTag::*;
+        use TokenKind::*;
         let text = match self {
             Int => "<int>",
             Float => "<float>",
-            Char => "<char>",
-            String => "<string>",
+            Char { .. } => "<char>",
+            String { .. } => "<string>",
             Identifier => "<identifier>",
             Comment => "<comment>",
             Colon => ":",
+            ColonColon => "::",
             SemiColon => ";",
             Comma => ",",
             Dot => ".",
@@ -78,85 +80,6 @@ impl std::fmt::Display for TokenTag {
             Eof => "<eof>",
         };
         write!(f, "{}", text)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenKind {
-    Int,
-    Float,
-    Char { terminated: bool },
-    String { terminated: bool },
-    Identifier,
-    Colon,
-    Comment,
-    SemiColon,
-    Comma,
-    Dot,
-    OpenParen,
-    CloseParen,
-    OpenBrace,
-    CloseBrace,
-    OpenBracket,
-    CloseBracket,
-    OpenAngle,
-    CloseAngle,
-    Eq,
-    Bang,
-    Minus,
-    Amper,
-    Vbar,
-    Plus,
-    Star,
-    Slash,
-    Percent,
-    EqEq,
-    BangEq,
-    LessEq,
-    GreaterEq,
-    Whitespace,
-    Unknown,
-    Eof,
-}
-
-impl TokenKind {
-    pub fn tag(&self) -> TokenTag {
-        match self {
-            TokenKind::Int => TokenTag::Int,
-            TokenKind::Float => TokenTag::Float,
-            TokenKind::Char { .. } => TokenTag::Char,
-            TokenKind::String { .. } => TokenTag::String,
-            TokenKind::Identifier => TokenTag::Identifier,
-            TokenKind::Colon => TokenTag::Colon,
-            TokenKind::SemiColon => TokenTag::SemiColon,
-            TokenKind::Comma => TokenTag::Comma,
-            TokenKind::Comment => TokenTag::Comment,
-            TokenKind::Dot => TokenTag::Dot,
-            TokenKind::OpenParen => TokenTag::OpenParen,
-            TokenKind::CloseParen => TokenTag::CloseParen,
-            TokenKind::OpenBrace => TokenTag::OpenBrace,
-            TokenKind::CloseBrace => TokenTag::CloseBrace,
-            TokenKind::OpenBracket => TokenTag::OpenBracket,
-            TokenKind::CloseBracket => TokenTag::CloseBracket,
-            TokenKind::OpenAngle => TokenTag::OpenAngle,
-            TokenKind::CloseAngle => TokenTag::CloseAngle,
-            TokenKind::Eq => TokenTag::Eq,
-            TokenKind::Bang => TokenTag::Bang,
-            TokenKind::Minus => TokenTag::Minus,
-            TokenKind::Amper => TokenTag::Amper,
-            TokenKind::Vbar => TokenTag::Vbar,
-            TokenKind::Plus => TokenTag::Plus,
-            TokenKind::Star => TokenTag::Star,
-            TokenKind::Slash => TokenTag::Slash,
-            TokenKind::Percent => TokenTag::Percent,
-            TokenKind::EqEq => TokenTag::EqEq,
-            TokenKind::BangEq => TokenTag::BangEq,
-            TokenKind::LessEq => TokenTag::LessEq,
-            TokenKind::GreaterEq => TokenTag::GreaterEq,
-            TokenKind::Whitespace => TokenTag::Whitespace,
-            TokenKind::Unknown => TokenTag::Unknown,
-            TokenKind::Eof => TokenTag::Eof,
-        }
     }
 }
 
@@ -199,7 +122,7 @@ impl<'a> Lexer<'a> {
             '/' => self.consume_comment_or_slash(),
             '<' => self.consume_and_check('=', TokenKind::LessEq, TokenKind::OpenAngle),
             '>' => self.consume_and_check('=', TokenKind::GreaterEq, TokenKind::CloseAngle),
-            ':' => TokenKind::Colon,
+            ':' => self.consume_and_check(':', TokenKind::ColonColon, TokenKind::Colon),
             '=' => self.consume_and_check('=', TokenKind::EqEq, TokenKind::Eq),
             '!' => self.consume_and_check('=', TokenKind::BangEq, TokenKind::Bang),
             '-' => TokenKind::Minus,
@@ -367,12 +290,13 @@ impl<'a> PeekableLexer<'a> {
         }
     }
 
-    pub fn next_expect(&mut self, expected: TokenTag) -> Result<Token, Token> {
+    pub fn next_expect(&mut self, expected: TokenKind) -> Result<Token, Token> {
         let token = self.next();
-        match token.kind.tag() {
-            tag if tag == expected => return Ok(token),
-            _ => Err(token),
+        if std::mem::discriminant(&token.kind) == std::mem::discriminant(&expected) {
+            return Ok(token);
         }
+
+        Err(token)
     }
 
     pub fn next(&mut self) -> Token {

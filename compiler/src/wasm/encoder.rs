@@ -93,6 +93,12 @@ impl Encode for wasm::Instruction {
             wasm::Instruction::I32And => {
                 sink.push(0x71);
             }
+            wasm::Instruction::I32Eq => {
+                sink.push(0x46);
+            }
+            wasm::Instruction::I32Eqz => {
+                sink.push(0x45);
+            }
             wasm::Instruction::I32Or => {
                 sink.push(0x72);
             }
@@ -123,6 +129,12 @@ impl Encode for wasm::Instruction {
             wasm::Instruction::I64Or => {
                 sink.push(0x84);
             }
+            wasm::Instruction::I64Eq => {
+                sink.push(0x86);
+            }
+            wasm::Instruction::I64Eqz => {
+                sink.push(0x87);
+            }
         }
     }
 }
@@ -143,31 +155,24 @@ enum SectionId {
     Data = 11,
 }
 
-struct FunctionSignature {
-    params: Vec<wasm::ValueType>,
-    result: Option<wasm::ValueType>,
-}
-
 struct TypeSection {
-    signatures: Vec<FunctionSignature>,
+    signatures: Vec<wasm::FunctionType>,
 }
 
-impl Encode for FunctionSignature {
+impl Encode for wasm::FunctionType {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(0x60); // Function type
 
-        let param_count = self.params.len() as u32;
+        let param_count = self.params().len() as u32;
         param_count.encode(sink);
-        for param in self.params.iter() {
+        for param in self.params().iter() {
             param.encode(sink);
         }
 
-        match self.result {
-            Some(result) => {
-                sink.push(1);
-                result.encode(sink);
-            }
-            None => {}
+        let result_count = self.results().len() as u32;
+        result_count.encode(sink);
+        for result in self.results().iter() {
+            result.encode(sink);
         }
     }
 }
@@ -255,8 +260,8 @@ impl Encode for ExportSection<'_> {
 }
 
 struct FunctionBody<'a> {
-    locals: Box<[wasm::Local<'a>]>,
-    instructions: Box<[wasm::Instruction]>,
+    locals: &'a [wasm::Local<'a>],
+    instructions: &'a [wasm::Instruction],
 }
 
 impl<'a> Encode for FunctionBody<'a> {
@@ -320,10 +325,7 @@ impl WASMEncoder {
             signatures: module
                 .functions
                 .iter()
-                .map(|function| FunctionSignature {
-                    params: function.params().iter().map(|local| local.ty).collect(),
-                    result: function.result,
-                })
+                .map(|function| function.ty.clone())
                 .collect(),
         }
         .encode(&mut sink);
@@ -357,8 +359,8 @@ impl WASMEncoder {
                 .functions
                 .iter()
                 .map(|function| FunctionBody {
-                    locals: Box::from(function.locals()),
-                    instructions: function.instructions.clone().into(),
+                    locals: function.locals.as_ref(),
+                    instructions: function.instructions.as_ref(),
                 })
                 .collect(),
         }

@@ -22,6 +22,8 @@ pub enum Instruction {
     I32RemU,
     I32And,
     I32Or,
+    I32Eq,
+    I32Eqz,
 
     I64Add,
     I64Sub,
@@ -32,12 +34,30 @@ pub enum Instruction {
     I64RemU,
     I64And,
     I64Or,
+    I64Eq,
+    I64Eqz,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum ValueType {
     I32,
     I64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionType {
+    pub param_count: usize,
+    pub param_results: Box<[ValueType]>,
+}
+
+impl FunctionType {
+    pub fn params(&self) -> &[ValueType] {
+        self.param_results.get(..self.param_count).unwrap_or(&[])
+    }
+
+    pub fn results(&self) -> &[ValueType] {
+        self.param_results.get(self.param_count..).unwrap_or(&[])
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,19 +70,22 @@ pub struct Local<'a> {
 pub struct Function<'a> {
     export: bool,
     name: &'a str,
-    param_count: u32,
+    ty: FunctionType,
     locals: Vec<Local<'a>>,
-    result: Option<ValueType>,
     instructions: Vec<Instruction>,
 }
 
 impl Function<'_> {
     pub fn params(&self) -> &[Local] {
-        self.locals.get(..self.param_count as usize).unwrap_or(&[])
+        self.locals
+            .get(0..self.ty.param_count as usize)
+            .unwrap_or(&[])
     }
 
-    pub fn locals(&self) -> &[Local] {
-        self.locals.get(self.param_count as usize..).unwrap_or(&[])
+    pub fn locals_without_params(&self) -> &[Local] {
+        self.locals
+            .get(self.ty.param_count as usize..)
+            .unwrap_or(&[])
     }
 }
 

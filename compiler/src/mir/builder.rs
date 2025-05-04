@@ -2,7 +2,9 @@ use core::panic;
 
 use crate::{ast, hir, mir};
 
-pub struct MIRBuilder {}
+pub struct MIRBuilder<'a> {
+    hir: &'a hir::HIR,
+}
 
 impl From<hir::PrimitiveType> for mir::Type {
     fn from(ty: hir::PrimitiveType) -> Self {
@@ -15,66 +17,82 @@ impl From<hir::PrimitiveType> for mir::Type {
     }
 }
 
-impl From<hir::Type> for mir::Type {
-    fn from(ty: hir::Type) -> Self {
-        match ty {
-            hir::Type::Primitive(ty) => mir::Type::from(ty),
-            hir::Type::Function(ty) => mir::Type::Function(mir::FunctionType {
-                params: ty
-                    .params
-                    .into_iter()
-                    .map(|ty| mir::Type::from(ty))
-                    .collect(),
-                result: Box::new(mir::Type::from(ty.result)),
-            }),
-            hir::Type::Comptime(_) => panic!("comptime types are not supported in MIR"),
-        }
-    }
-}
-
-impl MIRBuilder {
+impl<'a> MIRBuilder<'a> {
     pub fn build(hir: &hir::HIR) -> mir::MIR {
+        let builder = MIRBuilder { hir };
         mir::MIR {
             functions: hir
                 .functions
                 .iter()
-                .map(|func| MIRBuilder::build_function(func))
+                .map(|func| builder.build_function(func))
                 .collect(),
         }
     }
 
-    fn build_function(function: &hir::Function) -> mir::Function {
+    fn to_mir_function_type(&self, ty: hir::FunctionType) -> mir::FunctionType {
+        mir::FunctionType {
+            param_count: ty.params.len(),
+            params_results: ty
+                .params
+                .into_iter()
+                .map(|ty| self.to_mir_type(ty))
+                .chain(std::iter::once(self.to_mir_type(ty.result)))
+                .collect(),
+        }
+    }
+
+    fn to_mir_type(&self, ty: hir::Type) -> mir::Type {
+        match ty {
+            hir::Type::Primitive(ty) => mir::Type::from(ty),
+            hir::Type::Function(index) => mir::Type::Function(index),
+            hir::Type::Enum(enum_index) => {
+                let enum_ = &self.hir.enums[enum_index as usize];
+                mir::Type::from(enum_.ty.clone())
+            }
+            hir::Type::Comptime(_) => panic!("comptime types are not supported in MIR"),
+        }
+    }
+
+    fn build_function(&self, function: &hir::Function) -> mir::Function {
         mir::Function {
             export: function.export,
             name: function.name,
-            param_count: function.signature.params.len(),
-            locals: function
-                .locals
-                .iter()
-                .map(|local| mir::Local {
-                    name: local.name,
-                    ty: mir::Type::from(local.ty),
-                })
-                .collect(),
-            result: mir::Type::from(function.signature.result),
-            body: function
-                .body
-                .iter()
-                .filter_map(|stmt| MIRBuilder::build_expression_from_statement(&function, stmt))
-                .collect(),
+            ty: self.to_mir_function_type(function.ty.clone()),
+            block: mir::Block {
+                locals: function
+                    .block
+                    .locals
+                    .iter()
+                    .map(|local| mir::Local {
+                        name: local.name,
+                        ty: self.to_mir_type(local.ty),
+                    })
+                    .collect(),
+                expressions: function
+                    .block
+                    .statements
+                    .iter()
+                    .filter_map(|stmt| self.build_expression_from_statement(function, stmt))
+                    .chain(function.block.result.as_ref().map(|expr| {
+                        self.build_expression(expr, &self.to_mir_type(function.ty.result))
+                    }))
+                    .collect(),
+                ty: self.to_mir_type(function.ty.result),
+            },
         }
     }
 
     fn build_expression_from_statement(
+        &self,
         func: &hir::Function,
         stmt: &hir::Statement,
     ) -> Option<mir::Expression> {
         use hir::Statement::*;
         match stmt {
             Decl { index, expr } => {
-                let local = func.locals.get(*index as usize)?;
-                let ty = mir::Type::from(local.ty);
-                let value = MIRBuilder::build_expression(expr, &ty);
+                let local = func.block.locals.get(*index as usize)?;
+                let ty = self.to_mir_type(local.ty);
+                let value = self.build_expression(expr, &ty);
                 match value.kind {
                     mir::ExprKind::Int { value: num } if num == 0 => return None,
                     _ => {
@@ -89,23 +107,24 @@ impl MIRBuilder {
                 }
             }
             Expr { expr } => {
-                let ty = mir::Type::from(expr.ty.clone());
-                let value = MIRBuilder::build_expression(expr, &ty);
+                let ty = self.to_mir_type(expr.ty);
+                let value = self.build_expression(expr, &ty);
                 Some(value)
             }
             Return { expr } => Some(mir::Expression {
                 kind: mir::ExprKind::Return {
-                    value: Box::new(MIRBuilder::build_expression(
-                        expr,
-                        &mir::Type::from(func.signature.result),
-                    )),
+                    value: Box::new(self.build_expression(expr, &self.to_mir_type(func.ty.result))),
                 },
                 ty: mir::Type::Never,
             }),
         }
     }
 
-    fn build_expression(expr: &hir::Expression, expected_type: &mir::Type) -> mir::Expression {
+    fn build_expression(
+        &self,
+        expr: &hir::Expression,
+        expected_type: &mir::Type,
+    ) -> mir::Expression {
         match expr.ty {
             hir::Type::Comptime(hir::ComptimeType::Int) => {
                 let value = MIRBuilder::build_comptime_int_expression(&expr.kind);
@@ -119,10 +138,10 @@ impl MIRBuilder {
 
         match expr.kind.clone() {
             hir::ExprKind::Binary { operator, lhs, rhs } => {
-                MIRBuilder::build_runtime_binary_expression(operator, &lhs, &rhs, expected_type)
+                self.build_runtime_binary_expression(operator, &lhs, &rhs, expected_type)
             }
             hir::ExprKind::Unary { operator, operand } => {
-                MIRBuilder::build_runtime_unary_expression(operator, &operand, expected_type)
+                self.build_runtime_unary_expression(operator, &operand, expected_type)
             }
             hir::ExprKind::Local(index) => mir::Expression {
                 kind: mir::ExprKind::Local { index },
@@ -135,7 +154,7 @@ impl MIRBuilder {
             hir::ExprKind::Call { callee, arguments } => {
                 let args = arguments
                     .into_iter()
-                    .map(|arg| MIRBuilder::build_expression(&arg, expected_type))
+                    .map(|arg| self.build_expression(&arg, expected_type))
                     .collect();
 
                 mir::Expression {
@@ -149,17 +168,33 @@ impl MIRBuilder {
                     ty: expected_type.clone(),
                 }
             }
+            hir::ExprKind::EnumVariant {
+                enum_index,
+                variant_index,
+            } => {
+                let enum_ = &self.hir.enums[enum_index as usize];
+                let variant = &enum_.variants[variant_index as usize];
+                let ty = mir::Type::from(enum_.ty.clone());
+
+                mir::Expression {
+                    kind: mir::ExprKind::Int {
+                        value: variant.value,
+                    },
+                    ty,
+                }
+            }
             hir::ExprKind::Int(_) => unreachable!(),
             hir::ExprKind::Placeholder => unreachable!(),
         }
     }
 
     fn build_runtime_unary_expression(
+        &self,
         operator: ast::UnaryOperator,
         operand: &hir::Expression,
         expected_type: &mir::Type,
     ) -> mir::Expression {
-        let operand = MIRBuilder::build_expression(operand, expected_type);
+        let operand = self.build_expression(operand, expected_type);
 
         let kind = match operator {
             ast::UnaryOperator::Invert => mir::ExprKind::Sub {
@@ -178,6 +213,7 @@ impl MIRBuilder {
     }
 
     fn build_runtime_binary_expression(
+        &self,
         operator: ast::BinaryOperator,
         lhs: &hir::Expression,
         rhs: &hir::Expression,
@@ -185,8 +221,8 @@ impl MIRBuilder {
     ) -> mir::Expression {
         match operator {
             ast::BinaryOperator::Add => {
-                let left = MIRBuilder::build_expression(lhs, expected_type);
-                let right = MIRBuilder::build_expression(rhs, expected_type);
+                let left = self.build_expression(lhs, expected_type);
+                let right = self.build_expression(rhs, expected_type);
 
                 mir::Expression {
                     kind: mir::ExprKind::Add {
@@ -197,8 +233,8 @@ impl MIRBuilder {
                 }
             }
             ast::BinaryOperator::Subtract => {
-                let left = MIRBuilder::build_expression(lhs, expected_type);
-                let right = MIRBuilder::build_expression(rhs, expected_type);
+                let left = self.build_expression(lhs, expected_type);
+                let right = self.build_expression(rhs, expected_type);
 
                 mir::Expression {
                     kind: mir::ExprKind::Sub {
@@ -209,8 +245,8 @@ impl MIRBuilder {
                 }
             }
             ast::BinaryOperator::Multiply => {
-                let left = MIRBuilder::build_expression(lhs, expected_type);
-                let right = MIRBuilder::build_expression(rhs, expected_type);
+                let left = self.build_expression(lhs, expected_type);
+                let right = self.build_expression(rhs, expected_type);
 
                 mir::Expression {
                     kind: mir::ExprKind::Mul {
@@ -221,8 +257,8 @@ impl MIRBuilder {
                 }
             }
             ast::BinaryOperator::Assign => {
-                let ty = mir::Type::from(lhs.ty.clone());
-                let value = MIRBuilder::build_expression(rhs, &ty);
+                let ty = self.to_mir_type(lhs.ty);
+                let value = self.build_expression(rhs, &ty);
 
                 match lhs.kind {
                     hir::ExprKind::Local(index) => mir::Expression {
@@ -239,6 +275,18 @@ impl MIRBuilder {
                         ty,
                     },
                     _ => panic!("assignment only allowed on local mutable variables"),
+                }
+            }
+            ast::BinaryOperator::Eq => {
+                let left = self.build_expression(lhs, expected_type);
+                let right = self.build_expression(rhs, expected_type);
+
+                mir::Expression {
+                    kind: mir::ExprKind::Equal {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ty: mir::Type::from(expected_type.clone()),
                 }
             }
             _ => todo!("unimplemented operator"),
@@ -263,6 +311,13 @@ impl MIRBuilder {
                     ast::BinaryOperator::Multiply => left * right,
                     ast::BinaryOperator::Divide => left / right,
                     ast::BinaryOperator::Remainder => left % right,
+                    ast::BinaryOperator::Eq => {
+                        if left == right {
+                            1
+                        } else {
+                            0
+                        }
+                    }
                     _ => todo!("unimplemented operator"),
                 }
             }

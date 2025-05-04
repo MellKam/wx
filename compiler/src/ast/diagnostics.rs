@@ -1,9 +1,7 @@
 use codespan::{ByteIndex, Span};
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
-pub trait Report {
-    fn report(&self) -> Diagnostic<()>;
-}
+use super::files::FileId;
 
 #[derive(Debug)]
 pub enum DiagnosticKind {
@@ -17,31 +15,33 @@ pub enum DiagnosticKind {
     ReservedIdentifier(ReservedIdentifierDiagnostic),
 }
 
-impl Report for DiagnosticKind {
-    fn report(&self) -> Diagnostic<()> {
+impl DiagnosticKind {
+    pub fn to_diagnostic(&self) -> Diagnostic<FileId> {
+        use DiagnosticKind::*;
         match self {
-            DiagnosticKind::UnknownToken(diagnostic) => diagnostic.report(),
-            DiagnosticKind::UnexpectedEof(diagnostic) => diagnostic.report(),
-            DiagnosticKind::MissingStatementDelimiter(diagnostic) => diagnostic.report(),
-            DiagnosticKind::InvalidStatement(diagnostic) => diagnostic.report(),
-            DiagnosticKind::MisssingClosingParen(diagnostic) => diagnostic.report(),
-            DiagnosticKind::InvalidIntegerLiteral(diagnostic) => diagnostic.report(),
-            DiagnosticKind::MissingFunctionBody(diagnostic) => diagnostic.report(),
-            DiagnosticKind::ReservedIdentifier(diagnostic) => diagnostic.report(),
+            UnknownToken(diagnostic) => diagnostic.to_diagnostic(),
+            UnexpectedEof(diagnostic) => diagnostic.to_diagnostic(),
+            MissingStatementDelimiter(diagnostic) => diagnostic.to_diagnostic(),
+            InvalidStatement(diagnostic) => diagnostic.to_diagnostic(),
+            MisssingClosingParen(diagnostic) => diagnostic.to_diagnostic(),
+            InvalidIntegerLiteral(diagnostic) => diagnostic.to_diagnostic(),
+            MissingFunctionBody(diagnostic) => diagnostic.to_diagnostic(),
+            ReservedIdentifier(diagnostic) => diagnostic.to_diagnostic(),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct UnknownTokenDiagnostic {
+    pub file_id: FileId,
     pub span: Span,
 }
 
-impl Report for UnknownTokenDiagnostic {
-    fn report(&self) -> Diagnostic<()> {
+impl UnknownTokenDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("unknown token")
-            .with_label(Label::primary((), self.span))
+            .with_label(Label::primary(self.file_id, self.span))
     }
 }
 
@@ -53,14 +53,15 @@ impl Into<DiagnosticKind> for UnknownTokenDiagnostic {
 
 #[derive(Debug)]
 pub struct UnexpectedEofDiagnostic {
+    pub file_id: FileId,
     pub span: Span,
 }
 
-impl Report for UnexpectedEofDiagnostic {
-    fn report(&self) -> Diagnostic<()> {
+impl UnexpectedEofDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("unexpected end of file")
-            .with_label(Label::primary((), self.span))
+            .with_label(Label::primary(self.file_id, self.span))
     }
 }
 
@@ -72,16 +73,20 @@ impl Into<DiagnosticKind> for UnexpectedEofDiagnostic {
 
 #[derive(Debug)]
 pub struct MissingStatementDelimiterDiagnostic {
+    pub file_id: FileId,
     pub position: ByteIndex,
 }
 
-impl Report for MissingStatementDelimiterDiagnostic {
-    fn report(&self) -> Diagnostic<()> {
+impl MissingStatementDelimiterDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("missing statement delimiter")
             .with_label(
-                Label::primary((), self.position.to_usize()..self.position.to_usize())
-                    .with_message("consider adding a semicolon `;`"),
+                Label::primary(
+                    self.file_id,
+                    self.position.to_usize()..self.position.to_usize(),
+                )
+                .with_message("consider adding a semicolon `;`"),
             )
     }
 }
@@ -94,14 +99,15 @@ impl Into<DiagnosticKind> for MissingStatementDelimiterDiagnostic {
 
 #[derive(Debug)]
 pub struct InvalidStatementDiagnostic {
+    pub file_id: FileId,
     pub span: Span,
 }
 
-impl Report for InvalidStatementDiagnostic {
-    fn report(&self) -> Diagnostic<()> {
+impl InvalidStatementDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("invalid statement")
-            .with_label(Label::primary((), self.span))
+            .with_label(Label::primary(self.file_id, self.span))
     }
 }
 
@@ -113,24 +119,25 @@ impl Into<DiagnosticKind> for InvalidStatementDiagnostic {
 
 #[derive(Debug)]
 pub struct MissingClosingParenDiagnostic {
+    pub file_id: FileId,
     pub opening_paren: Span,
     pub expected_closing_paren_position: ByteIndex,
 }
 
-impl Report for MissingClosingParenDiagnostic {
-    fn report(&self) -> Diagnostic<()> {
+impl MissingClosingParenDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("missing closing parenthesis")
             .with_label(
                 Label::primary(
-                    (),
+                    self.file_id,
                     self.opening_paren.start().to_usize()..self.opening_paren.end().to_usize(),
                 )
                 .with_message("consider adding a closing parenthesis `)`"),
             )
             .with_label(
                 Label::secondary(
-                    (),
+                    self.file_id,
                     self.expected_closing_paren_position.to_usize()
                         ..self.expected_closing_paren_position.to_usize(),
                 )
@@ -147,14 +154,15 @@ impl Into<DiagnosticKind> for MissingClosingParenDiagnostic {
 
 #[derive(Debug)]
 pub struct InvalidIntegerLiteralDiagnostic {
+    pub file_id: FileId,
     pub span: Span,
 }
 
-impl Report for InvalidIntegerLiteralDiagnostic {
-    fn report(&self) -> Diagnostic<()> {
+impl InvalidIntegerLiteralDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("invalid integer literal")
-            .with_label(Label::primary((), self.span))
+            .with_label(Label::primary(self.file_id, self.span))
     }
 }
 
@@ -166,14 +174,15 @@ impl Into<DiagnosticKind> for InvalidIntegerLiteralDiagnostic {
 
 #[derive(Debug)]
 pub struct MissingFunctionBodyDiagnostic {
+    pub file_id: FileId,
     pub span: Span,
 }
 
-impl Report for MissingFunctionBodyDiagnostic {
-    fn report(&self) -> Diagnostic<()> {
+impl MissingFunctionBodyDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("missing function body, expected opening brace `{`")
-            .with_label(Label::primary((), self.span))
+            .with_label(Label::primary(self.file_id, self.span))
     }
 }
 
@@ -185,14 +194,15 @@ impl Into<DiagnosticKind> for MissingFunctionBodyDiagnostic {
 
 #[derive(Debug)]
 pub struct ReservedIdentifierDiagnostic {
+    pub file_id: FileId,
     pub span: Span,
 }
 
-impl Report for ReservedIdentifierDiagnostic {
-    fn report(&self) -> Diagnostic<()> {
+impl ReservedIdentifierDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("reserved identifier")
-            .with_label(Label::primary((), self.span))
+            .with_label(Label::primary(self.file_id, self.span))
     }
 }
 

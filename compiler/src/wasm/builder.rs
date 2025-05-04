@@ -19,6 +19,19 @@ impl TryFrom<mir::Type> for wasm::ValueType {
     }
 }
 
+impl From<mir::FunctionType> for wasm::FunctionType {
+    fn from(ty: mir::FunctionType) -> Self {
+        wasm::FunctionType {
+            param_count: ty.param_count,
+            param_results: ty
+                .params_results
+                .iter()
+                .map(|ty| wasm::ValueType::try_from(ty.clone()).unwrap())
+                .collect(),
+        }
+    }
+}
+
 impl WASMBuilder {
     pub fn build<'a>(
         mir: &mir::MIR,
@@ -27,13 +40,14 @@ impl WASMBuilder {
         let mut functions = Vec::new();
         for function in &mir.functions {
             let mut instructions = Vec::new();
-            for expr in &function.body {
+            for expr in &function.block.expressions {
                 WASMBuilder::build_expression(&mut instructions, expr)
             }
             functions.push(wasm::Function {
                 export: function.export,
                 name: interner.resolve(function.name).unwrap(),
                 locals: function
+                    .block
                     .locals
                     .iter()
                     .map(|local| wasm::Local {
@@ -41,13 +55,7 @@ impl WASMBuilder {
                         ty: wasm::ValueType::try_from(local.ty.clone()).unwrap(),
                     })
                     .collect(),
-                param_count: function.param_count as u32,
-                result: match function.result {
-                    mir::Type::I32 => Some(wasm::ValueType::I32),
-                    mir::Type::I64 => Some(wasm::ValueType::I64),
-                    mir::Type::Unit => None,
-                    _ => unreachable!(),
-                },
+                ty: wasm::FunctionType::from(function.ty.clone()),
                 instructions,
             });
         }
@@ -136,6 +144,19 @@ impl WASMBuilder {
                 match value.ty {
                     mir::Type::I32 | mir::Type::I64 => {
                         body.push(wasm::Instruction::Drop);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            mir::ExprKind::Equal { left, right } => {
+                WASMBuilder::build_expression(body, &left);
+                WASMBuilder::build_expression(body, &right);
+                match expr.ty {
+                    mir::Type::I32 => {
+                        body.push(wasm::Instruction::I32Eq);
+                    }
+                    mir::Type::I64 => {
+                        body.push(wasm::Instruction::I64Eq);
                     }
                     _ => unreachable!(),
                 }

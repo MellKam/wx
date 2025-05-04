@@ -12,8 +12,22 @@ pub type LocalIndex = u32;
 
 #[derive(Debug, Clone)]
 pub struct FunctionType {
-    pub params: Vec<Type>,
-    pub result: Box<Type>,
+    pub param_count: usize,
+    pub params_results: Vec<Type>,
+}
+
+impl FunctionType {
+    pub fn params(&self) -> &[Type] {
+        self.params_results.get(..self.param_count).unwrap_or(&[])
+    }
+
+    pub fn result(&self) -> &Type {
+        self.params_results
+            .get(self.param_count..)
+            .unwrap_or(&[])
+            .first()
+            .unwrap_or(&Type::Unit)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -22,7 +36,7 @@ pub enum Type {
     I64,
     Unit,
     Never,
-    Function(FunctionType),
+    Function(FunctionIndex),
 }
 
 #[derive(Debug)]
@@ -62,6 +76,10 @@ pub enum ExprKind {
         callee: FunctionIndex,
         arguments: Vec<Expression>,
     },
+    Equal {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
 }
 
 #[derive(Debug)]
@@ -77,17 +95,25 @@ pub struct Local {
 }
 
 #[derive(Debug)]
-pub struct Function {
-    pub name: SymbolU32,
-    pub param_count: usize,
+pub struct Block {
     pub locals: Vec<Local>,
-    pub result: Type,
-    pub body: Vec<Expression>,
+    pub expressions: Vec<Expression>,
+    pub ty: Type,
+}
+
+#[derive(Debug)]
+pub struct Function {
     pub export: bool,
+    pub name: SymbolU32,
+    pub ty: FunctionType,
+    pub block: Block,
 }
 
 impl Function {
     pub fn params(&self) -> &[Local] {
-        self.locals.get(0..self.param_count).unwrap_or(&[])
+        self.block
+            .locals
+            .get(0..self.ty.params().len())
+            .unwrap_or(&[])
     }
 }

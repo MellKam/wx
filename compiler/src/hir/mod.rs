@@ -6,6 +6,25 @@ use string_interner::symbol::SymbolU32;
 
 use crate::ast::{BinaryOperator, UnaryOperator};
 
+#[derive(Debug, Clone)]
+pub struct HIR {
+    pub functions: Vec<Function>,
+    pub enums: Vec<Enum>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Enum {
+    pub name: SymbolU32,
+    pub ty: PrimitiveType,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: SymbolU32,
+    pub value: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PrimitiveType {
     I32,
@@ -34,7 +53,7 @@ pub enum ComptimeType {
 }
 
 impl ComptimeType {
-    pub fn can_coerce_into(self, ty: PrimitiveType) -> bool {
+    pub fn coercible_to(self, ty: PrimitiveType) -> bool {
         match (self, ty) {
             (ComptimeType::Int, PrimitiveType::I32 | PrimitiveType::I64) => true,
             _ => false,
@@ -42,26 +61,36 @@ impl ComptimeType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FunctionType {
-    pub params: Vec<PrimitiveType>,
-    pub result: PrimitiveType,
-}
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
     Primitive(PrimitiveType),
     Comptime(ComptimeType),
-    Function(FunctionType),
+    Function(FunctionIndex),
+    Enum(EnumIndex),
+}
+
+impl Type {
+    pub fn coercible_to(self, ty: PrimitiveType) -> bool {
+        match (self, ty) {
+            (Type::Primitive(ty1), ty2) => ty1 == ty2,
+            (Type::Comptime(comptime_type), PrimitiveType::I32 | PrimitiveType::I64) => {
+                comptime_type.coercible_to(ty)
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionType {
+    pub params: Vec<Type>,
+    pub result: Type,
 }
 
 pub type LocalIndex = u32;
 pub type FunctionIndex = u32;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HIR {
-    pub functions: Vec<Function>,
-}
+pub type EnumIndex = u32;
+pub type EnumVariantIndex = usize;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
@@ -81,6 +110,10 @@ pub enum ExprKind {
     Int(i64),
     Local(LocalIndex),
     Function(FunctionIndex),
+    EnumVariant {
+        enum_index: EnumIndex,
+        variant_index: EnumVariantIndex,
+    },
     Placeholder,
     Unary {
         operator: UnaryOperator,
@@ -106,23 +139,28 @@ pub enum Mutability {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Local {
     pub name: SymbolU32,
-    pub ty: PrimitiveType,
+    pub ty: Type,
     pub mutability: Mutability,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Block {
+    pub locals: Vec<Local>,
+    pub statements: Vec<Statement>,
+    pub result: Option<Expression>,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub export: bool,
     pub name: SymbolU32,
-    pub signature: FunctionType,
-    pub locals: Vec<Local>,
-    pub body: Vec<Statement>,
+    pub ty: FunctionType,
+    pub block: Block,
 }
 
 impl Function {
     pub fn params(&self) -> &[Local] {
-        self.locals
-            .get(..self.signature.params.len())
-            .unwrap_or(&[])
+        self.block.locals.get(..self.ty.params.len()).unwrap_or(&[])
     }
 }

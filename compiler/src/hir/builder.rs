@@ -5,14 +5,55 @@ use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
+use super::HIR;
 use crate::{ast, hir};
 
 pub struct Builder<'a> {
+    std_ast: &'a ast::Ast,
     ast: &'a ast::Ast,
     interner: &'a StringInterner<StringBackend<SymbolU32>>,
-    functions: Vec<hir::FunctionType>,
-    function_lookup: HashMap<SymbolU32, hir::FunctionIndex>,
-    hir: hir::HIR,
+    global: GlobalScope,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GlobalItem {
+    Function(hir::FunctionIndex),
+    Enum(hir::EnumIndex),
+    EnumVariant {
+        enum_index: hir::EnumIndex,
+        variant_index: hir::EnumVariantIndex,
+    },
+}
+
+#[derive(Debug)]
+struct EnumLookup {
+    pub name: SymbolU32,
+    pub ty: hir::PrimitiveType,
+    pub variants_lookup: HashMap<SymbolU32, hir::EnumVariantIndex>,
+    pub variants: Vec<hir::EnumVariant>,
+}
+
+impl From<hir::Enum> for EnumLookup {
+    fn from(enum_: hir::Enum) -> Self {
+        Self {
+            name: enum_.name,
+            ty: enum_.ty,
+            variants_lookup: enum_
+                .variants
+                .iter()
+                .enumerate()
+                .map(|(index, variant)| (variant.name, index as hir::EnumVariantIndex))
+                .collect(),
+            variants: enum_.variants,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct GlobalScope {
+    pub functions: Vec<hir::FunctionType>,
+    pub enums: Vec<EnumLookup>,
+    pub lookup: HashMap<SymbolU32, GlobalItem>,
 }
 
 #[derive(Debug)]
@@ -30,7 +71,7 @@ impl BlockScope {
             .params
             .iter()
             .map(|param| {
-                let text = interner.resolve(param.ty).expect("invalid type");
+                let text = interner.resolve(param.ty.symbol).expect("invalid type");
                 let ty = hir::PrimitiveType::try_from(text).expect("invalid type");
                 match ty {
                     hir::PrimitiveType::Unit | hir::PrimitiveType::Never => {
@@ -40,8 +81,8 @@ impl BlockScope {
                 }
 
                 hir::Local {
-                    name: param.name,
-                    ty,
+                    name: param.name.symbol,
+                    ty: hir::Type::Primitive(ty),
                     mutability: hir::Mutability::Const,
                 }
             })
@@ -67,87 +108,194 @@ impl BlockScope {
     }
 }
 
-impl hir::FunctionType {
-    fn from_signature(
-        interner: &StringInterner<StringBackend>,
-        signature: &ast::FunctionSignature,
-    ) -> Self {
-        let params: Vec<hir::PrimitiveType> = signature
+impl<'a> Builder<'a> {
+    fn to_hir_type(&self, ty: SymbolU32) -> hir::Type {
+        let text = self.interner.resolve(ty).expect("invalid type");
+        match hir::PrimitiveType::try_from(text) {
+            Ok(ty) => hir::Type::Primitive(ty),
+            Err(_) => match self.global.lookup.get(&ty).copied() {
+                Some(GlobalItem::Enum(index)) => hir::Type::Enum(index),
+                Some(GlobalItem::EnumVariant { enum_index, .. }) => hir::Type::Enum(enum_index),
+                ty => panic!("invalid type {:?}", ty),
+            },
+        }
+    }
+
+    fn build_function_type(&self, signature: &ast::FunctionSignature) -> hir::FunctionType {
+        let params: Vec<hir::Type> = signature
             .params
             .iter()
-            .map(|param| {
-                let text = interner.resolve(param.ty).expect("invalid type");
-                hir::PrimitiveType::try_from(text).expect("invalid type")
-            })
+            .map(|param| self.to_hir_type(param.ty.symbol))
             .collect();
 
-        let result = match signature.result {
-            Some(ty) => {
-                let text = interner.resolve(ty).expect("invalid type");
-                hir::PrimitiveType::try_from(text).expect("invalid type")
-            }
-            None => hir::PrimitiveType::Unit,
+        let result = match &signature.result {
+            Some(ty) => self.to_hir_type(ty.symbol),
+            None => hir::Type::Primitive(hir::PrimitiveType::Unit),
         };
 
         hir::FunctionType { params, result }
     }
-}
 
-impl<'a> Builder<'a> {
     pub fn build(
         ast: &'a ast::Ast,
+        std_ast: &'a ast::Ast,
         interner: &'a StringInterner<StringBackend<SymbolU32>>,
     ) -> hir::HIR {
         let mut builder = Builder {
+            std_ast,
             ast,
             interner,
-            function_lookup: HashMap::new(),
-            functions: Vec::new(),
-            hir: hir::HIR {
+            global: GlobalScope {
                 functions: Vec::new(),
+                enums: Vec::new(),
+                lookup: HashMap::new(),
             },
         };
 
-        for item in builder.ast.items.iter() {
+        for item in builder.std_ast.items.iter().chain(builder.ast.items.iter()) {
             match &item.kind {
                 ast::ItemKind::FunctionDefinition(def) => {
-                    let index = builder.functions.len() as hir::FunctionIndex;
-                    builder.functions.push(hir::FunctionType::from_signature(
-                        builder.interner,
-                        &def.signature,
-                    ));
-                    builder.function_lookup.insert(def.signature.name, index);
+                    let index = builder.global.functions.len() as hir::FunctionIndex;
+                    builder
+                        .global
+                        .functions
+                        .push(builder.build_function_type(&def.signature));
+                    builder
+                        .global
+                        .lookup
+                        .insert(def.signature.name.symbol, GlobalItem::Function(index));
                 }
-                _ => {}
+                ast::ItemKind::Enum(item_enum) => {
+                    let index = builder.global.enums.len() as hir::EnumIndex;
+                    builder
+                        .global
+                        .enums
+                        .push(builder.build_enum_lookup(item_enum));
+                    builder
+                        .global
+                        .lookup
+                        .insert(item_enum.name.symbol, GlobalItem::Enum(index));
+                }
+                _ => unimplemented!("item kind not implemented"),
             }
         }
+
+        let mut functions = Vec::new();
 
         for item in builder.ast.items.iter() {
             match &item.kind {
                 ast::ItemKind::FunctionDefinition(def) => {
-                    builder.hir.functions.push(builder.build_function(def));
+                    functions.push(builder.build_function_definition(def));
                 }
                 _ => panic!("Expected function definition"),
             }
         }
 
-        builder.hir
+        HIR {
+            functions,
+            enums: builder
+                .global
+                .enums
+                .into_iter()
+                .map(|enum_| hir::Enum {
+                    name: enum_.name,
+                    ty: enum_.ty,
+                    variants: enum_.variants,
+                })
+                .collect(),
+        }
     }
 
-    fn build_function(&self, def: &ast::FunctionDefinition) -> hir::Function {
-        let func_index = self
-            .function_lookup
-            .get(&def.signature.name)
+    fn build_function_definition(&self, def: &ast::ItemFunctionDefinition) -> hir::Function {
+        let global_item = self
+            .global
+            .lookup
+            .get(&def.signature.name.symbol)
             .copied()
             .unwrap();
+        let func_index = match global_item {
+            GlobalItem::Function(index) => index,
+            _ => panic!("expected function"),
+        };
+        let ty = self
+            .global
+            .functions
+            .get(func_index as usize)
+            .expect("invalid function index")
+            .clone();
+
+        let block = self.build_function_root_block(def);
+
+        hir::Function {
+            export: def.export.is_some(),
+            name: def.signature.name.symbol,
+            ty,
+            block,
+        }
+    }
+
+    fn build_enum_lookup(&self, def: &ast::ItemEnum) -> EnumLookup {
+        let ty = hir::PrimitiveType::try_from(
+            self.interner.resolve(def.ty.symbol).expect("invalid type"),
+        )
+        .expect("invalid type");
+
+        let variants: Vec<hir::EnumVariant> = def
+            .variants
+            .iter()
+            .map(|variant| {
+                let value_expr = self
+                    .std_ast
+                    .get_expr(variant.value)
+                    .expect("invalid expression");
+                let value = match &value_expr.kind {
+                    ast::ExprKind::Int { value } => value.clone(),
+                    kind => panic!("invalid enum variant value {:?}", kind),
+                };
+
+                hir::EnumVariant {
+                    name: variant.name.symbol,
+                    value,
+                }
+            })
+            .collect();
+
+        let variants_lookup: HashMap<SymbolU32, usize> = variants
+            .iter()
+            .enumerate()
+            .map(|(index, variant)| (variant.name, index as hir::EnumVariantIndex))
+            .collect();
+
+        EnumLookup {
+            name: def.name.symbol,
+            ty,
+            variants_lookup,
+            variants,
+        }
+    }
+
+    fn build_function_root_block(&self, def: &ast::ItemFunctionDefinition) -> hir::Block {
+        let global_item = self
+            .global
+            .lookup
+            .get(&def.signature.name.symbol)
+            .copied()
+            .unwrap();
+        let func_index = match global_item {
+            GlobalItem::Function(index) => index,
+            _ => panic!("expected function"),
+        };
         let func_type = self
+            .global
             .functions
             .get(func_index as usize)
             .expect("invalid function index");
+
         let mut scope = BlockScope::from_function_signature(self.interner, &def.signature);
 
-        let body = def
-            .body
+        let statements = def
+            .block
+            .statements
             .iter()
             .map(|stmt_id| {
                 let stmt = self.ast.get_stmt(*stmt_id).expect("invalid statement");
@@ -155,12 +303,27 @@ impl<'a> Builder<'a> {
             })
             .collect();
 
-        hir::Function {
-            export: def.export.is_some(),
-            name: def.signature.name,
-            signature: func_type.clone(),
+        let result = match def.block.result {
+            Some(expr_id) => {
+                let expr = self.build_expression(func_index, &mut scope, expr_id);
+
+                match (func_type.result, expr.ty) {
+                    (hir::Type::Primitive(ty), hir::Type::Comptime(ty2))
+                        if ty2.coercible_to(ty) => {}
+                    (hir::Type::Enum(index_1), hir::Type::Enum(index_2)) if index_1 == index_2 => {}
+                    _ => panic!("invalid return type"),
+                }
+
+                Some(expr)
+            }
+            None => None,
+        };
+
+        hir::Block {
             locals: scope.locals,
-            body,
+            statements,
+            result,
+            ty: func_type.result,
         }
     }
 
@@ -211,12 +374,15 @@ impl<'a> Builder<'a> {
             ast::StmtKind::Return { value } => {
                 let value_expr = self.build_expression(func_index, scope, value);
                 let func_type = self
+                    .global
                     .functions
                     .get(func_index as usize)
                     .expect("invalid function index");
-                match value_expr.ty {
-                    hir::Type::Comptime(ty) if ty.can_coerce_into(func_type.result) => {}
-                    hir::Type::Primitive(ty) if ty == func_type.result => {}
+
+                match (func_type.result, value_expr.ty) {
+                    (hir::Type::Primitive(ty), hir::Type::Comptime(ty2))
+                        if ty2.coercible_to(ty) => {}
+                    (hir::Type::Enum(index_1), hir::Type::Enum(index_2)) if index_1 == index_2 => {}
                     _ => panic!("invalid return type"),
                 }
 
@@ -240,14 +406,12 @@ impl<'a> Builder<'a> {
         }
 
         let value_expr = self.build_expression(func_index, scope, value);
-        let binding_type =
-            hir::PrimitiveType::try_from(self.interner.resolve(ty).expect("invalid type"))
-                .expect("invalid type");
-        match value_expr.ty {
-            hir::Type::Comptime(ty) if ty.can_coerce_into(binding_type) => {}
-            hir::Type::Primitive(ty) if ty == binding_type => {}
+        let binding_type = self.to_hir_type(ty);
+        match (binding_type, value_expr.ty) {
+            (hir::Type::Primitive(ty), hir::Type::Comptime(ty2)) if ty2.coercible_to(ty) => {}
+            (hir::Type::Enum(index_1), hir::Type::Enum(index_2)) if index_1 == index_2 => {}
             _ => panic!("type mismatch in assignment"),
-        };
+        }
 
         let local_index = scope.push_local(hir::Local {
             name,
@@ -292,21 +456,30 @@ impl<'a> Builder<'a> {
                         };
                         hir::Expression {
                             kind: hir::ExprKind::Local(index as hir::LocalIndex),
-                            ty: hir::Type::Primitive(local.ty),
+                            ty: local.ty,
                         }
                     }
                     None => {
-                        let func_index = match self.function_lookup.get(&symbol).copied() {
-                            Some(index) => index,
+                        let global_item = match self.global.lookup.get(&symbol).copied() {
+                            Some(item) => item,
                             None => panic!("undeclared binding"),
                         };
-                        let func_type = match self.functions.get(func_index as usize).cloned() {
-                            Some(func_type) => func_type,
-                            None => panic!("invalid function index"),
-                        };
-                        hir::Expression {
-                            kind: hir::ExprKind::Function(func_index),
-                            ty: hir::Type::Function(func_type),
+                        match global_item {
+                            GlobalItem::Enum(_) => panic!("can't use enum as expression"),
+                            GlobalItem::EnumVariant {
+                                enum_index,
+                                variant_index,
+                            } => hir::Expression {
+                                kind: hir::ExprKind::EnumVariant {
+                                    enum_index,
+                                    variant_index,
+                                },
+                                ty: hir::Type::Enum(enum_index),
+                            },
+                            GlobalItem::Function(func_index) => hir::Expression {
+                                kind: hir::ExprKind::Function(func_index),
+                                ty: hir::Type::Function(func_index),
+                            },
                         }
                     }
                 }
@@ -330,7 +503,7 @@ impl<'a> Builder<'a> {
                     hir::ExprKind::Function(func_index) => func_index,
                     _ => panic!("can't call non-function"),
                 };
-                let func_type = match self.functions.get(func_index as usize).cloned() {
+                let func_type = match self.global.functions.get(func_index as usize).cloned() {
                     Some(func_type) => func_type,
                     None => panic!("invalid function index"),
                 };
@@ -344,9 +517,53 @@ impl<'a> Builder<'a> {
                         callee: Box::new(callee),
                         arguments,
                     },
-                    ty: hir::Type::Primitive(func_type.result),
+                    ty: func_type.result,
                 }
             }
+            ast::ExprKind::NamespaceMember { namespace, member } => {
+                let namespace_expr = self.ast.get_expr(namespace).expect("invalid expression");
+                let enum_index = match namespace_expr.kind {
+                    ast::ExprKind::Identifier { symbol } => {
+                        let global_item = match self.global.lookup.get(&symbol).copied() {
+                            Some(item) => item,
+                            None => panic!("undeclared namespace"),
+                        };
+                        match global_item {
+                            GlobalItem::Enum(enum_index) => enum_index,
+                            _ => panic!("undeclared namespace"),
+                        }
+                    }
+                    _ => panic!("invalid namespace"),
+                };
+
+                let member_expr = self.ast.get_expr(member).expect("invalid expression");
+                let variant_index = match member_expr.kind {
+                    ast::ExprKind::Identifier { symbol } => {
+                        let enum_ = self
+                            .global
+                            .enums
+                            .get(enum_index as usize)
+                            .expect("invalid enum");
+                        let variant_index = enum_
+                            .variants_lookup
+                            .get(&symbol)
+                            .copied()
+                            .expect("invalid enum variant");
+
+                        variant_index
+                    }
+                    _ => panic!("invalid enum variant"),
+                };
+
+                hir::Expression {
+                    kind: hir::ExprKind::EnumVariant {
+                        enum_index,
+                        variant_index,
+                    },
+                    ty: hir::Type::Enum(enum_index),
+                }
+            }
+            _ => unimplemented!("expression kind not implemented"),
         }
     }
 
@@ -378,21 +595,21 @@ impl<'a> Builder<'a> {
         left: hir::Expression,
         right: hir::Expression,
     ) -> hir::Expression {
-        use hir::{ComptimeType, PrimitiveType, Type};
+        use hir::*;
         let ty = match operator {
             ast::BinaryOperator::Assign => {
                 let local_index = match left.kind {
-                    hir::ExprKind::Local(index) => index,
-                    hir::ExprKind::Placeholder => {
+                    ExprKind::Local(index) => index,
+                    ExprKind::Placeholder => {
                         match right.ty {
                             Type::Comptime(_) => panic!("can't drop comptime type"),
                             _ => {}
                         }
-                        return hir::Expression {
-                            kind: hir::ExprKind::Binary {
+                        return Expression {
+                            kind: ExprKind::Binary {
                                 operator,
-                                lhs: Box::new(hir::Expression {
-                                    kind: hir::ExprKind::Placeholder,
+                                lhs: Box::new(Expression {
+                                    kind: ExprKind::Placeholder,
                                     ty: right.ty.clone(),
                                 }),
                                 rhs: Box::new(right),
@@ -407,48 +624,101 @@ impl<'a> Builder<'a> {
                     None => panic!("can't assign to undeclared variable"),
                 };
                 match local.mutability {
-                    hir::Mutability::Mutable => {}
-                    hir::Mutability::Const => panic!("can't assign to const variable"),
+                    Mutability::Mutable => {}
+                    Mutability::Const => panic!("can't assign to const variable"),
                 }
-                match right.ty {
-                    Type::Comptime(ty) if ty.can_coerce_into(local.ty) => {}
-                    Type::Primitive(ty) if ty == local.ty => {}
-                    _ => panic!("type mismatch in assignment"),
+                match (local.ty, right.ty) {
+                    (hir::Type::Primitive(ty), hir::Type::Comptime(ty2))
+                        if ty2.coercible_to(ty) => {}
+                    (hir::Type::Enum(index_1), hir::Type::Enum(index_2)) if index_1 == index_2 => {}
+                    _ => panic!("invalid return type"),
                 }
 
                 Type::Primitive(PrimitiveType::Unit)
             }
-            _ => match (left.ty.clone(), right.ty.clone()) {
-                (Type::Comptime(ComptimeType::Int), Type::Comptime(ComptimeType::Int)) => {
-                    Type::Comptime(ComptimeType::Int)
-                }
-                (
-                    Type::Comptime(ComptimeType::Int),
-                    Type::Primitive(PrimitiveType::I32 | PrimitiveType::I64),
-                ) => right.ty.clone(),
-                (
-                    Type::Primitive(PrimitiveType::I32) | Type::Primitive(PrimitiveType::I64),
-                    Type::Comptime(ComptimeType::Int),
-                ) => left.ty.clone(),
-                (Type::Primitive(PrimitiveType::I32), Type::Primitive(PrimitiveType::I32)) => {
-                    Type::Primitive(PrimitiveType::I32)
-                }
-                (Type::Primitive(PrimitiveType::I64), Type::Primitive(PrimitiveType::I64)) => {
-                    Type::Primitive(PrimitiveType::I64)
-                }
-                _ => {
-                    panic!("type mismatch in binary expression");
-                }
-            },
+            _ => self.resolve_binary_result(operator, left.ty.clone(), right.ty.clone()),
         };
 
-        hir::Expression {
-            kind: hir::ExprKind::Binary {
+        Expression {
+            kind: ExprKind::Binary {
                 operator,
                 lhs: Box::new(left),
                 rhs: Box::new(right),
             },
             ty,
+        }
+    }
+
+    fn resolve_binary_result(
+        &self,
+        operator: ast::BinaryOperator,
+        left: hir::Type,
+        right: hir::Type,
+    ) -> hir::Type {
+        use ast::BinaryOperator::*;
+        use hir::{ComptimeType, PrimitiveType, Type};
+
+        match operator {
+            Add | Subtract | Multiply => match (left, right) {
+                // ComptimeInt
+                (Type::Comptime(ComptimeType::Int), Type::Comptime(ComptimeType::Int)) => {
+                    Type::Comptime(ComptimeType::Int)
+                }
+
+                // I32
+                (Type::Primitive(PrimitiveType::I32), right_type)
+                    if right_type.coercible_to(PrimitiveType::I32) =>
+                {
+                    Type::Primitive(PrimitiveType::I32)
+                }
+                (left_type, Type::Primitive(PrimitiveType::I32))
+                    if left_type.coercible_to(PrimitiveType::I32) =>
+                {
+                    Type::Primitive(PrimitiveType::I32)
+                }
+
+                // I64
+                (Type::Primitive(PrimitiveType::I64), right_type)
+                    if right_type.coercible_to(PrimitiveType::I64) =>
+                {
+                    Type::Primitive(PrimitiveType::I64)
+                }
+                (left_type, Type::Primitive(PrimitiveType::I64))
+                    if left_type.coercible_to(PrimitiveType::I64) =>
+                {
+                    Type::Primitive(PrimitiveType::I64)
+                }
+                _ => panic!("type mismatch in binary expression"),
+            },
+            Eq => {
+                let global_item = self
+                    .global
+                    .lookup
+                    .get(&self.interner.get("bool").unwrap())
+                    .copied()
+                    .unwrap();
+                let bool_enum_id = match global_item {
+                    GlobalItem::Enum(enum_index) => enum_index,
+                    _ => panic!("expected bool enum from std"),
+                };
+
+                match (left, right) {
+                    (Type::Primitive(PrimitiveType::I32), Type::Primitive(PrimitiveType::I32)) => {
+                        Type::Enum(bool_enum_id)
+                    }
+                    (Type::Primitive(PrimitiveType::I64), Type::Primitive(PrimitiveType::I64)) => {
+                        Type::Enum(bool_enum_id)
+                    }
+                    (Type::Comptime(ComptimeType::Int), Type::Comptime(ComptimeType::Int)) => {
+                        Type::Enum(bool_enum_id)
+                    }
+                    (Type::Enum(index_1), Type::Enum(index_2)) if index_1 == index_2 => {
+                        Type::Enum(bool_enum_id)
+                    }
+                    _ => panic!("type mismatch in binary expression"),
+                }
+            }
+            _ => unimplemented!("operator not implemented"),
         }
     }
 }

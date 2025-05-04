@@ -133,6 +133,18 @@ impl EncodeWithContext for wasm::Instruction {
             wasm::Instruction::I64Or => {
                 sink.push_str("i64.or");
             }
+            wasm::Instruction::I32Eq => {
+                sink.push_str("i32.eq");
+            }
+            wasm::Instruction::I32Eqz => {
+                sink.push_str("i32.eqz");
+            }
+            wasm::Instruction::I64Eq => {
+                sink.push_str("i64.eq");
+            }
+            wasm::Instruction::I64Eqz => {
+                sink.push_str("i64.eqz");
+            }
         }
     }
 }
@@ -147,40 +159,26 @@ impl EncodeWithContext for wasm::Function<'_> {
             false => {}
         }
 
-        match self.param_count {
-            0 => {}
-            _ => {
-                for param in self.params().iter() {
-                    sink.push_str("(param $");
-                    sink.push_str(param.name);
-                    sink.push_str(" ");
-                    param.ty.encode(sink);
-                    sink.push_str(")");
-                }
-            }
+        for param in self.params().iter() {
+            sink.push_str("(param $");
+            sink.push_str(param.name);
+            sink.push_str(" ");
+            param.ty.encode(sink);
+            sink.push_str(")");
         }
 
-        match self.result {
-            Some(ty) => {
-                sink.push_str("(result ");
-                ty.encode(sink);
-                sink.push_str(")");
-            }
-            None => {}
+        for result in self.ty.results() {
+            sink.push_str("(result ");
+            result.encode(sink);
+            sink.push_str(")");
         }
 
-        let locals = self.locals();
-        match locals.len() {
-            0 => {}
-            _ => {
-                for local in locals {
-                    sink.push_str("(local $");
-                    sink.push_str(local.name);
-                    sink.push_str(" ");
-                    local.ty.encode(sink);
-                    sink.push_str(")");
-                }
-            }
+        for local in self.locals_without_params() {
+            sink.push_str("(local $");
+            sink.push_str(local.name);
+            sink.push_str(" ");
+            local.ty.encode(sink);
+            sink.push_str(")");
         }
 
         for instruction in &self.instructions {

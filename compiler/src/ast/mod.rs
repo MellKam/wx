@@ -1,13 +1,15 @@
 use codespan::Span;
-use lexer::{TokenKind, TokenTag};
+use lexer::TokenKind;
 use string_interner::symbol::SymbolU32;
 
 mod diagnostics;
+mod files;
 mod lexer;
 mod parser;
 mod unescape;
 
 pub use diagnostics::*;
+pub use files::*;
 pub use parser::*;
 
 pub type ExprId = u32;
@@ -52,23 +54,23 @@ pub enum BinaryOperator {
     GreaterEq,
 }
 
-impl TryFrom<TokenTag> for BinaryOperator {
+impl TryFrom<TokenKind> for BinaryOperator {
     type Error = ();
 
-    fn try_from(tag: TokenTag) -> Result<Self, Self::Error> {
+    fn try_from(tag: TokenKind) -> Result<Self, Self::Error> {
         match tag {
-            TokenTag::Plus => Ok(BinaryOperator::Add),
-            TokenTag::Minus => Ok(BinaryOperator::Subtract),
-            TokenTag::Star => Ok(BinaryOperator::Multiply),
-            TokenTag::Slash => Ok(BinaryOperator::Divide),
-            TokenTag::Percent => Ok(BinaryOperator::Remainder),
-            TokenTag::EqEq => Ok(BinaryOperator::Eq),
-            TokenTag::BangEq => Ok(BinaryOperator::NotEq),
-            TokenTag::OpenAngle => Ok(BinaryOperator::Less),
-            TokenTag::LessEq => Ok(BinaryOperator::LessEq),
-            TokenTag::CloseAngle => Ok(BinaryOperator::Greater),
-            TokenTag::GreaterEq => Ok(BinaryOperator::GreaterEq),
-            TokenTag::Eq => Ok(BinaryOperator::Assign),
+            TokenKind::Plus => Ok(BinaryOperator::Add),
+            TokenKind::Minus => Ok(BinaryOperator::Subtract),
+            TokenKind::Star => Ok(BinaryOperator::Multiply),
+            TokenKind::Slash => Ok(BinaryOperator::Divide),
+            TokenKind::Percent => Ok(BinaryOperator::Remainder),
+            TokenKind::EqEq => Ok(BinaryOperator::Eq),
+            TokenKind::BangEq => Ok(BinaryOperator::NotEq),
+            TokenKind::OpenAngle => Ok(BinaryOperator::Less),
+            TokenKind::LessEq => Ok(BinaryOperator::LessEq),
+            TokenKind::CloseAngle => Ok(BinaryOperator::Greater),
+            TokenKind::GreaterEq => Ok(BinaryOperator::GreaterEq),
+            TokenKind::Eq => Ok(BinaryOperator::Assign),
             _ => Err(()),
         }
     }
@@ -76,42 +78,36 @@ impl TryFrom<TokenTag> for BinaryOperator {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
-    Int {
-        value: i64,
-    },
-    // Float {
-    //     value: f64,
-    // },
-    // String {
-    //     symbol: SymbolU32,
-    // },
-    Identifier {
-        symbol: SymbolU32,
-    },
+    /// `1`
+    Int { value: i64 },
+    /// `x`
+    Identifier { symbol: SymbolU32 },
+    /// `-x`
     Unary {
         operator: UnaryOperator,
         operand: ExprId,
     },
+    /// `x + y`
     Binary {
         left: ExprId,
-        right: ExprId,
         operator: BinaryOperator,
+        right: ExprId,
     },
+    /// `x()`
     Call {
         callee: ExprId,
         arguments: Vec<ExprId>,
     },
-    // Member {
-    //     object: ExprId,
-    //     property: SymbolU32,
-    // },
+    /// `x.y`
+    ObjectMember { object: ExprId, member: ExprId },
+    /// `x::y`
+    NamespaceMember { namespace: ExprId, member: ExprId },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
     pub kind: ExprKind,
     pub span: Span,
-    pub id: ExprId,
 }
 
 #[derive(Debug, PartialEq)]
@@ -136,41 +132,66 @@ pub enum StmtKind {
 
 #[derive(Debug, PartialEq)]
 pub struct Statement {
-    pub id: StmtId,
     pub kind: StmtKind,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FunctionParam {
-    pub name: SymbolU32,
-    pub ty: SymbolU32,
+    pub name: Identifier,
+    pub ty: Identifier,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
-    pub name: SymbolU32,
+    pub name: Identifier,
     pub params: Vec<FunctionParam>,
-    pub result: Option<SymbolU32>,
+    pub result: Option<Identifier>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FunctionDefinition {
+pub struct Block {
+    pub statements: Vec<StmtId>,
+    pub result: Option<ExprId>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemFunctionDefinition {
     pub export: Option<Span>,
     pub signature: FunctionSignature,
-    pub body: Vec<StmtId>,
+    pub block: Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Identifier {
+    pub symbol: SymbolU32,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ItemEnum {
+    pub name: Identifier,
+    pub ty: Identifier,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariant {
+    pub name: Identifier,
+    pub value: ExprId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemKind {
-    FunctionDefinition(FunctionDefinition),
+    FunctionDefinition(ItemFunctionDefinition),
+    Enum(ItemEnum),
     FunctionDeclaration { signature: FunctionSignature },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
-    pub id: ItemId,
     pub kind: ItemKind,
     pub span: Span,
 }
@@ -193,7 +214,7 @@ impl Ast {
 
     pub fn push_expr(&mut self, kind: ExprKind, span: Span) -> ExprId {
         let id = self.expressions.len() as ExprId;
-        self.expressions.push(Expression { kind, span, id });
+        self.expressions.push(Expression { kind, span });
         return id;
     }
 
@@ -203,7 +224,7 @@ impl Ast {
 
     pub fn push_stmt(&mut self, kind: StmtKind, span: Span) -> StmtId {
         let id = self.statements.len() as StmtId;
-        self.statements.push(Statement { id, kind, span });
+        self.statements.push(Statement { kind, span });
         return id;
     }
 
@@ -213,7 +234,7 @@ impl Ast {
 
     pub fn push_item(&mut self, kind: ItemKind, span: Span) -> ItemId {
         let id = self.items.len() as ItemId;
-        self.items.push(Item { id, kind, span });
+        self.items.push(Item { kind, span });
         return id;
     }
 
