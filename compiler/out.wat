@@ -1,1 +1,5 @@
-(module(func $main(export"main")(result i32)(local $x i32)(local.get $x)(i32.const 0)(i32.eq)))
+(module
+  (func $main (export "main") (result i32) (local $x i32)
+    (local.get $x)
+    (i32.const 0)
+    (i32.eq)))

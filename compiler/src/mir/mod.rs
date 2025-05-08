@@ -1,6 +1,7 @@
 use string_interner::symbol::SymbolU32;
 
 pub mod builder;
+pub use builder::*;
 
 #[derive(Debug)]
 pub struct MIR {

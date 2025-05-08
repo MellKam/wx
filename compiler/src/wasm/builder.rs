@@ -4,7 +4,7 @@ use string_interner::backend::StringBackend;
 use super::Instruction;
 use crate::{mir, wasm};
 
-pub struct WASMBuilder {}
+pub struct Builder {}
 
 impl TryFrom<mir::Type> for wasm::ValueType {
     type Error = ();
@@ -32,7 +32,7 @@ impl From<mir::FunctionType> for wasm::FunctionType {
     }
 }
 
-impl WASMBuilder {
+impl Builder {
     pub fn build<'a>(
         mir: &mir::MIR,
         interner: &'a StringInterner<StringBackend>,
@@ -41,7 +41,7 @@ impl WASMBuilder {
         for function in &mir.functions {
             let mut instructions = Vec::new();
             for expr in &function.block.expressions {
-                WASMBuilder::build_expression(&mut instructions, expr)
+                Builder::build_expression(&mut instructions, expr)
             }
             functions.push(wasm::Function {
                 export: function.export,
@@ -71,7 +71,7 @@ impl WASMBuilder {
             }
             mir::ExprKind::Call { callee, arguments } => {
                 for arg in arguments {
-                    WASMBuilder::build_expression(body, arg);
+                    Builder::build_expression(body, arg);
                 }
                 body.push(wasm::Instruction::Call { index: *callee });
             }
@@ -90,8 +90,8 @@ impl WASMBuilder {
                 body.push(instruction);
             }
             mir::ExprKind::Add { left, right } => {
-                WASMBuilder::build_expression(body, &left);
-                WASMBuilder::build_expression(body, &right);
+                Builder::build_expression(body, &left);
+                Builder::build_expression(body, &right);
                 match &expr.ty {
                     mir::Type::I32 => {
                         body.push(wasm::Instruction::I32Add);
@@ -106,8 +106,8 @@ impl WASMBuilder {
                 body.push(wasm::Instruction::LocalGet { index: *index });
             }
             mir::ExprKind::Mul { left, right } => {
-                WASMBuilder::build_expression(body, &left);
-                WASMBuilder::build_expression(body, &right);
+                Builder::build_expression(body, &left);
+                Builder::build_expression(body, &right);
                 match expr.ty {
                     mir::Type::I32 => {
                         body.push(wasm::Instruction::I32Mul);
@@ -119,16 +119,16 @@ impl WASMBuilder {
                 }
             }
             mir::ExprKind::Assign { index, value } => {
-                WASMBuilder::build_expression(body, &value);
+                Builder::build_expression(body, &value);
                 body.push(wasm::Instruction::LocalSet { index: *index });
             }
             mir::ExprKind::Return { value } => {
-                WASMBuilder::build_expression(body, &value);
+                Builder::build_expression(body, &value);
                 body.push(wasm::Instruction::Return);
             }
             mir::ExprKind::Sub { left, right } => {
-                WASMBuilder::build_expression(body, &left);
-                WASMBuilder::build_expression(body, &right);
+                Builder::build_expression(body, &left);
+                Builder::build_expression(body, &right);
                 match expr.ty {
                     mir::Type::I32 => {
                         body.push(wasm::Instruction::I32Sub);
@@ -140,7 +140,7 @@ impl WASMBuilder {
                 }
             }
             mir::ExprKind::Drop { value } => {
-                WASMBuilder::build_expression(body, &value);
+                Builder::build_expression(body, &value);
                 match value.ty {
                     mir::Type::I32 | mir::Type::I64 => {
                         body.push(wasm::Instruction::Drop);
@@ -149,8 +149,8 @@ impl WASMBuilder {
                 }
             }
             mir::ExprKind::Equal { left, right } => {
-                WASMBuilder::build_expression(body, &left);
-                WASMBuilder::build_expression(body, &right);
+                Builder::build_expression(body, &left);
+                Builder::build_expression(body, &right);
                 match expr.ty {
                     mir::Type::I32 => {
                         body.push(wasm::Instruction::I32Eq);

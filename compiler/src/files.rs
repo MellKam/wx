@@ -40,12 +40,10 @@ impl Files {
         Files { files: Vec::new() }
     }
 
-    pub fn add(&mut self, name: impl Into<String>, source: impl Into<String>) -> Option<FileId> {
+    pub fn add(&mut self, name: String, source: String) -> Option<FileId> {
         use core::convert::TryFrom;
 
         let file_id = FileId(u32::try_from(self.files.len()).ok()?);
-        let name = name.into();
-        let source = source.into();
         let line_starts = files::line_starts(&source).collect();
 
         self.files.push(File {
@@ -69,11 +67,11 @@ impl<'files> files::Files<'files> for Files {
     type Name = &'files str;
     type Source = &'files str;
 
-    fn name(&self, file_id: FileId) -> Result<&str, files::Error> {
+    fn name(&'files self, file_id: FileId) -> Result<Self::Name, files::Error> {
         Ok(self.get(file_id)?.name.as_ref())
     }
 
-    fn source(&self, file_id: FileId) -> Result<&str, files::Error> {
+    fn source(&'files self, file_id: FileId) -> Result<Self::Source, files::Error> {
         Ok(&self.get(file_id)?.source)
     }
 

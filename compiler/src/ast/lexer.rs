@@ -1,4 +1,4 @@
-use codespan::Span;
+use crate::span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
@@ -290,15 +290,6 @@ impl<'a> PeekableLexer<'a> {
         }
     }
 
-    pub fn next_expect(&mut self, expected: TokenKind) -> Result<Token, Token> {
-        let token = self.next();
-        if std::mem::discriminant(&token.kind) == std::mem::discriminant(&expected) {
-            return Ok(token);
-        }
-
-        Err(token)
-    }
-
     pub fn next(&mut self) -> Token {
         if let Some(token) = self.peeked.take() {
             return token;
@@ -338,6 +329,14 @@ impl<'a> PeekableLexer<'a> {
                 self.peeked = Some(token.clone());
                 return token;
             }
+        }
+    }
+
+    pub fn next_expect(&mut self, expected: TokenKind) -> Result<Token, Token> {
+        let token = self.next();
+        match std::mem::discriminant(&token.kind) == std::mem::discriminant(&expected) {
+            true => Ok(token),
+            false => Err(token),
         }
     }
 }

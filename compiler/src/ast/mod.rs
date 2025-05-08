@@ -1,16 +1,15 @@
-use codespan::Span;
 use lexer::TokenKind;
 use string_interner::symbol::SymbolU32;
 
 mod diagnostics;
-mod files;
 mod lexer;
 mod parser;
 mod unescape;
 
-pub use diagnostics::*;
-pub use files::*;
 pub use parser::*;
+
+use crate::files::FileId;
+use crate::span::Span;
 
 pub type ExprId = u32;
 pub type StmtId = u32;
@@ -98,8 +97,6 @@ pub enum ExprKind {
         callee: ExprId,
         arguments: Vec<ExprId>,
     },
-    /// `x.y`
-    ObjectMember { object: ExprId, member: ExprId },
     /// `x::y`
     NamespaceMember { namespace: ExprId, member: ExprId },
 }
@@ -198,14 +195,16 @@ pub struct Item {
 
 #[derive(Debug, PartialEq)]
 pub struct Ast {
+    pub file_id: FileId,
     pub expressions: Vec<Expression>,
     pub statements: Vec<Statement>,
     pub items: Vec<Item>,
 }
 
 impl Ast {
-    pub fn new() -> Self {
+    pub fn new(file_id: FileId) -> Self {
         Self {
+            file_id,
             expressions: Vec::new(),
             statements: Vec::new(),
             items: Vec::new(),

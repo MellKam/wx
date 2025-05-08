@@ -312,9 +312,9 @@ impl<'a> Encode for CodeSection<'a> {
     }
 }
 
-pub struct WASMEncoder {}
+pub struct Encoder {}
 
-impl WASMEncoder {
+impl Encoder {
     pub fn encode(module: &wasm::Module) -> Vec<u8> {
         let mut sink = [
             0x00, 0x61, 0x73, 0x6D, // Magic

@@ -1,213 +1,124 @@
-use codespan::{ByteIndex, Span};
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
-use super::files::FileId;
+use super::lexer::{Token, TokenKind};
+use crate::files::FileId;
+use crate::span::{ByteIndex, Span};
 
-#[derive(Debug)]
-pub enum DiagnosticKind {
-    UnknownToken(UnknownTokenDiagnostic),
-    UnexpectedEof(UnexpectedEofDiagnostic),
-    MissingStatementDelimiter(MissingStatementDelimiterDiagnostic),
-    InvalidStatement(InvalidStatementDiagnostic),
-    MisssingClosingParen(MissingClosingParenDiagnostic),
-    InvalidIntegerLiteral(InvalidIntegerLiteralDiagnostic),
-    MissingFunctionBody(MissingFunctionBodyDiagnostic),
-    ReservedIdentifier(ReservedIdentifierDiagnostic),
+#[derive(Debug, Clone)]
+pub enum DiagnosticContext {
+    UnknownToken {
+        file_id: FileId,
+        span: Span,
+    },
+    UnexpectedEof {
+        file_id: FileId,
+        span: Span,
+    },
+    MissingStatementDelimiter {
+        file_id: FileId,
+        position: ByteIndex,
+    },
+    InvalidStatement {
+        file_id: FileId,
+        span: Span,
+    },
+    MissingClosingParen {
+        file_id: FileId,
+        opening_paren: Span,
+        expr_span: Span,
+    },
+    InvalidIntegerLiteral {
+        file_id: FileId,
+        span: Span,
+    },
+    MissingFunctionBody {
+        file_id: FileId,
+        span: Span,
+    },
+    ReservedIdentifier {
+        file_id: FileId,
+        span: Span,
+    },
+    UnexpectedToken {
+        file_id: FileId,
+        received: Token,
+        expected_kind: TokenKind,
+    },
+    IncompleteBinaryExpression {
+        file_id: FileId,
+        span: Span,
+    },
+    MissingUnaryOperand {
+        file_id: FileId,
+        span: Span,
+    },
 }
 
-impl DiagnosticKind {
-    pub fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        use DiagnosticKind::*;
+impl DiagnosticContext {
+    pub fn to_diagnostic(self) -> Diagnostic<FileId> {
+        use DiagnosticContext::*;
         match self {
-            UnknownToken(diagnostic) => diagnostic.to_diagnostic(),
-            UnexpectedEof(diagnostic) => diagnostic.to_diagnostic(),
-            MissingStatementDelimiter(diagnostic) => diagnostic.to_diagnostic(),
-            InvalidStatement(diagnostic) => diagnostic.to_diagnostic(),
-            MisssingClosingParen(diagnostic) => diagnostic.to_diagnostic(),
-            InvalidIntegerLiteral(diagnostic) => diagnostic.to_diagnostic(),
-            MissingFunctionBody(diagnostic) => diagnostic.to_diagnostic(),
-            ReservedIdentifier(diagnostic) => diagnostic.to_diagnostic(),
+            UnknownToken { file_id, span } => Diagnostic::error()
+                .with_message("unexpected end of file")
+                .with_label(Label::primary(file_id, span)),
+            UnexpectedEof { file_id, span } => Diagnostic::error()
+                .with_message("unexpected end of file")
+                .with_label(Label::primary(file_id, span)),
+            MissingStatementDelimiter { file_id, position } => Diagnostic::error()
+                .with_message("missing statement delimiter")
+                .with_label(
+                    Label::primary(file_id, position.to_usize()..position.to_usize())
+                        .with_message("consider adding a semicolon `;`"),
+                ),
+            InvalidStatement { file_id, span } => Diagnostic::error()
+                .with_message("invalid statement")
+                .with_label(Label::primary(file_id, span)),
+            MissingClosingParen {
+                file_id,
+                opening_paren,
+                ..
+            } => Diagnostic::error()
+                .with_message("missing closing parenthesis")
+                .with_label(
+                    Label::primary(file_id, opening_paren)
+                        .with_message("consider adding a closing parenthesis `)`"),
+                ),
+            InvalidIntegerLiteral { file_id, span } => Diagnostic::error()
+                .with_message("invalid integer literal")
+                .with_label(Label::primary(file_id, span)),
+            MissingFunctionBody { file_id, span } => Diagnostic::error()
+                .with_message("missing function body, expected opening brace `{`")
+                .with_label(Label::primary(file_id, span)),
+            ReservedIdentifier { file_id, span } => Diagnostic::error()
+                .with_message("reserved identifier")
+                .with_label(Label::primary(file_id, span)),
+            UnexpectedToken {
+                file_id,
+                expected_kind,
+                received,
+            } => Diagnostic::error()
+                .with_message(format!(
+                    "unexpected token, expected `{}` but found `{}`",
+                    expected_kind, received.kind
+                ))
+                .with_label(Label::primary(file_id, received.span))
+                .with_label(
+                    Label::secondary(file_id, received.span)
+                        .with_message(format!("expected `{}`", expected_kind)),
+                ),
+            IncompleteBinaryExpression { file_id, span } => Diagnostic::error()
+                .with_message("incomplete binary expression")
+                .with_label(Label::primary(file_id, span))
+                .with_label(
+                    Label::secondary(file_id, span)
+                        .with_message("consider adding a right-hand side operand"),
+                ),
+            MissingUnaryOperand { file_id, span } => Diagnostic::error()
+                .with_message("missing operand")
+                .with_label(Label::primary(file_id, span))
+                .with_label(
+                    Label::secondary(file_id, span).with_message("consider adding an operand"),
+                ),
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct UnknownTokenDiagnostic {
-    pub file_id: FileId,
-    pub span: Span,
-}
-
-impl UnknownTokenDiagnostic {
-    fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("unknown token")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-impl Into<DiagnosticKind> for UnknownTokenDiagnostic {
-    fn into(self) -> DiagnosticKind {
-        DiagnosticKind::UnknownToken(self)
-    }
-}
-
-#[derive(Debug)]
-pub struct UnexpectedEofDiagnostic {
-    pub file_id: FileId,
-    pub span: Span,
-}
-
-impl UnexpectedEofDiagnostic {
-    fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("unexpected end of file")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-impl Into<DiagnosticKind> for UnexpectedEofDiagnostic {
-    fn into(self) -> DiagnosticKind {
-        DiagnosticKind::UnexpectedEof(self)
-    }
-}
-
-#[derive(Debug)]
-pub struct MissingStatementDelimiterDiagnostic {
-    pub file_id: FileId,
-    pub position: ByteIndex,
-}
-
-impl MissingStatementDelimiterDiagnostic {
-    fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("missing statement delimiter")
-            .with_label(
-                Label::primary(
-                    self.file_id,
-                    self.position.to_usize()..self.position.to_usize(),
-                )
-                .with_message("consider adding a semicolon `;`"),
-            )
-    }
-}
-
-impl Into<DiagnosticKind> for MissingStatementDelimiterDiagnostic {
-    fn into(self) -> DiagnosticKind {
-        DiagnosticKind::MissingStatementDelimiter(self)
-    }
-}
-
-#[derive(Debug)]
-pub struct InvalidStatementDiagnostic {
-    pub file_id: FileId,
-    pub span: Span,
-}
-
-impl InvalidStatementDiagnostic {
-    fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("invalid statement")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-impl Into<DiagnosticKind> for InvalidStatementDiagnostic {
-    fn into(self) -> DiagnosticKind {
-        DiagnosticKind::InvalidStatement(self)
-    }
-}
-
-#[derive(Debug)]
-pub struct MissingClosingParenDiagnostic {
-    pub file_id: FileId,
-    pub opening_paren: Span,
-    pub expected_closing_paren_position: ByteIndex,
-}
-
-impl MissingClosingParenDiagnostic {
-    fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("missing closing parenthesis")
-            .with_label(
-                Label::primary(
-                    self.file_id,
-                    self.opening_paren.start().to_usize()..self.opening_paren.end().to_usize(),
-                )
-                .with_message("consider adding a closing parenthesis `)`"),
-            )
-            .with_label(
-                Label::secondary(
-                    self.file_id,
-                    self.expected_closing_paren_position.to_usize()
-                        ..self.expected_closing_paren_position.to_usize(),
-                )
-                .with_message("missing closing parenthesis"),
-            )
-    }
-}
-
-impl Into<DiagnosticKind> for MissingClosingParenDiagnostic {
-    fn into(self) -> DiagnosticKind {
-        DiagnosticKind::MisssingClosingParen(self)
-    }
-}
-
-#[derive(Debug)]
-pub struct InvalidIntegerLiteralDiagnostic {
-    pub file_id: FileId,
-    pub span: Span,
-}
-
-impl InvalidIntegerLiteralDiagnostic {
-    fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("invalid integer literal")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-impl Into<DiagnosticKind> for InvalidIntegerLiteralDiagnostic {
-    fn into(self) -> DiagnosticKind {
-        DiagnosticKind::InvalidIntegerLiteral(self)
-    }
-}
-
-#[derive(Debug)]
-pub struct MissingFunctionBodyDiagnostic {
-    pub file_id: FileId,
-    pub span: Span,
-}
-
-impl MissingFunctionBodyDiagnostic {
-    fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("missing function body, expected opening brace `{`")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-impl Into<DiagnosticKind> for MissingFunctionBodyDiagnostic {
-    fn into(self) -> DiagnosticKind {
-        DiagnosticKind::MissingFunctionBody(self)
-    }
-}
-
-#[derive(Debug)]
-pub struct ReservedIdentifierDiagnostic {
-    pub file_id: FileId,
-    pub span: Span,
-}
-
-impl ReservedIdentifierDiagnostic {
-    fn to_diagnostic(&self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("reserved identifier")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-impl Into<DiagnosticKind> for ReservedIdentifierDiagnostic {
-    fn into(self) -> DiagnosticKind {
-        DiagnosticKind::ReservedIdentifier(self)
     }
 }

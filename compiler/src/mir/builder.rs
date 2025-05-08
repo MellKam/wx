@@ -2,7 +2,7 @@ use core::panic;
 
 use crate::{ast, hir, mir};
 
-pub struct MIRBuilder<'a> {
+pub struct Builder<'a> {
     hir: &'a hir::HIR,
 }
 
@@ -17,9 +17,9 @@ impl From<hir::PrimitiveType> for mir::Type {
     }
 }
 
-impl<'a> MIRBuilder<'a> {
+impl<'a> Builder<'a> {
     pub fn build(hir: &hir::HIR) -> mir::MIR {
-        let builder = MIRBuilder { hir };
+        let builder = Builder { hir };
         mir::MIR {
             functions: hir
                 .functions
@@ -127,7 +127,7 @@ impl<'a> MIRBuilder<'a> {
     ) -> mir::Expression {
         match expr.ty {
             hir::Type::Comptime(hir::ComptimeType::Int) => {
-                let value = MIRBuilder::build_comptime_int_expression(&expr.kind);
+                let value = Builder::build_comptime_int_expression(&expr.kind);
                 return mir::Expression {
                     kind: mir::ExprKind::Int { value },
                     ty: expected_type.clone(),
@@ -297,14 +297,14 @@ impl<'a> MIRBuilder<'a> {
         match expr {
             hir::ExprKind::Int(value) => *value,
             hir::ExprKind::Unary { operator, operand } => {
-                let value = MIRBuilder::build_comptime_int_expression(&operand.kind);
+                let value = Builder::build_comptime_int_expression(&operand.kind);
                 match operator {
                     ast::UnaryOperator::Invert => !value,
                 }
             }
             hir::ExprKind::Binary { operator, lhs, rhs } => {
-                let left = MIRBuilder::build_comptime_int_expression(&lhs.kind);
-                let right = MIRBuilder::build_comptime_int_expression(&rhs.kind);
+                let left = Builder::build_comptime_int_expression(&lhs.kind);
+                let right = Builder::build_comptime_int_expression(&rhs.kind);
                 match operator {
                     ast::BinaryOperator::Add => left + right,
                     ast::BinaryOperator::Subtract => left - right,

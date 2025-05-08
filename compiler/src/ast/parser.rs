@@ -1,21 +1,18 @@
 use core::panic;
-use std::cell::RefCell;
-use std::rc::Rc;
 
-use codespan::Span;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
-use super::diagnostics::DiagnosticKind;
-use super::files::FileId;
+use super::diagnostics::DiagnosticContext;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
     Ast, BinaryOperator, Block, EnumVariant, ExprId, ExprKind, FunctionParam, FunctionSignature,
-    Identifier, InvalidIntegerLiteralDiagnostic, ItemEnum, ItemFunctionDefinition, ItemId,
-    ItemKind, MissingClosingParenDiagnostic, MissingFunctionBodyDiagnostic,
-    ReservedIdentifierDiagnostic, StmtId, StmtKind, UnaryOperator,
+    Identifier, ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, StmtId, StmtKind,
+    UnaryOperator,
 };
+use crate::files::FileId;
+use crate::span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum BindingPower {
@@ -70,8 +67,6 @@ pub enum Keyword {
     Underscore,
     Match,
     Return,
-    True,
-    False,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -90,19 +85,16 @@ impl TryFrom<&str> for Keyword {
             "_" => Ok(Keyword::Underscore),
             "match" => Ok(Keyword::Match),
             "return" => Ok(Keyword::Return),
-            "true" => Ok(Keyword::True),
-            "false" => Ok(Keyword::False),
             _ => Err(()),
         }
     }
 }
 
 pub struct Parser<'a> {
-    file_id: FileId,
     source: &'a str,
     lexer: PeekableLexer<'a>,
-    interner: &'a mut StringInterner<StringBackend>,
-    diagnostics: Rc<RefCell<Vec<DiagnosticKind>>>,
+    interner: &'a mut StringInterner<StringBackend<SymbolU32>>,
+    diagnostics: Vec<DiagnosticContext>,
     ast: Ast,
 }
 
@@ -110,18 +102,16 @@ impl<'a> Parser<'a> {
     pub fn parse(
         file_id: FileId,
         source: &'a str,
-        diagnostics: Rc<RefCell<Vec<DiagnosticKind>>>,
-        interner: &'a mut StringInterner<StringBackend>,
-    ) -> Ast {
+        interner: &'a mut StringInterner<StringBackend<SymbolU32>>,
+    ) -> (Ast, Vec<DiagnosticContext>) {
         let lexer: PeekableLexer<'a> = PeekableLexer::new(Lexer::new(source));
 
         let mut parser = Self {
-            file_id,
             source,
             lexer,
             interner,
-            diagnostics,
-            ast: Ast::new(),
+            diagnostics: Vec::new(),
+            ast: Ast::new(file_id),
         };
         loop {
             let token = parser.lexer.peek();
@@ -130,34 +120,29 @@ impl<'a> Parser<'a> {
             }
 
             match parser.parse_item() {
-                Some(_) => {}
-                None => break,
+                Ok(_) => {}
+                Err(_) => break,
             };
         }
 
-        parser.ast
+        (parser.ast, parser.diagnostics)
     }
 
-    fn parse_item(&mut self) -> Option<ItemId> {
+    fn parse_item(&mut self) -> Result<ItemId, ()> {
         let token = self.lexer.peek();
-        let symbol = match token.kind {
-            TokenKind::Identifier => self.get_identifier_symbol(token)?,
-            _ => return None,
-        };
-
-        let item_handler: fn(parser: &mut Parser) -> Option<ItemId> =
-            match Keyword::try_from(self.interner.resolve(symbol)?) {
+        let item_handler: fn(parser: &mut Parser) -> Result<ItemId, ()> =
+            match self.intern_keyword(token.clone()) {
                 Ok(Keyword::Fn) => Parser::parse_function_definition,
                 Ok(Keyword::Enum) => Parser::parse_enum_item,
                 Ok(Keyword::Export) => Parser::parse_exported_function_definition,
-                _ => return None,
+                _ => return Err(()),
             };
 
         let item_id = item_handler(self)?;
-        Some(item_id)
+        Ok(item_id)
     }
 
-    fn parse_exported_function_definition(parser: &mut Parser) -> Option<ItemId> {
+    fn parse_exported_function_definition(parser: &mut Parser) -> Result<ItemId, ()> {
         let export_keyword = parser.lexer.next();
         let item_id = Parser::parse_function_definition(parser)?;
 
@@ -172,25 +157,17 @@ impl<'a> Parser<'a> {
             })
             .unwrap();
 
-        Some(item_id)
+        Ok(item_id)
     }
 
-    fn parse_statement(&mut self) -> Option<StmtId> {
+    fn parse_statement(&mut self) -> Result<StmtId, ()> {
         let token = self.lexer.peek();
-        let keyword = match token.kind {
-            TokenKind::Identifier => self
-                .get_identifier_symbol(token.clone())
-                .map(|symbol| self.interner.resolve(symbol))
-                .flatten()
-                .map(|text| Keyword::try_from(text).ok())
-                .flatten(),
-            _ => None,
-        };
+        let keyword = self.intern_keyword(token.clone());
 
         match keyword {
-            Some(Keyword::Const) => Parser::parse_variable_definition(self),
-            Some(Keyword::Mut) => Parser::parse_variable_definition(self),
-            Some(Keyword::Return) => Parser::parse_return_statement(self),
+            Ok(Keyword::Const) => Parser::parse_variable_definition(self),
+            Ok(Keyword::Mut) => Parser::parse_variable_definition(self),
+            Ok(Keyword::Return) => Parser::parse_return_statement(self),
             _ => {
                 let expr_id = self.parse_expression(BindingPower::Default)?;
                 let expr = self.ast.get_expr(expr_id).unwrap();
@@ -198,18 +175,18 @@ impl<'a> Parser<'a> {
                     .ast
                     .push_stmt(StmtKind::Expression { expr: expr_id }, expr.span);
 
-                Some(stmt_id)
+                Ok(stmt_id)
             }
         }
     }
 
-    fn parse_expression(&mut self, limit_bp: BindingPower) -> Option<ExprId> {
+    fn parse_expression(&mut self, limit_bp: BindingPower) -> Result<ExprId, ()> {
         let token = self.lexer.peek();
         let nud_handler = match self.nud_lookup(token.clone()) {
             Some((nud_handler, _)) => nud_handler,
-            None => return None,
+            None => return Err(()),
         };
-        let mut left = nud_handler(self).unwrap();
+        let mut left = nud_handler(self)?;
 
         loop {
             let token = self.lexer.peek();
@@ -222,13 +199,13 @@ impl<'a> Parser<'a> {
 
             left = led_handler(self, left, operator_bp)?;
         }
-        Some(left)
+        Ok(left)
     }
 
     fn nud_lookup(
         &mut self,
         token: Token,
-    ) -> Option<(fn(parser: &mut Parser) -> Option<ExprId>, BindingPower)> {
+    ) -> Option<(fn(parser: &mut Parser) -> Result<ExprId, ()>, BindingPower)> {
         match token.kind {
             TokenKind::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
             // TokenKind::Float { .. } => Some((parse_float_expression, BindingPower::Primary)),
@@ -250,7 +227,7 @@ impl<'a> Parser<'a> {
     fn led_lookup(
         token: TokenKind,
     ) -> Option<(
-        fn(parser: &mut Parser, left: ExprId, bp: BindingPower) -> Option<ExprId>,
+        fn(parser: &mut Parser, left: ExprId, bp: BindingPower) -> Result<ExprId, ()>,
         BindingPower,
     )> {
         match token {
@@ -283,116 +260,115 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_identifier_expression(parser: &mut Parser) -> Option<ExprId> {
+    fn parse_identifier_expression(parser: &mut Parser) -> Result<ExprId, ()> {
         let token = parser.lexer.next();
-        let text = parser
-            .source
-            .get(token.span.start().to_usize()..token.span.end().to_usize())?;
-        let symbol = parser.interner.get_or_intern(text);
+        let symbol = parser.intern_identifier(token.clone())?;
 
         let expr_id = parser
             .ast
             .push_expr(ExprKind::Identifier { symbol }, token.span);
-        Some(expr_id)
+        Ok(expr_id)
     }
 
-    fn parse_variable_definition(parser: &mut Parser) -> Option<StmtId> {
-        let binding_type_token = parser.lexer.next();
-        let binding_type_symbol = parser.get_identifier_symbol(binding_type_token.clone())?;
-        let binding_type = match Keyword::try_from(parser.interner.resolve(binding_type_symbol)?) {
+    fn parse_variable_definition(parser: &mut Parser) -> Result<StmtId, ()> {
+        let mutability_token = parser.next_expect(TokenKind::Identifier)?;
+        let mutability = match parser.intern_keyword(mutability_token.clone()) {
             Ok(Keyword::Const) => Mutability::Const,
             Ok(Keyword::Mut) => Mutability::Mutable,
             _ => unreachable!(),
         };
 
-        let name = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-        let name_symbol = parser.get_identifier_symbol(name.clone())?;
-        match Keyword::try_from(parser.interner.resolve(name_symbol)?) {
-            Ok(_) => parser.diagnostics.borrow_mut().push(
-                ReservedIdentifierDiagnostic {
-                    file_id: parser.file_id,
-                    span: name.span,
-                }
-                .into(),
-            ),
-            Err(_) => {}
-        }
+        let name_token = parser.next_expect(TokenKind::Identifier)?;
+        let name_symbol = parser.intern_identifier(name_token.clone())?;
 
         let type_symbol = match parser.lexer.peek().kind {
             TokenKind::Colon => {
                 let _ = parser.lexer.next();
-                let type_token = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-                Some(parser.get_identifier_symbol(type_token)?)
+                let type_token = parser.next_expect(TokenKind::Identifier)?;
+                Some(parser.intern_identifier(type_token)?)
             }
             _ => None,
         };
 
-        let _ = parser.lexer.next_expect(TokenKind::Eq).ok()?;
-        let value = parser.parse_expression(BindingPower::Default)?;
-        let value_expr = parser.ast.get_expr(value).unwrap();
+        _ = parser.next_expect(TokenKind::Eq)?;
+        let value_expr_id = parser.parse_expression(BindingPower::Default)?;
+        let value_expr = parser.ast.get_expr(value_expr_id).unwrap();
 
         let stmt_id = parser.ast.push_stmt(
-            match binding_type {
+            match mutability {
                 Mutability::Const => StmtKind::ConstDefinition {
                     name: name_symbol,
                     ty: type_symbol,
-                    value,
+                    value: value_expr_id,
                 },
                 Mutability::Mutable => StmtKind::MutableDefinition {
                     name: name_symbol,
                     ty: type_symbol,
-                    value,
+                    value: value_expr_id,
                 },
             },
-            Span::merge(binding_type_token.span, value_expr.span),
+            Span::merge(mutability_token.span, value_expr.span),
         );
-        Some(stmt_id)
+        Ok(stmt_id)
     }
 
-    fn parse_return_statement(parser: &mut Parser) -> Option<StmtId> {
+    fn parse_return_statement(parser: &mut Parser) -> Result<StmtId, ()> {
         let return_keyword = parser.lexer.next();
-        let value = parser.parse_expression(BindingPower::Default)?;
-        let value_expr = parser.ast.get_expr(value).unwrap();
+        let value_expr_id = parser.parse_expression(BindingPower::Default)?;
+        let value_expr = parser.ast.get_expr(value_expr_id).unwrap();
 
         let stmt_id = parser.ast.push_stmt(
-            StmtKind::Return { value },
+            StmtKind::Return {
+                value: value_expr_id,
+            },
             Span::merge(return_keyword.span, value_expr.span),
         );
-        Some(stmt_id)
+        Ok(stmt_id)
     }
 
-    fn parse_grouping_expression(parser: &mut Parser) -> Option<ExprId> {
+    fn parse_grouping_expression(parser: &mut Parser) -> Result<ExprId, ()> {
         let open_paren = parser.lexer.next();
-        let inner_expr_id = parser.parse_expression(BindingPower::Default)?;
+        let expr_id = parser.parse_expression(BindingPower::Default)?;
 
         match parser.lexer.peek().kind {
             TokenKind::CloseParen => {
                 let _ = parser.lexer.next();
-                Some(inner_expr_id)
+                Ok(expr_id)
             }
             _ => {
-                let expr = parser.ast.get_expr(inner_expr_id).unwrap();
-                parser.diagnostics.borrow_mut().push(
-                    MissingClosingParenDiagnostic {
-                        file_id: parser.file_id,
+                let expr = parser.ast.get_expr(expr_id).unwrap();
+                parser.diagnostics.push(
+                    DiagnosticContext::MissingClosingParen {
+                        file_id: parser.ast.file_id,
                         opening_paren: open_paren.span,
-                        expected_closing_paren_position: expr.span.end(),
+                        expr_span: expr.span,
                     }
                     .into(),
                 );
-                None
+                Err(())
             }
         }
     }
 
-    fn parse_unary_expression(parser: &mut Parser) -> Option<ExprId> {
+    fn parse_unary_expression(parser: &mut Parser) -> Result<ExprId, ()> {
         let operator = parser.lexer.next();
         let operator_kind = match UnaryOperator::try_from(operator.kind) {
             Ok(operator) => operator,
-            Err(_) => unreachable!(),
+            Err(_) => panic!("invalid unary operator"),
         };
 
-        let operand_id = parser.parse_expression(BindingPower::Unary)?;
+        let operand_id = match parser.parse_expression(BindingPower::Unary) {
+            Ok(operand_id) => operand_id,
+            Err(_) => {
+                parser
+                    .diagnostics
+                    .push(DiagnosticContext::MissingUnaryOperand {
+                        file_id: parser.ast.file_id,
+                        span: operator.span.clone(),
+                    });
+                return Err(());
+            }
+        };
         let operand = parser.ast.get_expr(operand_id).unwrap();
 
         let expr_id = parser.ast.push_expr(
@@ -402,21 +378,32 @@ impl<'a> Parser<'a> {
             },
             Span::merge(operator.span, operand.span),
         );
-        Some(expr_id)
+        Ok(expr_id)
     }
 
     fn parse_binary_expression(
         parser: &mut Parser,
         left: ExprId,
         bp: BindingPower,
-    ) -> Option<ExprId> {
+    ) -> Result<ExprId, ()> {
         let operator = parser.lexer.next();
         let operator_kind = match BinaryOperator::try_from(operator.kind) {
             Ok(operator) => operator,
-            Err(_) => unreachable!(),
+            Err(_) => panic!("invalid binary operator"),
         };
 
-        let right_id = parser.parse_expression(bp)?;
+        let right_id = match parser.parse_expression(bp) {
+            Ok(right_id) => right_id,
+            Err(_) => {
+                parser
+                    .diagnostics
+                    .push(DiagnosticContext::IncompleteBinaryExpression {
+                        file_id: parser.ast.file_id,
+                        span: operator.span.clone(),
+                    });
+                return Err(());
+            }
+        };
 
         let right_expr = parser.ast.get_expr(right_id).unwrap();
         let left_expr = parser.ast.get_expr(left).unwrap();
@@ -428,15 +415,15 @@ impl<'a> Parser<'a> {
             },
             Span::merge(left_expr.span, right_expr.span),
         );
-        Some(expr_id)
+        Ok(expr_id)
     }
 
-    fn parse_int_expression(parser: &mut Parser) -> Option<ExprId> {
+    fn parse_int_expression(parser: &mut Parser) -> Result<ExprId, ()> {
         let token = parser.lexer.next();
         let text = parser
             .source
-            .get(token.span.start().to_usize()..token.span.end().to_usize())?;
-
+            .get(token.span.start().to_usize()..token.span.end().to_usize())
+            .expect("failed to get text");
         let value = match token.kind {
             TokenKind::Int => text.parse::<i64>().ok(),
             _ => unreachable!(),
@@ -445,52 +432,85 @@ impl<'a> Parser<'a> {
         let expr = match value {
             Some(value) => ExprKind::Int { value },
             None => {
-                parser.diagnostics.borrow_mut().push(
-                    InvalidIntegerLiteralDiagnostic {
-                        file_id: parser.file_id,
+                parser
+                    .diagnostics
+                    .push(DiagnosticContext::InvalidIntegerLiteral {
+                        file_id: parser.ast.file_id,
                         span: token.span.clone(),
-                    }
-                    .into(),
-                );
+                    });
 
                 ExprKind::Int { value: 0 }
             }
         };
 
         let expr_id = parser.ast.push_expr(expr, token.span);
-        Some(expr_id)
+        Ok(expr_id)
     }
 
-    fn get_identifier_symbol(&mut self, token: Token) -> Option<SymbolU32> {
-        match token.kind {
-            TokenKind::Identifier => {
-                let text = self
-                    .source
-                    .get(token.span.start().to_usize()..token.span.end().to_usize())?;
-                Some(self.interner.get_or_intern(text))
+    fn intern_identifier(&mut self, token: Token) -> Result<SymbolU32, ()> {
+        let text = match token.kind {
+            TokenKind::Identifier => self
+                .source
+                .get(token.span.start().to_usize()..token.span.end().to_usize())
+                .expect("failed to get text"),
+            _ => return Err(()),
+        };
+
+        match Keyword::try_from(text) {
+            Ok(_) => {
+                self.diagnostics
+                    .push(DiagnosticContext::ReservedIdentifier {
+                        file_id: self.ast.file_id,
+                        span: token.span,
+                    });
+
+                Err(())
             }
-            _ => None,
+            Err(_) => Ok(self.interner.get_or_intern(text)),
         }
     }
 
-    fn parse_function_signature(parser: &mut Parser) -> Option<FunctionSignature> {
-        let name_token = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-        let name_symbol = parser.get_identifier_symbol(name_token.clone())?;
+    fn intern_keyword(&mut self, token: Token) -> Result<Keyword, ()> {
+        match token.kind {
+            TokenKind::Identifier => self
+                .source
+                .get(token.span.start().to_usize()..token.span.end().to_usize())
+                .map(|text| Keyword::try_from(text))
+                .ok_or(())
+                .and_then(|result| result),
+            _ => Err(()),
+        }
+    }
 
-        let _ = parser.lexer.next_expect(TokenKind::OpenParen).ok()?;
+    fn parse_function_signature(parser: &mut Parser) -> Result<FunctionSignature, ()> {
+        let name_token = parser.next_expect(TokenKind::Identifier)?;
+        let name_symbol = parser.intern_identifier(name_token.clone())?;
+
+        _ = parser.next_expect(TokenKind::OpenParen)?;
         let mut params = Vec::new();
         loop {
             let token = parser.lexer.peek();
-            if token.kind == TokenKind::CloseParen {
-                break;
+            match token.kind {
+                TokenKind::CloseParen => break,
+                TokenKind::Comma => {
+                    let _ = parser.lexer.next();
+                    continue;
+                }
+                TokenKind::Eof => {
+                    parser.diagnostics.push(DiagnosticContext::UnexpectedEof {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    });
+                    return Err(());
+                }
+                _ => {}
             }
 
-            let param_name_token = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-            let param_name_symbol = parser.get_identifier_symbol(param_name_token.clone())?;
-
-            let _ = parser.lexer.next_expect(TokenKind::Colon).ok()?;
-            let param_type = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-            let param_type_symbol = parser.get_identifier_symbol(param_type.clone())?;
+            let param_name_token = parser.next_expect(TokenKind::Identifier)?;
+            let param_name_symbol = parser.intern_identifier(param_name_token.clone())?;
+            _ = parser.next_expect(TokenKind::Colon)?;
+            let param_type = parser.next_expect(TokenKind::Identifier)?;
+            let param_type_symbol = parser.intern_identifier(param_type.clone())?;
 
             params.push(FunctionParam {
                 name: Identifier {
@@ -502,22 +522,16 @@ impl<'a> Parser<'a> {
                     span: param_type.span,
                 },
             });
-
-            let token = parser.lexer.peek();
-            if token.kind == TokenKind::Comma {
-                let _ = parser.lexer.next();
-            }
         }
 
         let close_paren = parser.lexer.next();
         match parser.lexer.peek().kind {
             TokenKind::Colon => {
                 let _ = parser.lexer.next();
-                let return_type_token = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-                let return_type_symbol =
-                    Parser::get_identifier_symbol(parser, return_type_token.clone())?;
+                let return_type_token = parser.next_expect(TokenKind::Identifier)?;
+                let return_type_symbol = parser.intern_identifier(return_type_token.clone())?;
 
-                Some(FunctionSignature {
+                Ok(FunctionSignature {
                     name: Identifier {
                         symbol: name_symbol,
                         span: name_token.span,
@@ -530,7 +544,7 @@ impl<'a> Parser<'a> {
                     span: Span::merge(name_token.span, return_type_token.span),
                 })
             }
-            _ => Some(FunctionSignature {
+            _ => Ok(FunctionSignature {
                 name: Identifier {
                     symbol: name_symbol,
                     span: name_token.span,
@@ -569,8 +583,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_block(parser: &mut Parser) -> Option<Block> {
-        let open_brace = parser.lexer.next();
+    fn parse_block(&mut self) -> Result<Block, ()> {
+        let open_brace = self.lexer.next();
         let mut block = Block {
             statements: Vec::new(),
             result: None,
@@ -578,28 +592,35 @@ impl<'a> Parser<'a> {
         };
 
         loop {
-            match parser.lexer.peek().kind {
+            let token = self.lexer.peek();
+            match token.kind {
                 TokenKind::CloseBrace => break,
-                TokenKind::Eof => todo!("handle eof"),
+                TokenKind::Eof => {
+                    self.diagnostics.push(DiagnosticContext::UnexpectedEof {
+                        file_id: self.ast.file_id,
+                        span: token.span,
+                    });
+                    return Err(());
+                }
                 _ => {}
             }
 
-            let stmt_id = match parser.parse_statement() {
-                Some(stmt_id) => stmt_id,
-                None => {
-                    parser.skip_to_next_statement();
+            let stmt_id = match self.parse_statement() {
+                Ok(stmt_id) => stmt_id,
+                Err(_) => {
+                    self.skip_to_next_statement();
                     continue;
                 }
             };
 
-            match parser.lexer.peek().kind {
+            match self.lexer.peek().kind {
                 TokenKind::SemiColon => {
-                    let _ = parser.lexer.next();
+                    let _ = self.lexer.next();
                     block.statements.push(stmt_id);
                     continue;
                 }
                 TokenKind::CloseBrace => {
-                    let stmt = parser.ast.get_stmt(stmt_id).unwrap();
+                    let stmt = self.ast.get_stmt(stmt_id).unwrap();
                     match stmt.kind {
                         StmtKind::Expression { expr } => {
                             block.result = Some(expr);
@@ -610,41 +631,45 @@ impl<'a> Parser<'a> {
                     }
                     break;
                 }
-                kind => {
-                    println!("unexpected token: {:?}", kind);
+                _ => {
+                    let stmt = self.ast.get_stmt(stmt_id).unwrap();
+                    self.diagnostics
+                        .push(DiagnosticContext::MissingStatementDelimiter {
+                            file_id: self.ast.file_id,
+                            position: stmt.span.end(),
+                        });
                     block.statements.push(stmt_id);
-                    println!("consider adding a semicolon");
                     continue;
                 }
             }
         }
 
-        let close_brace = parser.lexer.next();
+        let close_brace = self.lexer.next();
         block.span = Span::merge(open_brace.span, close_brace.span);
 
-        Some(block)
+        Ok(block)
     }
 
-    fn parse_function_definition(parser: &mut Parser) -> Option<ItemId> {
+    fn parse_function_definition(parser: &mut Parser) -> Result<ItemId, ()> {
         let fn_keyword = parser.lexer.next();
         let signature = Parser::parse_function_signature(parser)?;
 
         match parser.lexer.peek().kind {
             TokenKind::OpenBrace => {}
             _ => {
-                parser.diagnostics.borrow_mut().push(
-                    MissingFunctionBodyDiagnostic {
-                        file_id: parser.file_id,
+                parser.diagnostics.push(
+                    DiagnosticContext::MissingFunctionBody {
+                        file_id: parser.ast.file_id,
                         span: Span::merge(fn_keyword.span, signature.span),
                     }
                     .into(),
                 );
 
-                return None;
+                return Err(());
             }
         }
 
-        let block = Parser::parse_block(parser)?;
+        let block = parser.parse_block()?;
         let span = Span::merge(fn_keyword.span, block.span);
         let item_id = parser.ast.push_item(
             ItemKind::FunctionDefinition(ItemFunctionDefinition {
@@ -655,28 +680,49 @@ impl<'a> Parser<'a> {
             span,
         );
 
-        Some(item_id)
+        Ok(item_id)
     }
 
     fn parse_call_expression(
         parser: &mut Parser,
         callee: ExprId,
         _: BindingPower,
-    ) -> Option<ExprId> {
+    ) -> Result<ExprId, ()> {
         let _ = parser.lexer.next();
         let mut arguments = Vec::new();
         loop {
             let token = parser.lexer.peek();
-            if token.kind == TokenKind::CloseParen {
-                break;
+            match token.kind {
+                TokenKind::CloseParen => {
+                    let _ = parser.lexer.next();
+                    break;
+                }
+                TokenKind::Eof => {
+                    parser.diagnostics.push(DiagnosticContext::UnexpectedEof {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    });
+                    return Err(());
+                }
+                _ => {}
             }
 
-            let argument = parser.parse_expression(BindingPower::Comma)?;
+            let argument = match parser.parse_expression(BindingPower::Comma) {
+                Ok(argument) => argument,
+                Err(_) => continue,
+            };
             arguments.push(argument);
 
-            let token = parser.lexer.peek();
-            if token.kind == TokenKind::Comma {
-                let _ = parser.lexer.next();
+            match parser.lexer.peek().kind {
+                TokenKind::CloseParen => {
+                    let _ = parser.lexer.next();
+                    break;
+                }
+                TokenKind::Comma => {
+                    let _ = parser.lexer.next();
+                    continue;
+                }
+                _ => panic!("unexpected token"),
             }
         }
 
@@ -687,15 +733,15 @@ impl<'a> Parser<'a> {
             ExprKind::Call { callee, arguments },
             Span::merge(callee_expr.span, close_paren.span),
         );
-        Some(expr_id)
+        Ok(expr_id)
     }
 
     fn parse_namespace_member_expression(
         parser: &mut Parser,
         namespace_expr_id: ExprId,
         _: BindingPower,
-    ) -> Option<ExprId> {
-        let _double_colon = parser.lexer.next_expect(TokenKind::ColonColon).ok()?;
+    ) -> Result<ExprId, ()> {
+        let _double_colon = parser.next_expect(TokenKind::ColonColon)?;
         let member_expr_id = parser.parse_expression(BindingPower::Member)?;
         let member = parser.ast.get_expr(member_expr_id).unwrap();
 
@@ -707,20 +753,31 @@ impl<'a> Parser<'a> {
             },
             Span::merge(namespace.span, member.span),
         );
-        Some(expr_id)
+        Ok(expr_id)
     }
 
-    fn parse_enum_item(parser: &mut Parser) -> Option<ItemId> {
+    fn next_expect(&mut self, kind: TokenKind) -> Result<Token, ()> {
+        self.lexer.next_expect(kind).map_err(|token| {
+            self.diagnostics.push(DiagnosticContext::UnexpectedToken {
+                file_id: self.ast.file_id,
+                received: token,
+                expected_kind: kind,
+            });
+            ()
+        })
+    }
+
+    fn parse_enum_item(parser: &mut Parser) -> Result<ItemId, ()> {
         let enum_keyword = parser.lexer.next();
 
-        let name_token = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-        let name_symbol = parser.get_identifier_symbol(name_token.clone())?;
+        let name_token = parser.next_expect(TokenKind::Identifier)?;
+        let name_symbol = parser.intern_identifier(name_token.clone())?;
 
-        _ = parser.lexer.next_expect(TokenKind::Colon).ok()?;
-        let type_token = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-        let type_symbol = parser.get_identifier_symbol(type_token.clone())?;
+        _ = parser.next_expect(TokenKind::Colon)?;
+        let type_token = parser.next_expect(TokenKind::Identifier)?;
+        let type_symbol = parser.intern_identifier(type_token.clone())?;
 
-        _ = parser.lexer.next_expect(TokenKind::OpenBrace).ok()?;
+        _ = parser.next_expect(TokenKind::OpenBrace)?;
         let mut variants = Vec::new();
         loop {
             let token = parser.lexer.peek();
@@ -730,14 +787,20 @@ impl<'a> Parser<'a> {
                     let _ = parser.lexer.next();
                     continue;
                 }
-                TokenKind::Eof => panic!("unexpected EOF"),
+                TokenKind::Eof => {
+                    parser.diagnostics.push(DiagnosticContext::UnexpectedEof {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    });
+
+                    return Err(());
+                }
                 _ => {}
             }
 
-            let variant_name_token = parser.lexer.next_expect(TokenKind::Identifier).ok()?;
-            let variant_name_symbol = parser.get_identifier_symbol(variant_name_token.clone())?;
-
-            _ = parser.lexer.next_expect(TokenKind::Eq).ok()?;
+            let variant_name_token = parser.next_expect(TokenKind::Identifier)?;
+            let variant_name_symbol = parser.intern_identifier(variant_name_token.clone())?;
+            _ = parser.next_expect(TokenKind::Eq)?;
             let value_expr_id = parser.parse_expression(BindingPower::Default)?;
 
             variants.push(EnumVariant {
@@ -747,11 +810,6 @@ impl<'a> Parser<'a> {
                 },
                 value: value_expr_id,
             });
-
-            let token = parser.lexer.peek();
-            if token.kind == TokenKind::Comma {
-                let _ = parser.lexer.next();
-            }
         }
 
         let close_brace = parser.lexer.next();
@@ -770,7 +828,7 @@ impl<'a> Parser<'a> {
             }),
             Span::merge(enum_keyword.span, close_brace.span),
         );
-        Some(item_id)
+        Ok(item_id)
     }
 }
 

@@ -1,7 +1,8 @@
 pub mod builder;
-
+pub mod diagnostics;
 use std::str;
 
+pub use builder::*;
 use string_interner::symbol::SymbolU32;
 
 use crate::ast::{BinaryOperator, UnaryOperator};

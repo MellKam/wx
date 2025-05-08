@@ -2,6 +2,9 @@ pub mod builder;
 pub mod encoder;
 pub mod wat;
 
+pub use builder::*;
+pub use encoder::*;
+
 #[derive(Debug, Clone)]
 pub enum Instruction {
     LocalGet { index: u32 },
