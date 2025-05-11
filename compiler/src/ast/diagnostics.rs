@@ -52,6 +52,10 @@ pub enum DiagnosticContext {
         file_id: FileId,
         span: Span,
     },
+    InvalidNamespace {
+        file_id: FileId,
+        span: Span,
+    },
 }
 
 impl DiagnosticContext {
@@ -118,6 +122,12 @@ impl DiagnosticContext {
                 .with_label(Label::primary(file_id, span))
                 .with_label(
                     Label::secondary(file_id, span).with_message("consider adding an operand"),
+                ),
+            InvalidNamespace { file_id, span } => Diagnostic::error()
+                .with_message("invalid namespace")
+                .with_label(
+                    Label::primary(file_id, span)
+                        .with_message("namespace must be a valid identifier"),
                 ),
         }
     }

@@ -53,10 +53,43 @@ fn start(): never {
   };
 }
 
-
-fn bar(): i32 {
-  cosnt x = 25
-
-  _ = start();
-  return x
+fn fibonacci(n: i32): i32 {
+  if n == 0 { 
+    0
+  } else {
+    if n == 1 { 
+      1 
+    } else {
+      fibonacci(n - 1) + fibonacci(n - 2)
+    }
+  }
 }
+
+fn fibonacci(n: i32): i32 {
+  match n {
+    0 -> 0,
+    1 -> 1,
+    _ -> fibonacci(n - 1) + fibonacci(n - 2),
+  }
+}
+
+module core {
+  public enum bool: i32 {
+    false = 0,
+    true = 1,
+  }
+}
+
+export fn main(): bool {
+  const x: bool = true
+
+  return match x {
+    true -> {}
+    false -> {}
+  }
+}
+
+fn main(): i32 {
+  
+}
+

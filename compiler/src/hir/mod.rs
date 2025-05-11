@@ -30,8 +30,6 @@ pub struct EnumVariant {
 pub enum PrimitiveType {
     I32,
     I64,
-    Unit,
-    Never,
 }
 
 impl TryFrom<&str> for PrimitiveType {
@@ -41,23 +39,7 @@ impl TryFrom<&str> for PrimitiveType {
         match value {
             "i32" => Ok(PrimitiveType::I32),
             "i64" => Ok(PrimitiveType::I64),
-            "never" => Ok(PrimitiveType::Never),
-            "()" => Ok(PrimitiveType::Unit),
             _ => Err(()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ComptimeType {
-    Int,
-}
-
-impl ComptimeType {
-    pub fn coercible_to(self, ty: PrimitiveType) -> bool {
-        match (self, ty) {
-            (ComptimeType::Int, PrimitiveType::I32 | PrimitiveType::I64) => true,
-            _ => false,
         }
     }
 }
@@ -65,19 +47,22 @@ impl ComptimeType {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
     Primitive(PrimitiveType),
-    Comptime(ComptimeType),
     Function(FunctionIndex),
     Enum(EnumIndex),
+    Unit,
+    Never,
+    Unknown,
 }
 
-impl Type {
-    pub fn coercible_to(self, ty: PrimitiveType) -> bool {
-        match (self, ty) {
-            (Type::Primitive(ty1), ty2) => ty1 == ty2,
-            (Type::Comptime(comptime_type), PrimitiveType::I32 | PrimitiveType::I64) => {
-                comptime_type.coercible_to(ty)
-            }
-            _ => false,
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Type::Primitive(ty) => write!(f, "{:?}", ty),
+            Type::Function(index) => write!(f, "function({})", index),
+            Type::Enum(index) => write!(f, "enum({})", index),
+            Type::Unit => write!(f, "unit"),
+            Type::Never => write!(f, "never"),
+            Type::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -94,23 +79,21 @@ pub type EnumIndex = u32;
 pub type EnumVariantIndex = usize;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Statement {
-    Return { expr: Expression },
-    Expr { expr: Expression },
-    Decl { index: LocalIndex, expr: Expression },
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
     pub kind: ExprKind,
-    pub ty: Type,
+    pub ty: Option<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     Int(i64),
+    LocalDeclaration {
+        index: LocalIndex,
+        expr: Box<Expression>,
+    },
     Local(LocalIndex),
     Function(FunctionIndex),
+    Return(Box<Expression>),
     EnumVariant {
         enum_index: EnumIndex,
         variant_index: EnumVariantIndex,
@@ -128,6 +111,11 @@ pub enum ExprKind {
     Call {
         callee: Box<Expression>,
         arguments: Vec<Expression>,
+    },
+    IfElse {
+        condition: Box<Expression>,
+        then: Block,
+        else_: Option<Block>,
     },
 }
 
@@ -147,8 +135,7 @@ pub struct Local {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Block {
     pub locals: Vec<Local>,
-    pub statements: Vec<Statement>,
-    pub result: Option<Expression>,
+    pub expressions: Vec<Expression>,
     pub ty: Type,
 }
 

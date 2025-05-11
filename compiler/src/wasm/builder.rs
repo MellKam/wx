@@ -64,6 +64,7 @@ impl Builder {
 
     fn build_expression(body: &mut Vec<Instruction>, expr: &mir::Expression) {
         match &expr.kind {
+            mir::ExprKind::Noop => {}
             mir::ExprKind::Function { index } => {
                 body.push(wasm::Instruction::I32Const {
                     value: *index as i32,

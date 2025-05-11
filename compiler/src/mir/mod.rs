@@ -42,6 +42,7 @@ pub enum Type {
 
 #[derive(Debug)]
 pub enum ExprKind {
+    Noop,
     Local {
         index: LocalIndex,
     },

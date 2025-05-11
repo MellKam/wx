@@ -53,6 +53,58 @@ pub enum BinaryOperator {
     GreaterEq,
 }
 
+impl BinaryOperator {
+    pub fn is_arithmetic(self) -> bool {
+        match self {
+            BinaryOperator::Add
+            | BinaryOperator::Subtract
+            | BinaryOperator::Multiply
+            | BinaryOperator::Divide
+            | BinaryOperator::Remainder => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_relational(self) -> bool {
+        match self {
+            BinaryOperator::Eq
+            | BinaryOperator::NotEq
+            | BinaryOperator::Less
+            | BinaryOperator::LessEq
+            | BinaryOperator::Greater
+            | BinaryOperator::GreaterEq => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_assignment(self) -> bool {
+        match self {
+            BinaryOperator::Assign => true,
+            _ => false,
+        }
+    }
+}
+
+// impl std::fmt::Display for BinaryOperator {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         let s = match self {
+//             BinaryOperator::Add => "+",
+//             BinaryOperator::Subtract => "-",
+//             BinaryOperator::Multiply => "*",
+//             BinaryOperator::Divide => "/",
+//             BinaryOperator::Remainder => "%",
+//             BinaryOperator::Eq => "==",
+//             BinaryOperator::NotEq => "!=",
+//             BinaryOperator::Less => "<",
+//             BinaryOperator::LessEq => "<=",
+//             BinaryOperator::Greater => ">",
+//             BinaryOperator::GreaterEq => ">=",
+//             BinaryOperator::Assign => "=",
+//         };
+//         write!(f, "{}", s)
+//     }
+// }
+
 impl TryFrom<TokenKind> for BinaryOperator {
     type Error = ();
 
@@ -76,29 +128,48 @@ impl TryFrom<TokenKind> for BinaryOperator {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Identifier {
+    pub symbol: SymbolU32,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExprKind {
     /// `1`
     Int { value: i64 },
     /// `x`
     Identifier { symbol: SymbolU32 },
-    /// `-x`
+    /// `-{expr}`
     Unary {
         operator: UnaryOperator,
         operand: ExprId,
     },
-    /// `x + y`
+    /// `{expr} + {expr}`
     Binary {
         left: ExprId,
         operator: BinaryOperator,
         right: ExprId,
     },
-    /// `x()`
+    /// `{expr}()`
     Call {
         callee: ExprId,
         arguments: Vec<ExprId>,
     },
-    /// `x::y`
-    NamespaceMember { namespace: ExprId, member: ExprId },
+    /// `{expr}::{expr}`
+    NamespaceMember {
+        namespace: Identifier,
+        member: Identifier,
+    },
+    /// `return {expr}`
+    Return { value: ExprId },
+    /// `{ ... }`
+    Block { statements: Vec<StmtId> },
+    // IfElse {
+    //     condition: ExprId,
+    //     then_block: ExprId,
+    //     else_block: Option<ExprId>,
+    //     span: Span,
+    // },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,27 +178,25 @@ pub struct Expression {
     pub span: Span,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
-    Expression {
-        expr: ExprId,
-    },
+    /// `{expr};`
+    DelimitedExpression { value: ExprId },
+    /// `const {identifier}(: {type})? = {expr};`
     ConstDefinition {
-        name: SymbolU32,
-        ty: Option<SymbolU32>,
+        name: Identifier,
+        ty: Option<Identifier>,
         value: ExprId,
     },
+    /// `mut {identifier}(: {type})? = {expr};`
     MutableDefinition {
-        name: SymbolU32,
-        ty: Option<SymbolU32>,
-        value: ExprId,
-    },
-    Return {
+        name: Identifier,
+        ty: Option<Identifier>,
         value: ExprId,
     },
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Statement {
     pub kind: StmtKind,
     pub span: Span,
@@ -159,12 +228,6 @@ pub struct ItemFunctionDefinition {
     pub export: Option<Span>,
     pub signature: FunctionSignature,
     pub block: Block,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Identifier {
-    pub symbol: SymbolU32,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -221,9 +284,9 @@ impl Ast {
         self.expressions.get(id as usize)
     }
 
-    pub fn push_stmt(&mut self, kind: StmtKind, span: Span) -> StmtId {
-        let id = self.statements.len() as StmtId;
-        self.statements.push(Statement { kind, span });
+    pub fn push_item(&mut self, kind: ItemKind, span: Span) -> ItemId {
+        let id = self.items.len() as ItemId;
+        self.items.push(Item { kind, span });
         return id;
     }
 
@@ -231,9 +294,9 @@ impl Ast {
         self.statements.get(id as usize)
     }
 
-    pub fn push_item(&mut self, kind: ItemKind, span: Span) -> ItemId {
-        let id = self.items.len() as ItemId;
-        self.items.push(Item { kind, span });
+    pub fn push_stmt(&mut self, stmt: Statement) -> StmtId {
+        let id = self.statements.len() as StmtId;
+        self.statements.push(stmt);
         return id;
     }
 

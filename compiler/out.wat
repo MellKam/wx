@@ -1,5 +1,5 @@
 (module
-  (func $main (export "main") (result i32) (local $x i32)
+  (func $add (param $x i32) (param $y i32) (result i32)
     (local.get $x)
-    (i32.const 0)
-    (i32.eq)))
+    (local.get $y)
+    (i32.add)))

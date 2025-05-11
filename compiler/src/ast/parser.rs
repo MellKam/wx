@@ -8,7 +8,7 @@ use super::diagnostics::DiagnosticContext;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
     Ast, BinaryOperator, Block, EnumVariant, ExprId, ExprKind, FunctionParam, FunctionSignature,
-    Identifier, ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, StmtId, StmtKind,
+    Identifier, ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, Statement, StmtId, StmtKind,
     UnaryOperator,
 };
 use crate::files::FileId;
@@ -64,7 +64,6 @@ pub enum Keyword {
     Loop,
     Break,
     Continue,
-    Underscore,
     Match,
     Return,
 }
@@ -82,7 +81,6 @@ impl TryFrom<&str> for Keyword {
             "loop" => Ok(Keyword::Loop),
             "break" => Ok(Keyword::Break),
             "continue" => Ok(Keyword::Continue),
-            "_" => Ok(Keyword::Underscore),
             "match" => Ok(Keyword::Match),
             "return" => Ok(Keyword::Return),
             _ => Err(()),
@@ -158,26 +156,6 @@ impl<'a> Parser<'a> {
             .unwrap();
 
         Ok(item_id)
-    }
-
-    fn parse_statement(&mut self) -> Result<StmtId, ()> {
-        let token = self.lexer.peek();
-        let keyword = self.intern_keyword(token.clone());
-
-        match keyword {
-            Ok(Keyword::Const) => Parser::parse_variable_definition(self),
-            Ok(Keyword::Mut) => Parser::parse_variable_definition(self),
-            Ok(Keyword::Return) => Parser::parse_return_statement(self),
-            _ => {
-                let expr_id = self.parse_expression(BindingPower::Default)?;
-                let expr = self.ast.get_expr(expr_id).unwrap();
-                let stmt_id = self
-                    .ast
-                    .push_stmt(StmtKind::Expression { expr: expr_id }, expr.span);
-
-                Ok(stmt_id)
-            }
-        }
     }
 
     fn parse_expression(&mut self, limit_bp: BindingPower) -> Result<ExprId, ()> {
@@ -270,6 +248,16 @@ impl<'a> Parser<'a> {
         Ok(expr_id)
     }
 
+    fn parse_identifier(&mut self) -> Result<Identifier, ()> {
+        let name_token = self.next_expect(TokenKind::Identifier)?;
+        let name_symbol = self.intern_identifier(name_token.clone())?;
+
+        Ok(Identifier {
+            symbol: name_symbol,
+            span: name_token.span,
+        })
+    }
+
     fn parse_variable_definition(parser: &mut Parser) -> Result<StmtId, ()> {
         let mutability_token = parser.next_expect(TokenKind::Identifier)?;
         let mutability = match parser.intern_keyword(mutability_token.clone()) {
@@ -278,14 +266,11 @@ impl<'a> Parser<'a> {
             _ => unreachable!(),
         };
 
-        let name_token = parser.next_expect(TokenKind::Identifier)?;
-        let name_symbol = parser.intern_identifier(name_token.clone())?;
-
-        let type_symbol = match parser.lexer.peek().kind {
+        let name = parser.parse_identifier()?;
+        let ty = match parser.lexer.peek().kind {
             TokenKind::Colon => {
                 let _ = parser.lexer.next();
-                let type_token = parser.next_expect(TokenKind::Identifier)?;
-                Some(parser.intern_identifier(type_token)?)
+                Some(parser.parse_identifier()?)
             }
             _ => None,
         };
@@ -294,31 +279,32 @@ impl<'a> Parser<'a> {
         let value_expr_id = parser.parse_expression(BindingPower::Default)?;
         let value_expr = parser.ast.get_expr(value_expr_id).unwrap();
 
-        let stmt_id = parser.ast.push_stmt(
-            match mutability {
+        let stmt = Statement {
+            kind: match mutability {
                 Mutability::Const => StmtKind::ConstDefinition {
-                    name: name_symbol,
-                    ty: type_symbol,
+                    name,
+                    ty,
                     value: value_expr_id,
                 },
                 Mutability::Mutable => StmtKind::MutableDefinition {
-                    name: name_symbol,
-                    ty: type_symbol,
+                    name,
+                    ty,
                     value: value_expr_id,
                 },
             },
-            Span::merge(mutability_token.span, value_expr.span),
-        );
+            span: Span::merge(mutability_token.span, value_expr.span),
+        };
+        let stmt_id = parser.ast.push_stmt(stmt);
         Ok(stmt_id)
     }
 
-    fn parse_return_statement(parser: &mut Parser) -> Result<StmtId, ()> {
+    fn parse_return_expression(parser: &mut Parser) -> Result<ExprId, ()> {
         let return_keyword = parser.lexer.next();
         let value_expr_id = parser.parse_expression(BindingPower::Default)?;
         let value_expr = parser.ast.get_expr(value_expr_id).unwrap();
 
-        let stmt_id = parser.ast.push_stmt(
-            StmtKind::Return {
+        let stmt_id = parser.ast.push_expr(
+            ExprKind::Return {
                 value: value_expr_id,
             },
             Span::merge(return_keyword.span, value_expr.span),
@@ -603,43 +589,60 @@ impl<'a> Parser<'a> {
                     return Err(());
                 }
                 _ => {}
+            };
+
+            let handler: Option<fn(&mut Parser) -> Result<StmtId, ()>> =
+                match self.intern_keyword(token.clone()) {
+                    Ok(Keyword::Const) => Some(Parser::parse_variable_definition),
+                    Ok(Keyword::Mut) => Some(Parser::parse_variable_definition),
+                    _ => None,
+                };
+
+            match handler {
+                Some(handler) => {
+                    match handler(self) {
+                        Ok(stmt_id) => block.statements.push(stmt_id),
+                        Err(_) => self.skip_to_next_statement(),
+                    };
+                    continue;
+                }
+                None => {}
             }
 
-            let stmt_id = match self.parse_statement() {
-                Ok(stmt_id) => stmt_id,
+            let expr_id = match self.parse_expression(BindingPower::Default) {
+                Ok(expr_id) => expr_id,
                 Err(_) => {
                     self.skip_to_next_statement();
                     continue;
                 }
             };
+            let expr = self.ast.get_expr(expr_id).unwrap();
 
             match self.lexer.peek().kind {
                 TokenKind::SemiColon => {
-                    let _ = self.lexer.next();
+                    let semicolon = self.lexer.next();
+                    let stmt_id = self.ast.push_stmt(Statement {
+                        kind: StmtKind::DelimitedExpression { value: expr_id },
+                        span: Span::merge(expr.span, semicolon.span),
+                    });
                     block.statements.push(stmt_id);
-                    continue;
                 }
                 TokenKind::CloseBrace => {
-                    let stmt = self.ast.get_stmt(stmt_id).unwrap();
-                    match stmt.kind {
-                        StmtKind::Expression { expr } => {
-                            block.result = Some(expr);
-                        }
-                        _ => {
-                            block.statements.push(stmt_id);
-                        }
-                    }
+                    block.result = Some(expr_id);
                     break;
                 }
                 _ => {
-                    let stmt = self.ast.get_stmt(stmt_id).unwrap();
                     self.diagnostics
                         .push(DiagnosticContext::MissingStatementDelimiter {
                             file_id: self.ast.file_id,
-                            position: stmt.span.end(),
+                            position: expr.span.end(),
                         });
+
+                    let stmt_id = self.ast.push_stmt(Statement {
+                        kind: StmtKind::DelimitedExpression { value: expr_id },
+                        span: expr.span,
+                    });
                     block.statements.push(stmt_id);
-                    continue;
                 }
             }
         }
@@ -693,10 +696,7 @@ impl<'a> Parser<'a> {
         loop {
             let token = parser.lexer.peek();
             match token.kind {
-                TokenKind::CloseParen => {
-                    let _ = parser.lexer.next();
-                    break;
-                }
+                TokenKind::CloseParen => break,
                 TokenKind::Eof => {
                     parser.diagnostics.push(DiagnosticContext::UnexpectedEof {
                         file_id: parser.ast.file_id,
@@ -714,10 +714,7 @@ impl<'a> Parser<'a> {
             arguments.push(argument);
 
             match parser.lexer.peek().kind {
-                TokenKind::CloseParen => {
-                    let _ = parser.lexer.next();
-                    break;
-                }
+                TokenKind::CloseParen => break,
                 TokenKind::Comma => {
                     let _ = parser.lexer.next();
                     continue;
@@ -741,17 +738,34 @@ impl<'a> Parser<'a> {
         namespace_expr_id: ExprId,
         _: BindingPower,
     ) -> Result<ExprId, ()> {
-        let _double_colon = parser.next_expect(TokenKind::ColonColon)?;
-        let member_expr_id = parser.parse_expression(BindingPower::Member)?;
-        let member = parser.ast.get_expr(member_expr_id).unwrap();
+        let _double_colon = parser.lexer.next();
+        let member = parser.parse_identifier()?;
 
-        let namespace = parser.ast.get_expr(namespace_expr_id).unwrap();
+        let namespace_expr = parser.ast.get_expr(namespace_expr_id).unwrap();
+        let namespace_symbol = match namespace_expr.kind {
+            ExprKind::Identifier { symbol } => symbol,
+            _ => {
+                parser
+                    .diagnostics
+                    .push(DiagnosticContext::InvalidNamespace {
+                        file_id: parser.ast.file_id,
+                        span: namespace_expr.span,
+                    });
+
+                return Err(());
+            }
+        };
+
+        let span = Span::merge(namespace_expr.span, member.span);
         let expr_id = parser.ast.push_expr(
             ExprKind::NamespaceMember {
-                namespace: namespace_expr_id,
-                member: member_expr_id,
+                namespace: Identifier {
+                    symbol: namespace_symbol,
+                    span: namespace_expr.span,
+                },
+                member,
             },
-            Span::merge(namespace.span, member.span),
+            span,
         );
         Ok(expr_id)
     }
