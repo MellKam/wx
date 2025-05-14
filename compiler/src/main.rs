@@ -31,15 +31,12 @@ fn main() {
             export fn main(): i32 { 
                 const a: i32 = 5;
 
-                // error: type annotation required
-                const z = 5;
-
                 const x: i32 = add(2, 2);
 
                 // works fine without type annotation
                 const y = add(3, 3) + 2;
 
-                x
+                532523
             }
             "# }
             .to_string(),
@@ -79,7 +76,7 @@ fn main() {
     let mir = mir::Builder::build(&hir);
     // println!("{:#?}", mir);
     let wasm = wasm::Builder::build(&mir, &interner);
-    // println!("{:#?}", wasm);
+    println!("{:#?}", wasm);
     let mut file = std::fs::File::create("out.wat").unwrap();
     file.write(wasm.encode_wat().as_bytes()).unwrap();
 

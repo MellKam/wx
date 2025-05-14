@@ -52,6 +52,18 @@ pub enum DiagnosticContext {
         file_id: FileId,
         span: Span,
     },
+    TypeMistmatch {
+        file_id: FileId,
+        expected: hir::Type,
+        actual: Option<hir::Type>,
+        span: Span,
+    },
+    LiteralOutOfRange {
+        file_id: FileId,
+        primitive: hir::PrimitiveType,
+        value: i64,
+        span: Span,
+    },
 }
 
 impl ast::BinaryOperator {
@@ -139,6 +151,29 @@ impl DiagnosticContext {
                 .with_note(
                     "if you don't need the value, consider dropping it with assignment to `_`",
                 ),
+            TypeMistmatch {
+                file_id,
+                span,
+                actual,
+                expected,
+            } => Diagnostic::error()
+                .with_message("type mismatch")
+                .with_label(Label::primary(file_id, span).with_message(format!(
+                    "expected `{}`, found `{}`",
+                    expected,
+                    actual.unwrap_or(hir::Type::Unknown)
+                ))),
+            LiteralOutOfRange {
+                file_id,
+                primitive,
+                value,
+                span,
+            } => Diagnostic::error()
+                .with_message(format!(
+                    "literal `{}` out of range for `{}`",
+                    value, primitive
+                ))
+                .with_label(Label::primary(file_id, span)),
         }
     }
 }

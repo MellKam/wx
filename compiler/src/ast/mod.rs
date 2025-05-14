@@ -284,6 +284,16 @@ impl Ast {
         self.expressions.get(id as usize)
     }
 
+    pub fn set_expr(&mut self, id: ExprId, cb: impl FnOnce(&mut Expression)) -> Result<(), ()> {
+        match self.expressions.get_mut(id as usize) {
+            Some(expr) => {
+                cb(expr);
+                Ok(())
+            }
+            None => Err(()),
+        }
+    }
+
     pub fn push_item(&mut self, kind: ItemKind, span: Span) -> ItemId {
         let id = self.items.len() as ItemId;
         self.items.push(Item { kind, span });

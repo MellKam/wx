@@ -190,7 +190,16 @@ impl<'a> Parser<'a> {
             // TokenKind::String { .. } => Some((parse_string_expression, BindingPower::Primary)),
             // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
             TokenKind::Identifier => {
-                Some((Parser::parse_identifier_expression, BindingPower::Primary))
+                let text = self
+                    .source
+                    .get(token.span.start().to_usize()..token.span.end().to_usize())
+                    .expect("failed to get text");
+                match Keyword::try_from(text) {
+                    Ok(Keyword::Return) => {
+                        Some((Parser::parse_return_expression, BindingPower::Primary))
+                    }
+                    _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
+                }
             }
             TokenKind::OpenParen => {
                 Some((Parser::parse_grouping_expression, BindingPower::Default))
@@ -318,7 +327,13 @@ impl<'a> Parser<'a> {
 
         match parser.lexer.peek().kind {
             TokenKind::CloseParen => {
-                let _ = parser.lexer.next();
+                let close_paren = parser.lexer.next();
+                parser
+                    .ast
+                    .set_expr(expr_id, |expr| {
+                        expr.span = Span::merge(open_paren.span, close_paren.span);
+                    })
+                    .unwrap();
                 Ok(expr_id)
             }
             _ => {

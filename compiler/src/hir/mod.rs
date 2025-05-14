@@ -32,6 +32,15 @@ pub enum PrimitiveType {
     I64,
 }
 
+impl std::fmt::Display for PrimitiveType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrimitiveType::I32 => write!(f, "i32"),
+            PrimitiveType::I64 => write!(f, "i64"),
+        }
+    }
+}
+
 impl TryFrom<&str> for PrimitiveType {
     type Error = ();
 
@@ -57,7 +66,7 @@ pub enum Type {
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Type::Primitive(ty) => write!(f, "{:?}", ty),
+            Type::Primitive(ty) => write!(f, "{}", ty),
             Type::Function(index) => write!(f, "function({})", index),
             Type::Enum(index) => write!(f, "enum({})", index),
             Type::Unit => write!(f, "unit"),
