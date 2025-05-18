@@ -27,14 +27,14 @@ pub enum DiagnosticContext {
     },
     InvalidEnumRepresentation {
         file_id: FileId,
-        enum_index: EnumIndex,
+        item_id: ast::ItemId,
         type_: hir::Type,
         span: Span,
     },
     InvalidEnumValue {
         file_id: FileId,
-        enum_index: EnumIndex,
-        span: Span,
+        item_id: ast::ItemId,
+        variant_index: usize,
     },
     UndeclaredIdentifier {
         file_id: FileId,
@@ -120,9 +120,9 @@ impl DiagnosticContext {
                 .with_label(Label::primary(file_id, span)),
             InvalidEnumRepresentation {
                 file_id,
-                enum_index,
                 type_,
                 span,
+                item_id: _,
             } => Diagnostic::error()
                 .with_message(format!(
                     "can't represent enum with `{}`: expected i32 or i64",
@@ -131,11 +131,9 @@ impl DiagnosticContext {
                 .with_label(Label::primary(file_id, span)),
             InvalidEnumValue {
                 file_id,
-                enum_index,
-                span,
-            } => Diagnostic::error()
-                .with_message("invalid enum variant value")
-                .with_label(Label::primary(file_id, span).with_message("expected integer literal")),
+                item_id: _,
+                variant_index,
+            } => Diagnostic::error().with_message("invalid enum variant value"),
             UndeclaredIdentifier { file_id, span } => Diagnostic::error()
                 .with_message("undeclared identifier")
                 .with_label(Label::primary(file_id, span)),

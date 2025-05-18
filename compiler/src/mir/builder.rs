@@ -1,6 +1,7 @@
 use core::panic;
 
-use crate::{ast, hir, mir};
+use crate::hir::{self, ScopeIndex};
+use crate::{ast, mir};
 
 pub struct Builder<'a> {
     hir: &'a hir::HIR,
@@ -42,9 +43,9 @@ impl<'a> Builder<'a> {
     fn to_mir_type(&self, ty: hir::Type) -> mir::Type {
         match ty {
             hir::Type::Primitive(ty) => mir::Type::from(ty),
-            hir::Type::Function(index) => mir::Type::Function(index),
+            hir::Type::Function(index) => mir::Type::Function(index.0),
             hir::Type::Enum(enum_index) => {
-                let enum_ = &self.hir.enums[enum_index as usize];
+                let enum_ = &self.hir.enums[enum_index.0 as usize];
                 mir::Type::from(enum_.ty.clone())
             }
             hir::Type::Unit => mir::Type::Unit,
@@ -54,28 +55,41 @@ impl<'a> Builder<'a> {
     }
 
     fn build_function(&self, function: &hir::Function) -> mir::Function {
+        let block = self.build_block_expression(
+            ScopeIndex(0),
+            &function.expressions,
+            match &function.result {
+                Some(result) => Some(result),
+                None => None,
+            },
+            self.to_mir_type(function.ty.result),
+        );
+
         mir::Function {
             export: function.export,
             name: function.name,
+            scopes: function
+                .scopes
+                .scopes
+                .iter()
+                .map(|scope| mir::LocalScope {
+                    parent_scope: match scope.parent_scope {
+                        Some(index) => Some(mir::ScopeIndex(index.0)),
+                        None => None,
+                    },
+                    locals: scope
+                        .locals
+                        .iter()
+                        .map(|local| mir::Local {
+                            name: local.name,
+                            ty: self.to_mir_type(local.ty),
+                            mutability: local.mutability,
+                        })
+                        .collect(),
+                })
+                .collect(),
             ty: self.to_mir_function_type(function.ty.clone()),
-            block: mir::Block {
-                locals: function
-                    .block
-                    .locals
-                    .iter()
-                    .map(|local| mir::Local {
-                        name: local.name,
-                        ty: self.to_mir_type(local.ty),
-                    })
-                    .collect(),
-                expressions: function
-                    .block
-                    .expressions
-                    .iter()
-                    .map(|expr| self.build_expression(expr))
-                    .collect(),
-                ty: self.to_mir_type(function.ty.result),
-            },
+            block,
         }
     }
 
@@ -88,12 +102,18 @@ impl<'a> Builder<'a> {
             hir::ExprKind::Unary { operator, operand } => {
                 self.build_unary_expression(*operator, &operand, ty)
             }
-            hir::ExprKind::Local(index) => mir::Expression {
-                kind: mir::ExprKind::Local { index: *index },
+            hir::ExprKind::Local {
+                local_index,
+                scope_index,
+            } => mir::Expression {
+                kind: mir::ExprKind::Local {
+                    local_index: local_index.0,
+                    scope_index: mir::ScopeIndex(scope_index.0),
+                },
                 ty,
             },
             hir::ExprKind::Function(index) => mir::Expression {
-                kind: mir::ExprKind::Function { index: *index },
+                kind: mir::ExprKind::Function { index: index.0 },
                 ty,
             },
             hir::ExprKind::Call { callee, arguments } => {
@@ -105,7 +125,7 @@ impl<'a> Builder<'a> {
                 mir::Expression {
                     kind: mir::ExprKind::Call {
                         callee: match callee.kind {
-                            hir::ExprKind::Function(index) => index,
+                            hir::ExprKind::Function(index) => index.0,
                             _ => panic!("expected function"),
                         },
                         arguments: args,
@@ -117,8 +137,8 @@ impl<'a> Builder<'a> {
                 enum_index,
                 variant_index,
             } => {
-                let enum_ = &self.hir.enums[*enum_index as usize];
-                let variant = &enum_.variants[*variant_index as usize];
+                let enum_ = &self.hir.enums[enum_index.0 as usize];
+                let variant = &enum_.variants[variant_index.0 as usize];
 
                 mir::Expression {
                     kind: mir::ExprKind::Int {
@@ -127,7 +147,11 @@ impl<'a> Builder<'a> {
                     ty,
                 }
             }
-            hir::ExprKind::LocalDeclaration { index, expr } => match expr.kind {
+            hir::ExprKind::LocalDeclaration {
+                local_index,
+                scope_index,
+                expr,
+            } => match expr.kind {
                 hir::ExprKind::Int(value) if value == 0 => {
                     return mir::Expression {
                         kind: mir::ExprKind::Noop,
@@ -137,7 +161,8 @@ impl<'a> Builder<'a> {
                 _ => {
                     return mir::Expression {
                         kind: mir::ExprKind::Assign {
-                            index: *index,
+                            local_index: local_index.0,
+                            scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(self.build_expression(expr)),
                         },
                         ty,
@@ -155,7 +180,63 @@ impl<'a> Builder<'a> {
                 ty,
             },
             hir::ExprKind::Placeholder => unreachable!(),
-            hir::ExprKind::IfElse { .. } => unimplemented!(),
+            hir::ExprKind::Block {
+                scope_index,
+                expressions,
+                result,
+            } => self.build_block_expression(
+                *scope_index,
+                expressions,
+                match result {
+                    Some(result) => Some(&result),
+                    None => None,
+                },
+                ty,
+            ),
+        }
+    }
+
+    fn build_block_expression(
+        &self,
+        scope_index: hir::ScopeIndex,
+        expressions: &[hir::Expression],
+        result: Option<&hir::Expression>,
+        ty: mir::Type,
+    ) -> mir::Expression {
+        let expressions: Box<_> = expressions
+            .iter()
+            .map(|expr| self.build_expression(expr))
+            .chain(match result {
+                Some(result) => {
+                    let expr = self.build_expression(result);
+
+                    // 0 is the root scope of the function
+                    match scope_index.0 == 0 {
+                        true => Some(mir::Expression {
+                            kind: mir::ExprKind::Return {
+                                value: Box::new(expr),
+                            },
+                            ty: mir::Type::Never,
+                        }),
+                        false => Some(mir::Expression {
+                            kind: mir::ExprKind::Break {
+                                scope_index: mir::ScopeIndex(scope_index.0),
+                                value: Some(Box::new(expr)),
+                            },
+                            ty: mir::Type::Never,
+                        }),
+                    }
+                }
+                None => None,
+            })
+            .collect();
+
+        mir::Expression {
+            kind: mir::ExprKind::Block {
+                scope_index: mir::ScopeIndex(scope_index.0),
+                expressions,
+            },
+            ty,
         }
     }
 
@@ -211,9 +292,13 @@ impl<'a> Builder<'a> {
                 let value = self.build_expression(rhs);
 
                 match lhs.kind {
-                    hir::ExprKind::Local(index) => mir::Expression {
+                    hir::ExprKind::Local {
+                        local_index,
+                        scope_index,
+                    } => mir::Expression {
                         kind: mir::ExprKind::Assign {
-                            index,
+                            local_index: local_index.0,
+                            scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(value),
                         },
                         ty,

@@ -45,9 +45,9 @@ impl EncodeWithContext for wasm::Instruction {
                     .get(func_index)
                     .unwrap()
                     .locals
-                    .get(*index as usize)
+                    .get(index.0 as usize)
                     .unwrap();
-                sink.push_str(local.name);
+                sink.push_str(format!("{}_{}", local.name, index.0).as_str());
             }
             wasm::Instruction::LocalSet { index } => {
                 sink.push_str("local.set $");
@@ -56,12 +56,31 @@ impl EncodeWithContext for wasm::Instruction {
                     .get(func_index)
                     .unwrap()
                     .locals
-                    .get(*index as usize)
+                    .get(index.0 as usize)
                     .unwrap();
-                sink.push_str(local.name);
+
+                sink.push_str(format!("{}_{}", local.name, index.0).as_str());
             }
             wasm::Instruction::Return => {
                 sink.push_str("return");
+            }
+            wasm::Instruction::Block { ty } => {
+                sink.push_str("(block ");
+                match ty {
+                    Some(ty) => {
+                        sink.push_str("(result ");
+                        ty.encode(sink);
+                        sink.push_str(")");
+                    }
+                    None => {}
+                }
+            }
+            wasm::Instruction::Br { block_index } => {
+                sink.push_str("br ");
+                block_index.encode(sink);
+            }
+            wasm::Instruction::End => {
+                sink.push_str(")");
             }
             wasm::Instruction::Drop => {
                 sink.push_str("drop");
@@ -159,9 +178,9 @@ impl EncodeWithContext for wasm::Function<'_> {
             false => {}
         }
 
-        for param in self.params().iter() {
+        for (param_index, param) in self.params().iter().enumerate() {
             sink.push_str("(param $");
-            sink.push_str(param.name);
+            sink.push_str(format!("{}_{}", param.name, param_index).as_str());
             sink.push_str(" ");
             param.ty.encode(sink);
             sink.push_str(")");
@@ -173,18 +192,17 @@ impl EncodeWithContext for wasm::Function<'_> {
             sink.push_str(")");
         }
 
-        for local in self.locals_without_params() {
+        for (local_index, local) in self.locals_without_params().iter().enumerate() {
             sink.push_str("(local $");
-            sink.push_str(local.name);
+            sink.push_str(format!("{}_{}", local.name, local_index + self.ty.param_count).as_str());
             sink.push_str(" ");
             local.ty.encode(sink);
             sink.push_str(")");
         }
 
         for instruction in &self.instructions {
-            sink.push_str("(");
             instruction.encode_with_context(sink, module, func_index);
-            sink.push_str(")");
+            sink.push_str(" ");
         }
         sink.push_str(")");
     }

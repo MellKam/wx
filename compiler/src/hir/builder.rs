@@ -5,78 +5,15 @@ use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
+use super::ScopeIndex;
 use super::diagnostics::DiagnosticContext;
-use super::{EnumIndex, HIR};
-use crate::ast::Identifier;
 use crate::{ast, hir};
 
 pub struct Builder<'a> {
     ast: &'a ast::Ast,
     interner: &'a StringInterner<StringBackend<SymbolU32>>,
-    global: GlobalScope,
+    global: hir::GlobalScope,
     diagnostics: Vec<hir::diagnostics::DiagnosticContext>,
-}
-
-#[derive(Debug, Clone)]
-enum GlobalValue {
-    Function(hir::FunctionIndex),
-    EnumVariant {
-        enum_index: hir::EnumIndex,
-        variant_index: hir::EnumVariantIndex,
-    },
-}
-
-#[derive(Debug, Clone)]
-enum GlobalType {
-    Enum(hir::EnumIndex),
-}
-
-#[derive(Debug)]
-struct EnumWithLookup {
-    pub name: SymbolU32,
-    pub type_: hir::PrimitiveType,
-    pub variants_lookup: HashMap<SymbolU32, hir::EnumVariantIndex>,
-    pub variants: Vec<hir::EnumVariant>,
-}
-
-#[derive(Debug)]
-struct GlobalScope {
-    pub functions: Vec<hir::FunctionType>,
-    pub enums: Vec<EnumWithLookup>,
-    pub type_lookup: HashMap<SymbolU32, GlobalType>,
-    pub value_lookup: HashMap<SymbolU32, GlobalValue>,
-}
-
-impl From<hir::Enum> for EnumWithLookup {
-    fn from(enum_: hir::Enum) -> Self {
-        Self {
-            name: enum_.name,
-            type_: enum_.ty,
-            variants_lookup: enum_
-                .variants
-                .iter()
-                .enumerate()
-                .map(|(index, variant)| (variant.name, index as hir::EnumVariantIndex))
-                .collect(),
-            variants: enum_.variants,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct BlockScope {
-    pub locals: Vec<hir::Local>,
-    pub local_lookup: HashMap<SymbolU32, hir::LocalIndex>,
-}
-
-impl BlockScope {
-    #[inline]
-    fn push_local(&mut self, local: hir::Local) -> hir::LocalIndex {
-        let index = self.locals.len() as hir::LocalIndex;
-        self.locals.push(local.clone());
-        self.local_lookup.insert(local.name, index);
-        index
-    }
 }
 
 impl<'a> Builder<'a> {
@@ -87,47 +24,22 @@ impl<'a> Builder<'a> {
         let mut builder = Builder {
             ast,
             interner,
-            global: GlobalScope {
-                functions: Vec::new(),
-                enums: Vec::new(),
-                type_lookup: HashMap::new(),
-                value_lookup: HashMap::new(),
-            },
+            global: hir::GlobalScope::new(),
             diagnostics: Vec::new(),
         };
 
-        for item in builder.ast.items.iter() {
+        for (item_id, item) in builder.ast.items.iter().enumerate() {
             match &item.kind {
                 ast::ItemKind::FunctionDefinition(def) => {
-                    let index = builder.global.functions.len() as hir::FunctionIndex;
-                    let func_type = match builder.create_function_type(&def.signature) {
-                        Ok(func_type) => func_type,
-                        Err(_) => {
-                            builder
-                                .diagnostics
-                                .push(DiagnosticContext::UnknownEnumVariant {
-                                    file_id: builder.ast.file_id,
-                                    enum_index: 0,
-                                    span: item.span,
-                                });
-                            continue;
-                        }
-                    };
+                    let func_type = builder.create_function_type(&def.signature).unwrap();
 
-                    builder.global.functions.push(func_type);
                     builder
                         .global
-                        .value_lookup
-                        .insert(def.signature.name.symbol, GlobalValue::Function(index));
+                        .add_function(def.signature.name.symbol, func_type);
                 }
                 ast::ItemKind::Enum(item_enum) => {
-                    let enum_index = builder.global.enums.len() as hir::EnumIndex;
-                    let enum_ = builder.build_enum_with_lookup(item_enum, enum_index);
-                    builder.global.enums.push(enum_);
-                    builder
-                        .global
-                        .type_lookup
-                        .insert(item_enum.name.symbol, GlobalType::Enum(enum_index));
+                    let enum_ = builder.build_enum(item_id as ast::ItemId, item_enum);
+                    builder.global.add_enum(enum_);
                 }
                 _ => unimplemented!("item kind not implemented"),
             }
@@ -148,18 +60,9 @@ impl<'a> Builder<'a> {
             }
         }
 
-        let hir = HIR {
+        let hir = hir::HIR {
             functions,
-            enums: builder
-                .global
-                .enums
-                .into_iter()
-                .map(|enum_| hir::Enum {
-                    name: enum_.name,
-                    ty: enum_.type_,
-                    variants: enum_.variants,
-                })
-                .collect(),
+            enums: builder.global.enums,
         };
 
         (hir, builder.diagnostics)
@@ -172,7 +75,7 @@ impl<'a> Builder<'a> {
             _ => {}
         }
         match self.global.type_lookup.get(&identifier.symbol).cloned() {
-            Some(GlobalType::Enum(index)) => return hir::Type::Enum(index),
+            Some(hir::GlobalType::Enum(index)) => return hir::Type::Enum(index),
             _ => {}
         }
 
@@ -202,46 +105,16 @@ impl<'a> Builder<'a> {
         Ok(hir::FunctionType { params, result })
     }
 
-    fn create_function_scope(
-        &mut self,
-        signature: &ast::FunctionSignature,
-    ) -> Result<BlockScope, ()> {
-        let locals: Vec<hir::Local> = signature
-            .params
-            .iter()
-            .map(|param| hir::Local {
-                name: param.name.symbol,
-                ty: self.resolve_type(param.ty.clone()),
-                mutability: hir::Mutability::Const,
-            })
-            .collect();
-
-        let local_lookup: HashMap<SymbolU32, hir::LocalIndex> = locals
-            .iter()
-            .enumerate()
-            .map(|(index, param)| (param.name, index as hir::LocalIndex))
-            .collect();
-
-        Ok(BlockScope {
-            locals,
-            local_lookup,
-        })
-    }
-
-    fn build_enum_with_lookup(
-        &mut self,
-        def: &ast::ItemEnum,
-        enum_index: EnumIndex,
-    ) -> EnumWithLookup {
-        let type_ = match self.resolve_type(def.ty.clone()) {
+    fn build_enum(&mut self, item_id: ast::ItemId, def: &ast::ItemEnum) -> hir::Enum {
+        let ty = match self.resolve_type(def.ty.clone()) {
             hir::Type::Primitive(ty) => ty,
             hir::Type::Unknown => hir::PrimitiveType::I32,
-            type_ => {
+            ty => {
                 self.diagnostics
                     .push(DiagnosticContext::InvalidEnumRepresentation {
                         file_id: self.ast.file_id,
-                        enum_index,
-                        type_,
+                        type_: ty,
+                        item_id,
                         span: def.ty.span,
                     });
 
@@ -252,7 +125,8 @@ impl<'a> Builder<'a> {
         let variants: Vec<hir::EnumVariant> = def
             .variants
             .iter()
-            .map(|variant| {
+            .enumerate()
+            .map(|(variant_index, variant)| {
                 let value_expr = self
                     .ast
                     .get_expr(variant.value)
@@ -260,14 +134,10 @@ impl<'a> Builder<'a> {
                 let value = match &value_expr.kind {
                     ast::ExprKind::Int { value } => value.clone(),
                     _ => {
-                        let expr = self
-                            .ast
-                            .get_expr(variant.value)
-                            .expect("invalid expression");
                         let diagnostic = DiagnosticContext::InvalidEnumValue {
                             file_id: self.ast.file_id,
-                            enum_index,
-                            span: expr.span,
+                            item_id,
+                            variant_index,
                         };
                         self.diagnostics.push(diagnostic);
 
@@ -282,17 +152,17 @@ impl<'a> Builder<'a> {
             })
             .collect();
 
-        let variants_lookup: HashMap<SymbolU32, usize> = variants
+        let variants_lookup: HashMap<SymbolU32, hir::EnumVariantIndex> = variants
             .iter()
             .enumerate()
-            .map(|(index, variant)| (variant.name, index as hir::EnumVariantIndex))
+            .map(|(index, variant)| (variant.name, hir::EnumVariantIndex(index as u32)))
             .collect();
 
-        EnumWithLookup {
+        hir::Enum {
             name: def.name.symbol,
-            type_,
-            variants_lookup,
-            variants,
+            ty,
+            variants: variants.into_boxed_slice(),
+            variant_lookup: variants_lookup,
         }
     }
 
@@ -307,58 +177,74 @@ impl<'a> Builder<'a> {
             .cloned()
             .unwrap();
         let func_index = match global_value {
-            GlobalValue::Function(index) => index,
+            hir::GlobalValue::Function(index) => index,
             _ => panic!("expected function index"),
         };
-        let func_type = self
-            .global
-            .functions
-            .get(func_index as usize)
-            .unwrap()
-            .clone();
+        let func_type = self.global.get_function(func_index).unwrap().clone();
 
-        let mut scope = self.create_function_scope(&def.signature)?;
-
-        let mut expressions: Vec<hir::Expression> = def
-            .block
-            .statements
+        let locals: Vec<hir::Local> = def
+            .signature
+            .params
             .iter()
-            .map(|&stmt_id| self.ast.get_stmt(stmt_id).unwrap())
-            .map(|stmt| self.build_statement(func_index, &mut scope, stmt))
-            .collect::<Result<_, _>>()?;
+            .map(|param| hir::Local {
+                name: param.name.symbol,
+                ty: self.resolve_type(param.ty.clone()),
+                mutability: hir::Mutability::Const,
+            })
+            .collect();
 
-        match def.block.result {
-            Some(expr_id) => {
-                let expr = self.build_expression(func_index, &mut scope, expr_id)?;
+        let local_lookup: HashMap<(ScopeIndex, SymbolU32), hir::LocalIndex> = locals
+            .iter()
+            .enumerate()
+            .map(|(index, param)| ((ScopeIndex(0), param.name), hir::LocalIndex(index as u32)))
+            .collect();
 
-                let coerced = self.coerce_expr(expr, expr_id, func_type.result)?;
-                expressions.push(coerced);
+        let mut ctx = hir::FunctionContext {
+            func_index,
+            scopes: hir::LocalScopes {
+                scopes: vec![hir::LocalScope {
+                    parent_scope: None,
+                    locals,
+                }],
+            },
+            scope_index: hir::ScopeIndex(0),
+            local_lookup,
+        };
+
+        let expr = self.build_block_expression(&mut ctx, def.block)?;
+        let (expressions, result) = match expr.kind {
+            hir::ExprKind::Block {
+                expressions,
+                result,
+                ..
+            } => {
+                let result = match result {
+                    Some(result) => Some(self.coerce_expr(*result, def.block, func_type.result)?),
+                    None => None,
+                };
+                (expressions, result)
             }
-            None => {}
+            _ => unreachable!("expected block expression"),
         };
 
-        let block = hir::Block {
-            locals: scope.locals,
-            expressions,
-            ty: func_type.result,
-        };
         Ok(hir::Function {
             ty: func_type,
             name: def.signature.name.symbol,
             export: def.export.is_some(),
-            block,
+            scopes: ctx.scopes,
+            expressions,
+            result,
         })
     }
 
     fn build_statement(
         &mut self,
-        func_index: hir::FunctionIndex,
-        scope: &mut BlockScope,
-        statement: &ast::Statement,
+        ctx: &mut hir::FunctionContext,
+        stmt: &ast::Statement,
     ) -> Result<hir::Expression, ()> {
-        match &statement.kind {
+        match &stmt.kind {
             ast::StmtKind::DelimitedExpression { value } => {
-                let expr = self.build_expression(func_index, scope, *value)?;
+                let expr = self.build_expression(ctx, *value)?;
                 match expr.ty {
                     Some(hir::Type::Unit) => {}
                     Some(hir::Type::Never) => {}
@@ -385,41 +271,33 @@ impl<'a> Builder<'a> {
                 }
                 Ok(expr)
             }
-            ast::StmtKind::ConstDefinition { name, ty, value } => self.build_declaration_statement(
-                func_index,
-                scope,
-                name.clone(),
-                ty.clone(),
-                *value,
-                hir::Mutability::Const,
-            ),
-            ast::StmtKind::MutableDefinition { name, ty, value } => self
-                .build_declaration_statement(
-                    func_index,
-                    scope,
-                    name.clone(),
-                    ty.clone(),
-                    *value,
-                    hir::Mutability::Mutable,
-                ),
+            ast::StmtKind::ConstDefinition { .. } => self.build_declaration_statement(ctx, stmt),
+            ast::StmtKind::MutableDefinition { .. } => self.build_declaration_statement(ctx, stmt),
         }
     }
 
     fn build_declaration_statement(
         &mut self,
-        func_index: hir::FunctionIndex,
-        scope: &mut BlockScope,
-        name: Identifier,
-        ty: Option<Identifier>,
-        value: ast::ExprId,
-        mutability: hir::Mutability,
+        ctx: &mut hir::FunctionContext,
+        stmt: &ast::Statement,
     ) -> Result<hir::Expression, ()> {
-        match scope.local_lookup.get(&name.symbol).copied() {
-            Some(_) => panic!("variable already defined"),
-            None => {}
-        }
+        let (name, ty, value, mutability) = match &stmt.kind {
+            ast::StmtKind::ConstDefinition { name, ty, value } => (
+                name.clone(),
+                ty.clone(),
+                value.clone(),
+                hir::Mutability::Const,
+            ),
+            ast::StmtKind::MutableDefinition { name, ty, value } => (
+                name.clone(),
+                ty.clone(),
+                value.clone(),
+                hir::Mutability::Mutable,
+            ),
+            _ => unreachable!("expected declaration statement"),
+        };
 
-        let value_expr = self.build_expression(func_index, scope, value)?;
+        let value_expr = self.build_expression(ctx, value)?;
         let binding_type = match ty {
             Some(ty) => self.resolve_type(ty),
             None => match value_expr.ty {
@@ -438,7 +316,7 @@ impl<'a> Builder<'a> {
             .coerce_expr(value_expr, value, binding_type)
             .expect("can't assign to this type");
 
-        let local_index = scope.push_local(hir::Local {
+        let local_index = ctx.push_local(hir::Local {
             name: name.symbol,
             ty: binding_type,
             mutability,
@@ -446,7 +324,8 @@ impl<'a> Builder<'a> {
 
         Ok(hir::Expression {
             kind: hir::ExprKind::LocalDeclaration {
-                index: local_index,
+                scope_index: ctx.scope_index,
+                local_index,
                 expr: Box::new(coerced_rhs),
             },
             ty: Some(binding_type),
@@ -455,28 +334,32 @@ impl<'a> Builder<'a> {
 
     fn build_identifier_expression(
         &mut self,
-        scope: &BlockScope,
+        ctx: &hir::FunctionContext,
         expr_id: ast::ExprId,
-        symbol: SymbolU32,
     ) -> Result<hir::Expression, ()> {
+        let symbol = match self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Identifier { symbol } => symbol,
+            _ => unreachable!("expected identifier expression"),
+        };
+
         match self.interner.resolve(symbol).unwrap() {
             "_" => {
                 return Ok(hir::Expression {
                     kind: hir::ExprKind::Placeholder,
-                    ty: Some(hir::Type::Unit),
+                    ty: None,
                 });
             }
             _ => {}
         };
 
-        match scope.local_lookup.get(&symbol).copied() {
-            Some(index) => {
-                let local = match scope.locals.get(index as usize).cloned() {
-                    Some(local) => local,
-                    None => unreachable!(),
-                };
+        match ctx.resolve_local(symbol) {
+            Some((scope_index, local_index)) => {
+                let local = ctx.scopes.get_local(scope_index, local_index).unwrap();
                 return Ok(hir::Expression {
-                    kind: hir::ExprKind::Local(index as hir::LocalIndex),
+                    kind: hir::ExprKind::Local {
+                        local_index,
+                        scope_index,
+                    },
                     ty: Some(local.ty),
                 });
             }
@@ -485,13 +368,13 @@ impl<'a> Builder<'a> {
 
         match self.global.value_lookup.get(&symbol).cloned() {
             Some(value) => match value {
-                GlobalValue::Function(func_index) => {
+                hir::GlobalValue::Function(func_index) => {
                     return Ok(hir::Expression {
                         kind: hir::ExprKind::Function(func_index),
                         ty: Some(hir::Type::Function(func_index)),
                     });
                 }
-                GlobalValue::EnumVariant {
+                hir::GlobalValue::EnumVariant {
                     enum_index,
                     variant_index,
                 } => {
@@ -517,24 +400,30 @@ impl<'a> Builder<'a> {
 
     fn build_namespace_member_expression(
         &mut self,
-        namespace: ast::Identifier,
-        member: ast::Identifier,
+        expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
+        let (namespace, member) = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::NamespaceMember { namespace, member } => (namespace, member),
+            _ => unreachable!("expected namespace member expression"),
+        };
+
         let global_type = match self.global.type_lookup.get(&namespace.symbol).cloned() {
             Some(item) => item,
             None => panic!("undeclared namespace"),
         };
         let enum_index = match global_type {
-            GlobalType::Enum(enum_index) => enum_index,
+            hir::GlobalType::Enum(enum_index) => enum_index,
         };
 
-        let enum_ = self
-            .global
-            .enums
-            .get(enum_index as usize)
-            .expect("invalid enum");
-        let variant_index = match enum_.variants_lookup.get(&member.symbol).copied() {
-            Some(index) => index,
+        let enum_ = self.global.get_enum(enum_index).expect("invalid enum");
+        match enum_.variant_lookup.get(&member.symbol).copied() {
+            Some(variant_index) => Ok(hir::Expression {
+                kind: hir::ExprKind::EnumVariant {
+                    enum_index,
+                    variant_index,
+                },
+                ty: Some(hir::Type::Enum(enum_index)),
+            }),
             None => {
                 self.diagnostics
                     .push(DiagnosticContext::UnknownEnumVariant {
@@ -543,24 +432,17 @@ impl<'a> Builder<'a> {
                         span: member.span,
                     });
 
-                // TODO: how would this work with empty enum?
-                0 // fallback value
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Placeholder,
+                    ty: Some(hir::Type::Enum(enum_index)),
+                })
             }
-        };
-
-        Ok(hir::Expression {
-            kind: hir::ExprKind::EnumVariant {
-                enum_index,
-                variant_index,
-            },
-            ty: Some(hir::Type::Enum(enum_index)),
-        })
+        }
     }
 
     fn build_expression(
         &mut self,
-        func_index: hir::FunctionIndex,
-        scope: &mut BlockScope,
+        ctx: &mut hir::FunctionContext,
         expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
         let expr = self.ast.get_expr(expr_id).unwrap();
@@ -569,47 +451,72 @@ impl<'a> Builder<'a> {
                 kind: hir::ExprKind::Int(value.clone()),
                 ty: None,
             }),
-            ast::ExprKind::Identifier { symbol } => {
-                self.build_identifier_expression(scope, expr_id, *symbol)
-            }
-            ast::ExprKind::Binary {
-                left: left_id,
-                right: right_id,
-                operator,
-            } => {
-                let left = self.build_expression(func_index, scope, *left_id)?;
-                let right = self.build_expression(func_index, scope, *right_id)?;
-                Ok(
-                    self.build_binary_expression(
-                        scope, *operator, left, *left_id, right, *right_id,
-                    ),
-                )
-            }
+            ast::ExprKind::Identifier { .. } => self.build_identifier_expression(ctx, expr_id),
+            ast::ExprKind::Binary { .. } => self.build_binary_expression(ctx, expr_id),
             ast::ExprKind::Unary { operator, operand } => Ok(Builder::build_unary_expression(
                 *operator,
-                self.build_expression(func_index, scope, *operand)?,
+                self.build_expression(ctx, *operand)?,
             )),
-            ast::ExprKind::Call { callee, arguments } => {
-                self.build_call_expression(func_index, scope, *callee, &arguments)
+            ast::ExprKind::Call { .. } => self.build_call_expression(ctx, expr_id),
+            ast::ExprKind::NamespaceMember { .. } => {
+                self.build_namespace_member_expression(expr_id)
             }
-            ast::ExprKind::NamespaceMember { namespace, member } => {
-                self.build_namespace_member_expression(namespace.clone(), member.clone())
+            ast::ExprKind::Return { value } => self.build_return_expression(ctx, *value),
+            ast::ExprKind::Grouping { .. } => self.build_expression(ctx, expr_id),
+            ast::ExprKind::Block { .. } => {
+                ctx.enter_scope(|ctx| self.build_block_expression(ctx, expr_id))
             }
-            ast::ExprKind::Return { value } => {
-                self.build_return_expression(func_index, scope, *value)
-            }
-            _ => unimplemented!(),
         }
+    }
+
+    fn build_block_expression(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        block_id: ast::ExprId,
+    ) -> Result<hir::Expression, ()> {
+        let block = self
+            .ast
+            .get_expr(block_id)
+            .expect("invalid block expression");
+
+        let (statements, result) = match &block.kind {
+            ast::ExprKind::Block { statements, result } => (statements, result),
+            _ => panic!("expected block expression"),
+        };
+
+        let expressions: Vec<_> = statements
+            .iter()
+            .map(|&stmt_id| self.ast.get_stmt(stmt_id).unwrap())
+            .map(|stmt| self.build_statement(ctx, stmt))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut ty: Option<hir::Type> = Some(hir::Type::Unit);
+        let result = match result {
+            Some(result) => {
+                let expr = self.build_expression(ctx, *result)?;
+                ty = expr.ty.clone();
+                Some(Box::new(expr))
+            }
+            None => None,
+        };
+
+        Ok(hir::Expression {
+            kind: hir::ExprKind::Block {
+                scope_index: ctx.scope_index,
+                expressions: expressions.into_boxed_slice(),
+                result,
+            },
+            ty,
+        })
     }
 
     fn build_return_expression(
         &mut self,
-        func_index: hir::FunctionIndex,
-        scope: &mut BlockScope,
+        ctx: &mut hir::FunctionContext,
         value: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
-        let expr = self.build_expression(func_index, scope, value)?;
-        let func_result = match self.global.functions.get(func_index as usize) {
+        let expr = self.build_expression(ctx, value)?;
+        let func_result = match self.global.get_function(ctx.func_index) {
             Some(func_type) => func_type.result,
             None => panic!("invalid function index"),
         };
@@ -623,16 +530,19 @@ impl<'a> Builder<'a> {
 
     fn build_call_expression(
         &mut self,
-        func_index: hir::FunctionIndex,
-        scope: &mut BlockScope,
-        callee_id: ast::ExprId,
-        arguments: &Vec<ast::ExprId>,
+        ctx: &mut hir::FunctionContext,
+        expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
-        let callee = self.build_expression(func_index, scope, callee_id)?;
+        let (callee_id, arguments) = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Call { callee, arguments } => (callee, arguments),
+            _ => unreachable!("expected call expression"),
+        };
+
+        let callee = self.build_expression(ctx, *callee_id)?;
         let func_index = match callee.kind {
             hir::ExprKind::Function(func_index) => func_index,
             _ => {
-                let callee_ast_expr = self.ast.get_expr(callee_id).unwrap();
+                let callee_ast_expr = self.ast.get_expr(*callee_id).unwrap();
                 self.diagnostics
                     .push(DiagnosticContext::NonCallableIdentifier {
                         file_id: self.ast.file_id,
@@ -642,7 +552,7 @@ impl<'a> Builder<'a> {
             }
         };
 
-        let func_type = match self.global.functions.get(func_index as usize).cloned() {
+        let func_type = match self.global.get_function(func_index).cloned() {
             Some(func_type) => func_type,
             None => panic!("invalid function index"),
         };
@@ -650,7 +560,7 @@ impl<'a> Builder<'a> {
             .iter()
             .enumerate()
             .map(|(index, arg)| {
-                let expr = self.build_expression(func_index, scope, *arg)?;
+                let expr = self.build_expression(ctx, *arg)?;
 
                 self.coerce_expr(expr, *arg, func_type.params.get(index).copied().unwrap())
             })
@@ -696,29 +606,40 @@ impl<'a> Builder<'a> {
 
     fn build_assignment_expression(
         &mut self,
-        scope: &mut BlockScope,
-        left: hir::Expression,
-        right: hir::Expression,
+        ctx: &mut hir::FunctionContext,
+        left_id: ast::ExprId,
         right_id: ast::ExprId,
-    ) -> hir::Expression {
-        let local_index = match left.kind {
-            hir::ExprKind::Local(index) => index,
+    ) -> Result<hir::Expression, ()> {
+        let left = self.build_expression(ctx, left_id)?;
+        let right = self.build_expression(ctx, right_id)?;
+
+        let (scope_index, local_index) = match left.kind {
+            hir::ExprKind::Local {
+                scope_index,
+                local_index,
+            } => (scope_index, local_index),
             hir::ExprKind::Placeholder => {
-                return hir::Expression {
+                let right_type = match right.ty {
+                    Some(ty) => ty,
+                    None => panic!("can't drop untyped value"),
+                };
+
+                return Ok(hir::Expression {
                     kind: hir::ExprKind::Binary {
                         operator: ast::BinaryOperator::Assign,
                         lhs: Box::new(hir::Expression {
                             kind: hir::ExprKind::Placeholder,
-                            ty: right.ty.clone(),
+                            ty: Some(right_type),
                         }),
                         rhs: Box::new(right),
                     },
                     ty: Some(hir::Type::Unit),
-                };
+                });
             }
             _ => panic!("left side of assignment must be a variable"),
         };
-        let local = match scope.locals.get(local_index as usize) {
+
+        let local = match ctx.scopes.get_local(scope_index, local_index) {
             Some(local) => local,
             None => panic!("can't assign to undeclared variable"),
         };
@@ -731,14 +652,14 @@ impl<'a> Builder<'a> {
             .coerce_expr(right, right_id, local.ty)
             .expect("invalid assignment type");
 
-        hir::Expression {
+        Ok(hir::Expression {
             kind: hir::ExprKind::Binary {
                 lhs: Box::new(left),
                 operator: ast::BinaryOperator::Assign,
                 rhs: Box::new(coerced_rhs),
             },
             ty: Some(hir::Type::Unit),
-        }
+        })
     }
 
     fn coerce_expr(
@@ -748,10 +669,12 @@ impl<'a> Builder<'a> {
         expected_type: hir::Type,
     ) -> Result<hir::Expression, ()> {
         match (expected_type, rhs.ty) {
-            (ty, None) => self.coerce_untyped_expr(&rhs, rhs_id, ty),
-            (hir::Type::Primitive(ty), Some(hir::Type::Primitive(ty2))) if ty == ty2 => Ok(rhs),
+            (ty, None) => self.coerce_untyped_expr(rhs, rhs_id, ty),
+            (hir::Type::Primitive(ty), Some(hir::Type::Primitive(ty2))) if ty == ty2 => {
+                Ok(rhs.clone())
+            }
             (hir::Type::Enum(index_1), Some(hir::Type::Enum(index_2))) if index_1 == index_2 => {
-                Ok(rhs)
+                Ok(rhs.clone())
             }
             (expected_type, rhs_type) => {
                 let ast_expr = self.ast.get_expr(rhs_id).unwrap();
@@ -768,13 +691,84 @@ impl<'a> Builder<'a> {
 
     fn coerce_untyped_expr(
         &mut self,
-        expr: &hir::Expression,
+        expr: hir::Expression,
         expr_id: ast::ExprId,
         ty: hir::Type,
     ) -> Result<hir::Expression, ()> {
-        match (&expr.kind, ty) {
-            (hir::ExprKind::Int(value), ty) => self.coerce_untyped_int_expr(*value, expr_id, ty),
+        match (expr.kind, ty) {
+            (hir::ExprKind::Int(value), ty) => self.coerce_untyped_int_expr(value, expr_id, ty),
+            (hir::ExprKind::Binary { lhs, operator, rhs }, ty) => {
+                let (left_id, right_id) = match self.ast.get_expr(expr_id).unwrap().kind {
+                    ast::ExprKind::Binary { left, right, .. } => (left, right),
+                    _ => unreachable!("expected binary expression"),
+                };
+                let lhs = self.coerce_untyped_expr(*lhs, left_id, ty.clone())?;
+                let rhs = self.coerce_untyped_expr(*rhs, right_id, ty.clone())?;
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Binary {
+                        operator,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                    },
+                    ty: Some(ty),
+                })
+            }
+            (
+                hir::ExprKind::Block {
+                    expressions,
+                    result,
+                    scope_index,
+                },
+                ty,
+            ) => self.coerce_untyped_block_expr(expressions, result, scope_index, expr_id, ty),
             (kind, _) => panic!("expected literal untyped expression, got {:?}", kind),
+        }
+    }
+
+    fn coerce_untyped_block_expr(
+        &mut self,
+        expressions: Box<[hir::Expression]>,
+        result: Option<Box<hir::Expression>>,
+        scope_index: hir::ScopeIndex,
+        expr_id: ast::ExprId,
+        ty: hir::Type,
+    ) -> Result<hir::Expression, ()> {
+        match result {
+            Some(result) => {
+                let result_expr_id = match self.ast.get_expr(expr_id).unwrap().kind {
+                    ast::ExprKind::Block { result, .. } => result.unwrap(),
+                    _ => unreachable!("expected block expression"),
+                };
+                let coerced = self.coerce_expr(*result, result_expr_id, ty)?;
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Block {
+                        result: Some(Box::new(coerced.clone())),
+                        expressions,
+                        scope_index,
+                    },
+                    ty: Some(ty),
+                })
+            }
+            None => match ty {
+                hir::Type::Unit => Ok(hir::Expression {
+                    kind: hir::ExprKind::Block {
+                        result: None,
+                        expressions,
+                        scope_index,
+                    },
+                    ty: Some(hir::Type::Unit),
+                }),
+                _ => {
+                    let ast_expr = self.ast.get_expr(expr_id).unwrap();
+                    self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                        file_id: self.ast.file_id,
+                        expected: ty,
+                        actual: None,
+                        span: ast_expr.span,
+                    });
+                    Err(())
+                }
+            },
         }
     }
 
@@ -825,22 +819,50 @@ impl<'a> Builder<'a> {
 
     fn build_binary_expression(
         &mut self,
-        scope: &mut BlockScope,
-        operator: ast::BinaryOperator,
-        left: hir::Expression,
-        left_id: ast::ExprId,
-        right: hir::Expression,
-        right_id: ast::ExprId,
-    ) -> hir::Expression {
-        use hir::*;
+        ctx: &mut hir::FunctionContext,
+        expr_id: ast::ExprId,
+    ) -> Result<hir::Expression, ()> {
+        let (left_id, right_id, operator) = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Binary {
+                left: left_id,
+                right: right_id,
+                operator,
+            } => (left_id.clone(), right_id.clone(), operator.clone()),
+            _ => unreachable!("expected binary expression"),
+        };
+
         match operator {
             ast::BinaryOperator::Assign => {
-                self.build_assignment_expression(scope, left, right, right_id)
+                return self.build_assignment_expression(ctx, left_id, right_id);
             }
+            _ => {}
+        }
+
+        let left = self.build_expression(ctx, left_id)?;
+        let right = self.build_expression(ctx, right_id)?;
+
+        use hir::*;
+        match operator {
             ast::BinaryOperator::Add
             | ast::BinaryOperator::Subtract
-            | ast::BinaryOperator::Multiply => match (left.ty, right.ty) {
-                (None, None) => Builder::evaluate_untyped_binary_expr(operator, left, right),
+            | ast::BinaryOperator::Multiply
+            | ast::BinaryOperator::Divide
+            | ast::BinaryOperator::Remainder => match (left.ty, right.ty) {
+                (None, None) => {
+                    let evaluated =
+                        Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
+                    match evaluated {
+                        Some(expr) => Ok(expr),
+                        None => Ok(Expression {
+                            kind: ExprKind::Binary {
+                                operator,
+                                lhs: Box::new(left),
+                                rhs: Box::new(right),
+                            },
+                            ty: None,
+                        }),
+                    }
+                }
                 (None, Some(ty)) | (Some(ty), None) => {
                     let (typed, untyped) = match left.ty {
                         Some(_) => ((left.clone(), left_id), (right, right_id)),
@@ -848,7 +870,7 @@ impl<'a> Builder<'a> {
                     };
 
                     let coerced = self
-                        .coerce_untyped_expr(&untyped.0, untyped.1, ty)
+                        .coerce_untyped_expr(untyped.0, untyped.1, ty)
                         .expect("invalid coercion");
 
                     let (left, right) = match left.ty {
@@ -856,26 +878,26 @@ impl<'a> Builder<'a> {
                         None => (coerced, typed.0),
                     };
 
-                    Expression {
+                    Ok(Expression {
                         kind: ExprKind::Binary {
                             operator,
                             lhs: Box::new(left),
                             rhs: Box::new(right),
                         },
                         ty: Some(ty),
-                    }
+                    })
                 }
                 (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
                     if primitive_1 == primitive_2 =>
                 {
-                    Expression {
+                    Ok(Expression {
                         kind: ExprKind::Binary {
                             operator,
                             lhs: Box::new(left),
                             rhs: Box::new(right),
                         },
                         ty: Some(Type::Primitive(primitive_1)),
-                    }
+                    })
                 }
                 _ => panic!("type mismatch in binary expression"),
             },
@@ -883,13 +905,13 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn evaluate_untyped_binary_expr(
+    fn try_evaluate_untyped_binary_expr(
         operator: ast::BinaryOperator,
-        left: hir::Expression,
-        right: hir::Expression,
-    ) -> hir::Expression {
-        match (left.kind, right.kind) {
-            (hir::ExprKind::Int(left), hir::ExprKind::Int(right)) => {
+        left: &hir::Expression,
+        right: &hir::Expression,
+    ) -> Option<hir::Expression> {
+        match (&left.kind, &right.kind) {
+            (hir::ExprKind::Int(left), &hir::ExprKind::Int(right)) => {
                 let value = match operator {
                     ast::BinaryOperator::Add => left.checked_add(right),
                     ast::BinaryOperator::Subtract => left.checked_sub(right),
@@ -900,12 +922,12 @@ impl<'a> Builder<'a> {
                 }
                 .expect("integer overflow");
 
-                hir::Expression {
+                Some(hir::Expression {
                     kind: hir::ExprKind::Int(value),
                     ty: None,
-                }
+                })
             }
-            _ => panic!("can't evaluate untyped expression"),
+            _ => None,
         }
     }
 }

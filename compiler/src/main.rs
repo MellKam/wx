@@ -24,19 +24,20 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            fn add(x: i32, y: i32): i32 {
-                x + y
-            }
+            export fn main(x: i32): i32 {
+                // variable x is shadowing the x argument
+                const x: i32 = 10;                
+                const y: i32 = { 10 } + { 20 };           
 
-            export fn main(): i32 { 
-                const a: i32 = 5;
+                {
+                    // variable shadowing in scopes
+                    const x: i32 = 30;
+                    const y = x + 10; 
 
-                const x: i32 = add(2, 2);
+                    const z = x + y;
+                };
 
-                // works fine without type annotation
-                const y = add(3, 3) + 2;
-
-                532523
+                z
             }
             "# }
             .to_string(),
@@ -76,7 +77,7 @@ fn main() {
     let mir = mir::Builder::build(&hir);
     // println!("{:#?}", mir);
     let wasm = wasm::Builder::build(&mir, &interner);
-    println!("{:#?}", wasm);
+    // println!("{:#?}", wasm);
     let mut file = std::fs::File::create("out.wat").unwrap();
     file.write(wasm.encode_wat().as_bytes()).unwrap();
 

@@ -7,7 +7,7 @@ use string_interner::symbol::SymbolU32;
 use super::diagnostics::DiagnosticContext;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
-    Ast, BinaryOperator, Block, EnumVariant, ExprId, ExprKind, FunctionParam, FunctionSignature,
+    Ast, BinaryOperator, EnumVariant, ExprId, ExprKind, FunctionParam, FunctionSignature,
     Identifier, ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, Statement, StmtId, StmtKind,
     UnaryOperator,
 };
@@ -186,6 +186,7 @@ impl<'a> Parser<'a> {
     ) -> Option<(fn(parser: &mut Parser) -> Result<ExprId, ()>, BindingPower)> {
         match token.kind {
             TokenKind::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
+            TokenKind::OpenBrace => Some((Parser::parse_block_expression, BindingPower::Primary)),
             // TokenKind::Float { .. } => Some((parse_float_expression, BindingPower::Primary)),
             // TokenKind::String { .. } => Some((parse_string_expression, BindingPower::Primary)),
             // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
@@ -328,25 +329,27 @@ impl<'a> Parser<'a> {
         match parser.lexer.peek().kind {
             TokenKind::CloseParen => {
                 let close_paren = parser.lexer.next();
-                parser
-                    .ast
-                    .set_expr(expr_id, |expr| {
-                        expr.span = Span::merge(open_paren.span, close_paren.span);
-                    })
-                    .unwrap();
+                let expr_id = parser.ast.push_expr(
+                    ExprKind::Grouping { value: expr_id },
+                    Span::merge(open_paren.span, close_paren.span),
+                );
                 Ok(expr_id)
             }
             _ => {
                 let expr = parser.ast.get_expr(expr_id).unwrap();
-                parser.diagnostics.push(
-                    DiagnosticContext::MissingClosingParen {
+                parser
+                    .diagnostics
+                    .push(DiagnosticContext::MissingClosingParen {
                         file_id: parser.ast.file_id,
                         opening_paren: open_paren.span,
                         expr_span: expr.span,
-                    }
-                    .into(),
+                    });
+
+                let expr_id = parser.ast.push_expr(
+                    ExprKind::Grouping { value: expr_id },
+                    Span::merge(open_paren.span, expr.span),
                 );
-                Err(())
+                Ok(expr_id)
             }
         }
     }
@@ -537,7 +540,7 @@ impl<'a> Parser<'a> {
                         symbol: name_symbol,
                         span: name_token.span,
                     },
-                    params,
+                    params: params.into_boxed_slice(),
                     result: Some(Identifier {
                         symbol: return_type_symbol,
                         span: return_type_token.span,
@@ -550,7 +553,7 @@ impl<'a> Parser<'a> {
                     symbol: name_symbol,
                     span: name_token.span,
                 },
-                params,
+                params: params.into_boxed_slice(),
                 result: None,
                 span: Span::merge(name_token.span, close_paren.span),
             }),
@@ -584,21 +587,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_block(&mut self) -> Result<Block, ()> {
-        let open_brace = self.lexer.next();
-        let mut block = Block {
-            statements: Vec::new(),
-            result: None,
-            span: open_brace.span,
-        };
+    fn parse_block_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+        let open_brace = parser.lexer.next();
+        let mut statements = Vec::new();
+        let mut result: Option<ExprId> = None;
 
         loop {
-            let token = self.lexer.peek();
+            let token = parser.lexer.peek();
             match token.kind {
                 TokenKind::CloseBrace => break,
                 TokenKind::Eof => {
-                    self.diagnostics.push(DiagnosticContext::UnexpectedEof {
-                        file_id: self.ast.file_id,
+                    parser.diagnostics.push(DiagnosticContext::UnexpectedEof {
+                        file_id: parser.ast.file_id,
                         span: token.span,
                     });
                     return Err(());
@@ -607,7 +607,7 @@ impl<'a> Parser<'a> {
             };
 
             let handler: Option<fn(&mut Parser) -> Result<StmtId, ()>> =
-                match self.intern_keyword(token.clone()) {
+                match parser.intern_keyword(token.clone()) {
                     Ok(Keyword::Const) => Some(Parser::parse_variable_definition),
                     Ok(Keyword::Mut) => Some(Parser::parse_variable_definition),
                     _ => None,
@@ -615,57 +615,64 @@ impl<'a> Parser<'a> {
 
             match handler {
                 Some(handler) => {
-                    match handler(self) {
-                        Ok(stmt_id) => block.statements.push(stmt_id),
-                        Err(_) => self.skip_to_next_statement(),
+                    match handler(parser) {
+                        Ok(stmt_id) => statements.push(stmt_id),
+                        Err(_) => parser.skip_to_next_statement(),
                     };
                     continue;
                 }
                 None => {}
             }
 
-            let expr_id = match self.parse_expression(BindingPower::Default) {
+            let expr_id = match parser.parse_expression(BindingPower::Default) {
                 Ok(expr_id) => expr_id,
                 Err(_) => {
-                    self.skip_to_next_statement();
+                    parser.skip_to_next_statement();
                     continue;
                 }
             };
-            let expr = self.ast.get_expr(expr_id).unwrap();
+            let expr = parser.ast.get_expr(expr_id).unwrap();
 
-            match self.lexer.peek().kind {
+            match parser.lexer.peek().kind {
                 TokenKind::SemiColon => {
-                    let semicolon = self.lexer.next();
-                    let stmt_id = self.ast.push_stmt(Statement {
+                    let semicolon = parser.lexer.next();
+                    let stmt_id = parser.ast.push_stmt(Statement {
                         kind: StmtKind::DelimitedExpression { value: expr_id },
                         span: Span::merge(expr.span, semicolon.span),
                     });
-                    block.statements.push(stmt_id);
+                    statements.push(stmt_id);
                 }
                 TokenKind::CloseBrace => {
-                    block.result = Some(expr_id);
+                    result = Some(expr_id);
                     break;
                 }
                 _ => {
-                    self.diagnostics
+                    parser
+                        .diagnostics
                         .push(DiagnosticContext::MissingStatementDelimiter {
-                            file_id: self.ast.file_id,
+                            file_id: parser.ast.file_id,
                             position: expr.span.end(),
                         });
 
-                    let stmt_id = self.ast.push_stmt(Statement {
+                    let stmt_id = parser.ast.push_stmt(Statement {
                         kind: StmtKind::DelimitedExpression { value: expr_id },
                         span: expr.span,
                     });
-                    block.statements.push(stmt_id);
+                    statements.push(stmt_id);
                 }
             }
         }
 
-        let close_brace = self.lexer.next();
-        block.span = Span::merge(open_brace.span, close_brace.span);
+        let close_brace = parser.lexer.next();
+        let expr_id = parser.ast.push_expr(
+            ExprKind::Block {
+                statements: statements.into_boxed_slice(),
+                result,
+            },
+            Span::merge(open_brace.span, close_brace.span),
+        );
 
-        Ok(block)
+        Ok(expr_id)
     }
 
     fn parse_function_definition(parser: &mut Parser) -> Result<ItemId, ()> {
@@ -687,15 +694,15 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let block = parser.parse_block()?;
-        let span = Span::merge(fn_keyword.span, block.span);
+        let block_expr_id = Parser::parse_block_expression(parser)?;
+        let block = parser.ast.get_expr(block_expr_id).unwrap();
         let item_id = parser.ast.push_item(
             ItemKind::FunctionDefinition(ItemFunctionDefinition {
                 export: None,
                 signature,
-                block,
+                block: block_expr_id,
             }),
-            span,
+            Span::merge(fn_keyword.span, block.span),
         );
 
         Ok(item_id)
@@ -742,7 +749,10 @@ impl<'a> Parser<'a> {
 
         let callee_expr = parser.ast.get_expr(callee).unwrap();
         let expr_id = parser.ast.push_expr(
-            ExprKind::Call { callee, arguments },
+            ExprKind::Call {
+                callee,
+                arguments: arguments.into_boxed_slice(),
+            },
             Span::merge(callee_expr.span, close_paren.span),
         );
         Ok(expr_id)
@@ -853,7 +863,7 @@ impl<'a> Parser<'a> {
                     symbol: type_symbol,
                     span: type_token.span,
                 },
-                variants,
+                variants: variants.into_boxed_slice(),
             }),
             Span::merge(enum_keyword.span, close_brace.span),
         );

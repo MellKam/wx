@@ -7,9 +7,12 @@ pub use encoder::*;
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    LocalGet { index: u32 },
-    LocalSet { index: u32 },
+    LocalGet { index: LocalIndex },
+    LocalSet { index: LocalIndex },
     Return,
+    Block { ty: Option<ValueType> },
+    Br { block_index: u32 },
+    End,
     Drop,
     Call { index: u32 },
 
@@ -69,12 +72,15 @@ pub struct Local<'a> {
     ty: ValueType,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LocalIndex(pub u32);
+
 #[derive(Debug, Clone)]
 pub struct Function<'a> {
     export: bool,
     name: &'a str,
     ty: FunctionType,
-    locals: Vec<Local<'a>>,
+    locals: Box<[Local<'a>]>,
     instructions: Vec<Instruction>,
 }
 

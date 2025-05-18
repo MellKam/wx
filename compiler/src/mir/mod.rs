@@ -3,6 +3,8 @@ use string_interner::symbol::SymbolU32;
 pub mod builder;
 pub use builder::*;
 
+use crate::hir;
+
 #[derive(Debug)]
 pub struct MIR {
     pub functions: Vec<Function>,
@@ -44,7 +46,8 @@ pub enum Type {
 pub enum ExprKind {
     Noop,
     Local {
-        index: LocalIndex,
+        scope_index: ScopeIndex,
+        local_index: LocalIndex,
     },
     Function {
         index: FunctionIndex,
@@ -53,7 +56,8 @@ pub enum ExprKind {
         value: i64,
     },
     Assign {
-        index: LocalIndex,
+        scope_index: ScopeIndex,
+        local_index: LocalIndex,
         value: Box<Expression>,
     },
     Add {
@@ -76,11 +80,19 @@ pub enum ExprKind {
     },
     Call {
         callee: FunctionIndex,
-        arguments: Vec<Expression>,
+        arguments: Box<[Expression]>,
     },
     Equal {
         left: Box<Expression>,
         right: Box<Expression>,
+    },
+    Block {
+        scope_index: ScopeIndex,
+        expressions: Box<[Expression]>,
+    },
+    Break {
+        scope_index: ScopeIndex,
+        value: Option<Box<Expression>>,
     },
 }
 
@@ -94,13 +106,7 @@ pub struct Expression {
 pub struct Local {
     pub name: SymbolU32,
     pub ty: Type,
-}
-
-#[derive(Debug)]
-pub struct Block {
-    pub locals: Vec<Local>,
-    pub expressions: Vec<Expression>,
-    pub ty: Type,
+    pub mutability: hir::Mutability,
 }
 
 #[derive(Debug)]
@@ -108,14 +114,15 @@ pub struct Function {
     pub export: bool,
     pub name: SymbolU32,
     pub ty: FunctionType,
-    pub block: Block,
+    pub scopes: Vec<LocalScope>,
+    pub block: Expression,
 }
 
-impl Function {
-    pub fn params(&self) -> &[Local] {
-        self.block
-            .locals
-            .get(0..self.ty.params().len())
-            .unwrap_or(&[])
-    }
+#[derive(Debug, Clone, Copy)]
+pub struct ScopeIndex(pub u32);
+
+#[derive(Debug)]
+pub struct LocalScope {
+    pub parent_scope: Option<ScopeIndex>,
+    pub locals: Vec<Local>,
 }

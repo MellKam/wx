@@ -45,14 +45,29 @@ impl Encode for wasm::Instruction {
         match self {
             wasm::Instruction::LocalGet { index } => {
                 sink.push(0x20);
-                sink.push(*index as u8);
+                index.0.encode(sink);
             }
             wasm::Instruction::LocalSet { index } => {
                 sink.push(0x21);
-                sink.push(*index as u8);
+                index.0.encode(sink);
             }
             wasm::Instruction::Return => {
                 sink.push(0x0F);
+            }
+            wasm::Instruction::Block { ty } => {
+                sink.push(0x02);
+                if let Some(ty) = ty {
+                    ty.encode(sink);
+                } else {
+                    sink.push(0x40); // Empty block type
+                }
+            }
+            wasm::Instruction::Br { block_index } => {
+                sink.push(0x0C);
+                block_index.encode(sink);
+            }
+            wasm::Instruction::End => {
+                sink.push(0x0B);
             }
             wasm::Instruction::Call { index } => {
                 sink.push(0x10);
@@ -283,7 +298,7 @@ impl<'a> Encode for FunctionBody<'a> {
         for instruction in self.instructions.iter() {
             instruction.encode(&mut body_content);
         }
-        body_content.push(0x0B); // End of function
+        wasm::Instruction::End.encode(&mut body_content);
 
         let body_size = body_content.len() as u32;
         body_size.encode(sink);

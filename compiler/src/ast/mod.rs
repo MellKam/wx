@@ -137,6 +137,8 @@ pub struct Identifier {
 pub enum ExprKind {
     /// `1`
     Int { value: i64 },
+    /// `({expr})`
+    Grouping { value: ExprId },
     /// `x`
     Identifier { symbol: SymbolU32 },
     /// `-{expr}`
@@ -153,7 +155,7 @@ pub enum ExprKind {
     /// `{expr}()`
     Call {
         callee: ExprId,
-        arguments: Vec<ExprId>,
+        arguments: Box<[ExprId]>,
     },
     /// `{expr}::{expr}`
     NamespaceMember {
@@ -163,7 +165,10 @@ pub enum ExprKind {
     /// `return {expr}`
     Return { value: ExprId },
     /// `{ ... }`
-    Block { statements: Vec<StmtId> },
+    Block {
+        statements: Box<[StmtId]>,
+        result: Option<ExprId>,
+    },
     // IfElse {
     //     condition: ExprId,
     //     then_block: ExprId,
@@ -211,15 +216,8 @@ pub struct FunctionParam {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
     pub name: Identifier,
-    pub params: Vec<FunctionParam>,
+    pub params: Box<[FunctionParam]>,
     pub result: Option<Identifier>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Block {
-    pub statements: Vec<StmtId>,
-    pub result: Option<ExprId>,
     pub span: Span,
 }
 
@@ -227,14 +225,14 @@ pub struct Block {
 pub struct ItemFunctionDefinition {
     pub export: Option<Span>,
     pub signature: FunctionSignature,
-    pub block: Block,
+    pub block: ExprId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemEnum {
     pub name: Identifier,
     pub ty: Identifier,
-    pub variants: Vec<EnumVariant>,
+    pub variants: Box<[EnumVariant]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
