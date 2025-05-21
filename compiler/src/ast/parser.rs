@@ -66,6 +66,8 @@ pub enum Keyword {
     Continue,
     Match,
     Return,
+    If,
+    Else,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -78,6 +80,8 @@ impl TryFrom<&str> for Keyword {
             "mut" => Ok(Keyword::Mut),
             "enum" => Ok(Keyword::Enum),
             "fn" => Ok(Keyword::Fn),
+            "if" => Ok(Keyword::If),
+            "else" => Ok(Keyword::Else),
             "loop" => Ok(Keyword::Loop),
             "break" => Ok(Keyword::Break),
             "continue" => Ok(Keyword::Continue),
@@ -198,6 +202,9 @@ impl<'a> Parser<'a> {
                 match Keyword::try_from(text) {
                     Ok(Keyword::Return) => {
                         Some((Parser::parse_return_expression, BindingPower::Primary))
+                    }
+                    Ok(Keyword::If) => {
+                        Some((Parser::parse_if_else_expression, BindingPower::Primary))
                     }
                     _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
                 }
@@ -868,6 +875,67 @@ impl<'a> Parser<'a> {
             Span::merge(enum_keyword.span, close_brace.span),
         );
         Ok(item_id)
+    }
+
+    fn parse_if_else_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+        let if_keyword = parser.lexer.next();
+        let condition = parser.parse_expression(BindingPower::Default)?;
+
+        let then_expr_id = match parser.lexer.peek().kind {
+            TokenKind::OpenBrace => Parser::parse_block_expression(parser)?,
+            _ => {
+                // parser
+                //     .diagnostics
+                //     .push(DiagnosticContext::MissingThenBlock {
+                //         file_id: parser.ast.file_id,
+                //         span: if_keyword.span.clone(),
+                //     });
+                return Err(());
+            }
+        };
+
+        let maybe_else_token = parser.lexer.peek();
+        match parser.intern_keyword(maybe_else_token) {
+            Ok(Keyword::Else) => {
+                let _ = parser.lexer.next();
+            }
+            _ => {
+                let then_expr = parser.ast.get_expr(then_expr_id).unwrap();
+                let expr_id = parser.ast.push_expr(
+                    ExprKind::IfElse {
+                        condition,
+                        then_block: then_expr_id,
+                        else_block: None,
+                    },
+                    Span::merge(if_keyword.span, then_expr.span),
+                );
+                return Ok(expr_id);
+            }
+        };
+
+        let else_expr_id = match parser.lexer.peek().kind {
+            TokenKind::OpenBrace => Parser::parse_block_expression(parser)?,
+            _ => {
+                // parser
+                //     .diagnostics
+                //     .push(DiagnosticContext::MissingThenBlock {
+                //         file_id: parser.ast.file_id,
+                //         span: if_keyword.span.clone(),
+                //     });
+                return Err(());
+            }
+        };
+        let else_expr = parser.ast.get_expr(else_expr_id).unwrap();
+
+        let expr_id = parser.ast.push_expr(
+            ExprKind::IfElse {
+                condition,
+                then_block: then_expr_id,
+                else_block: Some(else_expr_id),
+            },
+            Span::merge(if_keyword.span, else_expr.span),
+        );
+        Ok(expr_id)
     }
 }
 

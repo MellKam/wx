@@ -193,6 +193,27 @@ impl<'a> Builder<'a> {
                 },
                 ty,
             ),
+            hir::ExprKind::IfElse {
+                condition,
+                else_block,
+                then_block,
+            } => {
+                let condition = self.build_expression(condition);
+                let then_block = self.build_expression(then_block);
+                let else_block = match else_block {
+                    Some(else_block) => Some(self.build_expression(else_block)),
+                    None => None,
+                };
+
+                mir::Expression {
+                    kind: mir::ExprKind::IfElse {
+                        condition: Box::new(condition),
+                        then_block: Box::new(then_block),
+                        else_block: else_block.map(|block| Box::new(block)),
+                    },
+                    ty,
+                }
+            }
         }
     }
 

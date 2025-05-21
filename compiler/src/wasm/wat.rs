@@ -64,6 +64,21 @@ impl EncodeWithContext for wasm::Instruction {
             wasm::Instruction::Return => {
                 sink.push_str("return");
             }
+            wasm::Instruction::If { ty } => {
+                sink.push_str("(if ");
+                match ty {
+                    Some(ty) => {
+                        sink.push_str("(result ");
+                        ty.encode(sink);
+                        sink.push_str(")");
+                    }
+                    None => {}
+                }
+                sink.push_str(" (then");
+            }
+            wasm::Instruction::Else => {
+                sink.push_str("(else");
+            }
             wasm::Instruction::Block { ty } => {
                 sink.push_str("(block ");
                 match ty {

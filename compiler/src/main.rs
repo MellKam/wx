@@ -24,21 +24,30 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            export fn main(x: i32): i32 {
-                // variable x is shadowing the x argument
-                const x: i32 = 10;                
-                const y: i32 = { 10 } + { 20 };           
 
-                {
-                    // variable shadowing in scopes
-                    const x: i32 = 30;
-                    const y = x + 10; 
 
-                    const z = x + y;
-                };
 
-                z
+
+
+
+            enum bool: i32 {
+                false = 0,
+                true = 1,
             }
+
+            export fn fibonacci(n: i32): i32 {
+                if n == 0 { return 0 };
+                if n == 1 { return 1 };
+                fibonacci(n - 1) + fibonacci(n - 2)
+            }
+
+
+
+
+            
+
+
+
             "# }
             .to_string(),
         )
@@ -77,7 +86,7 @@ fn main() {
     let mir = mir::Builder::build(&hir);
     // println!("{:#?}", mir);
     let wasm = wasm::Builder::build(&mir, &interner);
-    // println!("{:#?}", wasm);
+    println!("{:#?}", wasm);
     let mut file = std::fs::File::create("out.wat").unwrap();
     file.write(wasm.encode_wat().as_bytes()).unwrap();
 

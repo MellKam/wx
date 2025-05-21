@@ -1,1 +1,1 @@
-(module)
+(module(func $fibonacci(export"fibonacci")(param $n_0 i32)(result i32)local.get $n_0 i32.const 0 i32.eq (if  (then (block  i32.const 0 return br 0 ) ) local.get $n_0 i32.const 1 i32.eq (if  (then (block  i32.const 1 return br 0 ) ) local.get $n_0 i32.const 1 i32.sub call $fibonacci local.get $n_0 i32.const 2 i32.sub call $fibonacci i32.add return ))

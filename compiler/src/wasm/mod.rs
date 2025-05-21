@@ -12,6 +12,8 @@ pub enum Instruction {
     Return,
     Block { ty: Option<ValueType> },
     Br { block_index: u32 },
+    If { ty: Option<ValueType> },
+    Else,
     End,
     Drop,
     Call { index: u32 },

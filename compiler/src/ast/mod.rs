@@ -11,9 +11,14 @@ pub use parser::*;
 use crate::files::FileId;
 use crate::span::Span;
 
-pub type ExprId = u32;
-pub type StmtId = u32;
-pub type ItemId = u32;
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExprId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StmtId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOperator {
@@ -169,12 +174,12 @@ pub enum ExprKind {
         statements: Box<[StmtId]>,
         result: Option<ExprId>,
     },
-    // IfElse {
-    //     condition: ExprId,
-    //     then_block: ExprId,
-    //     else_block: Option<ExprId>,
-    //     span: Span,
-    // },
+    /// `if {expr} { ... }`
+    IfElse {
+        condition: ExprId,
+        then_block: ExprId,
+        else_block: Option<ExprId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -273,17 +278,17 @@ impl Ast {
     }
 
     pub fn push_expr(&mut self, kind: ExprKind, span: Span) -> ExprId {
-        let id = self.expressions.len() as ExprId;
+        let id = ExprId(self.expressions.len() as u32);
         self.expressions.push(Expression { kind, span });
         return id;
     }
 
     pub fn get_expr(&self, id: ExprId) -> Option<&Expression> {
-        self.expressions.get(id as usize)
+        self.expressions.get(id.0 as usize)
     }
 
     pub fn set_expr(&mut self, id: ExprId, cb: impl FnOnce(&mut Expression)) -> Result<(), ()> {
-        match self.expressions.get_mut(id as usize) {
+        match self.expressions.get_mut(id.0 as usize) {
             Some(expr) => {
                 cb(expr);
                 Ok(())
@@ -293,27 +298,27 @@ impl Ast {
     }
 
     pub fn push_item(&mut self, kind: ItemKind, span: Span) -> ItemId {
-        let id = self.items.len() as ItemId;
+        let id = ItemId(self.items.len() as u32);
         self.items.push(Item { kind, span });
         return id;
     }
 
     pub fn get_stmt(&self, id: StmtId) -> Option<&Statement> {
-        self.statements.get(id as usize)
+        self.statements.get(id.0 as usize)
     }
 
     pub fn push_stmt(&mut self, stmt: Statement) -> StmtId {
-        let id = self.statements.len() as StmtId;
+        let id = StmtId(self.statements.len() as u32);
         self.statements.push(stmt);
         return id;
     }
 
     pub fn get_item(&self, id: ItemId) -> Option<&Item> {
-        self.items.get(id as usize)
+        self.items.get(id.0 as usize)
     }
 
     pub fn set_item(&mut self, id: ItemId, cb: impl FnOnce(&mut Item)) -> Result<(), ()> {
-        match self.items.get_mut(id as usize) {
+        match self.items.get_mut(id.0 as usize) {
             Some(item) => {
                 cb(item);
                 Ok(())

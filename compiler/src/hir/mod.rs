@@ -128,6 +128,11 @@ pub enum ExprKind {
         expressions: Box<[Expression]>,
         result: Option<Box<Expression>>,
     },
+    IfElse {
+        condition: Box<Expression>,
+        then_block: Box<Expression>,
+        else_block: Option<Box<Expression>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

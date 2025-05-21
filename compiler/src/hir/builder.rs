@@ -38,7 +38,7 @@ impl<'a> Builder<'a> {
                         .add_function(def.signature.name.symbol, func_type);
                 }
                 ast::ItemKind::Enum(item_enum) => {
-                    let enum_ = builder.build_enum(item_id as ast::ItemId, item_enum);
+                    let enum_ = builder.build_enum(ast::ItemId(item_id as u32), item_enum);
                     builder.global.add_enum(enum_);
                 }
                 _ => unimplemented!("item kind not implemented"),
@@ -466,7 +466,77 @@ impl<'a> Builder<'a> {
             ast::ExprKind::Block { .. } => {
                 ctx.enter_scope(|ctx| self.build_block_expression(ctx, expr_id))
             }
+            ast::ExprKind::IfElse { .. } => self.build_if_else_expression(ctx, expr_id),
         }
+    }
+
+    fn build_if_else_expression(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        expr_id: ast::ExprId,
+    ) -> Result<hir::Expression, ()> {
+        let (condition_id, then_block_id, else_block_id) =
+            match &self.ast.get_expr(expr_id).unwrap().kind {
+                ast::ExprKind::IfElse {
+                    condition,
+                    then_block,
+                    else_block,
+                } => (condition, then_block, else_block),
+                _ => unreachable!("expected if expression"),
+            };
+
+        let condition = self.build_expression(ctx, *condition_id)?;
+        let coerced_condition =
+            self.coerce_expr(condition, *condition_id, hir::Type::Enum(hir::EnumIndex(0)))?;
+
+        let mut then_block = match self.ast.get_expr(*then_block_id).unwrap().kind {
+            ast::ExprKind::Block { .. } => {
+                ctx.enter_scope(|ctx| self.build_block_expression(ctx, *then_block_id))?
+            }
+            _ => unreachable!("expected block expression"),
+        };
+        let (else_block, ty) = match else_block_id {
+            Some(else_block_id) => {
+                let else_block = match self.ast.get_expr(*else_block_id).unwrap().kind {
+                    ast::ExprKind::Block { .. } => {
+                        ctx.enter_scope(|ctx| self.build_block_expression(ctx, *else_block_id))?
+                    }
+                    _ => unreachable!("expected block expression"),
+                };
+
+                match (then_block.ty, else_block.ty) {
+                    (Some(ty1), Some(ty2)) if ty1 == ty2 => (Some(else_block), Some(ty1)),
+                    (Some(ty1), Some(ty2)) => {
+                        todo!("handle type mistmatch in if-else {} {}", ty1, ty2)
+                    }
+                    (None, None) => (Some(else_block), None),
+                    (Some(ty), None) => {
+                        let coerced = self
+                            .coerce_expr(else_block, *else_block_id, ty)
+                            .expect("can't assign to this type");
+
+                        (Some(coerced), Some(ty))
+                    }
+                    (None, Some(ty)) => {
+                        then_block = self
+                            .coerce_expr(then_block, *then_block_id, ty)
+                            .expect("can't assign to this type");
+
+                        (Some(else_block), Some(ty))
+                    }
+                }
+            }
+            None => (None, then_block.ty.clone()),
+        };
+
+        Ok(hir::Expression {
+            kind: hir::ExprKind::IfElse {
+                condition: Box::new(coerced_condition),
+                then_block: Box::new(then_block),
+                else_block: else_block.map(Box::new),
+            },
+            ty,
+        })
     }
 
     fn build_block_expression(
@@ -721,6 +791,29 @@ impl<'a> Builder<'a> {
                 },
                 ty,
             ) => self.coerce_untyped_block_expr(expressions, result, scope_index, expr_id, ty),
+            (
+                hir::ExprKind::IfElse {
+                    condition,
+                    then_block,
+                    else_block,
+                },
+                ty,
+            ) => {
+                let coerced_then_block =
+                    self.coerce_untyped_expr(*then_block, expr_id, ty.clone())?;
+                let coerced_else_block = match else_block {
+                    Some(else_block) => Some(self.coerce_untyped_expr(*else_block, expr_id, ty)?),
+                    None => None,
+                };
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::IfElse {
+                        condition,
+                        then_block: Box::new(coerced_then_block),
+                        else_block: coerced_else_block.map(Box::new),
+                    },
+                    ty: Some(ty),
+                })
+            }
             (kind, _) => panic!("expected literal untyped expression, got {:?}", kind),
         }
     }
@@ -900,6 +993,60 @@ impl<'a> Builder<'a> {
                     })
                 }
                 _ => panic!("type mismatch in binary expression"),
+            },
+            ast::BinaryOperator::Eq => match (left.ty, right.ty) {
+                (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
+                    if primitive_1 == primitive_2 =>
+                {
+                    Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            lhs: Box::new(left),
+                            rhs: Box::new(right),
+                        },
+                        ty: Some(Type::Enum(hir::EnumIndex(0))),
+                    })
+                }
+                (None, None) => {
+                    let evaluated =
+                        Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
+                    match evaluated {
+                        Some(expr) => Ok(expr),
+                        None => Ok(Expression {
+                            kind: ExprKind::Binary {
+                                operator,
+                                lhs: Box::new(left),
+                                rhs: Box::new(right),
+                            },
+                            ty: Some(Type::Enum(hir::EnumIndex(0))),
+                        }),
+                    }
+                }
+                (None, Some(ty)) | (Some(ty), None) => {
+                    let (typed, untyped) = match left.ty {
+                        Some(_) => ((left.clone(), left_id), (right, right_id)),
+                        None => ((right, right_id), (left.clone(), left_id)),
+                    };
+
+                    let coerced = self
+                        .coerce_untyped_expr(untyped.0, untyped.1, ty)
+                        .expect("invalid coercion");
+
+                    let (left, right) = match left.ty {
+                        Some(_) => (typed.0, coerced),
+                        None => (coerced, typed.0),
+                    };
+
+                    Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            lhs: Box::new(left),
+                            rhs: Box::new(right),
+                        },
+                        ty: Some(Type::Enum(hir::EnumIndex(0))),
+                    })
+                }
+                _ => panic!("can't compare these types"),
             },
             _ => unimplemented!("binary operator not implemented"),
         }

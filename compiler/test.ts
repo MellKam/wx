@@ -1,3 +1,3 @@
-import { main } from "./out.wasm";
+import { fibonacci } from "./out.wasm";
 
-console.log(main());
+console.log(fibonacci(12));

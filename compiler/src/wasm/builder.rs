@@ -236,6 +236,26 @@ impl<'a> Builder<'a> {
                 // hardcoded zero for now, fix this later
                 body.push(wasm::Instruction::Br { block_index: 0 });
             }
+            mir::ExprKind::IfElse {
+                condition,
+                then_block,
+                else_block,
+            } => {
+                self.build_expression(ctx, body, &condition);
+                body.push(wasm::Instruction::If {
+                    ty: match expr.ty {
+                        mir::Type::I32 => Some(wasm::ValueType::I32),
+                        mir::Type::I64 => Some(wasm::ValueType::I64),
+                        _ => None,
+                    },
+                });
+                self.build_expression(ctx, body, &then_block);
+                if let Some(else_block) = else_block {
+                    body.push(wasm::Instruction::Else);
+                    self.build_expression(ctx, body, &else_block);
+                }
+                body.push(wasm::Instruction::End);
+            }
         }
     }
 }

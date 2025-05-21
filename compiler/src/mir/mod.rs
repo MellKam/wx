@@ -94,6 +94,11 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         value: Option<Box<Expression>>,
     },
+    IfElse {
+        condition: Box<Expression>,
+        then_block: Box<Expression>,
+        else_block: Option<Box<Expression>>,
+    },
 }
 
 #[derive(Debug)]

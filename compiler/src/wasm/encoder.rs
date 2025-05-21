@@ -66,6 +66,17 @@ impl Encode for wasm::Instruction {
                 sink.push(0x0C);
                 block_index.encode(sink);
             }
+            wasm::Instruction::If { ty } => {
+                sink.push(0x04);
+                if let Some(ty) = ty {
+                    ty.encode(sink);
+                } else {
+                    sink.push(0x40); // Empty block type
+                }
+            }
+            wasm::Instruction::Else => {
+                sink.push(0x05);
+            }
             wasm::Instruction::End => {
                 sink.push(0x0B);
             }
