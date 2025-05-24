@@ -4,8 +4,28 @@ use leb128fmt;
 
 use crate::wasm;
 
-pub trait Encode {
+#[repr(u8)]
+enum SectionId {
+    Custom = 0,
+    Type = 1,
+    Import = 2,
+    Function = 3,
+    Table = 4,
+    Memory = 5,
+    Global = 6,
+    Export = 7,
+    Start = 8,
+    Element = 9,
+    Code = 10,
+    Data = 11,
+}
+
+trait Encode {
     fn encode(&self, sink: &mut Vec<u8>);
+}
+
+trait EncodeWithContext {
+    fn encode_with_context(&self, sink: &mut Vec<u8>, module: &wasm::Module);
 }
 
 impl Encode for i32 {
@@ -40,156 +60,187 @@ impl Encode for wasm::ValueType {
     }
 }
 
-impl Encode for wasm::Instruction {
+impl Encode for wasm::BlockResult {
     fn encode(&self, sink: &mut Vec<u8>) {
         match self {
-            wasm::Instruction::LocalGet { index } => {
-                sink.push(0x20);
-                index.0.encode(sink);
+            wasm::BlockResult::Empty => {
+                sink.push(0x40);
             }
-            wasm::Instruction::LocalSet { index } => {
-                sink.push(0x21);
-                index.0.encode(sink);
-            }
-            wasm::Instruction::Return => {
-                sink.push(0x0F);
-            }
-            wasm::Instruction::Block { ty } => {
-                sink.push(0x02);
-                if let Some(ty) = ty {
-                    ty.encode(sink);
-                } else {
-                    sink.push(0x40); // Empty block type
-                }
-            }
-            wasm::Instruction::Br { block_index } => {
-                sink.push(0x0C);
-                block_index.encode(sink);
-            }
-            wasm::Instruction::If { ty } => {
-                sink.push(0x04);
-                if let Some(ty) = ty {
-                    ty.encode(sink);
-                } else {
-                    sink.push(0x40); // Empty block type
-                }
-            }
-            wasm::Instruction::Else => {
-                sink.push(0x05);
-            }
-            wasm::Instruction::End => {
-                sink.push(0x0B);
-            }
-            wasm::Instruction::Call { index } => {
-                sink.push(0x10);
-                index.encode(sink);
-            }
-            wasm::Instruction::Drop => {
-                sink.push(0x1A);
-            }
-            wasm::Instruction::I32Const { value } => {
-                sink.push(0x41);
-                value.encode(sink);
-            }
-            wasm::Instruction::I64Const { value } => {
-                sink.push(0x42);
-                value.encode(sink);
-            }
-            wasm::Instruction::I32Add => {
-                sink.push(0x6A);
-            }
-            wasm::Instruction::I32Sub => {
-                sink.push(0x6B);
-            }
-            wasm::Instruction::I32Mul => {
-                sink.push(0x6C);
-            }
-            wasm::Instruction::I32DivS => {
-                sink.push(0x6D);
-            }
-            wasm::Instruction::I32DivU => {
-                sink.push(0x6E);
-            }
-            wasm::Instruction::I32RemS => {
-                sink.push(0x6F);
-            }
-            wasm::Instruction::I32RemU => {
-                sink.push(0x70);
-            }
-            wasm::Instruction::I32And => {
-                sink.push(0x71);
-            }
-            wasm::Instruction::I32Eq => {
-                sink.push(0x46);
-            }
-            wasm::Instruction::I32Eqz => {
-                sink.push(0x45);
-            }
-            wasm::Instruction::I32Or => {
-                sink.push(0x72);
-            }
-            wasm::Instruction::I64Add => {
-                sink.push(0x7C);
-            }
-            wasm::Instruction::I64Sub => {
-                sink.push(0x7D);
-            }
-            wasm::Instruction::I64Mul => {
-                sink.push(0x7E);
-            }
-            wasm::Instruction::I64DivS => {
-                sink.push(0x7F);
-            }
-            wasm::Instruction::I64DivU => {
-                sink.push(0x80);
-            }
-            wasm::Instruction::I64RemS => {
-                sink.push(0x81);
-            }
-            wasm::Instruction::I64RemU => {
-                sink.push(0x82);
-            }
-            wasm::Instruction::I64And => {
-                sink.push(0x83);
-            }
-            wasm::Instruction::I64Or => {
-                sink.push(0x84);
-            }
-            wasm::Instruction::I64Eq => {
-                sink.push(0x86);
-            }
-            wasm::Instruction::I64Eqz => {
-                sink.push(0x87);
+            wasm::BlockResult::SingleValue(ty) => {
+                ty.encode(sink);
             }
         }
     }
 }
 
 #[repr(u8)]
-enum SectionId {
-    Custom = 0,
-    Type = 1,
-    Import = 2,
-    Function = 3,
-    Table = 4,
-    Memory = 5,
-    Global = 6,
-    Export = 7,
-    Start = 8,
-    Element = 9,
-    Code = 10,
-    Data = 11,
+enum Instruction {
+    Nop = 0x01,
+    Block = 0x02,
+    If = 0x04,
+    Else = 0x05,
+    End = 0x0B,
+    Br = 0x0C,
+    Return = 0x0F,
+    Call = 0x10,
+    Drop = 0x1A,
+    LocalGet = 0x20,
+    LocalSet = 0x21,
+    I32Const = 0x41,
+    I64Const = 0x42,
+    I32Eq = 0x46,
+    I32Add = 0x6A,
+    I32Sub = 0x6B,
+    I32Mul = 0x6C,
+    I64Add = 0x7C,
+    I64Sub = 0x7D,
+    I64Mul = 0x7E,
+    I64Eq = 0x86,
 }
 
-struct TypeSection {
-    signatures: Vec<wasm::FunctionType>,
+impl EncodeWithContext for wasm::Expression {
+    fn encode_with_context(&self, sink: &mut Vec<u8>, module: &wasm::Module) {
+        match self {
+            wasm::Expression::Nop => {
+                sink.push(Instruction::Nop as u8);
+            }
+            wasm::Expression::LocalGet { local } => {
+                sink.push(Instruction::LocalGet as u8);
+                local.0.encode(sink);
+            }
+            wasm::Expression::LocalSet { local, value } => {
+                module.get_expr(*value).encode_with_context(sink, module);
+                sink.push(Instruction::LocalSet as u8);
+                local.0.encode(sink);
+            }
+            wasm::Expression::Return { value } => {
+                match value {
+                    Some(value) => {
+                        module.get_expr(*value).encode_with_context(sink, module);
+                    }
+                    None => {}
+                };
+                sink.push(Instruction::Return as u8);
+            }
+            wasm::Expression::I32Add { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32Add as u8);
+            }
+            wasm::Expression::I32Sub { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32Sub as u8);
+            }
+            wasm::Expression::I32Mul { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32Mul as u8);
+            }
+            wasm::Expression::Block {
+                expressions,
+                result,
+            } => {
+                sink.push(Instruction::Block as u8);
+                result.encode(sink);
+                for expr_index in expressions.iter() {
+                    module
+                        .get_expr(*expr_index)
+                        .encode_with_context(sink, module);
+                }
+                sink.push(Instruction::End as u8);
+            }
+            wasm::Expression::Break { depth, value } => {
+                match value {
+                    Some(value) => {
+                        module.get_expr(*value).encode_with_context(sink, module);
+                    }
+                    None => {}
+                };
+                sink.push(Instruction::Br as u8);
+                depth.encode(sink);
+            }
+            wasm::Expression::Call {
+                function,
+                arguments,
+            } => {
+                for arg in arguments.iter() {
+                    module.get_expr(*arg).encode_with_context(sink, module);
+                }
+                sink.push(Instruction::Call as u8);
+                function.0.encode(sink);
+            }
+            wasm::Expression::I32Const { value } => {
+                sink.push(Instruction::I32Const as u8);
+                value.encode(sink);
+            }
+            wasm::Expression::I64Const { value } => {
+                sink.push(Instruction::I64Const as u8);
+                value.encode(sink);
+            }
+            wasm::Expression::I32Eq { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32Eq as u8);
+            }
+            wasm::Expression::IfElse {
+                condition,
+                result,
+                then_branch,
+                else_branch,
+            } => {
+                module
+                    .get_expr(*condition)
+                    .encode_with_context(sink, module);
+                sink.push(Instruction::If as u8);
+                result.encode(sink);
+                module
+                    .get_expr(*then_branch)
+                    .encode_with_context(sink, module);
+                match else_branch {
+                    Some(else_branch) => {
+                        sink.push(Instruction::Else as u8);
+                        module
+                            .get_expr(*else_branch)
+                            .encode_with_context(sink, module);
+                    }
+                    None => {}
+                }
+                sink.push(Instruction::End as u8);
+            }
+            wasm::Expression::Drop { value } => {
+                module.get_expr(*value).encode_with_context(sink, module);
+                sink.push(Instruction::Drop as u8);
+            }
+            wasm::Expression::I64Add { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64Add as u8);
+            }
+            wasm::Expression::I64Sub { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64Sub as u8);
+            }
+            wasm::Expression::I64Mul { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64Mul as u8);
+            }
+            wasm::Expression::I64Eq { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64Eq as u8);
+            }
+        }
+    }
 }
 
 impl Encode for wasm::FunctionType {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(0x60); // Function type
 
-        let param_count = self.params().len() as u32;
+        let param_count = self.param_count as u32;
         param_count.encode(sink);
         for param in self.params().iter() {
             param.encode(sink);
@@ -203,7 +254,7 @@ impl Encode for wasm::FunctionType {
     }
 }
 
-impl Encode for TypeSection {
+impl Encode for wasm::TypeSection {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(SectionId::Type as u8);
 
@@ -220,19 +271,15 @@ impl Encode for TypeSection {
     }
 }
 
-struct FunctionSection {
-    function_indexes: Vec<u32>,
-}
-
-impl Encode for FunctionSection {
+impl Encode for wasm::FunctionSection {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(SectionId::Function as u8);
 
         let mut section_sink: Vec<u8> = Vec::new();
-        let size = self.function_indexes.len() as u32;
+        let size = self.functions.len() as u32;
         size.encode(&mut section_sink);
-        for index in &self.function_indexes {
-            index.encode(&mut section_sink);
+        for type_index in &self.functions {
+            type_index.0.encode(&mut section_sink);
         }
 
         let section_size = section_sink.len() as u32;
@@ -241,42 +288,37 @@ impl Encode for FunctionSection {
     }
 }
 
-struct ExportFunction<'a> {
-    name: &'a str,
-    index: u32,
-}
-
-struct ExportSection<'a> {
-    functions: Vec<ExportFunction<'a>>,
-}
-
 #[repr(u8)]
 enum ExportKind {
-    Function = 0,
-    Table = 1,
-    Memory = 2,
-    Global = 3,
+    Function = 0x00,
+    // Table = 0x01,
+    // Memory = 0x02,
+    // Global = 0x03,
 }
 
-impl Encode for ExportFunction<'_> {
+impl Encode for wasm::FunctionExport<'_> {
     fn encode(&self, sink: &mut Vec<u8>) {
         let name_len = self.name.len() as u32;
         name_len.encode(sink);
         sink.extend_from_slice(self.name.as_bytes());
         sink.push(ExportKind::Function as u8);
-        self.index.encode(sink);
+        self.index.0.encode(sink);
     }
 }
 
-impl Encode for ExportSection<'_> {
+impl Encode for wasm::ExportSection<'_> {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(SectionId::Export as u8);
 
         let mut section_sink: Vec<u8> = Vec::new();
-        let export_count = self.functions.len() as u32;
+        let export_count = self.items.len() as u32;
         export_count.encode(&mut section_sink);
-        for function in &self.functions {
-            function.encode(&mut section_sink);
+        for item in &self.items {
+            match item {
+                wasm::ExportItem::Function(func_export) => {
+                    func_export.encode(&mut section_sink);
+                }
+            }
         }
 
         let section_size = section_sink.len() as u32;
@@ -285,13 +327,8 @@ impl Encode for ExportSection<'_> {
     }
 }
 
-struct FunctionBody<'a> {
-    locals: &'a [wasm::Local<'a>],
-    instructions: &'a [wasm::Instruction],
-}
-
-impl<'a> Encode for FunctionBody<'a> {
-    fn encode(&self, sink: &mut Vec<u8>) {
+impl<'a> wasm::FunctionBody<'a> {
+    fn encode(&self, sink: &mut Vec<u8>, module: &wasm::Module) {
         let mut body_content: Vec<u8> = Vec::new();
 
         let mut grouped_locals: HashMap<wasm::ValueType, u32> = HashMap::new();
@@ -306,10 +343,12 @@ impl<'a> Encode for FunctionBody<'a> {
             local_type.encode(&mut body_content);
         }
 
-        for instruction in self.instructions.iter() {
-            instruction.encode(&mut body_content);
+        for expr_id in self.expressions.iter() {
+            module
+                .get_expr(*expr_id)
+                .encode_with_context(&mut body_content, module);
         }
-        wasm::Instruction::End.encode(&mut body_content);
+        body_content.push(Instruction::End as u8);
 
         let body_size = body_content.len() as u32;
         body_size.encode(sink);
@@ -317,19 +356,15 @@ impl<'a> Encode for FunctionBody<'a> {
     }
 }
 
-struct CodeSection<'a> {
-    functions: Vec<FunctionBody<'a>>,
-}
-
-impl<'a> Encode for CodeSection<'a> {
-    fn encode(&self, sink: &mut Vec<u8>) {
+impl<'a> wasm::CodeSection<'a> {
+    fn encode(&self, sink: &mut Vec<u8>, module: &wasm::Module) {
         sink.push(SectionId::Code as u8);
 
         let mut section_sink: Vec<u8> = Vec::new();
         let function_count = self.functions.len() as u32;
         function_count.encode(&mut section_sink);
         for function in &self.functions {
-            function.encode(&mut section_sink);
+            function.encode(&mut section_sink, module);
         }
 
         let section_size = section_sink.len() as u32;
@@ -347,50 +382,11 @@ impl Encoder {
             0x01, 0x00, 0x00, 0x00, // Version
         ]
         .to_vec();
-        TypeSection {
-            signatures: module
-                .functions
-                .iter()
-                .map(|function| function.ty.clone())
-                .collect(),
-        }
-        .encode(&mut sink);
 
-        FunctionSection {
-            function_indexes: module
-                .functions
-                .iter()
-                .enumerate()
-                .map(|(index, _)| index as u32)
-                .collect(),
-        }
-        .encode(&mut sink);
-
-        ExportSection {
-            functions: module
-                .functions
-                .iter()
-                .enumerate()
-                .filter(|(_, function)| function.export)
-                .map(|(index, function)| ExportFunction {
-                    name: function.name,
-                    index: index as u32,
-                })
-                .collect(),
-        }
-        .encode(&mut sink);
-
-        CodeSection {
-            functions: module
-                .functions
-                .iter()
-                .map(|function| FunctionBody {
-                    locals: function.locals.as_ref(),
-                    instructions: function.instructions.as_ref(),
-                })
-                .collect(),
-        }
-        .encode(&mut sink);
+        module.types.encode(&mut sink);
+        module.functions.encode(&mut sink);
+        module.exports.encode(&mut sink);
+        module.code.encode(&mut sink, module);
 
         sink
     }

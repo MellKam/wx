@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bumpalo = { version = "3.17.0", features = ["collections"] }
+bumpalo = { version = "3.17.0", features = [
+  "collections",
+  "boxed",
+  "allocator_api",
+] }
 codespan-reporting = "0.12.0"
 indoc = "2.0.6"
 leb128fmt = "0.1.0"

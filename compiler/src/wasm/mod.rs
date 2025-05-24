@@ -5,47 +5,6 @@ pub mod wat;
 pub use builder::*;
 pub use encoder::*;
 
-#[derive(Debug, Clone)]
-pub enum Instruction {
-    LocalGet { index: LocalIndex },
-    LocalSet { index: LocalIndex },
-    Return,
-    Block { ty: Option<ValueType> },
-    Br { block_index: u32 },
-    If { ty: Option<ValueType> },
-    Else,
-    End,
-    Drop,
-    Call { index: u32 },
-
-    I32Const { value: i32 },
-    I64Const { value: i64 },
-
-    I32Add,
-    I32Sub,
-    I32Mul,
-    I32DivS,
-    I32DivU,
-    I32RemS,
-    I32RemU,
-    I32And,
-    I32Or,
-    I32Eq,
-    I32Eqz,
-
-    I64Add,
-    I64Sub,
-    I64Mul,
-    I64DivS,
-    I64DivU,
-    I64RemS,
-    I64RemU,
-    I64And,
-    I64Or,
-    I64Eq,
-    I64Eqz,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
 pub enum ValueType {
     I32,
@@ -53,6 +12,25 @@ pub enum ValueType {
 }
 
 #[derive(Debug, Clone)]
+pub enum BlockResult {
+    Empty,
+    SingleValue(ValueType),
+    // TODO: MultiValue
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalIndex(pub u32);
+
+#[derive(Debug, Clone)]
+pub struct Local<'a> {
+    name: &'a str,
+    ty: ValueType,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FunctionIndex(pub u32);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionType {
     pub param_count: usize,
     pub param_results: Box<[ValueType]>,
@@ -68,39 +46,146 @@ impl FunctionType {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Local<'a> {
-    name: &'a str,
-    ty: ValueType,
-}
-
 #[derive(Debug, Clone, Copy)]
-pub struct LocalIndex(pub u32);
+pub struct ExprIndex(pub u32);
 
 #[derive(Debug, Clone)]
-pub struct Function<'a> {
-    export: bool,
+pub enum Expression {
+    Nop,
+    I32Const {
+        value: i32,
+    },
+    I64Const {
+        value: i64,
+    },
+    LocalGet {
+        local: LocalIndex,
+    },
+    LocalSet {
+        local: LocalIndex,
+        value: ExprIndex,
+    },
+    Return {
+        value: Option<ExprIndex>,
+    },
+    Block {
+        expressions: Box<[ExprIndex]>,
+        result: BlockResult,
+    },
+    Break {
+        depth: u32,
+        value: Option<ExprIndex>,
+    },
+    IfElse {
+        condition: ExprIndex,
+        result: BlockResult,
+        then_branch: ExprIndex,
+        else_branch: Option<ExprIndex>,
+    },
+    Drop {
+        value: ExprIndex,
+    },
+    Call {
+        function: FunctionIndex,
+        arguments: Box<[ExprIndex]>,
+    },
+    I32Add {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32Sub {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32Mul {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32Eq {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64Add {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64Sub {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64Mul {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64Eq {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeSection {
+    signatures: Box<[FunctionType]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeIndex(pub u32);
+
+#[derive(Debug, Clone)]
+pub struct FunctionSection {
+    functions: Box<[TypeIndex]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionExport<'a> {
     name: &'a str,
-    ty: FunctionType,
+    index: FunctionIndex,
+}
+
+#[derive(Debug, Clone)]
+enum ExportItem<'a> {
+    Function(FunctionExport<'a>),
+    // Table,
+    // Memory,
+    // Global,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportSection<'a> {
+    items: Box<[ExportItem<'a>]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionBody<'a> {
+    name: &'a str,
     locals: Box<[Local<'a>]>,
-    instructions: Vec<Instruction>,
+    expressions: Box<[ExprIndex]>,
 }
 
-impl Function<'_> {
-    pub fn params(&self) -> &[Local] {
-        self.locals
-            .get(0..self.ty.param_count as usize)
-            .unwrap_or(&[])
-    }
-
-    pub fn locals_without_params(&self) -> &[Local] {
-        self.locals
-            .get(self.ty.param_count as usize..)
-            .unwrap_or(&[])
-    }
+#[derive(Debug, Clone)]
+pub struct CodeSection<'a> {
+    expressions: Box<[Expression]>,
+    functions: Box<[FunctionBody<'a>]>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Module<'a> {
-    functions: Vec<Function<'a>>,
+    types: TypeSection,
+    functions: FunctionSection,
+    exports: ExportSection<'a>,
+    code: CodeSection<'a>,
+}
+
+impl Module<'_> {
+    pub fn get_expr(&self, index: ExprIndex) -> &Expression {
+        self.code.expressions.get(index.0 as usize).unwrap()
+    }
+
+    pub fn get_function(&self, index: FunctionIndex) -> &FunctionBody {
+        self.code.functions.get(index.0 as usize).unwrap()
+    }
+
+    pub fn get_type(&self, index: TypeIndex) -> &FunctionType {
+        self.types.signatures.get(index.0 as usize).unwrap()
+    }
 }

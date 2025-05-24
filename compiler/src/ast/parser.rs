@@ -1,5 +1,6 @@
 use core::panic;
 
+use bumpalo::collections::Vec as BumpVec;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
@@ -92,28 +93,29 @@ impl TryFrom<&str> for Keyword {
     }
 }
 
-pub struct Parser<'a> {
-    source: &'a str,
-    lexer: PeekableLexer<'a>,
-    interner: &'a mut StringInterner<StringBackend<SymbolU32>>,
-    diagnostics: Vec<DiagnosticContext>,
-    ast: Ast,
+pub struct Parser<'bump, 'input> {
+    source: &'input str,
+    lexer: PeekableLexer<'input>,
+    interner: &'input mut StringInterner<StringBackend<SymbolU32>>,
+    diagnostics: BumpVec<'bump, DiagnosticContext>,
+    ast: Ast<'bump>,
 }
 
-impl<'a> Parser<'a> {
+impl<'bump, 'input> Parser<'bump, 'input> {
     pub fn parse(
+        bump: &'bump bumpalo::Bump,
         file_id: FileId,
-        source: &'a str,
-        interner: &'a mut StringInterner<StringBackend<SymbolU32>>,
-    ) -> (Ast, Vec<DiagnosticContext>) {
-        let lexer: PeekableLexer<'a> = PeekableLexer::new(Lexer::new(source));
+        source: &'input str,
+        interner: &'input mut StringInterner<StringBackend<SymbolU32>>,
+    ) -> (Ast<'bump>, BumpVec<'bump, DiagnosticContext>) {
+        let lexer: PeekableLexer<'input> = PeekableLexer::new(Lexer::new(source));
 
         let mut parser = Self {
             source,
             lexer,
             interner,
-            diagnostics: Vec::new(),
-            ast: Ast::new(file_id),
+            diagnostics: BumpVec::new_in(bump),
+            ast: Ast::new(bump, file_id),
         };
         loop {
             let token = parser.lexer.peek();
@@ -317,16 +319,21 @@ impl<'a> Parser<'a> {
 
     fn parse_return_expression(parser: &mut Parser) -> Result<ExprId, ()> {
         let return_keyword = parser.lexer.next();
-        let value_expr_id = parser.parse_expression(BindingPower::Default)?;
-        let value_expr = parser.ast.get_expr(value_expr_id).unwrap();
+        match parser.parse_expression(BindingPower::Default) {
+            Ok(expr_id) => {
+                let expr = parser.ast.get_expr(expr_id).unwrap();
 
-        let stmt_id = parser.ast.push_expr(
-            ExprKind::Return {
-                value: value_expr_id,
-            },
-            Span::merge(return_keyword.span, value_expr.span),
-        );
-        Ok(stmt_id)
+                Ok(parser.ast.push_expr(
+                    ExprKind::Return {
+                        value: Some(expr_id),
+                    },
+                    Span::merge(return_keyword.span, expr.span),
+                ))
+            }
+            Err(_) => Ok(parser
+                .ast
+                .push_expr(ExprKind::Return { value: None }, return_keyword.span)),
+        }
     }
 
     fn parse_grouping_expression(parser: &mut Parser) -> Result<ExprId, ()> {

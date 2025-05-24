@@ -105,7 +105,9 @@ pub enum ExprKind {
         local_index: LocalIndex,
     },
     Function(FunctionIndex),
-    Return(Box<Expression>),
+    Return {
+        value: Option<Box<Expression>>,
+    },
     EnumVariant {
         enum_index: EnumIndex,
         variant_index: EnumVariantIndex,

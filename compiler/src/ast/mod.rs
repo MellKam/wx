@@ -1,3 +1,4 @@
+use bumpalo::collections::Vec as BumpVec;
 use lexer::TokenKind;
 use string_interner::symbol::SymbolU32;
 
@@ -168,7 +169,7 @@ pub enum ExprKind {
         member: Identifier,
     },
     /// `return {expr}`
-    Return { value: ExprId },
+    Return { value: Option<ExprId> },
     /// `{ ... }`
     Block {
         statements: Box<[StmtId]>,
@@ -260,20 +261,20 @@ pub struct Item {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Ast {
+pub struct Ast<'bump> {
     pub file_id: FileId,
-    pub expressions: Vec<Expression>,
-    pub statements: Vec<Statement>,
-    pub items: Vec<Item>,
+    pub expressions: BumpVec<'bump, Expression>,
+    pub statements: BumpVec<'bump, Statement>,
+    pub items: BumpVec<'bump, Item>,
 }
 
-impl Ast {
-    pub fn new(file_id: FileId) -> Self {
+impl<'bump> Ast<'bump> {
+    pub fn new(bump: &'bump bumpalo::Bump, file_id: FileId) -> Self {
         Self {
             file_id,
-            expressions: Vec::new(),
-            statements: Vec::new(),
-            items: Vec::new(),
+            expressions: BumpVec::new_in(bump),
+            statements: BumpVec::new_in(bump),
+            items: BumpVec::new_in(bump),
         }
     }
 

@@ -169,9 +169,12 @@ impl<'a> Builder<'a> {
                     };
                 }
             },
-            hir::ExprKind::Return(expr) => mir::Expression {
+            hir::ExprKind::Return { value } => mir::Expression {
                 kind: mir::ExprKind::Return {
-                    value: Box::new(self.build_expression(expr)),
+                    value: match value {
+                        Some(value) => Some(Box::new(self.build_expression(value))),
+                        None => None,
+                    },
                 },
                 ty: mir::Type::Never,
             },
@@ -224,6 +227,34 @@ impl<'a> Builder<'a> {
         result: Option<&hir::Expression>,
         ty: mir::Type,
     ) -> mir::Expression {
+        match (expressions.len(), result) {
+            (0, None) => {
+                return mir::Expression {
+                    kind: mir::ExprKind::Block {
+                        scope_index: mir::ScopeIndex(scope_index.0),
+                        expressions: Box::new([]),
+                    },
+                    ty: mir::Type::Unit,
+                };
+            }
+            (0, Some(result)) => {
+                let result = self.build_expression(result);
+                match scope_index.0 {
+                    0 => {
+                        return mir::Expression {
+                            kind: mir::ExprKind::Block {
+                                scope_index: mir::ScopeIndex(scope_index.0),
+                                expressions: Box::new([result]),
+                            },
+                            ty,
+                        };
+                    }
+                    _ => return result,
+                }
+            }
+            _ => {}
+        }
+
         let expressions: Box<_> = expressions
             .iter()
             .map(|expr| self.build_expression(expr))
@@ -233,12 +264,7 @@ impl<'a> Builder<'a> {
 
                     // 0 is the root scope of the function
                     match scope_index.0 == 0 {
-                        true => Some(mir::Expression {
-                            kind: mir::ExprKind::Return {
-                                value: Box::new(expr),
-                            },
-                            ty: mir::Type::Never,
-                        }),
+                        true => Some(expr),
                         false => Some(mir::Expression {
                             kind: mir::ExprKind::Break {
                                 scope_index: mir::ScopeIndex(scope_index.0),

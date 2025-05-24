@@ -9,17 +9,17 @@ use super::ScopeIndex;
 use super::diagnostics::DiagnosticContext;
 use crate::{ast, hir};
 
-pub struct Builder<'a> {
-    ast: &'a ast::Ast,
-    interner: &'a StringInterner<StringBackend<SymbolU32>>,
+pub struct Builder<'bump, 'interner> {
+    ast: &'bump ast::Ast<'bump>,
+    interner: &'interner StringInterner<StringBackend<SymbolU32>>,
     global: hir::GlobalScope,
     diagnostics: Vec<hir::diagnostics::DiagnosticContext>,
 }
 
-impl<'a> Builder<'a> {
+impl<'bump, 'interner> Builder<'bump, 'interner> {
     pub fn build(
-        ast: &'a ast::Ast,
-        interner: &'a StringInterner<StringBackend<SymbolU32>>,
+        ast: &'bump ast::Ast,
+        interner: &'interner StringInterner<StringBackend<SymbolU32>>,
     ) -> (hir::HIR, Vec<DiagnosticContext>) {
         let mut builder = Builder {
             ast,
@@ -462,7 +462,7 @@ impl<'a> Builder<'a> {
                 self.build_namespace_member_expression(expr_id)
             }
             ast::ExprKind::Return { value } => self.build_return_expression(ctx, *value),
-            ast::ExprKind::Grouping { .. } => self.build_expression(ctx, expr_id),
+            ast::ExprKind::Grouping { value } => self.build_expression(ctx, *value),
             ast::ExprKind::Block { .. } => {
                 ctx.enter_scope(|ctx| self.build_block_expression(ctx, expr_id))
             }
@@ -583,17 +583,34 @@ impl<'a> Builder<'a> {
     fn build_return_expression(
         &mut self,
         ctx: &mut hir::FunctionContext,
-        value: ast::ExprId,
+        value: Option<ast::ExprId>,
     ) -> Result<hir::Expression, ()> {
-        let expr = self.build_expression(ctx, value)?;
         let func_result = match self.global.get_function(ctx.func_index) {
             Some(func_type) => func_type.result,
-            None => panic!("invalid function index"),
+            None => unreachable!(),
         };
-        let coerced = self.coerce_expr(expr, value, func_result)?;
+
+        let expr = match value {
+            Some(expr_id) => {
+                let expr = self.build_expression(ctx, expr_id)?;
+                self.coerce_expr(expr, expr_id, func_result)?
+            }
+            None => {
+                match func_result {
+                    hir::Type::Unit => {}
+                    _ => panic!("return type mistmatch, can't return unit"),
+                }
+                return Ok(hir::Expression {
+                    kind: hir::ExprKind::Return { value: None },
+                    ty: Some(hir::Type::Never),
+                });
+            }
+        };
 
         Ok(hir::Expression {
-            kind: hir::ExprKind::Return(Box::new(coerced)),
+            kind: hir::ExprKind::Return {
+                value: Some(Box::new(expr)),
+            },
             ty: Some(hir::Type::Never),
         })
     }
@@ -772,6 +789,7 @@ impl<'a> Builder<'a> {
                     ast::ExprKind::Binary { left, right, .. } => (left, right),
                     _ => unreachable!("expected binary expression"),
                 };
+
                 let lhs = self.coerce_untyped_expr(*lhs, left_id, ty.clone())?;
                 let rhs = self.coerce_untyped_expr(*rhs, right_id, ty.clone())?;
                 Ok(hir::Expression {
@@ -799,10 +817,21 @@ impl<'a> Builder<'a> {
                 },
                 ty,
             ) => {
+                let (then_block_id, else_block_id) = match &self.ast.get_expr(expr_id).unwrap().kind
+                {
+                    ast::ExprKind::IfElse {
+                        then_block,
+                        else_block,
+                        ..
+                    } => (*then_block, *else_block),
+                    _ => unreachable!("expected if expression"),
+                };
                 let coerced_then_block =
-                    self.coerce_untyped_expr(*then_block, expr_id, ty.clone())?;
+                    self.coerce_untyped_expr(*then_block, then_block_id, ty.clone())?;
                 let coerced_else_block = match else_block {
-                    Some(else_block) => Some(self.coerce_untyped_expr(*else_block, expr_id, ty)?),
+                    Some(else_block) => {
+                        Some(self.coerce_untyped_expr(*else_block, else_block_id.unwrap(), ty)?)
+                    }
                     None => None,
                 };
                 Ok(hir::Expression {
@@ -828,9 +857,9 @@ impl<'a> Builder<'a> {
     ) -> Result<hir::Expression, ()> {
         match result {
             Some(result) => {
-                let result_expr_id = match self.ast.get_expr(expr_id).unwrap().kind {
+                let result_expr_id = match &self.ast.get_expr(expr_id).unwrap().kind {
                     ast::ExprKind::Block { result, .. } => result.unwrap(),
-                    _ => unreachable!("expected block expression"),
+                    kind => unreachable!("expected block expression {:?}", kind),
                 };
                 let coerced = self.coerce_expr(*result, result_expr_id, ty)?;
                 Ok(hir::Expression {

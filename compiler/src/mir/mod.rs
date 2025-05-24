@@ -73,7 +73,7 @@ pub enum ExprKind {
         right: Box<Expression>,
     },
     Return {
-        value: Box<Expression>,
+        value: Option<Box<Expression>>,
     },
     Drop {
         value: Box<Expression>,

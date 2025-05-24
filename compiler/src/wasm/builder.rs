@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 
@@ -5,6 +7,7 @@ use crate::{mir, wasm};
 
 pub struct Builder<'a> {
     interner: &'a StringInterner<StringBackend>,
+    expressions: Vec<wasm::Expression>,
 }
 
 impl TryFrom<mir::Type> for wasm::ValueType {
@@ -52,15 +55,37 @@ impl From<mir::FunctionType> for wasm::FunctionType {
 
 impl<'a> Builder<'a> {
     pub fn build(mir: &mir::MIR, interner: &'a StringInterner<StringBackend>) -> wasm::Module<'a> {
-        let builder = Builder { interner };
-        let mut functions = Vec::new();
-        for function in &mir.functions {
-            let expressions = match &function.block.kind {
+        let mut builder = Builder {
+            interner,
+            expressions: Vec::new(),
+        };
+
+        let mut types = HashMap::<wasm::FunctionType, wasm::TypeIndex>::new();
+        let mut function_signatures = Vec::<wasm::TypeIndex>::with_capacity(mir.functions.len());
+        let mut exports = Vec::<wasm::ExportItem>::new();
+        let mut functions = Vec::<wasm::FunctionBody>::with_capacity(mir.functions.len());
+
+        for (func_index, func) in mir.functions.iter().enumerate() {
+            let ty = wasm::FunctionType::from(func.ty.clone());
+            let next_type_index = wasm::TypeIndex(types.len() as u32);
+            let type_index = types.entry(ty).or_insert(next_type_index).clone();
+            function_signatures.push(type_index);
+            match func.export {
+                true => {
+                    exports.push(wasm::ExportItem::Function(wasm::FunctionExport {
+                        name: interner.resolve(func.name).unwrap(),
+                        index: wasm::FunctionIndex(func_index as u32),
+                    }));
+                }
+                false => {}
+            }
+
+            let func_expressions = match &func.block.kind {
                 mir::ExprKind::Block { expressions, .. } => expressions,
-                _ => panic!("expected block expression"),
+                _ => unreachable!(),
             };
 
-            let scope_offsets: Box<_> = function
+            let scope_offsets: Box<_> = func
                 .scopes
                 .iter()
                 .scan(0, |offset, scope| {
@@ -70,7 +95,7 @@ impl<'a> Builder<'a> {
                 })
                 .collect();
 
-            let flat_locals: Box<_> = function
+            let flat_locals: Box<_> = func
                 .scopes
                 .iter()
                 .flat_map(|scope| {
@@ -81,180 +106,187 @@ impl<'a> Builder<'a> {
                 })
                 .collect();
 
-            let ctx = FunctionContext {
+            let mut ctx = FunctionContext {
                 locals: flat_locals,
                 scope_offsets,
             };
 
-            let mut instructions = Vec::new();
-            for expr in expressions {
-                builder.build_expression(&ctx, &mut instructions, expr);
-            }
+            let func_expressions = func_expressions
+                .iter()
+                .map(|expr| builder.build_expression(&mut ctx, expr))
+                .collect();
 
-            functions.push(wasm::Function {
-                export: function.export,
-                name: interner.resolve(function.name).unwrap(),
+            functions.push(wasm::FunctionBody {
+                name: interner.resolve(func.name).unwrap(),
                 locals: ctx.locals,
-                ty: wasm::FunctionType::from(function.ty.clone()),
-                instructions,
+                expressions: func_expressions,
             });
         }
-        wasm::Module { functions }
+
+        wasm::Module {
+            types: wasm::TypeSection {
+                signatures: types.into_iter().map(|(ty, _)| ty).collect::<Box<_>>(),
+            },
+            functions: wasm::FunctionSection {
+                functions: function_signatures.into_boxed_slice(),
+            },
+            exports: wasm::ExportSection {
+                items: exports.into_boxed_slice(),
+            },
+            code: wasm::CodeSection {
+                expressions: builder.expressions.into_boxed_slice(),
+                functions: functions.into_boxed_slice(),
+            },
+        }
+    }
+
+    fn push_expr(&mut self, expr: wasm::Expression) -> wasm::ExprIndex {
+        let index = self.expressions.len() as u32;
+        self.expressions.push(expr);
+        wasm::ExprIndex(index)
     }
 
     fn build_expression(
-        &self,
+        &mut self,
         ctx: &FunctionContext<'a>,
-        body: &mut Vec<wasm::Instruction>,
         expr: &mir::Expression,
-    ) {
+    ) -> wasm::ExprIndex {
         match &expr.kind {
-            mir::ExprKind::Noop => {}
-            mir::ExprKind::Function { index } => {
-                body.push(wasm::Instruction::I32Const {
-                    value: *index as i32,
-                });
-            }
+            mir::ExprKind::Noop => self.push_expr(wasm::Expression::Nop),
+            mir::ExprKind::Function { index } => self.push_expr(wasm::Expression::I32Const {
+                value: *index as i32,
+            }),
             mir::ExprKind::Call { callee, arguments } => {
-                for arg in arguments {
-                    self.build_expression(ctx, body, arg);
-                }
-                body.push(wasm::Instruction::Call { index: *callee });
-            }
-            mir::ExprKind::Int { value } => {
-                let instruction = match expr.ty {
-                    mir::Type::I32 => wasm::Instruction::I32Const {
-                        value: value.clone() as i32,
-                    },
-                    mir::Type::I64 => wasm::Instruction::I64Const {
-                        value: value.clone(),
-                    },
-                    _ => {
-                        panic!("unsupported type for int expression {:?}", expr.ty)
-                    }
+                let expr = wasm::Expression::Call {
+                    function: wasm::FunctionIndex(*callee),
+                    arguments: arguments
+                        .iter()
+                        .map(|arg| self.build_expression(ctx, arg))
+                        .collect(),
                 };
-                body.push(instruction);
+                self.push_expr(expr)
             }
-            mir::ExprKind::Add { left, right } => {
-                self.build_expression(ctx, body, &left);
-                self.build_expression(ctx, body, &right);
-                match &expr.ty {
-                    mir::Type::I32 => {
-                        body.push(wasm::Instruction::I32Add);
-                    }
-                    mir::Type::I64 => {
-                        body.push(wasm::Instruction::I64Add);
-                    }
-                    ty => panic!("unsupported type for add operation {:?}", ty),
+            mir::ExprKind::Int { value } => self.push_expr(match expr.ty {
+                mir::Type::I32 => wasm::Expression::I32Const {
+                    value: *value as i32,
+                },
+                mir::Type::I64 => wasm::Expression::I64Const { value: *value },
+                _ => {
+                    panic!("unsupported type for int expression {:?}", expr.ty)
                 }
+            }),
+            mir::ExprKind::Add { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match &expr.ty {
+                    mir::Type::I32 => wasm::Expression::I32Add { left, right },
+                    mir::Type::I64 => wasm::Expression::I64Add { left, right },
+                    ty => panic!("unsupported type for add operation {:?}", ty),
+                })
             }
             mir::ExprKind::Local {
                 local_index,
                 scope_index,
             } => {
-                let index = ctx.get_flat_index(*scope_index, *local_index);
-                body.push(wasm::Instruction::LocalGet { index });
+                let local = ctx.get_flat_index(*scope_index, *local_index);
+                self.push_expr(wasm::Expression::LocalGet { local })
             }
             mir::ExprKind::Mul { left, right } => {
-                self.build_expression(ctx, body, &left);
-                self.build_expression(ctx, body, &right);
-                match expr.ty {
-                    mir::Type::I32 => {
-                        body.push(wasm::Instruction::I32Mul);
-                    }
-                    mir::Type::I64 => {
-                        body.push(wasm::Instruction::I64Mul);
-                    }
-                    _ => unreachable!(),
-                }
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match &expr.ty {
+                    mir::Type::I32 => wasm::Expression::I32Mul { left, right },
+                    mir::Type::I64 => wasm::Expression::I64Mul { left, right },
+                    ty => panic!("unsupported type for mul operation {:?}", ty),
+                })
             }
             mir::ExprKind::Assign {
                 local_index,
                 scope_index,
                 value,
             } => {
-                self.build_expression(ctx, body, &value);
-                let index = ctx.get_flat_index(*scope_index, *local_index);
-                body.push(wasm::Instruction::LocalSet { index });
+                let value = self.build_expression(ctx, &value);
+                let local = ctx.get_flat_index(*scope_index, *local_index);
+                self.push_expr(wasm::Expression::LocalSet { local, value })
             }
             mir::ExprKind::Return { value } => {
-                self.build_expression(ctx, body, &value);
-                body.push(wasm::Instruction::Return);
+                let value = match value {
+                    Some(value) => Some(self.build_expression(ctx, value)),
+                    None => None,
+                };
+                self.push_expr(wasm::Expression::Return { value })
             }
             mir::ExprKind::Sub { left, right } => {
-                self.build_expression(ctx, body, &left);
-                self.build_expression(ctx, body, &right);
-                match expr.ty {
-                    mir::Type::I32 => {
-                        body.push(wasm::Instruction::I32Sub);
-                    }
-                    mir::Type::I64 => {
-                        body.push(wasm::Instruction::I64Sub);
-                    }
-                    _ => unreachable!(),
-                }
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match &expr.ty {
+                    mir::Type::I32 => wasm::Expression::I32Sub { left, right },
+                    mir::Type::I64 => wasm::Expression::I64Sub { left, right },
+                    ty => panic!("unsupported type for sub operation {:?}", ty),
+                })
             }
             mir::ExprKind::Drop { value } => {
-                self.build_expression(ctx, body, &value);
-                match value.ty {
+                let value = self.build_expression(ctx, &value);
+                match expr.ty {
                     mir::Type::I32 | mir::Type::I64 => {
-                        body.push(wasm::Instruction::Drop);
+                        self.push_expr(wasm::Expression::Drop { value })
                     }
                     _ => unreachable!(),
                 }
             }
             mir::ExprKind::Equal { left, right } => {
-                self.build_expression(ctx, body, &left);
-                self.build_expression(ctx, body, &right);
-                match expr.ty {
-                    mir::Type::I32 => {
-                        body.push(wasm::Instruction::I32Eq);
-                    }
-                    mir::Type::I64 => {
-                        body.push(wasm::Instruction::I64Eq);
-                    }
-                    _ => unreachable!(),
-                }
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                // TODO: handle eqz case
+                self.push_expr(match &expr.ty {
+                    mir::Type::I32 => wasm::Expression::I32Eq { left, right },
+                    mir::Type::I64 => wasm::Expression::I64Eq { left, right },
+                    ty => panic!("unsupported type for equal operation {:?}", ty),
+                })
             }
             mir::ExprKind::Block { expressions, .. } => {
-                body.push(wasm::Instruction::Block {
-                    ty: match expr.ty {
-                        mir::Type::I32 => Some(wasm::ValueType::I32),
-                        mir::Type::I64 => Some(wasm::ValueType::I64),
-                        _ => None,
+                let expr = wasm::Expression::Block {
+                    expressions: expressions
+                        .iter()
+                        .map(|expr| self.build_expression(ctx, expr))
+                        .collect(),
+                    result: match expr.ty {
+                        mir::Type::I32 => wasm::BlockResult::SingleValue(wasm::ValueType::I32),
+                        mir::Type::I64 => wasm::BlockResult::SingleValue(wasm::ValueType::I64),
+                        _ => wasm::BlockResult::Empty,
                     },
-                });
-                for expr in expressions {
-                    self.build_expression(ctx, body, &expr);
-                }
-                body.push(wasm::Instruction::End);
+                };
+                self.push_expr(expr)
             }
             mir::ExprKind::Break { value, .. } => {
-                if let Some(value) = value {
-                    self.build_expression(ctx, body, &value);
-                }
+                let value = match value {
+                    Some(value) => Some(self.build_expression(ctx, value)),
+                    None => None,
+                };
                 // hardcoded zero for now, fix this later
-                body.push(wasm::Instruction::Br { block_index: 0 });
+                self.push_expr(wasm::Expression::Break { depth: 0, value })
             }
             mir::ExprKind::IfElse {
                 condition,
                 then_block,
                 else_block,
             } => {
-                self.build_expression(ctx, body, &condition);
-                body.push(wasm::Instruction::If {
-                    ty: match expr.ty {
-                        mir::Type::I32 => Some(wasm::ValueType::I32),
-                        mir::Type::I64 => Some(wasm::ValueType::I64),
-                        _ => None,
+                let condition = self.build_expression(ctx, &condition);
+                let then_branch = self.build_expression(ctx, &then_block);
+                let else_branch = else_block
+                    .as_ref()
+                    .map(|else_block| self.build_expression(ctx, else_block));
+                self.push_expr(wasm::Expression::IfElse {
+                    condition,
+                    result: match expr.ty {
+                        mir::Type::I32 => wasm::BlockResult::SingleValue(wasm::ValueType::I32),
+                        mir::Type::I64 => wasm::BlockResult::SingleValue(wasm::ValueType::I64),
+                        mir::Type::Unit | mir::Type::Never => wasm::BlockResult::Empty,
+                        _ => unreachable!(),
                     },
-                });
-                self.build_expression(ctx, body, &then_block);
-                if let Some(else_block) = else_block {
-                    body.push(wasm::Instruction::Else);
-                    self.build_expression(ctx, body, &else_block);
-                }
-                body.push(wasm::Instruction::End);
+                    then_branch,
+                    else_branch,
+                })
             }
         }
     }
