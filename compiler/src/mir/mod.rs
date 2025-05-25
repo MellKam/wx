@@ -39,6 +39,7 @@ pub enum Type {
     I64,
     Unit,
     Never,
+    Bool,
     Function(FunctionIndex),
 }
 
@@ -48,6 +49,9 @@ pub enum ExprKind {
     Local {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
+    },
+    Bool {
+        value: bool,
     },
     Function {
         index: FunctionIndex,
@@ -72,6 +76,14 @@ pub enum ExprKind {
         left: Box<Expression>,
         right: Box<Expression>,
     },
+    And {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Or {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
     Return {
         value: Option<Box<Expression>>,
     },
@@ -83,6 +95,10 @@ pub enum ExprKind {
         arguments: Box<[Expression]>,
     },
     Equal {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    NotEqual {
         left: Box<Expression>,
         right: Box<Expression>,
     },

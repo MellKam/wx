@@ -5,8 +5,7 @@ use string_interner::backend::StringBackend;
 
 use crate::{mir, wasm};
 
-pub struct Builder<'a> {
-    interner: &'a StringInterner<StringBackend>,
+pub struct Builder {
     expressions: Vec<wasm::Expression>,
 }
 
@@ -15,11 +14,20 @@ impl TryFrom<mir::Type> for wasm::ValueType {
 
     fn try_from(value: mir::Type) -> Result<Self, Self::Error> {
         match value {
+            mir::Type::Bool => Ok(wasm::ValueType::I32),
             mir::Type::I32 => Ok(wasm::ValueType::I32),
             mir::Type::I64 => Ok(wasm::ValueType::I64),
             mir::Type::Function(_) => Ok(wasm::ValueType::I32),
             _ => Err(()),
         }
+    }
+}
+
+impl From<mir::Type> for wasm::BlockResult {
+    fn from(value: mir::Type) -> Self {
+        wasm::ValueType::try_from(value)
+            .map(wasm::BlockResult::SingleValue)
+            .unwrap_or(wasm::BlockResult::Empty)
     }
 }
 
@@ -53,10 +61,12 @@ impl From<mir::FunctionType> for wasm::FunctionType {
     }
 }
 
-impl<'a> Builder<'a> {
-    pub fn build(mir: &mir::MIR, interner: &'a StringInterner<StringBackend>) -> wasm::Module<'a> {
+impl Builder {
+    pub fn build<'a>(
+        mir: &mir::MIR,
+        interner: &'a StringInterner<StringBackend>,
+    ) -> wasm::Module<'a> {
         let mut builder = Builder {
-            interner,
             expressions: Vec::new(),
         };
 
@@ -146,7 +156,7 @@ impl<'a> Builder<'a> {
         wasm::ExprIndex(index)
     }
 
-    fn build_expression(
+    fn build_expression<'a>(
         &mut self,
         ctx: &FunctionContext<'a>,
         expr: &mir::Expression,
@@ -155,6 +165,9 @@ impl<'a> Builder<'a> {
             mir::ExprKind::Noop => self.push_expr(wasm::Expression::Nop),
             mir::ExprKind::Function { index } => self.push_expr(wasm::Expression::I32Const {
                 value: *index as i32,
+            }),
+            mir::ExprKind::Bool { value } => self.push_expr(wasm::Expression::I32Const {
+                value: if *value { 1 } else { 0 },
             }),
             mir::ExprKind::Call { callee, arguments } => {
                 let expr = wasm::Expression::Call {
@@ -166,22 +179,61 @@ impl<'a> Builder<'a> {
                 };
                 self.push_expr(expr)
             }
-            mir::ExprKind::Int { value } => self.push_expr(match expr.ty {
-                mir::Type::I32 => wasm::Expression::I32Const {
-                    value: *value as i32,
-                },
-                mir::Type::I64 => wasm::Expression::I64Const { value: *value },
-                _ => {
-                    panic!("unsupported type for int expression {:?}", expr.ty)
-                }
-            }),
+            mir::ExprKind::Int { value } => {
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Const {
+                        value: *value as i32,
+                    },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Const { value: *value },
+                    _ => {
+                        panic!("unsupported type for int expression {:?}", expr.ty)
+                    }
+                })
+            }
             mir::ExprKind::Add { left, right } => {
                 let left = self.build_expression(ctx, &left);
                 let right = self.build_expression(ctx, &right);
-                self.push_expr(match &expr.ty {
-                    mir::Type::I32 => wasm::Expression::I32Add { left, right },
-                    mir::Type::I64 => wasm::Expression::I64Add { left, right },
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Add { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Add { left, right },
                     ty => panic!("unsupported type for add operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::Mul { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Mul { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Mul { left, right },
+                    ty => panic!("unsupported type for mul operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::NotEqual { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Ne { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Ne { left, right },
+                    ty => panic!("unsupported type for not equal operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::And { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32And { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64And { left, right },
+                    ty => panic!("unsupported type for and operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::Or { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Or { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Or { left, right },
+                    ty => panic!("unsupported type for or operation {:?}", ty),
                 })
             }
             mir::ExprKind::Local {
@@ -190,15 +242,6 @@ impl<'a> Builder<'a> {
             } => {
                 let local = ctx.get_flat_index(*scope_index, *local_index);
                 self.push_expr(wasm::Expression::LocalGet { local })
-            }
-            mir::ExprKind::Mul { left, right } => {
-                let left = self.build_expression(ctx, &left);
-                let right = self.build_expression(ctx, &right);
-                self.push_expr(match &expr.ty {
-                    mir::Type::I32 => wasm::Expression::I32Mul { left, right },
-                    mir::Type::I64 => wasm::Expression::I64Mul { left, right },
-                    ty => panic!("unsupported type for mul operation {:?}", ty),
-                })
             }
             mir::ExprKind::Assign {
                 local_index,
@@ -219,16 +262,16 @@ impl<'a> Builder<'a> {
             mir::ExprKind::Sub { left, right } => {
                 let left = self.build_expression(ctx, &left);
                 let right = self.build_expression(ctx, &right);
-                self.push_expr(match &expr.ty {
-                    mir::Type::I32 => wasm::Expression::I32Sub { left, right },
-                    mir::Type::I64 => wasm::Expression::I64Sub { left, right },
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Sub { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Sub { left, right },
                     ty => panic!("unsupported type for sub operation {:?}", ty),
                 })
             }
             mir::ExprKind::Drop { value } => {
                 let value = self.build_expression(ctx, &value);
-                match expr.ty {
-                    mir::Type::I32 | mir::Type::I64 => {
+                match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32 | wasm::ValueType::I64) => {
                         self.push_expr(wasm::Expression::Drop { value })
                     }
                     _ => unreachable!(),
@@ -238,9 +281,9 @@ impl<'a> Builder<'a> {
                 let left = self.build_expression(ctx, &left);
                 let right = self.build_expression(ctx, &right);
                 // TODO: handle eqz case
-                self.push_expr(match &expr.ty {
-                    mir::Type::I32 => wasm::Expression::I32Eq { left, right },
-                    mir::Type::I64 => wasm::Expression::I64Eq { left, right },
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Eq { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Eq { left, right },
                     ty => panic!("unsupported type for equal operation {:?}", ty),
                 })
             }
@@ -250,9 +293,13 @@ impl<'a> Builder<'a> {
                         .iter()
                         .map(|expr| self.build_expression(ctx, expr))
                         .collect(),
-                    result: match expr.ty {
-                        mir::Type::I32 => wasm::BlockResult::SingleValue(wasm::ValueType::I32),
-                        mir::Type::I64 => wasm::BlockResult::SingleValue(wasm::ValueType::I64),
+                    result: match wasm::ValueType::try_from(expr.ty.clone()) {
+                        Ok(wasm::ValueType::I32) => {
+                            wasm::BlockResult::SingleValue(wasm::ValueType::I32)
+                        }
+                        Ok(wasm::ValueType::I64) => {
+                            wasm::BlockResult::SingleValue(wasm::ValueType::I64)
+                        }
                         _ => wasm::BlockResult::Empty,
                     },
                 };
@@ -278,12 +325,7 @@ impl<'a> Builder<'a> {
                     .map(|else_block| self.build_expression(ctx, else_block));
                 self.push_expr(wasm::Expression::IfElse {
                     condition,
-                    result: match expr.ty {
-                        mir::Type::I32 => wasm::BlockResult::SingleValue(wasm::ValueType::I32),
-                        mir::Type::I64 => wasm::BlockResult::SingleValue(wasm::ValueType::I64),
-                        mir::Type::Unit | mir::Type::Never => wasm::BlockResult::Empty,
-                        _ => unreachable!(),
-                    },
+                    result: wasm::BlockResult::from(expr.ty.clone()),
                     then_branch,
                     else_branch,
                 })

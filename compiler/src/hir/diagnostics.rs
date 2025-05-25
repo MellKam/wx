@@ -86,6 +86,9 @@ impl ast::BinaryOperator {
             | BinaryOperator::GreaterEq => {
                 format!("cannot compare `{}` to `{}`", left, right)
             }
+            _ => {
+                format!("cannot perform operation on `{}` and `{}`", left, right)
+            }
         }
     }
 }

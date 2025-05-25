@@ -5,8 +5,8 @@ use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
-use super::ScopeIndex;
 use super::diagnostics::DiagnosticContext;
+use super::{Expression, ScopeIndex};
 use crate::{ast, hir};
 
 pub struct Builder<'bump, 'interner> {
@@ -72,6 +72,12 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         let text = self.interner.resolve(identifier.symbol).unwrap();
         match hir::PrimitiveType::try_from(text) {
             Ok(ty) => return hir::Type::Primitive(ty),
+            _ => {}
+        }
+        match text {
+            "bool" => return hir::Type::Bool,
+            "unit" => return hir::Type::Unit,
+            "never" => return hir::Type::Never,
             _ => {}
         }
         match self.global.type_lookup.get(&identifier.symbol).cloned() {
@@ -342,11 +348,24 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             _ => unreachable!("expected identifier expression"),
         };
 
+        // handle special identifiers
         match self.interner.resolve(symbol).unwrap() {
             "_" => {
                 return Ok(hir::Expression {
                     kind: hir::ExprKind::Placeholder,
                     ty: None,
+                });
+            }
+            "true" => {
+                return Ok(hir::Expression {
+                    kind: hir::ExprKind::Bool(true),
+                    ty: Some(hir::Type::Bool),
+                });
+            }
+            "false" => {
+                return Ok(hir::Expression {
+                    kind: hir::ExprKind::Bool(false),
+                    ty: Some(hir::Type::Bool),
                 });
             }
             _ => {}
@@ -486,8 +505,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             };
 
         let condition = self.build_expression(ctx, *condition_id)?;
-        let coerced_condition =
-            self.coerce_expr(condition, *condition_id, hir::Type::Enum(hir::EnumIndex(0)))?;
+        let coerced_condition = self.coerce_expr(condition, *condition_id, hir::Type::Bool)?;
 
         let mut then_block = match self.ast.get_expr(*then_block_id).unwrap().kind {
             ast::ExprKind::Block { .. } => {
@@ -760,6 +778,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             (hir::Type::Primitive(ty), Some(hir::Type::Primitive(ty2))) if ty == ty2 => {
                 Ok(rhs.clone())
             }
+            (hir::Type::Bool, Some(hir::Type::Bool)) => Ok(rhs.clone()),
             (hir::Type::Enum(index_1), Some(hir::Type::Enum(index_2))) if index_1 == index_2 => {
                 Ok(rhs.clone())
             }
@@ -957,127 +976,172 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             ast::BinaryOperator::Assign => {
                 return self.build_assignment_expression(ctx, left_id, right_id);
             }
-            _ => {}
-        }
-
-        let left = self.build_expression(ctx, left_id)?;
-        let right = self.build_expression(ctx, right_id)?;
-
-        use hir::*;
-        match operator {
             ast::BinaryOperator::Add
             | ast::BinaryOperator::Subtract
             | ast::BinaryOperator::Multiply
             | ast::BinaryOperator::Divide
-            | ast::BinaryOperator::Remainder => match (left.ty, right.ty) {
-                (None, None) => {
-                    let evaluated =
-                        Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
-                    match evaluated {
-                        Some(expr) => Ok(expr),
-                        None => Ok(Expression {
-                            kind: ExprKind::Binary {
-                                operator,
-                                lhs: Box::new(left),
-                                rhs: Box::new(right),
-                            },
-                            ty: None,
-                        }),
-                    }
-                }
-                (None, Some(ty)) | (Some(ty), None) => {
-                    let (typed, untyped) = match left.ty {
-                        Some(_) => ((left.clone(), left_id), (right, right_id)),
-                        None => ((right, right_id), (left.clone(), left_id)),
-                    };
-
-                    let coerced = self
-                        .coerce_untyped_expr(untyped.0, untyped.1, ty)
-                        .expect("invalid coercion");
-
-                    let (left, right) = match left.ty {
-                        Some(_) => (typed.0, coerced),
-                        None => (coerced, typed.0),
-                    };
-
-                    Ok(Expression {
-                        kind: ExprKind::Binary {
-                            operator,
-                            lhs: Box::new(left),
-                            rhs: Box::new(right),
-                        },
-                        ty: Some(ty),
-                    })
-                }
-                (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
-                    if primitive_1 == primitive_2 =>
-                {
-                    Ok(Expression {
-                        kind: ExprKind::Binary {
-                            operator,
-                            lhs: Box::new(left),
-                            rhs: Box::new(right),
-                        },
-                        ty: Some(Type::Primitive(primitive_1)),
-                    })
-                }
-                _ => panic!("type mismatch in binary expression"),
-            },
-            ast::BinaryOperator::Eq => match (left.ty, right.ty) {
-                (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
-                    if primitive_1 == primitive_2 =>
-                {
-                    Ok(Expression {
-                        kind: ExprKind::Binary {
-                            operator,
-                            lhs: Box::new(left),
-                            rhs: Box::new(right),
-                        },
-                        ty: Some(Type::Enum(hir::EnumIndex(0))),
-                    })
-                }
-                (None, None) => {
-                    let evaluated =
-                        Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
-                    match evaluated {
-                        Some(expr) => Ok(expr),
-                        None => Ok(Expression {
-                            kind: ExprKind::Binary {
-                                operator,
-                                lhs: Box::new(left),
-                                rhs: Box::new(right),
-                            },
-                            ty: Some(Type::Enum(hir::EnumIndex(0))),
-                        }),
-                    }
-                }
-                (None, Some(ty)) | (Some(ty), None) => {
-                    let (typed, untyped) = match left.ty {
-                        Some(_) => ((left.clone(), left_id), (right, right_id)),
-                        None => ((right, right_id), (left.clone(), left_id)),
-                    };
-
-                    let coerced = self
-                        .coerce_untyped_expr(untyped.0, untyped.1, ty)
-                        .expect("invalid coercion");
-
-                    let (left, right) = match left.ty {
-                        Some(_) => (typed.0, coerced),
-                        None => (coerced, typed.0),
-                    };
-
-                    Ok(Expression {
-                        kind: ExprKind::Binary {
-                            operator,
-                            lhs: Box::new(left),
-                            rhs: Box::new(right),
-                        },
-                        ty: Some(Type::Enum(hir::EnumIndex(0))),
-                    })
-                }
-                _ => panic!("can't compare these types"),
-            },
+            | ast::BinaryOperator::Remainder => {
+                self.build_arithmetic_expression(ctx, left_id, right_id, operator)
+            }
+            ast::BinaryOperator::Eq
+            | ast::BinaryOperator::NotEq
+            | ast::BinaryOperator::Or
+            | ast::BinaryOperator::And => {
+                self.build_logical_expression(ctx, left_id, right_id, operator)
+            }
             _ => unimplemented!("binary operator not implemented"),
+        }
+    }
+
+    fn build_arithmetic_expression(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        left_id: ast::ExprId,
+        right_id: ast::ExprId,
+        operator: ast::BinaryOperator,
+    ) -> Result<hir::Expression, ()> {
+        let left = self.build_expression(ctx, left_id)?;
+        let right = self.build_expression(ctx, right_id)?;
+
+        use hir::*;
+        match (left.ty, right.ty) {
+            (None, None) => {
+                let evaluated = Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
+                match evaluated {
+                    Some(expr) => Ok(expr),
+                    None => Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            lhs: Box::new(left),
+                            rhs: Box::new(right),
+                        },
+                        ty: None,
+                    }),
+                }
+            }
+            (None, Some(ty)) | (Some(ty), None) => {
+                let (typed, untyped) = match left.ty {
+                    Some(_) => ((left.clone(), left_id), (right, right_id)),
+                    None => ((right, right_id), (left.clone(), left_id)),
+                };
+
+                let coerced = self
+                    .coerce_untyped_expr(untyped.0, untyped.1, ty)
+                    .expect("invalid coercion");
+
+                let (left, right) = match left.ty {
+                    Some(_) => (typed.0, coerced),
+                    None => (coerced, typed.0),
+                };
+
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        lhs: Box::new(left),
+                        rhs: Box::new(right),
+                    },
+                    ty: Some(ty),
+                })
+            }
+            (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
+                if primitive_1 == primitive_2 =>
+            {
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        lhs: Box::new(left),
+                        rhs: Box::new(right),
+                    },
+                    ty: Some(Type::Primitive(primitive_1)),
+                })
+            }
+            _ => panic!("type mismatch in binary expression"),
+        }
+    }
+
+    fn build_logical_expression(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        left_id: ast::ExprId,
+        right_id: ast::ExprId,
+        operator: ast::BinaryOperator,
+    ) -> Result<hir::Expression, ()> {
+        let left = self.build_expression(ctx, left_id)?;
+        let right = self.build_expression(ctx, right_id)?;
+
+        use hir::*;
+        match (left.ty, right.ty) {
+            (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
+                if primitive_1 == primitive_2 =>
+            {
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        lhs: Box::new(left),
+                        rhs: Box::new(right),
+                    },
+                    ty: Some(Type::Bool),
+                })
+            }
+            (Some(Type::Enum(enum_index_1)), Some(Type::Enum(enum_index_2)))
+                if enum_index_1 == enum_index_2 =>
+            {
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        lhs: Box::new(left),
+                        rhs: Box::new(right),
+                    },
+                    ty: Some(Type::Bool),
+                })
+            }
+            (None, None) => {
+                let evaluated = Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
+                match evaluated {
+                    Some(expr) => Ok(expr),
+                    None => Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            lhs: Box::new(left),
+                            rhs: Box::new(right),
+                        },
+                        ty: Some(Type::Bool),
+                    }),
+                }
+            }
+            (None, Some(ty)) | (Some(ty), None) => {
+                let (typed, untyped) = match left.ty {
+                    Some(_) => ((left.clone(), left_id), (right, right_id)),
+                    None => ((right, right_id), (left.clone(), left_id)),
+                };
+
+                let coerced = self
+                    .coerce_untyped_expr(untyped.0, untyped.1, ty)
+                    .expect("invalid coercion");
+
+                let (left, right) = match left.ty {
+                    Some(_) => (typed.0, coerced),
+                    None => (coerced, typed.0),
+                };
+
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        lhs: Box::new(left),
+                        rhs: Box::new(right),
+                    },
+                    ty: Some(Type::Bool),
+                })
+            }
+            (Some(Type::Bool), Some(Type::Bool)) => Ok(Expression {
+                kind: ExprKind::Binary {
+                    operator,
+                    lhs: Box::new(left),
+                    rhs: Box::new(right),
+                },
+                ty: Some(Type::Bool),
+            }),
+            (l, r) => panic!("can't compare these types {:?} {:?}", l, r),
         }
     }
 
@@ -1094,6 +1158,18 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
                     ast::BinaryOperator::Multiply => left.checked_mul(right),
                     ast::BinaryOperator::Divide => left.checked_div(right),
                     ast::BinaryOperator::Remainder => left.checked_rem(right),
+                    ast::BinaryOperator::Eq => {
+                        return Some(Expression {
+                            kind: hir::ExprKind::Bool(*left == right),
+                            ty: Some(hir::Type::Bool),
+                        });
+                    }
+                    ast::BinaryOperator::NotEq => {
+                        return Some(Expression {
+                            kind: hir::ExprKind::Bool(*left != right),
+                            ty: Some(hir::Type::Bool),
+                        });
+                    }
                     _ => unimplemented!("unimplemented binary operator"),
                 }
                 .expect("integer overflow");

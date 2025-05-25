@@ -57,39 +57,45 @@ pub enum BinaryOperator {
     LessEq,
     Greater,
     GreaterEq,
+    // Logical
+    And,
+    Or,
+    // Bitwise
+    BitwiseAnd,
+    BitwiseOr,
 }
 
-impl BinaryOperator {
-    pub fn is_arithmetic(self) -> bool {
-        match self {
-            BinaryOperator::Add
-            | BinaryOperator::Subtract
-            | BinaryOperator::Multiply
-            | BinaryOperator::Divide
-            | BinaryOperator::Remainder => true,
-            _ => false,
-        }
-    }
+// impl BinaryOperator {
+//     pub fn is_arithmetic(self) -> bool {
+//         match self {
+//             BinaryOperator::Add
+//             | BinaryOperator::Subtract
+//             | BinaryOperator::Multiply
+//             | BinaryOperator::Divide
+//             | BinaryOperator::Remainder => true,
+//             _ => false,
+//         }
+//     }
 
-    pub fn is_relational(self) -> bool {
-        match self {
-            BinaryOperator::Eq
-            | BinaryOperator::NotEq
-            | BinaryOperator::Less
-            | BinaryOperator::LessEq
-            | BinaryOperator::Greater
-            | BinaryOperator::GreaterEq => true,
-            _ => false,
-        }
-    }
+//     pub fn is_relational(self) -> bool {
+//         match self {
+//             BinaryOperator::Eq
+//             | BinaryOperator::NotEq
+//             | BinaryOperator::Less
+//             | BinaryOperator::LessEq
+//             | BinaryOperator::Greater
+//             | BinaryOperator::GreaterEq => true,
+//             _ => false,
+//         }
+//     }
 
-    pub fn is_assignment(self) -> bool {
-        match self {
-            BinaryOperator::Assign => true,
-            _ => false,
-        }
-    }
-}
+//     pub fn is_assignment(self) -> bool {
+//         match self {
+//             BinaryOperator::Assign => true,
+//             _ => false,
+//         }
+//     }
+// }
 
 // impl std::fmt::Display for BinaryOperator {
 //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -128,6 +134,10 @@ impl TryFrom<TokenKind> for BinaryOperator {
             TokenKind::CloseAngle => Ok(BinaryOperator::Greater),
             TokenKind::GreaterEq => Ok(BinaryOperator::GreaterEq),
             TokenKind::Eq => Ok(BinaryOperator::Assign),
+            TokenKind::Amper => Ok(BinaryOperator::BitwiseAnd),
+            TokenKind::AmperAmper => Ok(BinaryOperator::And),
+            TokenKind::Vbar => Ok(BinaryOperator::BitwiseOr),
+            TokenKind::VbarVbar => Ok(BinaryOperator::Or),
             _ => Err(()),
         }
     }

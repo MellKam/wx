@@ -46,6 +46,7 @@ pub enum Type {
     Primitive(PrimitiveType),
     Function(FunctionIndex),
     Enum(EnumIndex),
+    Bool,
     Unit,
     Never,
     Unknown,
@@ -57,6 +58,7 @@ impl std::fmt::Display for Type {
             Type::Primitive(ty) => write!(f, "{}", ty),
             Type::Function(index) => write!(f, "function({})", index.0),
             Type::Enum(index) => write!(f, "enum({})", index.0),
+            Type::Bool => write!(f, "bool"),
             Type::Unit => write!(f, "unit"),
             Type::Never => write!(f, "never"),
             Type::Unknown => write!(f, "unknown"),
@@ -95,6 +97,7 @@ pub struct EnumVariantIndex(pub u32);
 pub enum ExprKind {
     Placeholder,
     Int(i64),
+    Bool(bool),
     LocalDeclaration {
         scope_index: ScopeIndex,
         local_index: LocalIndex,

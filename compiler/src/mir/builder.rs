@@ -44,6 +44,7 @@ impl<'a> Builder<'a> {
         match ty {
             hir::Type::Primitive(ty) => mir::Type::from(ty),
             hir::Type::Function(index) => mir::Type::Function(index.0),
+            hir::Type::Bool => mir::Type::Bool,
             hir::Type::Enum(enum_index) => {
                 let enum_ = &self.hir.enums[enum_index.0 as usize];
                 mir::Type::from(enum_.ty.clone())
@@ -102,6 +103,10 @@ impl<'a> Builder<'a> {
             hir::ExprKind::Unary { operator, operand } => {
                 self.build_unary_expression(*operator, &operand, ty)
             }
+            &hir::ExprKind::Bool(value) => mir::Expression {
+                kind: mir::ExprKind::Bool { value },
+                ty,
+            },
             hir::ExprKind::Local {
                 local_index,
                 scope_index,
@@ -153,6 +158,12 @@ impl<'a> Builder<'a> {
                 expr,
             } => match expr.kind {
                 hir::ExprKind::Int(value) if value == 0 => {
+                    return mir::Expression {
+                        kind: mir::ExprKind::Noop,
+                        ty: mir::Type::Unit,
+                    };
+                }
+                hir::ExprKind::Bool(value) if value == false => {
                     return mir::Expression {
                         kind: mir::ExprKind::Noop,
                         ty: mir::Type::Unit,
@@ -361,6 +372,27 @@ impl<'a> Builder<'a> {
             }
             ast::BinaryOperator::Eq => mir::Expression {
                 kind: mir::ExprKind::Equal {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            ast::BinaryOperator::NotEq => mir::Expression {
+                kind: mir::ExprKind::NotEqual {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            ast::BinaryOperator::And => mir::Expression {
+                kind: mir::ExprKind::And {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            ast::BinaryOperator::Or => mir::Expression {
+                kind: mir::ExprKind::Or {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },

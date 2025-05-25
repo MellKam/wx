@@ -88,21 +88,59 @@ enum Instruction {
     LocalSet = 0x21,
     I32Const = 0x41,
     I64Const = 0x42,
+    // I32 logical and comparison
+    I32Eqz = 0x45,
     I32Eq = 0x46,
+    I32Ne = 0x47,
+    I32LtS = 0x48,
+    I32LtU = 0x49,
+    I32GtS = 0x4A,
+    I32GtU = 0x4B,
+    I32LeS = 0x4C,
+    I32LeU = 0x4D,
+    I32GeS = 0x4E,
+    I32GeU = 0x4F,
+    // I64 logical and comparison
+    I64Eqz = 0x50,
+    I64Eq = 0x51,
+    I64Ne = 0x52,
+    I64LtS = 0x53,
+    I64LtU = 0x54,
+    I64GtS = 0x55,
+    I64GtU = 0x56,
+    I64LeS = 0x57,
+    I64LeU = 0x58,
+    I64GeS = 0x59,
+    I64GeU = 0x5A,
+    // ...
     I32Add = 0x6A,
     I32Sub = 0x6B,
     I32Mul = 0x6C,
+    I32DivS = 0x6D,
+    I32DivU = 0x6E,
+    I32RemS = 0x6F,
+    I32RemU = 0x70,
+    I32And = 0x71,
+    I32Or = 0x72,
+    I32Xor = 0x73,
+    // ...
     I64Add = 0x7C,
     I64Sub = 0x7D,
     I64Mul = 0x7E,
-    I64Eq = 0x86,
+    I64DivS = 0x7F,
+    I64DivU = 0x80,
+    I64RemS = 0x81,
+    I64RemU = 0x82,
+    I64And = 0x83,
+    I64Or = 0x84,
+    I64Xor = 0x85,
 }
 
 impl EncodeWithContext for wasm::Expression {
     fn encode_with_context(&self, sink: &mut Vec<u8>, module: &wasm::Module) {
         match self {
             wasm::Expression::Nop => {
-                sink.push(Instruction::Nop as u8);
+                // sink.push(Instruction::Nop as u8);
             }
             wasm::Expression::LocalGet { local } => {
                 sink.push(Instruction::LocalGet as u8);
@@ -183,6 +221,25 @@ impl EncodeWithContext for wasm::Expression {
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I32Eq as u8);
             }
+            wasm::Expression::I32Eqz { value } => {
+                module.get_expr(*value).encode_with_context(sink, module);
+                sink.push(Instruction::I32Eqz as u8);
+            }
+            wasm::Expression::I32Ne { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32Ne as u8);
+            }
+            wasm::Expression::I32And { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32And as u8);
+            }
+            wasm::Expression::I32Or { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32Or as u8);
+            }
             wasm::Expression::IfElse {
                 condition,
                 result,
@@ -231,6 +288,25 @@ impl EncodeWithContext for wasm::Expression {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I64Eq as u8);
+            }
+            wasm::Expression::I64Eqz { value } => {
+                module.get_expr(*value).encode_with_context(sink, module);
+                sink.push(Instruction::I64Eqz as u8);
+            }
+            wasm::Expression::I64Ne { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64Ne as u8);
+            }
+            wasm::Expression::I64And { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64And as u8);
+            }
+            wasm::Expression::I64Or { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64Or as u8);
             }
         }
     }

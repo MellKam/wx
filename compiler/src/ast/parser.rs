@@ -51,6 +51,10 @@ impl From<BinaryOperator> for BindingPower {
             BinaryOperator::LessEq => BindingPower::Relational,
             BinaryOperator::GreaterEq => BindingPower::Relational,
             BinaryOperator::Assign => BindingPower::Assignment,
+            BinaryOperator::And => BindingPower::Logical,
+            BinaryOperator::Or => BindingPower::Logical,
+            BinaryOperator::BitwiseAnd => BindingPower::Logical,
+            BinaryOperator::BitwiseOr => BindingPower::Logical,
         }
     }
 }
@@ -236,21 +240,16 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 BindingPower::Multiplicative,
             )),
             TokenKind::Eq => Some((Parser::parse_binary_expression, BindingPower::Assignment)),
-            TokenKind::EqEq
-            | TokenKind::BangEq
-            | TokenKind::OpenAngle
-            | TokenKind::LessEq
-            | TokenKind::CloseAngle
-            | TokenKind::GreaterEq => {
+            TokenKind::EqEq | TokenKind::BangEq => {
                 Some((Parser::parse_binary_expression, BindingPower::Relational))
             }
             TokenKind::ColonColon => Some((
                 Parser::parse_namespace_member_expression,
                 BindingPower::Member,
             )),
-            // TokenKind::VbarVbar | TokenKind::AmperAmper => {
-            //     Some((parse_binary_expression, BindingPower::Logical))
-            // }
+            TokenKind::VbarVbar | TokenKind::AmperAmper => {
+                Some((Parser::parse_binary_expression, BindingPower::Logical))
+            }
             TokenKind::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
             // TokenKind::Dot => Some((parse_member_expression, BindingPower::Member)),
             _ => None,

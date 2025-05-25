@@ -29,14 +29,10 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            enum bool: i32 {
-                true = 1,
-                false = 0,
-            }
+            export fn fibonacci(n: i32): bool {
+                const a = false;
 
-            export fn fibonacci(n: i32): i32 {
-                if n == 0 || n == 1 { return n; }
-                return fibonacci(n - 1) + fibonacci(n - 2);
+                if a { true } else { false }
             }
             "# }
             .to_string(),

@@ -1,16 +1,25 @@
 use crate::wasm;
 
-pub trait Encode {
+trait Encode {
     fn encode(&self, sink: &mut String);
 }
 
-pub trait EncodeWithContext {
-    fn encode_with_context(
-        &self,
-        sink: &mut String,
-        module: &wasm::Module,
-        func_index: wasm::FunctionIndex,
-    );
+#[derive(Clone)]
+struct EncodeContext<'a> {
+    module: &'a wasm::Module<'a>,
+    func_index: wasm::FunctionIndex,
+}
+
+impl EncodeContext<'_> {
+    fn encode(&self, sink: &mut String, expr_index: wasm::ExprIndex) {
+        self.module
+            .get_expr(expr_index)
+            .encode_with_context(sink, self.clone());
+    }
+}
+
+trait EncodeWithContext {
+    fn encode_with_context(&self, sink: &mut String, ctx: EncodeContext);
 }
 
 impl Encode for i32 {
@@ -41,20 +50,16 @@ impl Encode for wasm::ValueType {
 }
 
 impl EncodeWithContext for wasm::Expression {
-    fn encode_with_context(
-        &self,
-        sink: &mut String,
-        module: &wasm::Module,
-        func_index: wasm::FunctionIndex,
-    ) {
+    fn encode_with_context(&self, sink: &mut String, ctx: EncodeContext) {
         match self {
             wasm::Expression::Nop => {
                 sink.push_str("(nop)");
             }
             wasm::Expression::LocalGet { local: local_index } => {
                 sink.push_str("(local.get $");
-                let local = module
-                    .get_function(func_index)
+                let local = ctx
+                    .module
+                    .get_function(ctx.func_index)
                     .locals
                     .get(local_index.0 as usize)
                     .unwrap();
@@ -65,25 +70,22 @@ impl EncodeWithContext for wasm::Expression {
                 value,
             } => {
                 sink.push_str("(local.set $");
-                let local = module
-                    .get_function(func_index)
+                let local = ctx
+                    .module
+                    .get_function(ctx.func_index)
                     .locals
                     .get(local_index.0 as usize)
                     .unwrap();
 
                 sink.push_str(format!("{}_{}", local.name, local_index.0).as_str());
                 sink.push_str(" ");
-                module
-                    .get_expr(*value)
-                    .encode_with_context(sink, module, func_index);
+                ctx.encode(sink, *value);
                 sink.push_str(")");
             }
             wasm::Expression::Return { value } => match value {
                 Some(value) => {
                     sink.push_str("(return ");
-                    module
-                        .get_expr(*value)
-                        .encode_with_context(sink, module, func_index);
+                    ctx.encode(sink, *value);
                     sink.push_str(")");
                 }
                 None => {
@@ -105,22 +107,16 @@ impl EncodeWithContext for wasm::Expression {
                         sink.push_str(")");
                     }
                 }
-                module
-                    .get_expr(*condition)
-                    .encode_with_context(sink, module, func_index);
+                ctx.encode(sink, *condition);
 
                 sink.push_str("(then");
-                module
-                    .get_expr(*then_branch)
-                    .encode_with_context(sink, module, func_index);
+                ctx.encode(sink, *then_branch);
                 sink.push_str(")");
 
                 match else_branch {
                     Some(else_branch) => {
                         sink.push_str("(else");
-                        module
-                            .get_expr(*else_branch)
-                            .encode_with_context(sink, module, func_index);
+                        ctx.encode(sink, *else_branch);
                         sink.push_str(")");
                     }
                     None => {}
@@ -142,41 +138,36 @@ impl EncodeWithContext for wasm::Expression {
                 }
 
                 for expr_index in expressions {
-                    let expr = module.get_expr(*expr_index);
-                    expr.encode_with_context(sink, module, func_index);
+                    ctx.encode(sink, *expr_index);
                 }
             }
             wasm::Expression::Break { value, depth } => {
                 sink.push_str("(br ");
                 depth.encode(sink);
-                match value {
+                match *value {
                     Some(value) => {
                         sink.push_str(" ");
-                        module
-                            .get_expr(*value)
-                            .encode_with_context(sink, module, func_index);
+                        ctx.encode(sink, value);
                     }
                     None => {}
                 }
                 sink.push_str(")");
             }
             wasm::Expression::Drop { value } => {
-                sink.push_str("(drop");
-                module
-                    .get_expr(*value)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(drop ");
+                ctx.encode(sink, *value);
                 sink.push_str(")");
             }
             wasm::Expression::Call {
                 arguments,
                 function,
             } => {
-                let func_name = module.get_function(*function).name;
-                sink.push_str(format!("(call ${} ", func_name).as_str());
+                let func_name = ctx.module.get_function(*function).name;
+                sink.push_str("(call $");
+                sink.push_str(func_name);
+                sink.push_str(" ");
                 for arg in arguments {
-                    module
-                        .get_expr(*arg)
-                        .encode_with_context(sink, module, func_index);
+                    ctx.encode(sink, *arg);
                 }
                 sink.push_str(")");
             }
@@ -191,83 +182,97 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push_str(")");
             }
             wasm::Expression::I32Add { left, right } => {
-                sink.push_str("(i32.add");
-                module
-                    .get_expr(*left)
-                    .encode_with_context(sink, module, func_index);
-                module
-                    .get_expr(*right)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(i32.add ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
                 sink.push_str(")");
             }
             wasm::Expression::I32Sub { left, right } => {
-                sink.push_str("(i32.sub");
-                module
-                    .get_expr(*left)
-                    .encode_with_context(sink, module, func_index);
-                module
-                    .get_expr(*right)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(i32.sub ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
                 sink.push_str(")");
             }
             wasm::Expression::I32Mul { left, right } => {
-                sink.push_str("(i32.mul");
-                module
-                    .get_expr(*left)
-                    .encode_with_context(sink, module, func_index);
-                module
-                    .get_expr(*right)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(i32.mul ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
                 sink.push_str(")");
             }
             wasm::Expression::I32Eq { left, right } => {
-                sink.push_str("(i32.eq");
-                module
-                    .get_expr(*left)
-                    .encode_with_context(sink, module, func_index);
-                module
-                    .get_expr(*right)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(i32.eq ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
                 sink.push_str(")");
             }
             wasm::Expression::I64Add { left, right } => {
-                sink.push_str("(i64.add");
-                module
-                    .get_expr(*left)
-                    .encode_with_context(sink, module, func_index);
-                module
-                    .get_expr(*right)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(i64.add ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
                 sink.push_str(")");
             }
             wasm::Expression::I64Sub { left, right } => {
-                sink.push_str("(i64.sub");
-                module
-                    .get_expr(*left)
-                    .encode_with_context(sink, module, func_index);
-                module
-                    .get_expr(*right)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(i64.sub ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
                 sink.push_str(")");
             }
             wasm::Expression::I64Mul { left, right } => {
-                sink.push_str("(i64.mul");
-                module
-                    .get_expr(*left)
-                    .encode_with_context(sink, module, func_index);
-                module
-                    .get_expr(*right)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(i64.mul ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
                 sink.push_str(")");
             }
             wasm::Expression::I64Eq { left, right } => {
-                sink.push_str("(i64.eq");
-                module
-                    .get_expr(*left)
-                    .encode_with_context(sink, module, func_index);
-                module
-                    .get_expr(*right)
-                    .encode_with_context(sink, module, func_index);
+                sink.push_str("(i64.eq ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            wasm::Expression::I32And { left, right } => {
+                sink.push_str("(i32.and ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            wasm::Expression::I32Or { left, right } => {
+                sink.push_str("(i32.or ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            wasm::Expression::I32Eqz { value } => {
+                sink.push_str("(i32.eqz ");
+                ctx.encode(sink, *value);
+                sink.push_str(")");
+            }
+            wasm::Expression::I64And { left, right } => {
+                sink.push_str("(i64.and ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            wasm::Expression::I64Or { left, right } => {
+                sink.push_str("(i64.or ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            wasm::Expression::I64Eqz { value } => {
+                sink.push_str("(i64.eqz ");
+                ctx.encode(sink, *value);
+                sink.push_str(")");
+            }
+            wasm::Expression::I32Ne { left, right } => {
+                sink.push_str("(i32.ne ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            wasm::Expression::I64Ne { left, right } => {
+                sink.push_str("(i64.ne ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
                 sink.push_str(")");
             }
         }
@@ -275,16 +280,11 @@ impl EncodeWithContext for wasm::Expression {
 }
 
 impl EncodeWithContext for wasm::FunctionBody<'_> {
-    fn encode_with_context(
-        &self,
-        sink: &mut String,
-        module: &wasm::Module,
-        func_index: wasm::FunctionIndex,
-    ) {
+    fn encode_with_context(&self, sink: &mut String, ctx: EncodeContext) {
         sink.push_str(format!("(func ${}", self.name).as_str());
 
-        let export_item = module.exports.items.iter().find(|item| match item {
-            wasm::ExportItem::Function(func_export) => func_export.index.0 == func_index.0,
+        let export_item = ctx.module.exports.items.iter().find(|item| match item {
+            wasm::ExportItem::Function(func_export) => func_export.index.0 == ctx.func_index.0,
         });
         match export_item {
             Some(wasm::ExportItem::Function(func_export)) => {
@@ -293,11 +293,11 @@ impl EncodeWithContext for wasm::FunctionBody<'_> {
             _ => {}
         };
 
-        let func_type = module.get_type(
-            module
+        let func_type = ctx.module.get_type(
+            ctx.module
                 .functions
                 .functions
-                .get(func_index.0 as usize)
+                .get(ctx.func_index.0 as usize)
                 .unwrap()
                 .clone(),
         );
@@ -329,9 +329,7 @@ impl EncodeWithContext for wasm::FunctionBody<'_> {
         }
 
         for expr_index in &self.expressions {
-            module
-                .get_expr(*expr_index)
-                .encode_with_context(sink, module, func_index);
+            ctx.encode(sink, *expr_index);
         }
         sink.push_str(")");
     }
@@ -342,7 +340,13 @@ impl wasm::Module<'_> {
         let mut sink = String::new();
         sink.push_str("(module");
         for (index, func) in self.code.functions.iter().enumerate() {
-            func.encode_with_context(&mut sink, self, wasm::FunctionIndex(index as u32));
+            func.encode_with_context(
+                &mut sink,
+                EncodeContext {
+                    module: self,
+                    func_index: wasm::FunctionIndex(index as u32),
+                },
+            );
         }
         sink.push_str(")");
         sink

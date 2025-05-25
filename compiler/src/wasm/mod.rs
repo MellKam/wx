@@ -105,6 +105,21 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I32Ne {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32And {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32Or {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32Eqz {
+        value: ExprIndex,
+    },
     I64Add {
         left: ExprIndex,
         right: ExprIndex,
@@ -118,6 +133,21 @@ pub enum Expression {
         right: ExprIndex,
     },
     I64Eq {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64Eqz {
+        value: ExprIndex,
+    },
+    I64Ne {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64And {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64Or {
         left: ExprIndex,
         right: ExprIndex,
     },
