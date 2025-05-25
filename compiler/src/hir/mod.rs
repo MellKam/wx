@@ -6,7 +6,7 @@ use std::str;
 pub use builder::*;
 use string_interner::symbol::SymbolU32;
 
-use crate::ast::{BinaryOperator, UnaryOperator};
+use crate::ast;
 
 #[derive(Debug, Clone)]
 pub struct HIR {
@@ -116,11 +116,11 @@ pub enum ExprKind {
         variant_index: EnumVariantIndex,
     },
     Unary {
-        operator: UnaryOperator,
+        operator: ast::UnaryOp,
         operand: Box<Expression>,
     },
     Binary {
-        operator: BinaryOperator,
+        operator: ast::BinaryOp,
         lhs: Box<Expression>,
         rhs: Box<Expression>,
     },

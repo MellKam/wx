@@ -1,35 +1,35 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
 use super::EnumIndex;
-use crate::ast::{self, BinaryOperator};
+use crate::ast::{self, BinaryOp};
 use crate::files::FileId;
 use crate::hir;
-use crate::span::Span;
+use crate::span::TextSpan;
 
 #[derive(Debug, Clone)]
 pub enum DiagnosticContext {
     UnknownEnumVariant {
         file_id: FileId,
         enum_index: EnumIndex,
-        span: Span,
+        span: TextSpan,
     },
     UnknownType {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     BinaryExpressionMistmatch {
         file_id: FileId,
-        left: Span,
+        left: TextSpan,
         left_type: hir::Type,
-        operator: BinaryOperator,
-        right: Span,
+        operator: BinaryOp,
+        right: TextSpan,
         right_type: hir::Type,
     },
     InvalidEnumRepresentation {
         file_id: FileId,
         item_id: ast::ItemId,
         type_: hir::Type,
-        span: Span,
+        span: TextSpan,
     },
     InvalidEnumValue {
         file_id: FileId,
@@ -38,52 +38,52 @@ pub enum DiagnosticContext {
     },
     UndeclaredIdentifier {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     NonCallableIdentifier {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     TypeAnnotationRequired {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     UnusedExpressionValue {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     TypeMistmatch {
         file_id: FileId,
         expected: hir::Type,
         actual: Option<hir::Type>,
-        span: Span,
+        span: TextSpan,
     },
     LiteralOutOfRange {
         file_id: FileId,
         primitive: hir::PrimitiveType,
         value: i64,
-        span: Span,
+        span: TextSpan,
     },
 }
 
-impl ast::BinaryOperator {
+impl ast::BinaryOp {
     pub fn get_error_message(self, left: hir::Type, right: hir::Type) -> String {
         match self {
-            BinaryOperator::Add => format!("cannot add `{}` to `{}`", left, right),
-            BinaryOperator::Subtract => format!("cannot subtract `{}` from `{}`", left, right),
-            BinaryOperator::Assign => format!("cannot assign `{}` to `{}`", left, right),
-            BinaryOperator::Multiply => format!("cannot multiply `{}` by `{}`", left, right),
-            BinaryOperator::Divide => format!("cannot divide `{}` by `{}`", left, right),
-            BinaryOperator::Remainder => format!(
+            BinaryOp::Add => format!("cannot add `{}` to `{}`", left, right),
+            BinaryOp::Sub => format!("cannot subtract `{}` from `{}`", left, right),
+            BinaryOp::Assign => format!("cannot assign `{}` to `{}`", left, right),
+            BinaryOp::Mul => format!("cannot multiply `{}` by `{}`", left, right),
+            BinaryOp::Div => format!("cannot divide `{}` by `{}`", left, right),
+            BinaryOp::Rem => format!(
                 "cannot calculate the remainder of `{}` by `{}`",
                 left, right
             ),
-            BinaryOperator::Eq
-            | BinaryOperator::NotEq
-            | BinaryOperator::Less
-            | BinaryOperator::LessEq
-            | BinaryOperator::Greater
-            | BinaryOperator::GreaterEq => {
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Less
+            | BinaryOp::LessEq
+            | BinaryOp::Greater
+            | BinaryOp::GreaterEq => {
                 format!("cannot compare `{}` to `{}`", left, right)
             }
             _ => {

@@ -5,6 +5,7 @@ use std::ops::Range;
 pub struct ByteIndex(pub u32);
 
 impl ByteIndex {
+    #[inline]
     pub const fn to_usize(self) -> usize {
         self.0 as usize
     }
@@ -12,9 +13,7 @@ impl ByteIndex {
 
 impl fmt::Debug for ByteIndex {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ByteIndex(")?;
-        self.0.fmt(f)?;
-        write!(f, ")")
+        self.0.fmt(f)
     }
 }
 
@@ -25,15 +24,15 @@ impl fmt::Display for ByteIndex {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub struct Span {
+pub struct TextSpan {
     start: ByteIndex,
     end: ByteIndex,
 }
 
-impl Span {
-    pub fn new(start: u32, end: u32) -> Span {
+impl TextSpan {
+    pub fn new(start: u32, end: u32) -> TextSpan {
         assert!(end >= start);
-        Span {
+        TextSpan {
             start: ByteIndex(start),
             end: ByteIndex(end),
         }
@@ -41,16 +40,16 @@ impl Span {
 
     /// Combine two spans by taking the start of the earlier span
     /// and the end of the later span.
-    pub fn merge(self, other: Span) -> Span {
+    pub fn merge(self, other: TextSpan) -> TextSpan {
         use core::cmp::{max, min};
 
         let start = min(self.start.0, other.start.0);
         let end = max(self.end.0, other.end.0);
-        Span::new(start, end)
+        TextSpan::new(start, end)
     }
 
     /// A helper function to tell whether two spans do not overlap.
-    pub fn disjoint(self, other: Span) -> bool {
+    pub fn disjoint(self, other: TextSpan) -> bool {
         let (first, last) = if self.end.0 < other.end.0 {
             (self, other)
         } else {
@@ -70,13 +69,13 @@ impl Span {
     }
 }
 
-impl fmt::Display for Span {
+impl fmt::Display for TextSpan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{start}, {end})", start = self.start, end = self.end)
     }
 }
 
-impl Into<Range<usize>> for Span {
+impl Into<Range<usize>> for TextSpan {
     fn into(self) -> Range<usize> {
         self.start.to_usize()..self.end.to_usize()
     }

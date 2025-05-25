@@ -1,10 +1,10 @@
 (module
   (func $fibonacci (param $n i32) (result i32)
     ;; Base case: if n == 0, return 0
+    (i32.eq
+      (local.get $n)
+      (i32.const 0))
     (if (result i32)
-      (i32.eq
-        (local.get $n)
-        (i32.const 0))
       (then
         (i32.const 0)) ;; Direct return
       (else

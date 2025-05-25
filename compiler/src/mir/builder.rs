@@ -300,12 +300,12 @@ impl<'a> Builder<'a> {
 
     fn build_unary_expression(
         &self,
-        operator: ast::UnaryOperator,
+        operator: ast::UnaryOp,
         operand: &hir::Expression,
         ty: mir::Type,
     ) -> mir::Expression {
         let kind = match operator {
-            ast::UnaryOperator::Invert => mir::ExprKind::Sub {
+            ast::UnaryOp::Invert => mir::ExprKind::Sub {
                 left: Box::new(mir::Expression {
                     kind: mir::ExprKind::Int { value: 0 },
                     ty: ty.clone(),
@@ -319,34 +319,34 @@ impl<'a> Builder<'a> {
 
     fn build_binary_expression(
         &self,
-        operator: ast::BinaryOperator,
+        operator: ast::BinOp,
         lhs: &hir::Expression,
         rhs: &hir::Expression,
         ty: mir::Type,
     ) -> mir::Expression {
         match operator {
-            ast::BinaryOperator::Add => mir::Expression {
+            ast::BinOp::Add => mir::Expression {
                 kind: mir::ExprKind::Add {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinaryOperator::Subtract => mir::Expression {
+            ast::BinOp::Sub => mir::Expression {
                 kind: mir::ExprKind::Sub {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinaryOperator::Multiply => mir::Expression {
+            ast::BinOp::Mul => mir::Expression {
                 kind: mir::ExprKind::Mul {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinaryOperator::Assign => {
+            ast::BinOp::Assign => {
                 let value = self.build_expression(rhs);
 
                 match lhs.kind {
@@ -370,28 +370,28 @@ impl<'a> Builder<'a> {
                     _ => panic!("assignment only allowed on local mutable variables"),
                 }
             }
-            ast::BinaryOperator::Eq => mir::Expression {
+            ast::BinOp::Eq => mir::Expression {
                 kind: mir::ExprKind::Equal {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinaryOperator::NotEq => mir::Expression {
+            ast::BinOp::NotEq => mir::Expression {
                 kind: mir::ExprKind::NotEqual {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinaryOperator::And => mir::Expression {
+            ast::BinOp::And => mir::Expression {
                 kind: mir::ExprKind::And {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinaryOperator::Or => mir::Expression {
+            ast::BinOp::Or => mir::Expression {
                 kind: mir::ExprKind::Or {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),

@@ -1,41 +1,54 @@
-use crate::span::Span;
+use crate::span::TextSpan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
+    // Literals
     Int,
     Float,
     Char { terminated: bool },
     String { terminated: bool },
     Identifier,
+    // Delimiters
     Colon,
-    Comment,
     ColonColon,
     SemiColon,
     Comma,
     Dot,
+    // Grouping
     OpenParen,
     CloseParen,
     OpenBrace,
     CloseBrace,
     OpenBracket,
     CloseBracket,
-    OpenAngle,
-    CloseAngle,
+    // Operators
     Eq,
+    EqEq,
     Bang,
+    BangEq,
+    Less,
+    LessEq,
+    LeftShift,
+    Greater,
+    GreaterEq,
+    RightShift,
+    Plus,
+    PlusEq,
     Minus,
+    MinusEq,
+    Star,
+    StarEq,
+    Slash,
+    SlashEq,
+    Percent,
+    PercentEq,
     Amper,
     AmperAmper,
     Vbar,
     VbarVbar,
-    Plus,
-    Star,
-    Slash,
-    Percent,
-    EqEq,
-    BangEq,
-    LessEq,
-    GreaterEq,
+    Caret,
+    // Special
+    Comment,
     Whitespace,
     Unknown,
     Eof,
@@ -45,43 +58,55 @@ impl std::fmt::Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use TokenKind::*;
         let text = match self {
-            Int => "<int>",
-            Float => "<float>",
-            Char { .. } => "<char>",
-            String { .. } => "<string>",
-            Identifier => "<identifier>",
-            Comment => "<comment>",
-            Colon => ":",
-            ColonColon => "::",
-            SemiColon => ";",
-            Comma => ",",
-            Dot => ".",
-            OpenParen => "(",
-            CloseParen => ")",
-            OpenBrace => "{",
-            CloseBrace => "}",
-            OpenBracket => "[",
-            CloseBracket => "]",
-            OpenAngle => "<",
-            CloseAngle => ">",
-            Eq => "=",
-            Bang => "!",
-            Minus => "-",
-            Amper => "&",
-            AmperAmper => "&&",
-            Vbar => "|",
-            VbarVbar => "||",
-            Plus => "+",
-            Star => "*",
-            Slash => "/",
-            Percent => "%",
-            EqEq => "==",
-            BangEq => "!=",
-            LessEq => "<=",
-            GreaterEq => ">=",
-            Whitespace => "<whitespace>",
-            Unknown => "<unknown>",
-            Eof => "<eof>",
+            Int => "integer literal",
+            Float => "float literal",
+            Char { .. } => "char literal",
+            String { .. } => "string literal",
+            Identifier => "identifier",
+
+            Colon => "colon",
+            ColonColon => "double colon",
+            SemiColon => "semicolon",
+            Comma => "comma",
+            Dot => "dot",
+
+            OpenParen => "open parenthesis",
+            CloseParen => "close parenthesis",
+            OpenBrace => "open brace",
+            CloseBrace => "close brace",
+            OpenBracket => "open bracket",
+            CloseBracket => "close bracket",
+
+            Eq => "equals",
+            Bang => "bang",
+            EqEq => "equals equals",
+            BangEq => "bang equals",
+            Less => "less than",
+            LessEq => "less than or equal to",
+            LeftShift => "left shift",
+            Greater => "greater than",
+            GreaterEq => "greater than or equal to",
+            RightShift => "right shift",
+            Plus => "plus",
+            PlusEq => "plus equals",
+            Minus => "minus",
+            MinusEq => "minus equals",
+            Star => "star",
+            StarEq => "star equals",
+            Slash => "slash",
+            SlashEq => "slash equals",
+            Percent => "percent",
+            PercentEq => "percent equals",
+            Amper => "ampersand",
+            AmperAmper => "ampersand ampersand",
+            Vbar => "vertical bar",
+            VbarVbar => "vertical bar vertical bar",
+            Caret => "caret",
+
+            Comment => "comment",
+            Whitespace => "whitespace",
+            Unknown => "unknown token",
+            Eof => "end of file",
         };
         write!(f, "{}", text)
     }
@@ -90,7 +115,7 @@ impl std::fmt::Display for TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
-    pub span: Span,
+    pub span: TextSpan,
 }
 
 pub struct Lexer<'a> {
@@ -111,32 +136,40 @@ impl<'a> Lexer<'a> {
     pub fn next(&mut self) -> Token {
         let start = self.chars.as_str().len();
         let token_kind = match self.chars.next().unwrap_or(EOF_CHAR) {
+            // Patterns are ordered by frequency of occurrence in typical source code
+            // Most Frequent
             '\t' | '\n' | '\r' | ' ' => self.consume_whitespace(),
-            '0'..='9' => self.consume_number(),
             'A'..='Z' | 'a'..='z' | '_' => self.consume_identifier(),
-            ';' => TokenKind::SemiColon,
-            ',' => TokenKind::Comma,
-            '.' => TokenKind::Dot,
+            '0'..='9' => self.consume_number(),
+
+            // Common Punctuation & Operators
             '(' => TokenKind::OpenParen,
             ')' => TokenKind::CloseParen,
+            ';' => TokenKind::SemiColon,
+            ',' => TokenKind::Comma,
+            '=' => self.consume_and_check('=', TokenKind::EqEq, TokenKind::Eq),
             '{' => TokenKind::OpenBrace,
             '}' => TokenKind::CloseBrace,
             '[' => TokenKind::OpenBracket,
             ']' => TokenKind::CloseBracket,
-            '/' => self.consume_comment_or_slash(),
-            '<' => self.consume_and_check('=', TokenKind::LessEq, TokenKind::OpenAngle),
-            '>' => self.consume_and_check('=', TokenKind::GreaterEq, TokenKind::CloseAngle),
+            '.' => TokenKind::Dot,
             ':' => self.consume_and_check(':', TokenKind::ColonColon, TokenKind::Colon),
-            '=' => self.consume_and_check('=', TokenKind::EqEq, TokenKind::Eq),
+            '/' => self.consume_slash(), // Handles division and comments
+
+            // Moderately Frequent
+            '+' => self.consume_and_check('=', TokenKind::PlusEq, TokenKind::Plus),
+            '-' => self.consume_and_check('=', TokenKind::MinusEq, TokenKind::Minus),
+            '*' => self.consume_and_check('=', TokenKind::StarEq, TokenKind::Star),
+            '<' => self.consume_and_check('=', TokenKind::LessEq, TokenKind::Less),
+            '>' => self.consume_and_check('=', TokenKind::GreaterEq, TokenKind::Greater),
             '!' => self.consume_and_check('=', TokenKind::BangEq, TokenKind::Bang),
-            '-' => TokenKind::Minus,
             '&' => self.consume_and_check('&', TokenKind::AmperAmper, TokenKind::Amper),
             '|' => self.consume_and_check('|', TokenKind::VbarVbar, TokenKind::Vbar),
-            '+' => TokenKind::Plus,
-            '*' => TokenKind::Star,
-            '%' => TokenKind::Percent,
-            '\'' => self.consume_char(),
             '"' => self.consume_string(),
+
+            // Less Frequent
+            '%' => self.consume_and_check('=', TokenKind::PercentEq, TokenKind::Percent),
+            '\'' => self.consume_char(),
             '\0' => TokenKind::Eof,
             _ => TokenKind::Unknown,
         };
@@ -144,7 +177,7 @@ impl<'a> Lexer<'a> {
 
         let token = Token {
             kind: token_kind,
-            span: Span::new(self.offset as u32, (self.offset + length) as u32),
+            span: TextSpan::new(self.offset as u32, (self.offset + length) as u32),
         };
         self.offset += length;
 
@@ -211,11 +244,15 @@ impl<'a> Lexer<'a> {
         TokenKind::Char { terminated }
     }
 
-    fn consume_comment_or_slash(&mut self) -> TokenKind {
+    fn consume_slash(&mut self) -> TokenKind {
         let mut peeker = self.chars.clone();
         match peeker.next().unwrap_or(EOF_CHAR) {
             '/' => {
                 _ = self.chars.next();
+            }
+            '=' => {
+                _ = self.chars.next();
+                return TokenKind::SlashEq;
             }
             _ => return TokenKind::Slash,
         }
@@ -299,14 +336,14 @@ impl<'a> PeekableLexer<'a> {
             return token;
         }
 
-        let mut unknown_span: Option<Span> = None;
+        let mut unknown_span: Option<TextSpan> = None;
         loop {
             let token = self.lexer.next();
             match token.kind {
                 TokenKind::Whitespace | TokenKind::Comment => continue,
                 TokenKind::Unknown => {
                     unknown_span = match unknown_span {
-                        Some(span) => Some(Span::merge(span, token.span)),
+                        Some(span) => Some(TextSpan::merge(span, token.span)),
                         None => Some(token.span),
                     };
                     continue;

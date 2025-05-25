@@ -2,17 +2,17 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 
 use super::lexer::{Token, TokenKind};
 use crate::files::FileId;
-use crate::span::{ByteIndex, Span};
+use crate::span::{ByteIndex, TextSpan};
 
 #[derive(Debug, Clone)]
 pub enum DiagnosticContext {
     UnknownToken {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     UnexpectedEof {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     MissingStatementDelimiter {
         file_id: FileId,
@@ -20,24 +20,24 @@ pub enum DiagnosticContext {
     },
     InvalidStatement {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     MissingClosingParen {
         file_id: FileId,
-        opening_paren: Span,
-        expr_span: Span,
+        opening_paren: TextSpan,
+        expr_span: TextSpan,
     },
     InvalidIntegerLiteral {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     MissingFunctionBody {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     ReservedIdentifier {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     UnexpectedToken {
         file_id: FileId,
@@ -46,15 +46,15 @@ pub enum DiagnosticContext {
     },
     IncompleteBinaryExpression {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     MissingUnaryOperand {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
     InvalidNamespace {
         file_id: FileId,
-        span: Span,
+        span: TextSpan,
     },
 }
 

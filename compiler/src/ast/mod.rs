@@ -10,7 +10,7 @@ mod unescape;
 pub use parser::*;
 
 use crate::files::FileId;
-use crate::span::Span;
+use crate::span::TextSpan;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExprId(pub u32);
@@ -22,19 +22,19 @@ pub struct StmtId(pub u32);
 pub struct ItemId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum UnaryOperator {
+pub enum UnaryOp {
     /// Sign inversion `-x`
     Invert,
-    // /// Logical negation `!x`
-    // Negate,
+    /// Logical negation `!x`
+    Negate,
 }
 
-impl TryFrom<TokenKind> for UnaryOperator {
+impl TryFrom<TokenKind> for UnaryOp {
     type Error = ();
 
     fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
         match kind {
-            TokenKind::Minus => Ok(UnaryOperator::Invert),
+            TokenKind::Minus => Ok(UnaryOp::Invert),
             // TokenKind::Bang => Ok(UnaryOperator::Negate),
             _ => Err(()),
         }
@@ -42,15 +42,14 @@ impl TryFrom<TokenKind> for UnaryOperator {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BinaryOperator {
-    Assign,
+pub enum BinaryOp {
     // Arithmetic
     Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Remainder,
-    // Relational
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    // Comparison
     Eq,
     NotEq,
     Less,
@@ -60,9 +59,19 @@ pub enum BinaryOperator {
     // Logical
     And,
     Or,
+    // Assignment
+    Assign,
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    RemAssign,
     // Bitwise
-    BitwiseAnd,
-    BitwiseOr,
+    BitAnd,
+    BitOr,
+    BitXor,
+    LeftShift,
+    RightShift,
 }
 
 // impl BinaryOperator {
@@ -117,27 +126,40 @@ pub enum BinaryOperator {
 //     }
 // }
 
-impl TryFrom<TokenKind> for BinaryOperator {
+impl TryFrom<TokenKind> for BinaryOp {
     type Error = ();
 
     fn try_from(tag: TokenKind) -> Result<Self, Self::Error> {
         match tag {
-            TokenKind::Plus => Ok(BinaryOperator::Add),
-            TokenKind::Minus => Ok(BinaryOperator::Subtract),
-            TokenKind::Star => Ok(BinaryOperator::Multiply),
-            TokenKind::Slash => Ok(BinaryOperator::Divide),
-            TokenKind::Percent => Ok(BinaryOperator::Remainder),
-            TokenKind::EqEq => Ok(BinaryOperator::Eq),
-            TokenKind::BangEq => Ok(BinaryOperator::NotEq),
-            TokenKind::OpenAngle => Ok(BinaryOperator::Less),
-            TokenKind::LessEq => Ok(BinaryOperator::LessEq),
-            TokenKind::CloseAngle => Ok(BinaryOperator::Greater),
-            TokenKind::GreaterEq => Ok(BinaryOperator::GreaterEq),
-            TokenKind::Eq => Ok(BinaryOperator::Assign),
-            TokenKind::Amper => Ok(BinaryOperator::BitwiseAnd),
-            TokenKind::AmperAmper => Ok(BinaryOperator::And),
-            TokenKind::Vbar => Ok(BinaryOperator::BitwiseOr),
-            TokenKind::VbarVbar => Ok(BinaryOperator::Or),
+            // Arithmetic
+            TokenKind::Plus => Ok(BinaryOp::Add),
+            TokenKind::Minus => Ok(BinaryOp::Sub),
+            TokenKind::Star => Ok(BinaryOp::Mul),
+            TokenKind::Slash => Ok(BinaryOp::Div),
+            TokenKind::Percent => Ok(BinaryOp::Rem),
+            // Relational
+            TokenKind::EqEq => Ok(BinaryOp::Eq),
+            TokenKind::BangEq => Ok(BinaryOp::NotEq),
+            TokenKind::Less => Ok(BinaryOp::Less),
+            TokenKind::LessEq => Ok(BinaryOp::LessEq),
+            TokenKind::Greater => Ok(BinaryOp::Greater),
+            TokenKind::GreaterEq => Ok(BinaryOp::GreaterEq),
+            // Logical
+            TokenKind::AmperAmper => Ok(BinaryOp::And),
+            TokenKind::VbarVbar => Ok(BinaryOp::Or),
+            // Assignment
+            TokenKind::Eq => Ok(BinaryOp::Assign),
+            TokenKind::PlusEq => Ok(BinaryOp::AddAssign),
+            TokenKind::MinusEq => Ok(BinaryOp::SubAssign),
+            TokenKind::StarEq => Ok(BinaryOp::MulAssign),
+            TokenKind::SlashEq => Ok(BinaryOp::DivAssign),
+            TokenKind::PercentEq => Ok(BinaryOp::RemAssign),
+            // Bitwise
+            TokenKind::Amper => Ok(BinaryOp::BitAnd),
+            TokenKind::Vbar => Ok(BinaryOp::BitOr),
+            TokenKind::Caret => Ok(BinaryOp::BitXor),
+            TokenKind::LeftShift => Ok(BinaryOp::LeftShift),
+            TokenKind::RightShift => Ok(BinaryOp::RightShift),
             _ => Err(()),
         }
     }
@@ -146,7 +168,7 @@ impl TryFrom<TokenKind> for BinaryOperator {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identifier {
     pub symbol: SymbolU32,
-    pub span: Span,
+    pub span: TextSpan,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,14 +180,11 @@ pub enum ExprKind {
     /// `x`
     Identifier { symbol: SymbolU32 },
     /// `-{expr}`
-    Unary {
-        operator: UnaryOperator,
-        operand: ExprId,
-    },
+    Unary { operator: UnaryOp, operand: ExprId },
     /// `{expr} + {expr}`
     Binary {
         left: ExprId,
-        operator: BinaryOperator,
+        operator: BinaryOp,
         right: ExprId,
     },
     /// `{expr}()`
@@ -196,7 +215,7 @@ pub enum ExprKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression {
     pub kind: ExprKind,
-    pub span: Span,
+    pub span: TextSpan,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -220,7 +239,7 @@ pub enum StmtKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Statement {
     pub kind: StmtKind,
-    pub span: Span,
+    pub span: TextSpan,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -234,12 +253,12 @@ pub struct FunctionSignature {
     pub name: Identifier,
     pub params: Box<[FunctionParam]>,
     pub result: Option<Identifier>,
-    pub span: Span,
+    pub span: TextSpan,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemFunctionDefinition {
-    pub export: Option<Span>,
+    pub export: Option<TextSpan>,
     pub signature: FunctionSignature,
     pub block: ExprId,
 }
@@ -267,7 +286,7 @@ pub enum ItemKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub kind: ItemKind,
-    pub span: Span,
+    pub span: TextSpan,
 }
 
 #[derive(Debug, PartialEq)]
@@ -288,7 +307,7 @@ impl<'bump> Ast<'bump> {
         }
     }
 
-    pub fn push_expr(&mut self, kind: ExprKind, span: Span) -> ExprId {
+    pub fn push_expr(&mut self, kind: ExprKind, span: TextSpan) -> ExprId {
         let id = ExprId(self.expressions.len() as u32);
         self.expressions.push(Expression { kind, span });
         return id;
@@ -308,7 +327,7 @@ impl<'bump> Ast<'bump> {
         }
     }
 
-    pub fn push_item(&mut self, kind: ItemKind, span: Span) -> ItemId {
+    pub fn push_item(&mut self, kind: ItemKind, span: TextSpan) -> ItemId {
         let id = ItemId(self.items.len() as u32);
         self.items.push(Item { kind, span });
         return id;

@@ -264,7 +264,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
 
                         return Ok(hir::Expression {
                             kind: hir::ExprKind::Binary {
-                                operator: ast::BinaryOperator::Assign,
+                                operator: ast::BinaryOp::Assign,
                                 lhs: Box::new(hir::Expression {
                                     kind: hir::ExprKind::Placeholder,
                                     ty: expr.ty.clone(),
@@ -472,7 +472,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             }),
             ast::ExprKind::Identifier { .. } => self.build_identifier_expression(ctx, expr_id),
             ast::ExprKind::Binary { .. } => self.build_binary_expression(ctx, expr_id),
-            ast::ExprKind::Unary { operator, operand } => Ok(Builder::build_unary_expression(
+            ast::ExprKind::Unary { operator, operand } => Ok(Builder::build_unary_expr(
                 *operator,
                 self.build_expression(ctx, *operand)?,
             )),
@@ -680,10 +680,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         })
     }
 
-    fn build_unary_expression(
-        operator: ast::UnaryOperator,
-        operand: hir::Expression,
-    ) -> hir::Expression {
+    fn build_unary_expr(operator: ast::UnaryOp, operand: hir::Expression) -> hir::Expression {
         match operand.ty {
             Some(hir::Type::Primitive(ty)) => hir::Expression {
                 kind: hir::ExprKind::Unary {
@@ -695,7 +692,8 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             None => match operand.kind {
                 hir::ExprKind::Int(value) => {
                     let value = match operator {
-                        ast::UnaryOperator::Invert => -value,
+                        ast::UnaryOp::Invert => -value,
+                        ast::UnaryOp::Negate => !value,
                     };
 
                     return hir::Expression {
@@ -709,7 +707,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         }
     }
 
-    fn build_assignment_expression(
+    fn build_assignment_expr(
         &mut self,
         ctx: &mut hir::FunctionContext,
         left_id: ast::ExprId,
@@ -731,7 +729,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
 
                 return Ok(hir::Expression {
                     kind: hir::ExprKind::Binary {
-                        operator: ast::BinaryOperator::Assign,
+                        operator: ast::BinaryOp::Assign,
                         lhs: Box::new(hir::Expression {
                             kind: hir::ExprKind::Placeholder,
                             ty: Some(right_type),
@@ -760,7 +758,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         Ok(hir::Expression {
             kind: hir::ExprKind::Binary {
                 lhs: Box::new(left),
-                operator: ast::BinaryOperator::Assign,
+                operator: ast::BinaryOp::Assign,
                 rhs: Box::new(coerced_rhs),
             },
             ty: Some(hir::Type::Unit),
@@ -973,32 +971,66 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         };
 
         match operator {
-            ast::BinaryOperator::Assign => {
-                return self.build_assignment_expression(ctx, left_id, right_id);
+            ast::BinaryOp::Assign => self.build_assignment_expr(ctx, left_id, right_id),
+            ast::BinaryOp::AddAssign
+            | ast::BinaryOp::SubAssign
+            | ast::BinaryOp::MulAssign
+            | ast::BinaryOp::DivAssign
+            | ast::BinaryOp::RemAssign => {
+                self.build_arithmetic_assignment_expr(ctx, left_id, right_id, operator)
             }
-            ast::BinaryOperator::Add
-            | ast::BinaryOperator::Subtract
-            | ast::BinaryOperator::Multiply
-            | ast::BinaryOperator::Divide
-            | ast::BinaryOperator::Remainder => {
-                self.build_arithmetic_expression(ctx, left_id, right_id, operator)
+            ast::BinaryOp::Add
+            | ast::BinaryOp::Sub
+            | ast::BinaryOp::Mul
+            | ast::BinaryOp::Div
+            | ast::BinaryOp::Rem => self.build_arithmetic_expr(ctx, left_id, right_id, operator),
+            ast::BinaryOp::Eq
+            | ast::BinaryOp::NotEq
+            | ast::BinaryOp::Less
+            | ast::BinaryOp::LessEq
+            | ast::BinaryOp::Greater
+            | ast::BinaryOp::GreaterEq => {
+                self.build_comparison_binary_expr(ctx, left_id, right_id, operator)
             }
-            ast::BinaryOperator::Eq
-            | ast::BinaryOperator::NotEq
-            | ast::BinaryOperator::Or
-            | ast::BinaryOperator::And => {
-                self.build_logical_expression(ctx, left_id, right_id, operator)
+            ast::BinaryOp::And | ast::BinaryOp::Or => {
+                self.build_logical_binary_expr(ctx, left_id, right_id, operator)
             }
-            _ => unimplemented!("binary operator not implemented"),
+            ast::BinaryOp::BitAnd
+            | ast::BinaryOp::BitOr
+            | ast::BinaryOp::BitXor
+            | ast::BinaryOp::LeftShift
+            | ast::BinaryOp::RightShift => {
+                self.build_bitwise_binary_expr(ctx, left_id, right_id, operator)
+            }
         }
     }
 
-    fn build_arithmetic_expression(
+    fn build_arithmetic_assignment_expr(
         &mut self,
         ctx: &mut hir::FunctionContext,
         left_id: ast::ExprId,
         right_id: ast::ExprId,
-        operator: ast::BinaryOperator,
+        operator: ast::BinaryOp,
+    ) -> Result<hir::Expression, ()> {
+        todo!()
+    }
+
+    fn build_bitwise_binary_expr(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        left_id: ast::ExprId,
+        right_id: ast::ExprId,
+        operator: ast::BinaryOp,
+    ) -> Result<hir::Expression, ()> {
+        todo!()
+    }
+
+    fn build_arithmetic_expr(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        left_id: ast::ExprId,
+        right_id: ast::ExprId,
+        operator: ast::BinaryOp,
     ) -> Result<hir::Expression, ()> {
         let left = self.build_expression(ctx, left_id)?;
         let right = self.build_expression(ctx, right_id)?;
@@ -1059,12 +1091,12 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         }
     }
 
-    fn build_logical_expression(
+    fn build_comparison_binary_expr(
         &mut self,
         ctx: &mut hir::FunctionContext,
         left_id: ast::ExprId,
         right_id: ast::ExprId,
-        operator: ast::BinaryOperator,
+        operator: ast::BinaryOp,
     ) -> Result<hir::Expression, ()> {
         let left = self.build_expression(ctx, left_id)?;
         let right = self.build_expression(ctx, right_id)?;
@@ -1086,6 +1118,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             (Some(Type::Enum(enum_index_1)), Some(Type::Enum(enum_index_2)))
                 if enum_index_1 == enum_index_2 =>
             {
+                // TODO: handle enum comparison
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
@@ -1095,20 +1128,14 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
                     ty: Some(Type::Bool),
                 })
             }
-            (None, None) => {
-                let evaluated = Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
-                match evaluated {
-                    Some(expr) => Ok(expr),
-                    None => Ok(Expression {
-                        kind: ExprKind::Binary {
-                            operator,
-                            lhs: Box::new(left),
-                            rhs: Box::new(right),
-                        },
-                        ty: Some(Type::Bool),
-                    }),
-                }
-            }
+            (Some(Type::Bool), Some(Type::Bool)) => Ok(Expression {
+                kind: ExprKind::Binary {
+                    operator,
+                    lhs: Box::new(left),
+                    rhs: Box::new(right),
+                },
+                ty: Some(Type::Bool),
+            }),
             (None, Some(ty)) | (Some(ty), None) => {
                 let (typed, untyped) = match left.ty {
                     Some(_) => ((left.clone(), left_id), (right, right_id)),
@@ -1133,38 +1160,76 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
                     ty: Some(Type::Bool),
                 })
             }
-            (Some(Type::Bool), Some(Type::Bool)) => Ok(Expression {
-                kind: ExprKind::Binary {
-                    operator,
-                    lhs: Box::new(left),
-                    rhs: Box::new(right),
-                },
-                ty: Some(Type::Bool),
-            }),
+            (None, None) => {
+                let evaluated = Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
+                match evaluated {
+                    Some(expr) => Ok(expr),
+                    None => Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            lhs: Box::new(left),
+                            rhs: Box::new(right),
+                        },
+                        ty: Some(Type::Bool),
+                    }),
+                }
+            }
             (l, r) => panic!("can't compare these types {:?} {:?}", l, r),
         }
     }
 
+    fn build_logical_binary_expr(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        left_id: ast::ExprId,
+        right_id: ast::ExprId,
+        operator: ast::BinaryOp,
+    ) -> Result<hir::Expression, ()> {
+        let left = self.build_expression(ctx, left_id)?;
+        let right = self.build_expression(ctx, right_id)?;
+
+        match (left.ty, right.ty) {
+            (Some(hir::Type::Bool), Some(hir::Type::Bool)) => Ok(hir::Expression {
+                kind: hir::ExprKind::Binary {
+                    operator,
+                    lhs: Box::new(left),
+                    rhs: Box::new(right),
+                },
+                ty: Some(hir::Type::Bool),
+            }),
+            _ => {
+                let ast_expr = self.ast.get_expr(left_id).unwrap();
+                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                    file_id: self.ast.file_id,
+                    expected: hir::Type::Bool,
+                    actual: left.ty.clone(),
+                    span: ast_expr.span,
+                });
+                Err(())
+            }
+        }
+    }
+
     fn try_evaluate_untyped_binary_expr(
-        operator: ast::BinaryOperator,
+        operator: ast::BinaryOp,
         left: &hir::Expression,
         right: &hir::Expression,
     ) -> Option<hir::Expression> {
         match (&left.kind, &right.kind) {
             (hir::ExprKind::Int(left), &hir::ExprKind::Int(right)) => {
                 let value = match operator {
-                    ast::BinaryOperator::Add => left.checked_add(right),
-                    ast::BinaryOperator::Subtract => left.checked_sub(right),
-                    ast::BinaryOperator::Multiply => left.checked_mul(right),
-                    ast::BinaryOperator::Divide => left.checked_div(right),
-                    ast::BinaryOperator::Remainder => left.checked_rem(right),
-                    ast::BinaryOperator::Eq => {
+                    ast::BinaryOp::Add => left.checked_add(right),
+                    ast::BinaryOp::Sub => left.checked_sub(right),
+                    ast::BinaryOp::Mul => left.checked_mul(right),
+                    ast::BinaryOp::Div => left.checked_div(right),
+                    ast::BinaryOp::Rem => left.checked_rem(right),
+                    ast::BinaryOp::Eq => {
                         return Some(Expression {
                             kind: hir::ExprKind::Bool(*left == right),
                             ty: Some(hir::Type::Bool),
                         });
                     }
-                    ast::BinaryOperator::NotEq => {
+                    ast::BinaryOp::NotEq => {
                         return Some(Expression {
                             kind: hir::ExprKind::Bool(*left != right),
                             ty: Some(hir::Type::Bool),

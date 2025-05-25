@@ -14,9 +14,9 @@ use string_interner::StringInterner;
 mod ast;
 mod files;
 mod hir;
-mod mir;
 mod span;
-mod wasm;
+// mod mir;
+// mod wasm;
 
 fn main() {
     let start_time = Instant::now();
@@ -29,10 +29,8 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            export fn fibonacci(n: i32): bool {
-                const a = false;
-
-                if a { true } else { false }
+            fn main(): i32 {
+                5 < 10 && 5 > 20
             }
             "# }
             .to_string(),
@@ -49,7 +47,7 @@ fn main() {
             files.get(main_file_id).unwrap().source.as_ref(),
             &mut interner,
         );
-        // println!("{:#?}", ast);
+        println!("{:#?}", ast);
 
         for diagnostic in diagnostics.iter() {
             term::emit(
@@ -64,33 +62,33 @@ fn main() {
         ast
     };
 
-    let hir = {
-        let (hir, diagnostics) = hir::Builder::build(&ast, &interner);
-        // println!("{:#?}", hir);
-        for diagnostic in diagnostics.iter() {
-            term::emit(
-                &mut writer.lock(),
-                &config,
-                &files,
-                &diagnostic.clone().to_diagnostic(),
-            )
-            .unwrap();
-        }
+    // let hir = {
+    //     let (hir, diagnostics) = hir::Builder::build(&ast, &interner);
+    //     // println!("{:#?}", hir);
+    //     for diagnostic in diagnostics.iter() {
+    //         term::emit(
+    //             &mut writer.lock(),
+    //             &config,
+    //             &files,
+    //             &diagnostic.clone().to_diagnostic(),
+    //         )
+    //         .unwrap();
+    //     }
 
-        hir
-    };
+    //     hir
+    // };
 
-    let mir = mir::Builder::build(&hir);
-    // println!("{:#?}", mir);
-    let wasm = wasm::Builder::build(&mir, &interner);
-    println!("{:#?}", wasm);
-    let mut file = std::fs::File::create("out.wat").unwrap();
-    file.write(wasm.to_wat().as_bytes()).unwrap();
+    // let mir = mir::Builder::build(&hir);
+    // // println!("{:#?}", mir);
+    // let wasm = wasm::Builder::build(&mir, &interner);
+    // println!("{:#?}", wasm);
+    // let mut file = std::fs::File::create("out.wat").unwrap();
+    // file.write(wasm.to_wat().as_bytes()).unwrap();
 
-    let bytecode = wasm::Encoder::encode(&wasm);
-    let mut file = std::fs::File::create("out.wasm").unwrap();
-    file.write(&bytecode).unwrap();
-    println!("Wrote {} bytes to out.wasm", bytecode.len());
+    // let bytecode = wasm::Encoder::encode(&wasm);
+    // let mut file = std::fs::File::create("out.wasm").unwrap();
+    // file.write(&bytecode).unwrap();
+    // println!("Wrote {} bytes to out.wasm", bytecode.len());
 
     let duration = start_time.elapsed();
     println!("Time to compile: {:?}", duration);

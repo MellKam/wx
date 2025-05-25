@@ -8,20 +8,23 @@ use string_interner::symbol::SymbolU32;
 use super::diagnostics::DiagnosticContext;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
-    Ast, BinaryOperator, EnumVariant, ExprId, ExprKind, FunctionParam, FunctionSignature,
-    Identifier, ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, Statement, StmtId, StmtKind,
-    UnaryOperator,
+    Ast, BinaryOp, EnumVariant, ExprId, ExprKind, FunctionParam, FunctionSignature, Identifier,
+    ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, Statement, StmtId, StmtKind, UnaryOp,
 };
 use crate::files::FileId;
-use crate::span::Span;
+use crate::span::TextSpan;
 
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
-pub enum BindingPower {
+enum BindingPower {
     Default,
-    Comma,
     Assignment,
-    Logical,
-    Relational,
+    LogicalOr,
+    LogicalAnd,
+    BitwiseOr,
+    BitwiseXor,
+    BitwiseAnd,
+    Comparison,
+    BitwiseShift,
     Additive,
     Multiplicative,
     Unary,
@@ -30,37 +33,51 @@ pub enum BindingPower {
     Primary,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Mutability {
-    Mutable,
-    Const,
-}
-
-impl From<BinaryOperator> for BindingPower {
-    fn from(operator: BinaryOperator) -> Self {
+impl From<BinaryOp> for BindingPower {
+    fn from(operator: BinaryOp) -> Self {
         match operator {
-            BinaryOperator::Add => BindingPower::Additive,
-            BinaryOperator::Subtract => BindingPower::Additive,
-            BinaryOperator::Multiply => BindingPower::Multiplicative,
-            BinaryOperator::Divide => BindingPower::Multiplicative,
-            BinaryOperator::Remainder => BindingPower::Multiplicative,
-            BinaryOperator::Eq => BindingPower::Relational,
-            BinaryOperator::NotEq => BindingPower::Relational,
-            BinaryOperator::Less => BindingPower::Relational,
-            BinaryOperator::Greater => BindingPower::Relational,
-            BinaryOperator::LessEq => BindingPower::Relational,
-            BinaryOperator::GreaterEq => BindingPower::Relational,
-            BinaryOperator::Assign => BindingPower::Assignment,
-            BinaryOperator::And => BindingPower::Logical,
-            BinaryOperator::Or => BindingPower::Logical,
-            BinaryOperator::BitwiseAnd => BindingPower::Logical,
-            BinaryOperator::BitwiseOr => BindingPower::Logical,
+            BinaryOp::Assign => BindingPower::Assignment,
+            BinaryOp::AddAssign => BindingPower::Assignment,
+            BinaryOp::SubAssign => BindingPower::Assignment,
+            BinaryOp::MulAssign => BindingPower::Assignment,
+            BinaryOp::DivAssign => BindingPower::Assignment,
+            BinaryOp::RemAssign => BindingPower::Assignment,
+
+            BinaryOp::Or => BindingPower::LogicalOr,
+            BinaryOp::And => BindingPower::LogicalAnd,
+
+            BinaryOp::BitOr => BindingPower::BitwiseOr,
+            BinaryOp::BitXor => BindingPower::BitwiseXor,
+            BinaryOp::BitAnd => BindingPower::BitwiseAnd,
+
+            BinaryOp::Eq => BindingPower::Comparison,
+            BinaryOp::NotEq => BindingPower::Comparison,
+            BinaryOp::Less => BindingPower::Comparison,
+            BinaryOp::LessEq => BindingPower::Comparison,
+            BinaryOp::Greater => BindingPower::Comparison,
+            BinaryOp::GreaterEq => BindingPower::Comparison,
+
+            BinaryOp::LeftShift => BindingPower::BitwiseShift,
+            BinaryOp::RightShift => BindingPower::BitwiseShift,
+
+            BinaryOp::Add => BindingPower::Additive,
+            BinaryOp::Sub => BindingPower::Additive,
+
+            BinaryOp::Mul => BindingPower::Multiplicative,
+            BinaryOp::Div => BindingPower::Multiplicative,
+            BinaryOp::Rem => BindingPower::Multiplicative,
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Mutability {
+    Mutable,
+    Const,
+}
+
 #[derive(Debug, Clone)]
-pub enum Keyword {
+enum Keyword {
     Export,
     Const,
     Mut,
@@ -150,6 +167,39 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         Ok(item_id)
     }
 
+    fn parse_function_definition(parser: &mut Parser) -> Result<ItemId, ()> {
+        let fn_keyword = parser.lexer.next();
+        let signature = Parser::parse_function_signature(parser)?;
+
+        match parser.lexer.peek().kind {
+            TokenKind::OpenBrace => {}
+            _ => {
+                parser.diagnostics.push(
+                    DiagnosticContext::MissingFunctionBody {
+                        file_id: parser.ast.file_id,
+                        span: TextSpan::merge(fn_keyword.span, signature.span),
+                    }
+                    .into(),
+                );
+
+                return Err(());
+            }
+        }
+
+        let block_expr_id = Parser::parse_block_expression(parser)?;
+        let block = parser.ast.get_expr(block_expr_id).unwrap();
+        let item_id = parser.ast.push_item(
+            ItemKind::FunctionDefinition(ItemFunctionDefinition {
+                export: None,
+                signature,
+                block: block_expr_id,
+            }),
+            TextSpan::merge(fn_keyword.span, block.span),
+        );
+
+        Ok(item_id)
+    }
+
     fn parse_exported_function_definition(parser: &mut Parser) -> Result<ItemId, ()> {
         let export_keyword = parser.lexer.next();
         let item_id = Parser::parse_function_definition(parser)?;
@@ -159,12 +209,76 @@ impl<'bump, 'input> Parser<'bump, 'input> {
             .set_item(item_id, |item| match &mut item.kind {
                 ItemKind::FunctionDefinition(def) => {
                     def.export = Some(export_keyword.span);
-                    item.span = Span::merge(export_keyword.span, item.span);
+                    item.span = TextSpan::merge(export_keyword.span, item.span);
                 }
                 _ => unreachable!(),
             })
             .unwrap();
 
+        Ok(item_id)
+    }
+
+    fn parse_enum_item(parser: &mut Parser) -> Result<ItemId, ()> {
+        let enum_keyword = parser.lexer.next();
+
+        let name_token = parser.next_expect(TokenKind::Identifier)?;
+        let name_symbol = parser.intern_identifier(name_token.clone())?;
+
+        _ = parser.next_expect(TokenKind::Colon)?;
+        let type_token = parser.next_expect(TokenKind::Identifier)?;
+        let type_symbol = parser.intern_identifier(type_token.clone())?;
+
+        _ = parser.next_expect(TokenKind::OpenBrace)?;
+        let mut variants = Vec::new();
+        loop {
+            let token = parser.lexer.peek();
+            match token.kind {
+                TokenKind::CloseBrace => break,
+                TokenKind::Comma => {
+                    let _ = parser.lexer.next();
+                    continue;
+                }
+                TokenKind::Eof => {
+                    parser.diagnostics.push(DiagnosticContext::UnexpectedEof {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    });
+
+                    return Err(());
+                }
+                _ => {}
+            }
+
+            let variant_name_token = parser.next_expect(TokenKind::Identifier)?;
+            let variant_name_symbol = parser.intern_identifier(variant_name_token.clone())?;
+            _ = parser.next_expect(TokenKind::Eq)?;
+            let value_expr_id = parser.parse_expression(BindingPower::Default)?;
+
+            variants.push(EnumVariant {
+                name: Identifier {
+                    symbol: variant_name_symbol,
+                    span: variant_name_token.span,
+                },
+                value: value_expr_id,
+            });
+        }
+
+        let close_brace = parser.lexer.next();
+
+        let item_id = parser.ast.push_item(
+            ItemKind::Enum(ItemEnum {
+                name: Identifier {
+                    symbol: name_symbol,
+                    span: name_token.span,
+                },
+                ty: Identifier {
+                    symbol: type_symbol,
+                    span: type_token.span,
+                },
+                variants: variants.into_boxed_slice(),
+            }),
+            TextSpan::merge(enum_keyword.span, close_brace.span),
+        );
         Ok(item_id)
     }
 
@@ -195,16 +309,11 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         token: Token,
     ) -> Option<(fn(parser: &mut Parser) -> Result<ExprId, ()>, BindingPower)> {
         match token.kind {
-            TokenKind::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
-            TokenKind::OpenBrace => Some((Parser::parse_block_expression, BindingPower::Primary)),
-            // TokenKind::Float { .. } => Some((parse_float_expression, BindingPower::Primary)),
-            // TokenKind::String { .. } => Some((parse_string_expression, BindingPower::Primary)),
-            // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
             TokenKind::Identifier => {
                 let text = self
                     .source
                     .get(token.span.start().to_usize()..token.span.end().to_usize())
-                    .expect("failed to get text");
+                    .expect("token span shouldn't be empty");
                 match Keyword::try_from(text) {
                     Ok(Keyword::Return) => {
                         Some((Parser::parse_return_expression, BindingPower::Primary))
@@ -215,12 +324,17 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                     _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
                 }
             }
+            TokenKind::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
+            TokenKind::OpenBrace => Some((Parser::parse_block_expression, BindingPower::Primary)),
             TokenKind::OpenParen => {
                 Some((Parser::parse_grouping_expression, BindingPower::Default))
             }
             TokenKind::Minus | TokenKind::Bang => {
                 Some((Parser::parse_unary_expression, BindingPower::Unary))
             }
+            // TokenKind::Float { .. } => Some((parse_float_expression, BindingPower::Primary)),
+            // TokenKind::String { .. } => Some((parse_string_expression, BindingPower::Primary)),
+            // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
             _ => None,
         }
     }
@@ -232,6 +346,31 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         BindingPower,
     )> {
         match token {
+            TokenKind::Eq
+            | TokenKind::PlusEq
+            | TokenKind::MinusEq
+            | TokenKind::StarEq
+            | TokenKind::PercentEq => {
+                Some((Parser::parse_binary_expression, BindingPower::Assignment))
+            }
+            TokenKind::VbarVbar => Some((Parser::parse_binary_expression, BindingPower::LogicalOr)),
+            TokenKind::AmperAmper => {
+                Some((Parser::parse_binary_expression, BindingPower::LogicalAnd))
+            }
+            TokenKind::Vbar => Some((Parser::parse_binary_expression, BindingPower::BitwiseOr)),
+            TokenKind::Caret => Some((Parser::parse_binary_expression, BindingPower::BitwiseXor)),
+            TokenKind::Amper => Some((Parser::parse_binary_expression, BindingPower::BitwiseAnd)),
+            TokenKind::EqEq
+            | TokenKind::BangEq
+            | TokenKind::LessEq
+            | TokenKind::Less
+            | TokenKind::Greater
+            | TokenKind::GreaterEq => {
+                Some((Parser::parse_binary_expression, BindingPower::Comparison))
+            }
+            TokenKind::LeftShift | TokenKind::RightShift => {
+                Some((Parser::parse_binary_expression, BindingPower::BitwiseShift))
+            }
             TokenKind::Plus | TokenKind::Minus => {
                 Some((Parser::parse_binary_expression, BindingPower::Additive))
             }
@@ -239,18 +378,11 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 Parser::parse_binary_expression,
                 BindingPower::Multiplicative,
             )),
-            TokenKind::Eq => Some((Parser::parse_binary_expression, BindingPower::Assignment)),
-            TokenKind::EqEq | TokenKind::BangEq => {
-                Some((Parser::parse_binary_expression, BindingPower::Relational))
-            }
+            TokenKind::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
             TokenKind::ColonColon => Some((
                 Parser::parse_namespace_member_expression,
                 BindingPower::Member,
             )),
-            TokenKind::VbarVbar | TokenKind::AmperAmper => {
-                Some((Parser::parse_binary_expression, BindingPower::Logical))
-            }
-            TokenKind::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
             // TokenKind::Dot => Some((parse_member_expression, BindingPower::Member)),
             _ => None,
         }
@@ -310,7 +442,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                     value: value_expr_id,
                 },
             },
-            span: Span::merge(mutability_token.span, value_expr.span),
+            span: TextSpan::merge(mutability_token.span, value_expr.span),
         };
         let stmt_id = parser.ast.push_stmt(stmt);
         Ok(stmt_id)
@@ -326,7 +458,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                     ExprKind::Return {
                         value: Some(expr_id),
                     },
-                    Span::merge(return_keyword.span, expr.span),
+                    TextSpan::merge(return_keyword.span, expr.span),
                 ))
             }
             Err(_) => Ok(parser
@@ -344,7 +476,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 let close_paren = parser.lexer.next();
                 let expr_id = parser.ast.push_expr(
                     ExprKind::Grouping { value: expr_id },
-                    Span::merge(open_paren.span, close_paren.span),
+                    TextSpan::merge(open_paren.span, close_paren.span),
                 );
                 Ok(expr_id)
             }
@@ -360,7 +492,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
 
                 let expr_id = parser.ast.push_expr(
                     ExprKind::Grouping { value: expr_id },
-                    Span::merge(open_paren.span, expr.span),
+                    TextSpan::merge(open_paren.span, expr.span),
                 );
                 Ok(expr_id)
             }
@@ -369,7 +501,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
 
     fn parse_unary_expression(parser: &mut Parser) -> Result<ExprId, ()> {
         let operator = parser.lexer.next();
-        let operator_kind = match UnaryOperator::try_from(operator.kind) {
+        let operator_kind = match UnaryOp::try_from(operator.kind) {
             Ok(operator) => operator,
             Err(_) => panic!("invalid unary operator"),
         };
@@ -393,7 +525,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 operator: operator_kind,
                 operand: operand_id,
             },
-            Span::merge(operator.span, operand.span),
+            TextSpan::merge(operator.span, operand.span),
         );
         Ok(expr_id)
     }
@@ -404,7 +536,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         bp: BindingPower,
     ) -> Result<ExprId, ()> {
         let operator = parser.lexer.next();
-        let operator_kind = match BinaryOperator::try_from(operator.kind) {
+        let operator_kind = match BinaryOp::try_from(operator.kind) {
             Ok(operator) => operator,
             Err(_) => panic!("invalid binary operator"),
         };
@@ -421,16 +553,27 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 return Err(());
             }
         };
-
         let right_expr = parser.ast.get_expr(right_id).unwrap();
+
         let left_expr = parser.ast.get_expr(left).unwrap();
+        if bp == BindingPower::Comparison {
+            match left_expr.kind {
+                ExprKind::Binary { operator, .. }
+                    if BindingPower::from(operator) == BindingPower::Comparison =>
+                {
+                    panic!("comparison operators cannot be chained")
+                }
+                _ => {}
+            }
+        }
+
         let expr_id = parser.ast.push_expr(
             ExprKind::Binary {
                 left,
                 right: right_id,
                 operator: operator_kind,
             },
-            Span::merge(left_expr.span, right_expr.span),
+            TextSpan::merge(left_expr.span, right_expr.span),
         );
         Ok(expr_id)
     }
@@ -558,7 +701,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                         symbol: return_type_symbol,
                         span: return_type_token.span,
                     }),
-                    span: Span::merge(name_token.span, return_type_token.span),
+                    span: TextSpan::merge(name_token.span, return_type_token.span),
                 })
             }
             _ => Ok(FunctionSignature {
@@ -568,7 +711,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 },
                 params: params.into_boxed_slice(),
                 result: None,
-                span: Span::merge(name_token.span, close_paren.span),
+                span: TextSpan::merge(name_token.span, close_paren.span),
             }),
         }
     }
@@ -651,7 +794,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                     let semicolon = parser.lexer.next();
                     let stmt_id = parser.ast.push_stmt(Statement {
                         kind: StmtKind::DelimitedExpression { value: expr_id },
-                        span: Span::merge(expr.span, semicolon.span),
+                        span: TextSpan::merge(expr.span, semicolon.span),
                     });
                     statements.push(stmt_id);
                 }
@@ -682,43 +825,10 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 statements: statements.into_boxed_slice(),
                 result,
             },
-            Span::merge(open_brace.span, close_brace.span),
+            TextSpan::merge(open_brace.span, close_brace.span),
         );
 
         Ok(expr_id)
-    }
-
-    fn parse_function_definition(parser: &mut Parser) -> Result<ItemId, ()> {
-        let fn_keyword = parser.lexer.next();
-        let signature = Parser::parse_function_signature(parser)?;
-
-        match parser.lexer.peek().kind {
-            TokenKind::OpenBrace => {}
-            _ => {
-                parser.diagnostics.push(
-                    DiagnosticContext::MissingFunctionBody {
-                        file_id: parser.ast.file_id,
-                        span: Span::merge(fn_keyword.span, signature.span),
-                    }
-                    .into(),
-                );
-
-                return Err(());
-            }
-        }
-
-        let block_expr_id = Parser::parse_block_expression(parser)?;
-        let block = parser.ast.get_expr(block_expr_id).unwrap();
-        let item_id = parser.ast.push_item(
-            ItemKind::FunctionDefinition(ItemFunctionDefinition {
-                export: None,
-                signature,
-                block: block_expr_id,
-            }),
-            Span::merge(fn_keyword.span, block.span),
-        );
-
-        Ok(item_id)
     }
 
     fn parse_call_expression(
@@ -742,7 +852,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 _ => {}
             }
 
-            let argument = match parser.parse_expression(BindingPower::Comma) {
+            let argument = match parser.parse_expression(BindingPower::Default) {
                 Ok(argument) => argument,
                 Err(_) => continue,
             };
@@ -766,7 +876,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 callee,
                 arguments: arguments.into_boxed_slice(),
             },
-            Span::merge(callee_expr.span, close_paren.span),
+            TextSpan::merge(callee_expr.span, close_paren.span),
         );
         Ok(expr_id)
     }
@@ -794,7 +904,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
             }
         };
 
-        let span = Span::merge(namespace_expr.span, member.span);
+        let span = TextSpan::merge(namespace_expr.span, member.span);
         let expr_id = parser.ast.push_expr(
             ExprKind::NamespaceMember {
                 namespace: Identifier {
@@ -817,70 +927,6 @@ impl<'bump, 'input> Parser<'bump, 'input> {
             });
             ()
         })
-    }
-
-    fn parse_enum_item(parser: &mut Parser) -> Result<ItemId, ()> {
-        let enum_keyword = parser.lexer.next();
-
-        let name_token = parser.next_expect(TokenKind::Identifier)?;
-        let name_symbol = parser.intern_identifier(name_token.clone())?;
-
-        _ = parser.next_expect(TokenKind::Colon)?;
-        let type_token = parser.next_expect(TokenKind::Identifier)?;
-        let type_symbol = parser.intern_identifier(type_token.clone())?;
-
-        _ = parser.next_expect(TokenKind::OpenBrace)?;
-        let mut variants = Vec::new();
-        loop {
-            let token = parser.lexer.peek();
-            match token.kind {
-                TokenKind::CloseBrace => break,
-                TokenKind::Comma => {
-                    let _ = parser.lexer.next();
-                    continue;
-                }
-                TokenKind::Eof => {
-                    parser.diagnostics.push(DiagnosticContext::UnexpectedEof {
-                        file_id: parser.ast.file_id,
-                        span: token.span,
-                    });
-
-                    return Err(());
-                }
-                _ => {}
-            }
-
-            let variant_name_token = parser.next_expect(TokenKind::Identifier)?;
-            let variant_name_symbol = parser.intern_identifier(variant_name_token.clone())?;
-            _ = parser.next_expect(TokenKind::Eq)?;
-            let value_expr_id = parser.parse_expression(BindingPower::Default)?;
-
-            variants.push(EnumVariant {
-                name: Identifier {
-                    symbol: variant_name_symbol,
-                    span: variant_name_token.span,
-                },
-                value: value_expr_id,
-            });
-        }
-
-        let close_brace = parser.lexer.next();
-
-        let item_id = parser.ast.push_item(
-            ItemKind::Enum(ItemEnum {
-                name: Identifier {
-                    symbol: name_symbol,
-                    span: name_token.span,
-                },
-                ty: Identifier {
-                    symbol: type_symbol,
-                    span: type_token.span,
-                },
-                variants: variants.into_boxed_slice(),
-            }),
-            Span::merge(enum_keyword.span, close_brace.span),
-        );
-        Ok(item_id)
     }
 
     fn parse_if_else_expression(parser: &mut Parser) -> Result<ExprId, ()> {
@@ -913,7 +959,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                         then_block: then_expr_id,
                         else_block: None,
                     },
-                    Span::merge(if_keyword.span, then_expr.span),
+                    TextSpan::merge(if_keyword.span, then_expr.span),
                 );
                 return Ok(expr_id);
             }
@@ -939,7 +985,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 then_block: then_expr_id,
                 else_block: Some(else_expr_id),
             },
-            Span::merge(if_keyword.span, else_expr.span),
+            TextSpan::merge(if_keyword.span, else_expr.span),
         );
         Ok(expr_id)
     }
