@@ -56,6 +56,11 @@ pub enum DiagnosticContext {
         file_id: FileId,
         span: TextSpan,
     },
+    ChainedComparisons {
+        file_id: FileId,
+        first_operator_span: TextSpan,
+        second_operator_span: TextSpan,
+    },
 }
 
 impl DiagnosticContext {
@@ -129,6 +134,14 @@ impl DiagnosticContext {
                     Label::primary(file_id, span)
                         .with_message("namespace must be a valid identifier"),
                 ),
+            ChainedComparisons {
+                file_id,
+                first_operator_span,
+                second_operator_span,
+            } => Diagnostic::error()
+                .with_message("comparison operators cannot be chained")
+                .with_label(Label::primary(file_id, first_operator_span))
+                .with_label(Label::primary(file_id, second_operator_span)).with_note("consider using logical operator like `&&` or `||` to split the comparisons or use parentheses to group them"),
         }
     }
 }

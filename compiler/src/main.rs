@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use ast::Parser;
 use bumpalo::Bump;
+use codespan_reporting::diagnostic::Severity;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use files::Files;
@@ -29,8 +30,8 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            fn main(): i32 {
-                5 < 10 && 5 > 20
+            fn main(): bool {
+                5 > (6 as i32) && (1 as i32) == 3
             }
             "# }
             .to_string(),
@@ -48,7 +49,28 @@ fn main() {
             &mut interner,
         );
         println!("{:#?}", ast);
+        let diagnostics = diagnostics
+            .into_iter()
+            .map(|d| d.to_diagnostic())
+            .collect::<Vec<_>>();
 
+        for diagnostic in diagnostics.iter() {
+            term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+        }
+
+        if diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error || d.severity == Severity::Bug)
+        {
+            std::process::exit(1);
+        }
+
+        ast
+    };
+
+    let hir = {
+        let (hir, diagnostics) = hir::Builder::build(&ast, &interner);
+        println!("{:#?}", hir);
         for diagnostic in diagnostics.iter() {
             term::emit(
                 &mut writer.lock(),
@@ -59,24 +81,8 @@ fn main() {
             .unwrap();
         }
 
-        ast
+        hir
     };
-
-    // let hir = {
-    //     let (hir, diagnostics) = hir::Builder::build(&ast, &interner);
-    //     // println!("{:#?}", hir);
-    //     for diagnostic in diagnostics.iter() {
-    //         term::emit(
-    //             &mut writer.lock(),
-    //             &config,
-    //             &files,
-    //             &diagnostic.clone().to_diagnostic(),
-    //         )
-    //         .unwrap();
-    //     }
-
-    //     hir
-    // };
 
     // let mir = mir::Builder::build(&hir);
     // // println!("{:#?}", mir);

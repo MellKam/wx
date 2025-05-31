@@ -6,7 +6,6 @@ use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
 use super::diagnostics::DiagnosticContext;
-use super::{Expression, ScopeIndex};
 use crate::{ast, hir};
 
 pub struct Builder<'bump, 'interner> {
@@ -199,10 +198,15 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             })
             .collect();
 
-        let local_lookup: HashMap<(ScopeIndex, SymbolU32), hir::LocalIndex> = locals
+        let local_lookup: HashMap<(hir::ScopeIndex, SymbolU32), hir::LocalIndex> = locals
             .iter()
             .enumerate()
-            .map(|(index, param)| ((ScopeIndex(0), param.name), hir::LocalIndex(index as u32)))
+            .map(|(index, param)| {
+                (
+                    (hir::ScopeIndex(0), param.name),
+                    hir::LocalIndex(index as u32),
+                )
+            })
             .collect();
 
         let mut ctx = hir::FunctionContext {
@@ -465,28 +469,45 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
         let expr = self.ast.get_expr(expr_id).unwrap();
+        use ast::ExprKind;
         match &expr.kind {
-            ast::ExprKind::Int { value } => Ok(hir::Expression {
+            ExprKind::Int { value } => Ok(hir::Expression {
                 kind: hir::ExprKind::Int(value.clone()),
                 ty: None,
             }),
-            ast::ExprKind::Identifier { .. } => self.build_identifier_expression(ctx, expr_id),
-            ast::ExprKind::Binary { .. } => self.build_binary_expression(ctx, expr_id),
-            ast::ExprKind::Unary { operator, operand } => Ok(Builder::build_unary_expr(
+            ExprKind::Identifier { .. } => self.build_identifier_expression(ctx, expr_id),
+            ExprKind::Binary { .. } => self.build_binary_expression(ctx, expr_id),
+            ExprKind::Unary { operator, operand } => Ok(Builder::build_unary_expr(
                 *operator,
                 self.build_expression(ctx, *operand)?,
             )),
-            ast::ExprKind::Call { .. } => self.build_call_expression(ctx, expr_id),
-            ast::ExprKind::NamespaceMember { .. } => {
-                self.build_namespace_member_expression(expr_id)
-            }
-            ast::ExprKind::Return { value } => self.build_return_expression(ctx, *value),
-            ast::ExprKind::Grouping { value } => self.build_expression(ctx, *value),
-            ast::ExprKind::Block { .. } => {
+            ExprKind::Call { .. } => self.build_call_expression(ctx, expr_id),
+            ExprKind::NamespaceMember { .. } => self.build_namespace_member_expression(expr_id),
+            ExprKind::Return { value } => self.build_return_expression(ctx, *value),
+            ExprKind::Grouping { value } => self.build_expression(ctx, *value),
+            ExprKind::Block { .. } => {
                 ctx.enter_scope(|ctx| self.build_block_expression(ctx, expr_id))
             }
-            ast::ExprKind::IfElse { .. } => self.build_if_else_expression(ctx, expr_id),
+            ExprKind::IfElse { .. } => self.build_if_else_expression(ctx, expr_id),
+            ExprKind::Cast { .. } => self.build_cast_expression(ctx, expr_id),
         }
+    }
+
+    fn build_cast_expression(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        expr_id: ast::ExprId,
+    ) -> Result<hir::Expression, ()> {
+        let (value_id, ty) = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Cast { value, ty } => (value, ty),
+            _ => unreachable!("expected cast expression"),
+        };
+
+        let value = self.build_expression(ctx, *value_id)?;
+        let ty = self.resolve_type(ty.clone());
+        let coerced_value = self.coerce_expr(value, *value_id, ty)?;
+
+        Ok(coerced_value)
     }
 
     fn build_if_else_expression(
@@ -707,64 +728,6 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         }
     }
 
-    fn build_assignment_expr(
-        &mut self,
-        ctx: &mut hir::FunctionContext,
-        left_id: ast::ExprId,
-        right_id: ast::ExprId,
-    ) -> Result<hir::Expression, ()> {
-        let left = self.build_expression(ctx, left_id)?;
-        let right = self.build_expression(ctx, right_id)?;
-
-        let (scope_index, local_index) = match left.kind {
-            hir::ExprKind::Local {
-                scope_index,
-                local_index,
-            } => (scope_index, local_index),
-            hir::ExprKind::Placeholder => {
-                let right_type = match right.ty {
-                    Some(ty) => ty,
-                    None => panic!("can't drop untyped value"),
-                };
-
-                return Ok(hir::Expression {
-                    kind: hir::ExprKind::Binary {
-                        operator: ast::BinaryOp::Assign,
-                        lhs: Box::new(hir::Expression {
-                            kind: hir::ExprKind::Placeholder,
-                            ty: Some(right_type),
-                        }),
-                        rhs: Box::new(right),
-                    },
-                    ty: Some(hir::Type::Unit),
-                });
-            }
-            _ => panic!("left side of assignment must be a variable"),
-        };
-
-        let local = match ctx.scopes.get_local(scope_index, local_index) {
-            Some(local) => local,
-            None => panic!("can't assign to undeclared variable"),
-        };
-        match local.mutability {
-            hir::Mutability::Mutable => {}
-            hir::Mutability::Const => panic!("can't assign to const variable"),
-        }
-
-        let coerced_rhs = self
-            .coerce_expr(right, right_id, local.ty)
-            .expect("invalid assignment type");
-
-        Ok(hir::Expression {
-            kind: hir::ExprKind::Binary {
-                lhs: Box::new(left),
-                operator: ast::BinaryOp::Assign,
-                rhs: Box::new(coerced_rhs),
-            },
-            ty: Some(hir::Type::Unit),
-        })
-    }
-
     fn coerce_expr(
         &mut self,
         rhs: hir::Expression,
@@ -802,8 +765,8 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         match (expr.kind, ty) {
             (hir::ExprKind::Int(value), ty) => self.coerce_untyped_int_expr(value, expr_id, ty),
             (hir::ExprKind::Binary { lhs, operator, rhs }, ty) => {
-                let (left_id, right_id) = match self.ast.get_expr(expr_id).unwrap().kind {
-                    ast::ExprKind::Binary { left, right, .. } => (left, right),
+                let (left_id, right_id) = match &self.ast.get_expr(expr_id).unwrap().kind {
+                    ast::ExprKind::Binary(expr) => (expr.left.clone(), expr.right.clone()),
                     _ => unreachable!("expected binary expression"),
                 };
 
@@ -961,100 +924,226 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         ctx: &mut hir::FunctionContext,
         expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
-        let (left_id, right_id, operator) = match &self.ast.get_expr(expr_id).unwrap().kind {
-            ast::ExprKind::Binary {
-                left: left_id,
-                right: right_id,
-                operator,
-            } => (left_id.clone(), right_id.clone(), operator.clone()),
+        let operator = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Binary(expr) => expr.operator.clone(),
             _ => unreachable!("expected binary expression"),
         };
 
         match operator {
-            ast::BinaryOp::Assign => self.build_assignment_expr(ctx, left_id, right_id),
+            ast::BinaryOp::Assign => self.build_assignment_expr(ctx, expr_id),
             ast::BinaryOp::AddAssign
             | ast::BinaryOp::SubAssign
             | ast::BinaryOp::MulAssign
             | ast::BinaryOp::DivAssign
-            | ast::BinaryOp::RemAssign => {
-                self.build_arithmetic_assignment_expr(ctx, left_id, right_id, operator)
-            }
+            | ast::BinaryOp::RemAssign => self.build_arithmetic_assignment_expr(ctx, expr_id),
             ast::BinaryOp::Add
             | ast::BinaryOp::Sub
             | ast::BinaryOp::Mul
             | ast::BinaryOp::Div
-            | ast::BinaryOp::Rem => self.build_arithmetic_expr(ctx, left_id, right_id, operator),
+            | ast::BinaryOp::Rem => self.build_arithmetic_expr(ctx, expr_id),
             ast::BinaryOp::Eq
             | ast::BinaryOp::NotEq
             | ast::BinaryOp::Less
             | ast::BinaryOp::LessEq
             | ast::BinaryOp::Greater
-            | ast::BinaryOp::GreaterEq => {
-                self.build_comparison_binary_expr(ctx, left_id, right_id, operator)
-            }
-            ast::BinaryOp::And | ast::BinaryOp::Or => {
-                self.build_logical_binary_expr(ctx, left_id, right_id, operator)
-            }
+            | ast::BinaryOp::GreaterEq => self.build_comparison_binary_expr(ctx, expr_id),
+            ast::BinaryOp::And | ast::BinaryOp::Or => self.build_logical_binary_expr(ctx, expr_id),
             ast::BinaryOp::BitAnd
             | ast::BinaryOp::BitOr
             | ast::BinaryOp::BitXor
             | ast::BinaryOp::LeftShift
-            | ast::BinaryOp::RightShift => {
-                self.build_bitwise_binary_expr(ctx, left_id, right_id, operator)
-            }
+            | ast::BinaryOp::RightShift => self.build_bitwise_binary_expr(ctx, expr_id),
         }
+    }
+
+    fn build_assignment_expr(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        expr_id: ast::ExprId,
+    ) -> Result<hir::Expression, ()> {
+        let expr = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Binary(expr) => expr.clone(),
+            _ => unreachable!("expected binary expression"),
+        };
+
+        let left = self.build_expression(ctx, expr.left)?;
+        let right = self.build_expression(ctx, expr.right)?;
+
+        let (scope_index, local_index) = match left.kind {
+            hir::ExprKind::Local {
+                scope_index,
+                local_index,
+            } => (scope_index, local_index),
+            hir::ExprKind::Placeholder => {
+                let right_type = match right.ty {
+                    Some(ty) => ty,
+                    None => panic!("can't drop untyped value"),
+                };
+
+                return Ok(hir::Expression {
+                    kind: hir::ExprKind::Binary {
+                        operator: ast::BinaryOp::Assign,
+                        lhs: Box::new(hir::Expression {
+                            kind: hir::ExprKind::Placeholder,
+                            ty: Some(right_type),
+                        }),
+                        rhs: Box::new(right),
+                    },
+                    ty: Some(hir::Type::Unit),
+                });
+            }
+            _ => panic!("left side of assignment must be a variable"),
+        };
+
+        let local = match ctx.scopes.get_local(scope_index, local_index) {
+            Some(local) => local,
+            None => panic!("can't assign to undeclared variable"),
+        };
+        match local.mutability {
+            hir::Mutability::Mutable => {}
+            hir::Mutability::Const => panic!("can't assign to const variable"),
+        }
+
+        let coerced_rhs = self
+            .coerce_expr(right, expr.right, local.ty)
+            .expect("invalid assignment type");
+
+        Ok(hir::Expression {
+            kind: hir::ExprKind::Binary {
+                lhs: Box::new(left),
+                operator: ast::BinaryOp::Assign,
+                rhs: Box::new(coerced_rhs),
+            },
+            ty: Some(hir::Type::Unit),
+        })
     }
 
     fn build_arithmetic_assignment_expr(
         &mut self,
         ctx: &mut hir::FunctionContext,
-        left_id: ast::ExprId,
-        right_id: ast::ExprId,
-        operator: ast::BinaryOp,
+        expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
-        todo!()
+        let expr = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Binary(expr) => expr.clone(),
+            _ => unreachable!("expected binary expression"),
+        };
+
+        let left = self.build_expression(ctx, expr.left)?;
+        let right = self.build_expression(ctx, expr.right)?;
+
+        let (scope_index, local_index) = match left.kind {
+            hir::ExprKind::Local {
+                scope_index,
+                local_index,
+            } => (scope_index, local_index),
+            _ => panic!("left side of assignment must be a variable"),
+        };
+
+        let local = match ctx.scopes.get_local(scope_index, local_index) {
+            Some(local) => local,
+            None => panic!("can't assign to undeclared variable"),
+        };
+        match local.mutability {
+            hir::Mutability::Mutable => {}
+            hir::Mutability::Const => panic!("can't assign to const variable"),
+        }
+
+        let coerced_rhs = self
+            .coerce_expr(right, expr.right, local.ty)
+            .expect("invalid assignment type");
+
+        Ok(hir::Expression {
+            kind: hir::ExprKind::Binary {
+                lhs: Box::new(left),
+                operator: expr.operator,
+                rhs: Box::new(coerced_rhs),
+            },
+            ty: Some(hir::Type::Unit),
+        })
     }
 
     fn build_bitwise_binary_expr(
         &mut self,
         ctx: &mut hir::FunctionContext,
-        left_id: ast::ExprId,
-        right_id: ast::ExprId,
-        operator: ast::BinaryOp,
+        expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
-        todo!()
+        let expr = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Binary(expr) => expr.clone(),
+            _ => unreachable!("expected binary expression"),
+        };
+
+        let left = self.build_expression(ctx, expr.left)?;
+        let right = self.build_expression(ctx, expr.right)?;
+
+        use hir::{ExprKind, Expression, PrimitiveType, Type};
+        match (left.ty, right.ty) {
+            (
+                Some(Type::Primitive(PrimitiveType::I32)),
+                Some(Type::Primitive(PrimitiveType::I32)),
+            )
+            | (
+                Some(Type::Primitive(PrimitiveType::I64)),
+                Some(Type::Primitive(PrimitiveType::I64)),
+            ) => {
+                let ty = left.ty.clone();
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator: expr.operator,
+                        lhs: Box::new(left),
+                        rhs: Box::new(right),
+                    },
+                    ty,
+                })
+            }
+            // (None, None) => {
+            //     match Evaluator::evaluate_untyped_bitwise_expr(expr.operator, &left, &right) {
+            //         Ok(expr) => Ok(expr),
+            //         Err(_) => Ok(Expression {
+            //             kind: ExprKind::Binary {
+            //                 operator: expr.operator,
+            //                 lhs: Box::new(left),
+            //                 rhs: Box::new(right),
+            //             },
+            //             ty: None,
+            //         }),
+            //     }
+            // }
+            _ => panic!("type mismatch in bitwise binary expression"),
+        }
     }
 
     fn build_arithmetic_expr(
         &mut self,
         ctx: &mut hir::FunctionContext,
-        left_id: ast::ExprId,
-        right_id: ast::ExprId,
-        operator: ast::BinaryOp,
+        expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
-        let left = self.build_expression(ctx, left_id)?;
-        let right = self.build_expression(ctx, right_id)?;
+        let expr = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Binary(expr) => expr.clone(),
+            _ => unreachable!("expected binary expression"),
+        };
 
-        use hir::*;
+        let left = self.build_expression(ctx, expr.left)?;
+        let right = self.build_expression(ctx, expr.right)?;
+
+        use hir::{ExprKind, Expression, Type};
         match (left.ty, right.ty) {
-            (None, None) => {
-                let evaluated = Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
-                match evaluated {
-                    Some(expr) => Ok(expr),
-                    None => Ok(Expression {
-                        kind: ExprKind::Binary {
-                            operator,
-                            lhs: Box::new(left),
-                            rhs: Box::new(right),
-                        },
-                        ty: None,
-                    }),
-                }
-            }
+            // (None, None) => {
+            //     match Evaluator::evaluate_untyped_binary_expr(expr.operator, &left, &right) {
+            //         Ok(expr) => Ok(expr),
+            //         Err(_) => Ok(Expression {
+            //             kind: ExprKind::Binary {
+            //                 operator: expr.operator,
+            //                 lhs: Box::new(left),
+            //                 rhs: Box::new(right),
+            //             },
+            //             ty: None,
+            //         }),
+            //     }
+            // }
             (None, Some(ty)) | (Some(ty), None) => {
                 let (typed, untyped) = match left.ty {
-                    Some(_) => ((left.clone(), left_id), (right, right_id)),
-                    None => ((right, right_id), (left.clone(), left_id)),
+                    Some(_) => ((left.clone(), expr.left), (right, expr.right)),
+                    None => ((right, expr.right), (left.clone(), expr.left)),
                 };
 
                 let coerced = self
@@ -1068,7 +1157,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
-                        operator,
+                        operator: expr.operator,
                         lhs: Box::new(left),
                         rhs: Box::new(right),
                     },
@@ -1080,7 +1169,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             {
                 Ok(Expression {
                     kind: ExprKind::Binary {
-                        operator,
+                        operator: expr.operator,
                         lhs: Box::new(left),
                         rhs: Box::new(right),
                     },
@@ -1094,21 +1183,24 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
     fn build_comparison_binary_expr(
         &mut self,
         ctx: &mut hir::FunctionContext,
-        left_id: ast::ExprId,
-        right_id: ast::ExprId,
-        operator: ast::BinaryOp,
+        expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
-        let left = self.build_expression(ctx, left_id)?;
-        let right = self.build_expression(ctx, right_id)?;
+        let expr = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Binary(expr) => expr.clone(),
+            _ => unreachable!("expected binary expression"),
+        };
 
-        use hir::*;
+        let left = self.build_expression(ctx, expr.left)?;
+        let right = self.build_expression(ctx, expr.right)?;
+
+        use hir::{ExprKind, Expression, Type};
         match (left.ty, right.ty) {
             (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
                 if primitive_1 == primitive_2 =>
             {
                 Ok(Expression {
                     kind: ExprKind::Binary {
-                        operator,
+                        operator: expr.operator,
                         lhs: Box::new(left),
                         rhs: Box::new(right),
                     },
@@ -1118,10 +1210,9 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             (Some(Type::Enum(enum_index_1)), Some(Type::Enum(enum_index_2)))
                 if enum_index_1 == enum_index_2 =>
             {
-                // TODO: handle enum comparison
                 Ok(Expression {
                     kind: ExprKind::Binary {
-                        operator,
+                        operator: expr.operator,
                         lhs: Box::new(left),
                         rhs: Box::new(right),
                     },
@@ -1130,7 +1221,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             }
             (Some(Type::Bool), Some(Type::Bool)) => Ok(Expression {
                 kind: ExprKind::Binary {
-                    operator,
+                    operator: expr.operator,
                     lhs: Box::new(left),
                     rhs: Box::new(right),
                 },
@@ -1138,8 +1229,8 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             }),
             (None, Some(ty)) | (Some(ty), None) => {
                 let (typed, untyped) = match left.ty {
-                    Some(_) => ((left.clone(), left_id), (right, right_id)),
-                    None => ((right, right_id), (left.clone(), left_id)),
+                    Some(_) => ((left.clone(), expr.left), (right, expr.right)),
+                    None => ((right, expr.right), (left.clone(), expr.left)),
                 };
 
                 let coerced = self
@@ -1153,56 +1244,47 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
-                        operator,
+                        operator: expr.operator,
                         lhs: Box::new(left),
                         rhs: Box::new(right),
                     },
                     ty: Some(Type::Bool),
                 })
             }
-            (None, None) => {
-                let evaluated = Builder::try_evaluate_untyped_binary_expr(operator, &left, &right);
-                match evaluated {
-                    Some(expr) => Ok(expr),
-                    None => Ok(Expression {
-                        kind: ExprKind::Binary {
-                            operator,
-                            lhs: Box::new(left),
-                            rhs: Box::new(right),
-                        },
-                        ty: Some(Type::Bool),
-                    }),
-                }
-            }
+            // (None, None) => {
+            //     match Evaluator::evaluate_untyped_binary_expr(expr.operator, &left, &right) {
+            //         Ok(expr) => Ok(expr),
+            //         Err(_) => Ok(Expression {
+            //             kind: ExprKind::Binary {
+            //                 operator: expr.operator,
+            //                 lhs: Box::new(left),
+            //                 rhs: Box::new(right),
+            //             },
+            //             ty: Some(Type::Bool),
+            //         }),
+            //     }
+            // }
             (l, r) => panic!("can't compare these types {:?} {:?}", l, r),
         }
     }
 
-    fn build_logical_binary_expr(
+    fn build_boolean_expr(
         &mut self,
-        ctx: &mut hir::FunctionContext,
-        left_id: ast::ExprId,
-        right_id: ast::ExprId,
-        operator: ast::BinaryOp,
+        expr: hir::Expression,
+        ast_expr_id: ast::ExprId,
     ) -> Result<hir::Expression, ()> {
-        let left = self.build_expression(ctx, left_id)?;
-        let right = self.build_expression(ctx, right_id)?;
-
-        match (left.ty, right.ty) {
-            (Some(hir::Type::Bool), Some(hir::Type::Bool)) => Ok(hir::Expression {
-                kind: hir::ExprKind::Binary {
-                    operator,
-                    lhs: Box::new(left),
-                    rhs: Box::new(right),
-                },
-                ty: Some(hir::Type::Bool),
-            }),
+        match expr.ty {
+            Some(hir::Type::Bool) => Ok(expr),
+            None => {
+                let coerced = self.coerce_expr(expr, ast_expr_id, hir::Type::Bool)?;
+                Ok(coerced)
+            }
             _ => {
-                let ast_expr = self.ast.get_expr(left_id).unwrap();
+                let ast_expr = self.ast.get_expr(ast_expr_id).unwrap();
                 self.diagnostics.push(DiagnosticContext::TypeMistmatch {
                     file_id: self.ast.file_id,
                     expected: hir::Type::Bool,
-                    actual: left.ty.clone(),
+                    actual: expr.ty,
                     span: ast_expr.span,
                 });
                 Err(())
@@ -1210,41 +1292,51 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         }
     }
 
-    fn try_evaluate_untyped_binary_expr(
-        operator: ast::BinaryOp,
-        left: &hir::Expression,
-        right: &hir::Expression,
-    ) -> Option<hir::Expression> {
-        match (&left.kind, &right.kind) {
-            (hir::ExprKind::Int(left), &hir::ExprKind::Int(right)) => {
-                let value = match operator {
-                    ast::BinaryOp::Add => left.checked_add(right),
-                    ast::BinaryOp::Sub => left.checked_sub(right),
-                    ast::BinaryOp::Mul => left.checked_mul(right),
-                    ast::BinaryOp::Div => left.checked_div(right),
-                    ast::BinaryOp::Rem => left.checked_rem(right),
-                    ast::BinaryOp::Eq => {
-                        return Some(Expression {
-                            kind: hir::ExprKind::Bool(*left == right),
-                            ty: Some(hir::Type::Bool),
-                        });
-                    }
-                    ast::BinaryOp::NotEq => {
-                        return Some(Expression {
-                            kind: hir::ExprKind::Bool(*left != right),
-                            ty: Some(hir::Type::Bool),
-                        });
-                    }
-                    _ => unimplemented!("unimplemented binary operator"),
-                }
-                .expect("integer overflow");
+    fn build_logical_binary_expr(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        expr_id: ast::ExprId,
+    ) -> Result<hir::Expression, ()> {
+        let expr = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Binary(expr) => expr.clone(),
+            _ => unreachable!("expected binary expression"),
+        };
 
-                Some(hir::Expression {
-                    kind: hir::ExprKind::Int(value),
-                    ty: None,
+        let left = self.build_expression(ctx, expr.left)?;
+        let right = self.build_expression(ctx, expr.right)?;
+
+        match (left.ty, right.ty) {
+            // (None, None) => {
+            //     match Evaluator::evaluate_untyped_binary_expr(expr.operator, &left, &right) {
+            //         Ok(expr) => Ok(expr),
+            //         Err(_) => Ok(hir::Expression {
+            //             kind: hir::ExprKind::Binary {
+            //                 operator: expr.operator,
+            //                 lhs: Box::new(left),
+            //                 rhs: Box::new(right),
+            //             },
+            //             ty: Some(hir::Type::Bool),
+            //         }),
+            //     }
+            // }
+            (_, _) => {
+                let (left, right) = match (
+                    self.build_boolean_expr(left, expr.left),
+                    self.build_boolean_expr(right, expr.right),
+                ) {
+                    (Ok(coerced_left), Ok(coerced_right)) => (coerced_left, coerced_right),
+                    _ => return Err(()),
+                };
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Binary {
+                        operator: expr.operator,
+                        lhs: Box::new(left),
+                        rhs: Box::new(right),
+                    },
+                    ty: Some(hir::Type::Bool),
                 })
             }
-            _ => None,
         }
     }
 }

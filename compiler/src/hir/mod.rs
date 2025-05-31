@@ -1,5 +1,6 @@
 pub mod builder;
 pub mod diagnostics;
+pub mod evaluator;
 use std::collections::HashMap;
 use std::str;
 

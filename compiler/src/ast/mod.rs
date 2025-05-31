@@ -1,4 +1,4 @@
-use bumpalo::collections::Vec as BumpVec;
+use bumpalo::collections::Vec;
 use lexer::TokenKind;
 use string_interner::symbol::SymbolU32;
 
@@ -35,7 +35,7 @@ impl TryFrom<TokenKind> for UnaryOp {
     fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
         match kind {
             TokenKind::Minus => Ok(UnaryOp::Invert),
-            // TokenKind::Bang => Ok(UnaryOperator::Negate),
+            TokenKind::Bang => Ok(UnaryOp::Negate),
             _ => Err(()),
         }
     }
@@ -73,38 +73,6 @@ pub enum BinaryOp {
     LeftShift,
     RightShift,
 }
-
-// impl BinaryOperator {
-//     pub fn is_arithmetic(self) -> bool {
-//         match self {
-//             BinaryOperator::Add
-//             | BinaryOperator::Subtract
-//             | BinaryOperator::Multiply
-//             | BinaryOperator::Divide
-//             | BinaryOperator::Remainder => true,
-//             _ => false,
-//         }
-//     }
-
-//     pub fn is_relational(self) -> bool {
-//         match self {
-//             BinaryOperator::Eq
-//             | BinaryOperator::NotEq
-//             | BinaryOperator::Less
-//             | BinaryOperator::LessEq
-//             | BinaryOperator::Greater
-//             | BinaryOperator::GreaterEq => true,
-//             _ => false,
-//         }
-//     }
-
-//     pub fn is_assignment(self) -> bool {
-//         match self {
-//             BinaryOperator::Assign => true,
-//             _ => false,
-//         }
-//     }
-// }
 
 // impl std::fmt::Display for BinaryOperator {
 //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -165,13 +133,21 @@ impl TryFrom<TokenKind> for BinaryOp {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Identifier {
     pub symbol: SymbolU32,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
+pub struct BinaryExpression {
+    pub left: ExprId,
+    pub operator: BinaryOp,
+    pub operator_span: TextSpan,
+    pub right: ExprId,
+}
+
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     /// `1`
     Int { value: i64 },
@@ -179,14 +155,12 @@ pub enum ExprKind {
     Grouping { value: ExprId },
     /// `x`
     Identifier { symbol: SymbolU32 },
+    /// `5 as i32`
+    Cast { value: ExprId, ty: Identifier },
     /// `-{expr}`
     Unary { operator: UnaryOp, operand: ExprId },
     /// `{expr} + {expr}`
-    Binary {
-        left: ExprId,
-        operator: BinaryOp,
-        right: ExprId,
-    },
+    Binary(BinaryExpression),
     /// `{expr}()`
     Call {
         callee: ExprId,
@@ -212,13 +186,13 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Expression {
     pub kind: ExprKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum StmtKind {
     /// `{expr};`
     DelimitedExpression { value: ExprId },
@@ -236,19 +210,19 @@ pub enum StmtKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Statement {
     pub kind: StmtKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct FunctionParam {
     pub name: Identifier,
     pub ty: Identifier,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct FunctionSignature {
     pub name: Identifier,
     pub params: Box<[FunctionParam]>,
@@ -256,54 +230,54 @@ pub struct FunctionSignature {
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ItemFunctionDefinition {
     pub export: Option<TextSpan>,
     pub signature: FunctionSignature,
     pub block: ExprId,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ItemEnum {
     pub name: Identifier,
     pub ty: Identifier,
     pub variants: Box<[EnumVariant]>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: Identifier,
     pub value: ExprId,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ItemKind {
     FunctionDefinition(ItemFunctionDefinition),
     Enum(ItemEnum),
     FunctionDeclaration { signature: FunctionSignature },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Item {
     pub kind: ItemKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Ast<'bump> {
     pub file_id: FileId,
-    pub expressions: BumpVec<'bump, Expression>,
-    pub statements: BumpVec<'bump, Statement>,
-    pub items: BumpVec<'bump, Item>,
+    pub expressions: Vec<'bump, Expression>,
+    pub statements: Vec<'bump, Statement>,
+    pub items: Vec<'bump, Item>,
 }
 
 impl<'bump> Ast<'bump> {
-    pub fn new(bump: &'bump bumpalo::Bump, file_id: FileId) -> Self {
+    pub fn new(allocator: &'bump bumpalo::Bump, file_id: FileId) -> Self {
         Self {
             file_id,
-            expressions: BumpVec::new_in(bump),
-            statements: BumpVec::new_in(bump),
-            items: BumpVec::new_in(bump),
+            expressions: Vec::new_in(allocator),
+            statements: Vec::new_in(allocator),
+            items: Vec::new_in(allocator),
         }
     }
 

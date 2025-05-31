@@ -8,8 +8,9 @@ use string_interner::symbol::SymbolU32;
 use super::diagnostics::DiagnosticContext;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
-    Ast, BinaryOp, EnumVariant, ExprId, ExprKind, FunctionParam, FunctionSignature, Identifier,
-    ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, Statement, StmtId, StmtKind, UnaryOp,
+    Ast, BinaryExpression, BinaryOp, EnumVariant, ExprId, ExprKind, FunctionParam,
+    FunctionSignature, Identifier, ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, Statement,
+    StmtId, StmtKind, UnaryOp,
 };
 use crate::files::FileId;
 use crate::span::TextSpan;
@@ -28,6 +29,7 @@ enum BindingPower {
     Additive,
     Multiplicative,
     Unary,
+    Cast,
     Call,
     Member,
     Primary,
@@ -90,6 +92,7 @@ enum Keyword {
     Return,
     If,
     Else,
+    As,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -109,6 +112,7 @@ impl TryFrom<&str> for Keyword {
             "continue" => Ok(Keyword::Continue),
             "match" => Ok(Keyword::Match),
             "return" => Ok(Keyword::Return),
+            "as" => Ok(Keyword::As),
             _ => Err(()),
         }
     }
@@ -293,7 +297,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         loop {
             let token = self.lexer.peek();
 
-            let (led_handler, operator_bp) = match Parser::led_lookup(token.kind) {
+            let (led_handler, operator_bp) = match self.led_lookup(token) {
                 Some((_, bp)) if bp <= limit_bp => break,
                 Some((handler, bp)) => (handler, bp),
                 None => break,
@@ -340,12 +344,13 @@ impl<'bump, 'input> Parser<'bump, 'input> {
     }
 
     fn led_lookup(
-        token: TokenKind,
+        &mut self,
+        token: Token,
     ) -> Option<(
         fn(parser: &mut Parser, left: ExprId, bp: BindingPower) -> Result<ExprId, ()>,
         BindingPower,
     )> {
-        match token {
+        match token.kind {
             TokenKind::Eq
             | TokenKind::PlusEq
             | TokenKind::MinusEq
@@ -383,6 +388,10 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 Parser::parse_namespace_member_expression,
                 BindingPower::Member,
             )),
+            TokenKind::Identifier => match self.intern_keyword(token) {
+                Ok(Keyword::As) => Some((Parser::parse_cast_expression, BindingPower::Cast)),
+                _ => None,
+            },
             // TokenKind::Dot => Some((parse_member_expression, BindingPower::Member)),
             _ => None,
         }
@@ -499,6 +508,26 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         }
     }
 
+    fn parse_cast_expression(
+        parser: &mut Parser,
+        operand_id: ExprId,
+        _: BindingPower,
+    ) -> Result<ExprId, ()> {
+        _ = parser.lexer.next();
+        let ty = parser.parse_identifier()?;
+
+        let operand = parser.ast.get_expr(operand_id).unwrap();
+        let span = TextSpan::merge(operand.span, ty.span);
+        let expr_id = parser.ast.push_expr(
+            ExprKind::Cast {
+                value: operand_id,
+                ty,
+            },
+            span,
+        );
+        Ok(expr_id)
+    }
+
     fn parse_unary_expression(parser: &mut Parser) -> Result<ExprId, ()> {
         let operator = parser.lexer.next();
         let operator_kind = match UnaryOp::try_from(operator.kind) {
@@ -535,10 +564,10 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         left: ExprId,
         bp: BindingPower,
     ) -> Result<ExprId, ()> {
-        let operator = parser.lexer.next();
-        let operator_kind = match BinaryOp::try_from(operator.kind) {
+        let operator_token = parser.lexer.next();
+        let binary_op = match BinaryOp::try_from(operator_token.kind) {
             Ok(operator) => operator,
-            Err(_) => panic!("invalid binary operator"),
+            Err(_) => unreachable!("invalid binary operator"),
         };
 
         let right_id = match parser.parse_expression(bp) {
@@ -548,7 +577,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                     .diagnostics
                     .push(DiagnosticContext::IncompleteBinaryExpression {
                         file_id: parser.ast.file_id,
-                        span: operator.span.clone(),
+                        span: operator_token.span.clone(),
                     });
                 return Err(());
             }
@@ -558,21 +587,46 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         let left_expr = parser.ast.get_expr(left).unwrap();
         if bp == BindingPower::Comparison {
             match left_expr.kind {
-                ExprKind::Binary { operator, .. }
-                    if BindingPower::from(operator) == BindingPower::Comparison =>
-                {
-                    panic!("comparison operators cannot be chained")
+                ExprKind::Binary(BinaryExpression {
+                    operator,
+                    operator_span,
+                    ..
+                }) if BindingPower::from(operator) == BindingPower::Comparison => {
+                    parser
+                        .diagnostics
+                        .push(DiagnosticContext::ChainedComparisons {
+                            file_id: parser.ast.file_id,
+                            first_operator_span: operator_span,
+                            second_operator_span: operator_token.span.clone(),
+                        });
+                }
+                _ => {}
+            }
+            match right_expr.kind {
+                ExprKind::Binary(BinaryExpression {
+                    operator,
+                    operator_span,
+                    ..
+                }) if BindingPower::from(operator) == BindingPower::Comparison => {
+                    parser
+                        .diagnostics
+                        .push(DiagnosticContext::ChainedComparisons {
+                            file_id: parser.ast.file_id,
+                            first_operator_span: operator_token.span.clone(),
+                            second_operator_span: operator_span,
+                        });
                 }
                 _ => {}
             }
         }
 
         let expr_id = parser.ast.push_expr(
-            ExprKind::Binary {
+            ExprKind::Binary(BinaryExpression {
                 left,
                 right: right_id,
-                operator: operator_kind,
-            },
+                operator: binary_op,
+                operator_span: operator_token.span,
+            }),
             TextSpan::merge(left_expr.span, right_expr.span),
         );
         Ok(expr_id)
@@ -933,19 +987,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         let if_keyword = parser.lexer.next();
         let condition = parser.parse_expression(BindingPower::Default)?;
 
-        let then_expr_id = match parser.lexer.peek().kind {
-            TokenKind::OpenBrace => Parser::parse_block_expression(parser)?,
-            _ => {
-                // parser
-                //     .diagnostics
-                //     .push(DiagnosticContext::MissingThenBlock {
-                //         file_id: parser.ast.file_id,
-                //         span: if_keyword.span.clone(),
-                //     });
-                return Err(());
-            }
-        };
-
+        let then_expr_id = Parser::parse_block_expression(parser)?;
         let maybe_else_token = parser.lexer.peek();
         match parser.intern_keyword(maybe_else_token) {
             Ok(Keyword::Else) => {
@@ -965,18 +1007,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
             }
         };
 
-        let else_expr_id = match parser.lexer.peek().kind {
-            TokenKind::OpenBrace => Parser::parse_block_expression(parser)?,
-            _ => {
-                // parser
-                //     .diagnostics
-                //     .push(DiagnosticContext::MissingThenBlock {
-                //         file_id: parser.ast.file_id,
-                //         span: if_keyword.span.clone(),
-                //     });
-                return Err(());
-            }
-        };
+        let else_expr_id = Parser::parse_block_expression(parser)?;
         let else_expr = parser.ast.get_expr(else_expr_id).unwrap();
 
         let expr_id = parser.ast.push_expr(
@@ -1063,33 +1094,4 @@ impl<'bump, 'input> Parser<'bump, 'input> {
 
 //     let expr_id = parser.ast.add_expression(ExprKind::String { symbol });
 //     Some(expr_id)
-// }
-
-// fn parse_block_statement(parser: &mut Parser) -> Option<StmtId> {
-//     let open_brace = parser.lexer.next();
-//     let mut statements = Vec::new();
-
-//     loop {
-//         let token = parser.lexer.peek();
-//         if token.kind == TokenKind::CloseBrace {
-//             break;
-//         }
-
-//         let stmt_id = match parser.parse_statement() {
-//             Some(stmt_id) => stmt_id,
-//             None => {
-//                 parser.skip_statement();
-//                 continue;
-//             }
-//         };
-//         statements.push(stmt_id);
-//     }
-
-//     let close_brace = parser.lexer.next();
-
-//     let stmt_id = parser.ast.push_stmt(
-//         StmtKind::Block { statements },
-//         TextSpan::combine(open_brace.span, close_brace.span),
-//     );
-//     Some(stmt_id)
 // }

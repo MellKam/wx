@@ -160,8 +160,8 @@ impl<'a> Lexer<'a> {
             '+' => self.consume_and_check('=', TokenKind::PlusEq, TokenKind::Plus),
             '-' => self.consume_and_check('=', TokenKind::MinusEq, TokenKind::Minus),
             '*' => self.consume_and_check('=', TokenKind::StarEq, TokenKind::Star),
-            '<' => self.consume_and_check('=', TokenKind::LessEq, TokenKind::Less),
-            '>' => self.consume_and_check('=', TokenKind::GreaterEq, TokenKind::Greater),
+            '<' => self.consume_open_angle(),
+            '>' => self.consume_close_angle(),
             '!' => self.consume_and_check('=', TokenKind::BangEq, TokenKind::Bang),
             '&' => self.consume_and_check('&', TokenKind::AmperAmper, TokenKind::Amper),
             '|' => self.consume_and_check('|', TokenKind::VbarVbar, TokenKind::Vbar),
@@ -169,6 +169,7 @@ impl<'a> Lexer<'a> {
 
             // Less Frequent
             '%' => self.consume_and_check('=', TokenKind::PercentEq, TokenKind::Percent),
+            '^' => TokenKind::Caret,
             '\'' => self.consume_char(),
             '\0' => TokenKind::Eof,
             _ => TokenKind::Unknown,
@@ -196,6 +197,84 @@ impl<'a> Lexer<'a> {
                 return token;
             }
             _ => return fallback,
+        }
+    }
+
+    fn consume_open_angle(&mut self) -> TokenKind {
+        let mut peeker = self.chars.clone();
+        match peeker.next().unwrap_or(EOF_CHAR) {
+            '=' => {
+                _ = self.chars.next();
+                return TokenKind::LessEq;
+            }
+            '<' => {
+                _ = self.chars.next();
+                return TokenKind::LeftShift;
+            }
+            _ => return TokenKind::Less,
+        }
+    }
+
+    fn consume_close_angle(&mut self) -> TokenKind {
+        let mut peeker = self.chars.clone();
+        match peeker.next().unwrap_or(EOF_CHAR) {
+            '=' => {
+                _ = self.chars.next();
+                return TokenKind::GreaterEq;
+            }
+            '>' => {
+                _ = self.chars.next();
+                return TokenKind::RightShift;
+            }
+            _ => return TokenKind::Greater,
+        }
+    }
+
+    fn consume_identifier(&mut self) -> TokenKind {
+        let mut peeker = self.chars.clone();
+        while let Some(char) = peeker.next() {
+            match char {
+                'A'..='Z' | 'a'..='z' | '0'..='9' | '_' => {
+                    _ = self.chars.next();
+                }
+                _ => break,
+            }
+        }
+
+        TokenKind::Identifier
+    }
+
+    fn consume_whitespace(&mut self) -> TokenKind {
+        let mut peeker = self.chars.clone();
+        while let Some(ch) = peeker.next() {
+            if ch.is_whitespace() {
+                _ = self.chars.next();
+            } else {
+                break;
+            }
+        }
+        TokenKind::Whitespace
+    }
+
+    fn consume_number(&mut self) -> TokenKind {
+        let mut peeker = self.chars.clone();
+        let mut seen_dot = false;
+        while let Some(char) = peeker.next() {
+            match char {
+                '0'..='9' => {
+                    _ = self.chars.next();
+                }
+                '.' if !seen_dot => {
+                    seen_dot = true;
+                    _ = self.chars.next();
+                }
+                _ => break,
+            }
+        }
+
+        match seen_dot {
+            true => TokenKind::Float,
+            false => TokenKind::Int,
         }
     }
 
@@ -267,54 +346,6 @@ impl<'a> Lexer<'a> {
         }
 
         TokenKind::Comment
-    }
-
-    fn consume_whitespace(&mut self) -> TokenKind {
-        let mut peeker = self.chars.clone();
-        while let Some(ch) = peeker.next() {
-            if ch.is_whitespace() {
-                _ = self.chars.next();
-            } else {
-                break;
-            }
-        }
-        TokenKind::Whitespace
-    }
-
-    fn consume_number(&mut self) -> TokenKind {
-        let mut peeker = self.chars.clone();
-        let mut seen_dot = false;
-        while let Some(char) = peeker.next() {
-            match char {
-                '0'..='9' => {
-                    _ = self.chars.next();
-                }
-                '.' if !seen_dot => {
-                    seen_dot = true;
-                    _ = self.chars.next();
-                }
-                _ => break,
-            }
-        }
-
-        match seen_dot {
-            true => TokenKind::Float,
-            false => TokenKind::Int,
-        }
-    }
-
-    fn consume_identifier(&mut self) -> TokenKind {
-        let mut peeker = self.chars.clone();
-        while let Some(char) = peeker.next() {
-            match char {
-                'A'..='Z' | 'a'..='z' | '0'..='9' | '_' => {
-                    _ = self.chars.next();
-                }
-                _ => break,
-            }
-        }
-
-        TokenKind::Identifier
     }
 }
 
