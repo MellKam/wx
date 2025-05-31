@@ -23,10 +23,9 @@ pub struct ItemId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
-    /// Sign inversion `-x`
-    Invert,
-    /// Logical negation `!x`
-    Negate,
+    InvertSign,
+    Not,
+    BitNot,
 }
 
 impl TryFrom<TokenKind> for UnaryOp {
@@ -34,8 +33,9 @@ impl TryFrom<TokenKind> for UnaryOp {
 
     fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
         match kind {
-            TokenKind::Minus => Ok(UnaryOp::Invert),
-            TokenKind::Bang => Ok(UnaryOp::Negate),
+            TokenKind::Minus => Ok(UnaryOp::InvertSign),
+            TokenKind::Bang => Ok(UnaryOp::Not),
+            TokenKind::Caret => Ok(UnaryOp::BitNot),
             _ => Err(()),
         }
     }
@@ -73,26 +73,6 @@ pub enum BinaryOp {
     LeftShift,
     RightShift,
 }
-
-// impl std::fmt::Display for BinaryOperator {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         let s = match self {
-//             BinaryOperator::Add => "+",
-//             BinaryOperator::Subtract => "-",
-//             BinaryOperator::Multiply => "*",
-//             BinaryOperator::Divide => "/",
-//             BinaryOperator::Remainder => "%",
-//             BinaryOperator::Eq => "==",
-//             BinaryOperator::NotEq => "!=",
-//             BinaryOperator::Less => "<",
-//             BinaryOperator::LessEq => "<=",
-//             BinaryOperator::Greater => ">",
-//             BinaryOperator::GreaterEq => ">=",
-//             BinaryOperator::Assign => "=",
-//         };
-//         write!(f, "{}", s)
-//     }
-// }
 
 impl TryFrom<TokenKind> for BinaryOp {
     type Error = ();

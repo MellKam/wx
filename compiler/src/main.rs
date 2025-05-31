@@ -15,8 +15,8 @@ use string_interner::StringInterner;
 mod ast;
 mod files;
 mod hir;
-mod span;
 // mod mir;
+mod span;
 // mod wasm;
 
 fn main() {
@@ -30,8 +30,8 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            fn main(): bool {
-                5 > (6 as i32) && (1 as i32) == 3
+            export fn main(a: i64, b: i32): bool {
+                5 as i32 > 10
             }
             "# }
             .to_string(),
@@ -48,7 +48,7 @@ fn main() {
             files.get(main_file_id).unwrap().source.as_ref(),
             &mut interner,
         );
-        println!("{:#?}", ast);
+        // println!("{:#?}", ast);
         let diagnostics = diagnostics
             .into_iter()
             .map(|d| d.to_diagnostic())
