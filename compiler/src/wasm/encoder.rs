@@ -284,20 +284,21 @@ enum Instruction {
 
 impl EncodeWithContext for wasm::Expression {
     fn encode_with_context(&self, sink: &mut Vec<u8>, module: &wasm::Module) {
+        use wasm::Expression;
         match self {
-            wasm::Expression::Nop => {
+            Expression::Nop => {
                 // sink.push(Instruction::Nop as u8);
             }
-            wasm::Expression::LocalGet { local } => {
+            Expression::LocalGet { local } => {
                 sink.push(Instruction::LocalGet as u8);
                 local.0.encode(sink);
             }
-            wasm::Expression::LocalSet { local, value } => {
+            Expression::LocalSet { local, value } => {
                 module.get_expr(*value).encode_with_context(sink, module);
                 sink.push(Instruction::LocalSet as u8);
                 local.0.encode(sink);
             }
-            wasm::Expression::Return { value } => {
+            Expression::Return { value } => {
                 match value {
                     Some(value) => {
                         module.get_expr(*value).encode_with_context(sink, module);
@@ -306,22 +307,22 @@ impl EncodeWithContext for wasm::Expression {
                 };
                 sink.push(Instruction::Return as u8);
             }
-            wasm::Expression::I32Add { left, right } => {
+            Expression::I32Add { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I32Add as u8);
             }
-            wasm::Expression::I32Sub { left, right } => {
+            Expression::I32Sub { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I32Sub as u8);
             }
-            wasm::Expression::I32Mul { left, right } => {
+            Expression::I32Mul { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I32Mul as u8);
             }
-            wasm::Expression::Block {
+            Expression::Block {
                 expressions,
                 result,
             } => {
@@ -334,7 +335,7 @@ impl EncodeWithContext for wasm::Expression {
                 }
                 sink.push(Instruction::End as u8);
             }
-            wasm::Expression::Break { depth, value } => {
+            Expression::Break { depth, value } => {
                 match value {
                     Some(value) => {
                         module.get_expr(*value).encode_with_context(sink, module);
@@ -344,7 +345,7 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push(Instruction::Br as u8);
                 depth.encode(sink);
             }
-            wasm::Expression::Call {
+            Expression::Call {
                 function,
                 arguments,
             } => {
@@ -354,39 +355,39 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push(Instruction::Call as u8);
                 function.0.encode(sink);
             }
-            wasm::Expression::I32Const { value } => {
+            Expression::I32Const { value } => {
                 sink.push(Instruction::I32Const as u8);
                 value.encode(sink);
             }
-            wasm::Expression::I64Const { value } => {
+            Expression::I64Const { value } => {
                 sink.push(Instruction::I64Const as u8);
                 value.encode(sink);
             }
-            wasm::Expression::I32Eq { left, right } => {
+            Expression::I32Eq { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I32Eq as u8);
             }
-            wasm::Expression::I32Eqz { value } => {
+            Expression::I32Eqz { value } => {
                 module.get_expr(*value).encode_with_context(sink, module);
                 sink.push(Instruction::I32Eqz as u8);
             }
-            wasm::Expression::I32Ne { left, right } => {
+            Expression::I32Ne { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I32Ne as u8);
             }
-            wasm::Expression::I32And { left, right } => {
+            Expression::I32And { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I32And as u8);
             }
-            wasm::Expression::I32Or { left, right } => {
+            Expression::I32Or { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I32Or as u8);
             }
-            wasm::Expression::IfElse {
+            Expression::IfElse {
                 condition,
                 result,
                 then_branch,
@@ -411,48 +412,138 @@ impl EncodeWithContext for wasm::Expression {
                 }
                 sink.push(Instruction::End as u8);
             }
-            wasm::Expression::Drop { value } => {
+            Expression::Drop { value } => {
                 module.get_expr(*value).encode_with_context(sink, module);
                 sink.push(Instruction::Drop as u8);
             }
-            wasm::Expression::I64Add { left, right } => {
+            Expression::I64Add { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I64Add as u8);
             }
-            wasm::Expression::I64Sub { left, right } => {
+            Expression::I64Sub { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I64Sub as u8);
             }
-            wasm::Expression::I64Mul { left, right } => {
+            Expression::I64Mul { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I64Mul as u8);
             }
-            wasm::Expression::I64Eq { left, right } => {
+            Expression::I64Eq { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I64Eq as u8);
             }
-            wasm::Expression::I64Eqz { value } => {
+            Expression::I64Eqz { value } => {
                 module.get_expr(*value).encode_with_context(sink, module);
                 sink.push(Instruction::I64Eqz as u8);
             }
-            wasm::Expression::I64Ne { left, right } => {
+            Expression::I64Ne { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I64Ne as u8);
             }
-            wasm::Expression::I64And { left, right } => {
+            Expression::I64And { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I64And as u8);
             }
-            wasm::Expression::I64Or { left, right } => {
+            Expression::I64Or { left, right } => {
                 module.get_expr(*left).encode_with_context(sink, module);
                 module.get_expr(*right).encode_with_context(sink, module);
                 sink.push(Instruction::I64Or as u8);
+            }
+            Expression::I32DivS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32DivS as u8);
+            }
+            Expression::I32GeS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32GeS as u8);
+            }
+            Expression::I32ShrS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32ShrS as u8);
+            }
+            Expression::I32LtS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32LtS as u8);
+            }
+            Expression::I32GtS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32GtS as u8);
+            }
+            Expression::I32LeS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32LeS as u8);
+            }
+            Expression::I32RemS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32RemS as u8);
+            }
+            Expression::I64DivS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64DivS as u8);
+            }
+            Expression::I64GeS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64GeS as u8);
+            }
+            Expression::I64ShrS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64ShrS as u8);
+            }
+            Expression::I64LtS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64LtS as u8);
+            }
+            Expression::I64GtS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64GtS as u8);
+            }
+            Expression::I64LeS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64LeS as u8);
+            }
+            Expression::I64RemS { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64RemS as u8);
+            }
+            Expression::I32Xor { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32Xor as u8);
+            }
+            Expression::I64Xor { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64Xor as u8);
+            }
+            Expression::I32Shl { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I32Shl as u8);
+            }
+            Expression::I64Shl { left, right } => {
+                module.get_expr(*left).encode_with_context(sink, module);
+                module.get_expr(*right).encode_with_context(sink, module);
+                sink.push(Instruction::I64Shl as u8);
             }
         }
     }

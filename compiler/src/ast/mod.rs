@@ -74,6 +74,57 @@ pub enum BinaryOp {
     RightShift,
 }
 
+impl BinaryOp {
+    pub fn is_assignment(&self) -> bool {
+        match self {
+            BinaryOp::Assign
+            | BinaryOp::AddAssign
+            | BinaryOp::SubAssign
+            | BinaryOp::MulAssign
+            | BinaryOp::DivAssign
+            | BinaryOp::RemAssign => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_comparison(&self) -> bool {
+        match self {
+            BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Less
+            | BinaryOp::LessEq
+            | BinaryOp::Greater
+            | BinaryOp::GreaterEq => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_logical(&self) -> bool {
+        match self {
+            BinaryOp::And | BinaryOp::Or => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_arithmetic(&self) -> bool {
+        match self {
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_bitwise(&self) -> bool {
+        match self {
+            BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor
+            | BinaryOp::LeftShift
+            | BinaryOp::RightShift => true,
+            _ => false,
+        }
+    }
+}
+
 impl TryFrom<TokenKind> for BinaryOp {
     type Error = ();
 

@@ -333,7 +333,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
             TokenKind::OpenParen => {
                 Some((Parser::parse_grouping_expression, BindingPower::Default))
             }
-            TokenKind::Minus | TokenKind::Bang => {
+            TokenKind::Minus | TokenKind::Bang | TokenKind::Caret => {
                 Some((Parser::parse_unary_expression, BindingPower::Unary))
             }
             // TokenKind::Float { .. } => Some((parse_float_expression, BindingPower::Primary)),

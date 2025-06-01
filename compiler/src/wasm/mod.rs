@@ -101,6 +101,14 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I32DivS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32RemS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I32Eq {
         left: ExprIndex,
         right: ExprIndex,
@@ -117,8 +125,36 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I32Xor {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I32Eqz {
         value: ExprIndex,
+    },
+    I32Shl {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32ShrS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32LtS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32GtS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32LeS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32GeS {
+        left: ExprIndex,
+        right: ExprIndex,
     },
     I64Add {
         left: ExprIndex,
@@ -129,6 +165,14 @@ pub enum Expression {
         right: ExprIndex,
     },
     I64Mul {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64DivS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64RemS {
         left: ExprIndex,
         right: ExprIndex,
     },
@@ -148,6 +192,34 @@ pub enum Expression {
         right: ExprIndex,
     },
     I64Or {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64Xor {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64Shl {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64ShrS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64LtS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64GtS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64LeS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64GeS {
         left: ExprIndex,
         right: ExprIndex,
     },

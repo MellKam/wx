@@ -1,7 +1,1 @@
-(module
-  (func $main (result i32) (local $x_0 i32)
-    (local.set $x_0
-      (i32.const 10))
-    (local.set $x_0
-      (i32.const 20))
-    (local.get $x_0)))
+(module(func $main (export "main")(result i32)(i32.eq (i32.mul (i32.const 5)(i32.const 5))(i32.const 25))))

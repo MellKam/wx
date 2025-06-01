@@ -305,12 +305,18 @@ impl<'a> Builder<'a> {
         ty: mir::Type,
     ) -> mir::Expression {
         let kind = match operator {
-            ast::UnaryOp::Invert => mir::ExprKind::Sub {
+            ast::UnaryOp::InvertSign => mir::ExprKind::Sub {
                 left: Box::new(mir::Expression {
                     kind: mir::ExprKind::Int { value: 0 },
                     ty: ty.clone(),
                 }),
                 right: Box::new(self.build_expression(operand)),
+            },
+            ast::UnaryOp::Not => mir::ExprKind::Eqz {
+                value: Box::new(self.build_expression(operand)),
+            },
+            ast::UnaryOp::BitNot => mir::ExprKind::BitNot {
+                value: Box::new(self.build_expression(operand)),
             },
         };
 
@@ -319,36 +325,78 @@ impl<'a> Builder<'a> {
 
     fn build_binary_expression(
         &self,
-        operator: ast::BinOp,
+        operator: ast::BinaryOp,
         lhs: &hir::Expression,
         rhs: &hir::Expression,
         ty: mir::Type,
     ) -> mir::Expression {
+        use crate::ast::BinaryOp;
         match operator {
-            ast::BinOp::Add => mir::Expression {
+            BinaryOp::Add => mir::Expression {
                 kind: mir::ExprKind::Add {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinOp::Sub => mir::Expression {
+            BinaryOp::Sub => mir::Expression {
                 kind: mir::ExprKind::Sub {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinOp::Mul => mir::Expression {
+            BinaryOp::Mul => mir::Expression {
                 kind: mir::ExprKind::Mul {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinOp::Assign => {
+            BinaryOp::Div => mir::Expression {
+                kind: mir::ExprKind::Div {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::Rem => mir::Expression {
+                kind: mir::ExprKind::Rem {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::Less => mir::Expression {
+                kind: mir::ExprKind::Less {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::LessEq => mir::Expression {
+                kind: mir::ExprKind::LessEq {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::Greater => mir::Expression {
+                kind: mir::ExprKind::Greater {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::GreaterEq => mir::Expression {
+                kind: mir::ExprKind::GreaterEq {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::Assign => {
                 let value = self.build_expression(rhs);
-
                 match lhs.kind {
                     hir::ExprKind::Local {
                         local_index,
@@ -367,38 +415,202 @@ impl<'a> Builder<'a> {
                         },
                         ty,
                     },
-                    _ => panic!("assignment only allowed on local mutable variables"),
+                    _ => unreachable!("assignment only allowed on local mutable variables"),
                 }
             }
-            ast::BinOp::Eq => mir::Expression {
-                kind: mir::ExprKind::Equal {
+            BinaryOp::AddAssign => match lhs.kind {
+                hir::ExprKind::Local {
+                    local_index,
+                    scope_index,
+                } => {
+                    let left = self.build_expression(lhs);
+                    let sum_type = left.ty.clone();
+                    let sum = mir::Expression {
+                        kind: mir::ExprKind::Add {
+                            left: Box::new(left),
+                            right: Box::new(self.build_expression(rhs)),
+                        },
+                        ty: sum_type,
+                    };
+
+                    mir::Expression {
+                        kind: mir::ExprKind::Assign {
+                            local_index: local_index.0,
+                            scope_index: mir::ScopeIndex(scope_index.0),
+                            value: Box::new(sum),
+                        },
+                        ty,
+                    }
+                }
+                _ => unreachable!("add assignment only allowed on local mutable variables"),
+            },
+            BinaryOp::SubAssign => match lhs.kind {
+                hir::ExprKind::Local {
+                    local_index,
+                    scope_index,
+                } => {
+                    let left = self.build_expression(lhs);
+                    let value_ty = left.ty.clone();
+                    let value = mir::Expression {
+                        kind: mir::ExprKind::Sub {
+                            left: Box::new(self.build_expression(lhs)),
+                            right: Box::new(self.build_expression(rhs)),
+                        },
+                        ty: value_ty,
+                    };
+
+                    mir::Expression {
+                        kind: mir::ExprKind::Assign {
+                            local_index: local_index.0,
+                            scope_index: mir::ScopeIndex(scope_index.0),
+                            value: Box::new(value),
+                        },
+                        ty,
+                    }
+                }
+                _ => unreachable!("sub assignment only allowed on local mutable variables"),
+            },
+            BinaryOp::MulAssign => match lhs.kind {
+                hir::ExprKind::Local {
+                    local_index,
+                    scope_index,
+                } => {
+                    let left = self.build_expression(lhs);
+                    let value_type = left.ty.clone();
+                    let value = mir::Expression {
+                        kind: mir::ExprKind::Mul {
+                            left: Box::new(self.build_expression(lhs)),
+                            right: Box::new(self.build_expression(rhs)),
+                        },
+                        ty: value_type,
+                    };
+
+                    mir::Expression {
+                        kind: mir::ExprKind::Assign {
+                            local_index: local_index.0,
+                            scope_index: mir::ScopeIndex(scope_index.0),
+                            value: Box::new(value),
+                        },
+                        ty,
+                    }
+                }
+                _ => unreachable!("mul assignment only allowed on local mutable variables"),
+            },
+            BinaryOp::DivAssign => match lhs.kind {
+                hir::ExprKind::Local {
+                    local_index,
+                    scope_index,
+                } => {
+                    let left = self.build_expression(lhs);
+                    let value_type = left.ty.clone();
+                    let value = mir::Expression {
+                        kind: mir::ExprKind::Div {
+                            left: Box::new(self.build_expression(lhs)),
+                            right: Box::new(self.build_expression(rhs)),
+                        },
+                        ty: value_type,
+                    };
+
+                    mir::Expression {
+                        kind: mir::ExprKind::Assign {
+                            local_index: local_index.0,
+                            scope_index: mir::ScopeIndex(scope_index.0),
+                            value: Box::new(value),
+                        },
+                        ty,
+                    }
+                }
+                _ => unreachable!("div assignment only allowed on local mutable variables"),
+            },
+            BinaryOp::RemAssign => match lhs.kind {
+                hir::ExprKind::Local {
+                    local_index,
+                    scope_index,
+                } => {
+                    let left = self.build_expression(lhs);
+                    let value_type = left.ty.clone();
+                    let value = mir::Expression {
+                        kind: mir::ExprKind::Rem {
+                            left: Box::new(self.build_expression(lhs)),
+                            right: Box::new(self.build_expression(rhs)),
+                        },
+                        ty: value_type,
+                    };
+
+                    mir::Expression {
+                        kind: mir::ExprKind::Assign {
+                            local_index: local_index.0,
+                            scope_index: mir::ScopeIndex(scope_index.0),
+                            value: Box::new(value),
+                        },
+                        ty,
+                    }
+                }
+                _ => unreachable!("rem assignment only allowed on local mutable variables"),
+            },
+            BinaryOp::BitAnd => mir::Expression {
+                kind: mir::ExprKind::BitAnd {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinOp::NotEq => mir::Expression {
-                kind: mir::ExprKind::NotEqual {
+            BinaryOp::BitOr => mir::Expression {
+                kind: mir::ExprKind::BitOr {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinOp::And => mir::Expression {
+            BinaryOp::BitXor => mir::Expression {
+                kind: mir::ExprKind::BitXor {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::LeftShift => mir::Expression {
+                kind: mir::ExprKind::LeftShift {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::RightShift => mir::Expression {
+                kind: mir::ExprKind::RightShift {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::Eq => mir::Expression {
+                kind: mir::ExprKind::Eq {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::NotEq => mir::Expression {
+                kind: mir::ExprKind::NotEq {
+                    left: Box::new(self.build_expression(lhs)),
+                    right: Box::new(self.build_expression(rhs)),
+                },
+                ty,
+            },
+            BinaryOp::And => mir::Expression {
                 kind: mir::ExprKind::And {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            ast::BinOp::Or => mir::Expression {
+            BinaryOp::Or => mir::Expression {
                 kind: mir::ExprKind::Or {
                     left: Box::new(self.build_expression(lhs)),
                     right: Box::new(self.build_expression(rhs)),
                 },
                 ty,
             },
-            _ => todo!("unimplemented operator"),
         }
     }
 }

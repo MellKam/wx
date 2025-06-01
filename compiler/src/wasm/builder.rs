@@ -208,7 +208,25 @@ impl Builder {
                     ty => panic!("unsupported type for mul operation {:?}", ty),
                 })
             }
-            mir::ExprKind::NotEqual { left, right } => {
+            mir::ExprKind::Div { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32DivS { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64DivS { left, right },
+                    ty => panic!("unsupported type for div operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::Rem { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32RemS { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64RemS { left, right },
+                    ty => panic!("unsupported type for rem operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::NotEq { left, right } => {
                 let left = self.build_expression(ctx, &left);
                 let right = self.build_expression(ctx, &right);
 
@@ -277,7 +295,7 @@ impl Builder {
                     _ => unreachable!(),
                 }
             }
-            mir::ExprKind::Equal { left, right } => {
+            mir::ExprKind::Eq { left, right } => {
                 let left = self.build_expression(ctx, &left);
                 let right = self.build_expression(ctx, &right);
                 // TODO: handle eqz case
@@ -285,6 +303,14 @@ impl Builder {
                     Ok(wasm::ValueType::I32) => wasm::Expression::I32Eq { left, right },
                     Ok(wasm::ValueType::I64) => wasm::Expression::I64Eq { left, right },
                     ty => panic!("unsupported type for equal operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::Eqz { value } => {
+                let value = self.build_expression(ctx, &value);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Eqz { value },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Eqz { value },
+                    ty => panic!("unsupported type for eqz operation {:?}", ty),
                 })
             }
             mir::ExprKind::Block { expressions, .. } => {
@@ -328,6 +354,100 @@ impl Builder {
                     result: wasm::BlockResult::from(expr.ty.clone()),
                     then_branch,
                     else_branch,
+                })
+            }
+            mir::ExprKind::BitAnd { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32And { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64And { left, right },
+                    ty => panic!("unsupported type for bit and operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::BitOr { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Or { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Or { left, right },
+                    ty => panic!("unsupported type for bit or operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::BitXor { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Xor { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Xor { left, right },
+                    ty => panic!("unsupported type for bit xor operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::BitNot { value } => {
+                let left = self.build_expression(ctx, &value);
+                let right = self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Const { value: -1 },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Const { value: -1 },
+                    ty => panic!("unsupported type for bit not operation {:?}", ty),
+                });
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Xor { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Xor { left, right },
+                    ty => panic!("unsupported type for bit not operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::LeftShift { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Shl { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Shl { left, right },
+                    ty => panic!("unsupported type for left shift operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::RightShift { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32ShrS { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64ShrS { left, right },
+                    ty => panic!("unsupported type for right shift operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::Less { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32LtS { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64LtS { left, right },
+                    ty => panic!("unsupported type for less operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::LessEq { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32LeS { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64LeS { left, right },
+                    ty => panic!("unsupported type for less equal operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::Greater { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32GtS { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64GtS { left, right },
+                    ty => panic!("unsupported type for greater operation {:?}", ty),
+                })
+            }
+            mir::ExprKind::GreaterEq { left, right } => {
+                let left = self.build_expression(ctx, &left);
+                let right = self.build_expression(ctx, &right);
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32GeS { left, right },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64GeS { left, right },
+                    ty => panic!("unsupported type for greater equal operation {:?}", ty),
                 })
             }
         }
