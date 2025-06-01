@@ -139,6 +139,10 @@ pub enum ExprKind {
         then_block: Box<Expression>,
         else_block: Option<Box<Expression>>,
     },
+    Break {
+        scope_index: ScopeIndex,
+        value: Option<Box<Expression>>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -158,6 +162,7 @@ pub struct Local {
 pub struct LocalScope {
     pub parent_scope: Option<ScopeIndex>,
     pub locals: Vec<Local>,
+    pub block: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,9 +271,23 @@ impl GlobalScope {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum LookupValue {
+    Local(LocalIndex),
+    Label(ScopeIndex),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LookupType {
+    Local,
+    Label,
+}
+
+type LookupKey = (LookupType, ScopeIndex, SymbolU32);
+
 #[derive(Debug, Clone)]
 struct FunctionContext {
-    pub local_lookup: HashMap<(ScopeIndex, SymbolU32), LocalIndex>,
+    pub lookup: HashMap<LookupKey, LookupValue>,
     pub func_index: FunctionIndex,
     pub scope_index: ScopeIndex,
     pub scopes: LocalScopes,
@@ -278,18 +297,44 @@ impl FunctionContext {
     pub fn push_local(&mut self, local: Local) -> LocalIndex {
         let name = local.name;
         let index = self.scopes.push_local(self.scope_index, local);
-        self.local_lookup.insert((self.scope_index, name), index);
+        self.lookup.insert(
+            (LookupType::Local, self.scope_index, name),
+            LookupValue::Local(index),
+        );
         index
     }
 
     pub fn resolve_local(&self, symbol: SymbolU32) -> Option<(ScopeIndex, LocalIndex)> {
         let mut scope_index = self.scope_index;
+
         loop {
-            match self.local_lookup.get(&(scope_index, symbol)) {
-                Some(&local_index) => {
-                    return Some((scope_index, local_index));
+            match self.lookup.get(&(LookupType::Local, scope_index, symbol)) {
+                Some(&value) => {
+                    return Some((
+                        scope_index,
+                        match value {
+                            LookupValue::Local(local_index) => local_index,
+                            _ => unreachable!(),
+                        },
+                    ));
                 }
                 None => match self.scopes.scopes.get(scope_index.0 as usize) {
+                    Some(scope) => scope_index = scope.parent_scope?,
+                    None => break,
+                },
+            }
+        }
+
+        None
+    }
+
+    pub fn resolve_label(&self, symbol: SymbolU32) -> Option<ScopeIndex> {
+        let mut scope_index = self.scope_index;
+
+        loop {
+            match self.lookup.get(&(LookupType::Label, scope_index, symbol)) {
+                Some(&LookupValue::Label(label_index)) => return Some(label_index),
+                _ => match self.scopes.scopes.get(scope_index.0 as usize) {
                     Some(scope) => scope_index = scope.parent_scope?,
                     None => break,
                 },
@@ -314,5 +359,24 @@ impl FunctionContext {
             None => unreachable!("invalid current scope index"),
         };
         result
+    }
+
+    pub fn set_label(&mut self, label: SymbolU32, index: ScopeIndex) -> Option<LookupValue> {
+        self.lookup.insert(
+            (LookupType::Label, self.scope_index, label),
+            LookupValue::Label(index),
+        )
+    }
+
+    pub fn enter_scope_with_label<T>(
+        &mut self,
+        label: SymbolU32,
+        handler: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.lookup.insert(
+            (LookupType::Label, self.scope_index, label),
+            LookupValue::Label(ScopeIndex(self.scopes.scopes.len() as u32)),
+        );
+        self.enter_scope(handler)
     }
 }

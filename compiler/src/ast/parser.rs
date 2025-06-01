@@ -325,6 +325,9 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                     Ok(Keyword::If) => {
                         Some((Parser::parse_if_else_expression, BindingPower::Primary))
                     }
+                    Ok(Keyword::Break) => {
+                        Some((Parser::parse_break_expression, BindingPower::Primary))
+                    }
                     _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
                 }
             }
@@ -351,6 +354,13 @@ impl<'bump, 'input> Parser<'bump, 'input> {
         BindingPower,
     )> {
         match token.kind {
+            TokenKind::Plus | TokenKind::Minus => {
+                Some((Parser::parse_binary_expression, BindingPower::Additive))
+            }
+            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some((
+                Parser::parse_binary_expression,
+                BindingPower::Multiplicative,
+            )),
             TokenKind::Eq
             | TokenKind::PlusEq
             | TokenKind::MinusEq
@@ -376,13 +386,6 @@ impl<'bump, 'input> Parser<'bump, 'input> {
             TokenKind::LeftShift | TokenKind::RightShift => {
                 Some((Parser::parse_binary_expression, BindingPower::BitwiseShift))
             }
-            TokenKind::Plus | TokenKind::Minus => {
-                Some((Parser::parse_binary_expression, BindingPower::Additive))
-            }
-            TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Some((
-                Parser::parse_binary_expression,
-                BindingPower::Multiplicative,
-            )),
             TokenKind::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
             TokenKind::ColonColon => Some((
                 Parser::parse_namespace_member_expression,
@@ -392,6 +395,7 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 Ok(Keyword::As) => Some((Parser::parse_cast_expression, BindingPower::Cast)),
                 _ => None,
             },
+            TokenKind::Colon => Some((Parser::parse_labelled_expression, BindingPower::Primary)),
             // TokenKind::Dot => Some((parse_member_expression, BindingPower::Member)),
             _ => None,
         }
@@ -694,6 +698,69 @@ impl<'bump, 'input> Parser<'bump, 'input> {
                 .and_then(|result| result),
             _ => Err(()),
         }
+    }
+
+    fn parse_break_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+        let break_keyword = parser.lexer.next();
+
+        let label: Option<Identifier> = match parser.lexer.peek().kind {
+            TokenKind::Colon => {
+                let _ = parser.lexer.next();
+
+                let label_token = parser.next_expect(TokenKind::Identifier)?;
+                let span = label_token.span;
+                let symbol = parser.intern_identifier(label_token)?;
+
+                Some(Identifier { symbol, span })
+            }
+            _ => None,
+        };
+
+        let value = parser.parse_expression(BindingPower::Default).ok();
+        let value_expr = match value {
+            Some(value) => Some(parser.ast.get_expr(value).unwrap()),
+            None => None,
+        };
+
+        let span = match (label.clone(), value_expr) {
+            (_, Some(value)) => TextSpan::merge(break_keyword.span, value.span),
+            (Some(label), None) => TextSpan::merge(break_keyword.span, label.span),
+            (None, None) => break_keyword.span,
+        };
+
+        Ok(parser.ast.push_expr(ExprKind::Break { label, value }, span))
+    }
+
+    fn parse_labelled_expression(
+        parser: &mut Parser,
+        label_id: ExprId,
+        _: BindingPower,
+    ) -> Result<ExprId, ()> {
+        let label_expr = parser.ast.get_expr(label_id).unwrap();
+        let label = match label_expr.kind {
+            ExprKind::Identifier { symbol } => Identifier {
+                symbol,
+                span: label_expr.span,
+            },
+            _ => panic!("expected an identifier for label"),
+        };
+        _ = parser.next_expect(TokenKind::Colon)?;
+
+        let block_id = parser.parse_expression(BindingPower::Default)?;
+        let block = parser.ast.get_expr(block_id).unwrap();
+        match block.kind {
+            ExprKind::Block { .. } => {}
+            _ => panic!("expected a block expression after label"),
+        }
+
+        let span = TextSpan::merge(label.span, block.span);
+        Ok(parser.ast.push_expr(
+            ExprKind::Label {
+                label,
+                block: block_id,
+            },
+            span,
+        ))
     }
 
     fn parse_function_signature(parser: &mut Parser) -> Result<FunctionSignature, ()> {

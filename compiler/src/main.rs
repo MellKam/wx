@@ -30,8 +30,11 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            export fn main(): bool {
-                5 * 5 == 25 as i32
+            export fn main(): i32 {
+                const x: i32 = 5;
+                const y: i32 = 10;
+
+                a: { x + y }
             }
             "# }
             .to_string(),

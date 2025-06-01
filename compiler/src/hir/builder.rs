@@ -205,13 +205,13 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             })
             .collect();
 
-        let local_lookup: HashMap<(hir::ScopeIndex, SymbolU32), hir::LocalIndex> = locals
+        let local_lookup: HashMap<hir::LookupKey, hir::LookupValue> = locals
             .iter()
             .enumerate()
             .map(|(index, param)| {
                 (
-                    (hir::ScopeIndex(0), param.name),
-                    hir::LocalIndex(index as u32),
+                    (hir::LookupType::Local, hir::ScopeIndex(0), param.name),
+                    hir::LookupValue::Local(hir::LocalIndex(index as u32)),
                 )
             })
             .collect();
@@ -225,7 +225,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
                 }],
             },
             scope_index: hir::ScopeIndex(0),
-            local_lookup,
+            lookup: local_lookup,
         };
 
         let expr = self.build_block_expression(&mut ctx, def.block)?;
@@ -510,7 +510,46 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             }
             ExprKind::IfElse { .. } => self.build_if_else_expression(ctx, expr_id),
             ExprKind::Cast { .. } => self.build_cast_expression(ctx, expr_id),
+            ExprKind::Break { label, value } => {
+                todo!()
+            }
+            ExprKind::Label { label, block } => ctx.enter_scope_with_label(label.symbol, |ctx| {
+                self.build_block_expression(ctx, *block)
+            }),
         }
+    }
+
+    fn build_break_expression(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        expr_id: ast::ExprId,
+    ) -> Result<hir::Expression, ()> {
+        let (label, value) = match &self.ast.get_expr(expr_id).unwrap().kind {
+            ast::ExprKind::Break { label, value } => (label.clone(), value.clone()),
+            _ => unreachable!("expected break expression"),
+        };
+
+        match label {
+            Some(label) => {
+                let scope_index = ctx.resolve_label(label.symbol);
+            }
+            None => {}
+        }
+
+        let scope_index = ctx.scope_index;
+        let value_expr = match value {
+            Some(value_id) => Some(self.build_expression(ctx, *value_id)?),
+            None => None,
+        };
+
+        Ok(hir::Expression {
+            kind: hir::ExprKind::Break {
+                scope_index,
+                label: label.as_ref().map(|l| l.symbol),
+                value: value_expr.map(Box::new),
+            },
+            ty: Some(hir::Type::Never),
+        })
     }
 
     fn build_cast_expression(

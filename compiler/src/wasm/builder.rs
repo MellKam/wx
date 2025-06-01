@@ -292,6 +292,7 @@ impl Builder {
                     Ok(wasm::ValueType::I32 | wasm::ValueType::I64) => {
                         self.push_expr(wasm::Expression::Drop { value })
                     }
+                    // TODO: fix drop of empty types
                     _ => unreachable!(),
                 }
             }

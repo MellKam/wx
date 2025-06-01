@@ -209,6 +209,13 @@ pub enum ExprKind {
         statements: Box<[StmtId]>,
         result: Option<ExprId>,
     },
+    /// `{identifier}: { ... }`
+    Label { label: Identifier, block: ExprId },
+    /// `break(: {label})? {expr}?`
+    Break {
+        label: Option<Identifier>,
+        value: Option<ExprId>,
+    },
     /// `if {expr} { ... }`
     IfElse {
         condition: ExprId,
