@@ -93,3 +93,24 @@ fn main(): i32 {
   
 }
 
+
+const add = fn(a: i32, b: i32): i32 {
+  a + b
+}
+const x = add(5, 5);
+
+type Person = {
+  name: i32,
+  age: i32,
+}
+
+const person = Person {
+  name: 5,
+  age: 8,
+}
+
+global x: i32 = 0;
+
+
+const x = if true { 5 as i32 } else { 5 }
+const y = if true { 5 } else { 5 }

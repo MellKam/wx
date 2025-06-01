@@ -51,11 +51,12 @@ impl Encode for wasm::ValueType {
 
 impl EncodeWithContext for wasm::Expression {
     fn encode_with_context(&self, sink: &mut String, ctx: EncodeContext) {
+        use wasm::Expression;
         match self {
-            wasm::Expression::Nop => {
+            Expression::Nop => {
                 sink.push_str("(nop)");
             }
-            wasm::Expression::LocalGet { local: local_index } => {
+            Expression::LocalGet { local: local_index } => {
                 sink.push_str("(local.get $");
                 let local = ctx
                     .module
@@ -65,7 +66,7 @@ impl EncodeWithContext for wasm::Expression {
                     .unwrap();
                 sink.push_str(format!("{}_{})", local.name, local_index.0).as_str());
             }
-            wasm::Expression::LocalSet {
+            Expression::LocalSet {
                 local: local_index,
                 value,
             } => {
@@ -82,7 +83,7 @@ impl EncodeWithContext for wasm::Expression {
                 ctx.encode(sink, *value);
                 sink.push_str(")");
             }
-            wasm::Expression::Return { value } => match value {
+            Expression::Return { value } => match value {
                 Some(value) => {
                     sink.push_str("(return ");
                     ctx.encode(sink, *value);
@@ -92,7 +93,7 @@ impl EncodeWithContext for wasm::Expression {
                     sink.push_str("(return)");
                 }
             },
-            wasm::Expression::IfElse {
+            Expression::IfElse {
                 condition,
                 result,
                 then_branch,
@@ -123,7 +124,7 @@ impl EncodeWithContext for wasm::Expression {
                 }
                 sink.push_str(")");
             }
-            wasm::Expression::Block {
+            Expression::Block {
                 expressions,
                 result,
             } => {
@@ -140,8 +141,9 @@ impl EncodeWithContext for wasm::Expression {
                 for expr_index in expressions {
                     ctx.encode(sink, *expr_index);
                 }
+                sink.push_str(")");
             }
-            wasm::Expression::Break { value, depth } => {
+            Expression::Break { value, depth } => {
                 sink.push_str("(br ");
                 depth.encode(sink);
                 match *value {
@@ -153,12 +155,12 @@ impl EncodeWithContext for wasm::Expression {
                 }
                 sink.push_str(")");
             }
-            wasm::Expression::Drop { value } => {
+            Expression::Drop { value } => {
                 sink.push_str("(drop ");
                 ctx.encode(sink, *value);
                 sink.push_str(")");
             }
-            wasm::Expression::Call {
+            Expression::Call {
                 arguments,
                 function,
             } => {
@@ -171,106 +173,214 @@ impl EncodeWithContext for wasm::Expression {
                 }
                 sink.push_str(")");
             }
-            wasm::Expression::I32Const { value } => {
+            Expression::I32Const { value } => {
                 sink.push_str("(i32.const ");
                 value.encode(sink);
                 sink.push_str(")");
             }
-            wasm::Expression::I64Const { value } => {
+            Expression::I64Const { value } => {
                 sink.push_str("(i64.const ");
                 value.encode(sink);
                 sink.push_str(")");
             }
-            wasm::Expression::I32Add { left, right } => {
+            Expression::I32Add { left, right } => {
                 sink.push_str("(i32.add ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I32Sub { left, right } => {
+            Expression::I32Sub { left, right } => {
                 sink.push_str("(i32.sub ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I32Mul { left, right } => {
+            Expression::I32Mul { left, right } => {
                 sink.push_str("(i32.mul ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I32Eq { left, right } => {
+            Expression::I32Eq { left, right } => {
                 sink.push_str("(i32.eq ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I64Add { left, right } => {
+            Expression::I64Add { left, right } => {
                 sink.push_str("(i64.add ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I64Sub { left, right } => {
+            Expression::I64Sub { left, right } => {
                 sink.push_str("(i64.sub ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I64Mul { left, right } => {
+            Expression::I64Mul { left, right } => {
                 sink.push_str("(i64.mul ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I64Eq { left, right } => {
+            Expression::I64Eq { left, right } => {
                 sink.push_str("(i64.eq ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I32And { left, right } => {
+            Expression::I32And { left, right } => {
                 sink.push_str("(i32.and ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I32Or { left, right } => {
+            Expression::I32Or { left, right } => {
                 sink.push_str("(i32.or ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I32Eqz { value } => {
+            Expression::I32Eqz { value } => {
                 sink.push_str("(i32.eqz ");
                 ctx.encode(sink, *value);
                 sink.push_str(")");
             }
-            wasm::Expression::I64And { left, right } => {
+            Expression::I64And { left, right } => {
                 sink.push_str("(i64.and ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I64Or { left, right } => {
+            Expression::I64Or { left, right } => {
                 sink.push_str("(i64.or ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I64Eqz { value } => {
+            Expression::I64Eqz { value } => {
                 sink.push_str("(i64.eqz ");
                 ctx.encode(sink, *value);
                 sink.push_str(")");
             }
-            wasm::Expression::I32Ne { left, right } => {
+            Expression::I32Ne { left, right } => {
                 sink.push_str("(i32.ne ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");
             }
-            wasm::Expression::I64Ne { left, right } => {
+            Expression::I64Ne { left, right } => {
                 sink.push_str("(i64.ne ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32LtS { left, right } => {
+                sink.push_str("(i32.lt_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32GtS { left, right } => {
+                sink.push_str("(i32.gt_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32LeS { left, right } => {
+                sink.push_str("(i32.le_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32GeS { left, right } => {
+                sink.push_str("(i32.ge_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64LtS { left, right } => {
+                sink.push_str("(i64.lt_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64GtS { left, right } => {
+                sink.push_str("(i64.gt_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64LeS { left, right } => {
+                sink.push_str("(i64.le_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64GeS { left, right } => {
+                sink.push_str("(i64.ge_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32Shl { left, right } => {
+                sink.push_str("(i32.shl ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32ShrS { left, right } => {
+                sink.push_str("(i32.shr_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64Shl { left, right } => {
+                sink.push_str("(i64.shl ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64ShrS { left, right } => {
+                sink.push_str("(i64.shr_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32DivS { left, right } => {
+                sink.push_str("(i32.div_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32RemS { left, right } => {
+                sink.push_str("(i32.rem_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64DivS { left, right } => {
+                sink.push_str("(i64.div_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64RemS { left, right } => {
+                sink.push_str("(i64.rem_s ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32Xor { left, right } => {
+                sink.push_str("(i32.xor ");
+                ctx.encode(sink, *left);
+                ctx.encode(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64Xor { left, right } => {
+                sink.push_str("(i64.xor ");
                 ctx.encode(sink, *left);
                 ctx.encode(sink, *right);
                 sink.push_str(")");

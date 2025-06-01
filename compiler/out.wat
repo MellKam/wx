@@ -1,10 +1,1 @@
-(module
-  (func $fibonacci (export "fibonacci") (param $n_0 i32) (result i32)
-    (local $a_1 i32)
-    (nop)
-    (if (result i32)
-      (local.get $a_1)
-      (then
-        (i32.const 1))
-      (else
-        (i32.const 0)))))
+(module(func $main (export "main")(result i32)(i32.eq (i32.mul (i32.const 5)(i32.const 5))(i32.const 25))))

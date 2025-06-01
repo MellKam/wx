@@ -76,6 +76,14 @@ pub enum ExprKind {
         left: Box<Expression>,
         right: Box<Expression>,
     },
+    Div {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Rem {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
     And {
         left: Box<Expression>,
         right: Box<Expression>,
@@ -94,11 +102,14 @@ pub enum ExprKind {
         callee: FunctionIndex,
         arguments: Box<[Expression]>,
     },
-    Equal {
+    Eq {
         left: Box<Expression>,
         right: Box<Expression>,
     },
-    NotEqual {
+    Eqz {
+        value: Box<Expression>,
+    },
+    NotEq {
         left: Box<Expression>,
         right: Box<Expression>,
     },
@@ -114,6 +125,45 @@ pub enum ExprKind {
         condition: Box<Expression>,
         then_block: Box<Expression>,
         else_block: Option<Box<Expression>>,
+    },
+    BitAnd {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    BitOr {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    BitXor {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    BitNot {
+        value: Box<Expression>,
+    },
+    LeftShift {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    RightShift {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Less {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    LessEq {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Greater {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    GreaterEq {
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
 }
 

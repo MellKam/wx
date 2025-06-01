@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use ast::Parser;
 use bumpalo::Bump;
+use codespan_reporting::diagnostic::Severity;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use files::Files;
@@ -29,10 +30,8 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            export fn fibonacci(n: i32): bool {
-                const a = false;
-
-                if a { true } else { false }
+            export fn main(): bool {
+                5 * 5 == 25 as i32
             }
             "# }
             .to_string(),
@@ -50,15 +49,20 @@ fn main() {
             &mut interner,
         );
         // println!("{:#?}", ast);
+        let diagnostics = diagnostics
+            .into_iter()
+            .map(|d| d.to_diagnostic())
+            .collect::<Vec<_>>();
 
         for diagnostic in diagnostics.iter() {
-            term::emit(
-                &mut writer.lock(),
-                &config,
-                &files,
-                &diagnostic.clone().to_diagnostic(),
-            )
-            .unwrap();
+            term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+        }
+
+        if diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error || d.severity == Severity::Bug)
+        {
+            std::process::exit(1);
         }
 
         ast
@@ -80,18 +84,23 @@ fn main() {
         hir
     };
 
-    let mir = mir::Builder::build(&hir);
-    // println!("{:#?}", mir);
-    let wasm = wasm::Builder::build(&mir, &interner);
-    println!("{:#?}", wasm);
-    let mut file = std::fs::File::create("out.wat").unwrap();
-    file.write(wasm.to_wat().as_bytes()).unwrap();
+    let mir = {
+        let mir = mir::Builder::build(&hir);
+        println!("{:#?}", mir);
 
-    let bytecode = wasm::Encoder::encode(&wasm);
-    let mut file = std::fs::File::create("out.wasm").unwrap();
-    file.write(&bytecode).unwrap();
-    println!("Wrote {} bytes to out.wasm", bytecode.len());
+        mir
+    };
+
+    let wasm_module = wasm::Builder::build(&mir, &interner);
+    let bytecode = wasm::Encoder::encode(&wasm_module);
 
     let duration = start_time.elapsed();
     println!("Time to compile: {:?}", duration);
+
+    let mut file = std::fs::File::create("out.wat").unwrap();
+    file.write(wasm_module.to_wat().as_bytes()).unwrap();
+
+    let mut file = std::fs::File::create("out.wasm").unwrap();
+    file.write(&bytecode).unwrap();
+    println!("Wrote {} bytes to out.wasm", bytecode.len());
 }
