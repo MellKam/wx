@@ -218,10 +218,11 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
 
         let mut ctx = hir::FunctionContext {
             func_index,
-            scopes: hir::LocalScopes {
-                scopes: vec![hir::LocalScope {
+            frame: hir::StackFrame {
+                scopes: vec![hir::BlockScope {
                     parent_scope: None,
                     locals,
+                    result: Some(func_type.result.clone()),
                 }],
             },
             scope_index: hir::ScopeIndex(0),
@@ -229,6 +230,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         };
 
         let expr = self.build_block_expression(&mut ctx, def.block)?;
+        println!("scopes: {:#?}", ctx.frame.scopes);
         let (expressions, result) = match expr.kind {
             hir::ExprKind::Block {
                 expressions,
@@ -255,7 +257,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             ty: func_type,
             name: def.signature.name.symbol,
             export: def.export.is_some(),
-            scopes: ctx.scopes,
+            scopes: ctx.frame,
             expressions,
             result,
         })
@@ -271,7 +273,19 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
                 let expr = self.build_expression(ctx, *value)?;
                 match expr.ty {
                     Some(hir::Type::Unit) => {}
-                    Some(hir::Type::Never) => {}
+                    Some(hir::Type::Never) => {
+                        let scope = ctx
+                            .frame
+                            .scopes
+                            .get_mut(ctx.scope_index.0 as usize)
+                            .unwrap();
+                        match scope.result {
+                            Some(_) => {}
+                            None => {
+                                scope.result = Some(hir::Type::Never);
+                            }
+                        }
+                    }
                     _ => {
                         let ast_expr = self.ast.get_expr(*value).unwrap();
                         self.diagnostics
@@ -397,7 +411,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
 
         match ctx.resolve_local(symbol) {
             Some((scope_index, local_index)) => {
-                let local = ctx.scopes.get_local(scope_index, local_index).unwrap();
+                let local = ctx.frame.get_local(scope_index, local_index).unwrap();
                 return Ok(hir::Expression {
                     kind: hir::ExprKind::Local {
                         local_index,
@@ -510,9 +524,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             }
             ExprKind::IfElse { .. } => self.build_if_else_expression(ctx, expr_id),
             ExprKind::Cast { .. } => self.build_cast_expression(ctx, expr_id),
-            ExprKind::Break { label, value } => {
-                todo!()
-            }
+            ExprKind::Break { .. } => self.build_break_expression(ctx, expr_id),
             ExprKind::Label { label, block } => ctx.enter_scope_with_label(label.symbol, |ctx| {
                 self.build_block_expression(ctx, *block)
             }),
@@ -529,23 +541,44 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             _ => unreachable!("expected break expression"),
         };
 
-        match label {
-            Some(label) => {
-                let scope_index = ctx.resolve_label(label.symbol);
-            }
-            None => {}
-        }
+        let scope_index = match label {
+            Some(label) => ctx.resolve_label(label.symbol).expect("invalid label"),
+            None => ctx.scope_index,
+        };
 
-        let scope_index = ctx.scope_index;
         let value_expr = match value {
-            Some(value_id) => Some(self.build_expression(ctx, *value_id)?),
-            None => None,
+            Some(value_id) => {
+                let expr = self.build_expression(ctx, value_id)?;
+                match expr.ty {
+                    Some(value_type) => {
+                        let scope = ctx.frame.scopes.get_mut(scope_index.0 as usize).unwrap();
+                        match scope.result {
+                            Some(ty) if ty == value_type => {}
+                            Some(_) => panic!("type mistmatch in bream expression"),
+                            None => scope.result = Some(value_type),
+                        }
+                    }
+                    None => panic!("break expression value must have a type"),
+                }
+
+                Some(expr)
+            }
+            None => {
+                let scope = ctx.frame.scopes.get_mut(scope_index.0 as usize).unwrap();
+                match scope.result {
+                    Some(hir::Type::Unit) => None,
+                    Some(ty) => panic!("can't break without a value, expected {ty}"),
+                    None => {
+                        scope.result = Some(hir::Type::Unit);
+                        None
+                    }
+                }
+            }
         };
 
         Ok(hir::Expression {
             kind: hir::ExprKind::Break {
                 scope_index,
-                label: label.as_ref().map(|l| l.symbol),
                 value: value_expr.map(Box::new),
             },
             ty: Some(hir::Type::Never),
@@ -672,23 +705,60 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             .map(|stmt| self.build_statement(ctx, stmt))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut ty: Option<hir::Type> = Some(hir::Type::Unit);
-        let result = match result {
+        let (result, result_type) = match *result {
             Some(result) => {
-                let expr = self.build_expression(ctx, *result)?;
-                ty = expr.ty.clone();
-                Some(Box::new(expr))
+                let expr = self.build_expression(ctx, result)?;
+                let scope = ctx
+                    .frame
+                    .scopes
+                    .get_mut(ctx.scope_index.0 as usize)
+                    .unwrap();
+
+                match (expr.ty, scope.result) {
+                    (Some(expr_type), Some(result_type)) => {
+                        if expr_type != result_type {
+                            panic!(
+                                "type mistmatch in block expression result {expr_type} != {result_type}"
+                            );
+                        }
+                        (Some(expr), Some(result_type))
+                    }
+                    (Some(expr_type), None) => {
+                        scope.result = Some(expr_type.clone());
+                        (Some(expr), Some(expr_type))
+                    }
+                    (None, Some(result_type)) => {
+                        let coerced = self.coerce_expr(expr, result, result_type)?;
+                        scope.result = Some(result_type.clone());
+                        (Some(coerced), Some(result_type))
+                    }
+                    (None, None) => {
+                        // this means that we didn't have any break expressions,
+                        // to get the type from
+                        // and our result expression is untyped
+                        (Some(expr), None)
+                    }
+                }
             }
-            None => None,
+            None => {
+                let scope = ctx
+                    .frame
+                    .scopes
+                    .get_mut(ctx.scope_index.0 as usize)
+                    .unwrap();
+                scope.result = Some(scope.result.unwrap_or(hir::Type::Unit));
+
+                (None, scope.result)
+            }
         };
 
         Ok(hir::Expression {
             kind: hir::ExprKind::Block {
                 scope_index: ctx.scope_index,
                 expressions: expressions.into_boxed_slice(),
-                result,
+                result: result.map(Box::new),
             },
-            ty,
+            ty: result_type,
         })
     }
 
@@ -697,18 +767,21 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         ctx: &mut hir::FunctionContext,
         value: Option<ast::ExprId>,
     ) -> Result<hir::Expression, ()> {
-        let func_result = match self.global.get_function(ctx.func_index) {
-            Some(func_type) => func_type.result,
-            None => unreachable!(),
-        };
+        let result = ctx
+            .frame
+            .scopes
+            .get_mut(0)
+            .unwrap()
+            .result
+            .expect("function must have a result type");
 
         let expr = match value {
             Some(expr_id) => {
                 let expr = self.build_expression(ctx, expr_id)?;
-                self.coerce_expr(expr, expr_id, func_result)?
+                self.coerce_expr(expr, expr_id, result)?
             }
             None => {
-                match func_result {
+                match result {
                     hir::Type::Unit => {}
                     _ => panic!("return type mistmatch, can't return unit"),
                 }
@@ -1099,7 +1172,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             _ => panic!("left side of assignment must be a variable"),
         };
 
-        let local = match ctx.scopes.get_local(scope_index, local_index) {
+        let local = match ctx.frame.get_local(scope_index, local_index) {
             Some(local) => local,
             None => panic!("can't assign to undeclared variable"),
         };
@@ -1143,7 +1216,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             _ => panic!("left side of assignment must be a variable"),
         };
 
-        let local = match ctx.scopes.get_local(scope_index, local_index) {
+        let local = match ctx.frame.get_local(scope_index, local_index) {
             Some(local) => local,
             None => panic!("can't assign to undeclared variable"),
         };

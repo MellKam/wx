@@ -159,18 +159,18 @@ pub struct Local {
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalScope {
+pub struct BlockScope {
     pub parent_scope: Option<ScopeIndex>,
     pub locals: Vec<Local>,
-    pub block: Box<Expression>,
+    pub result: Option<Type>,
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalScopes {
-    pub scopes: Vec<LocalScope>,
+pub struct StackFrame {
+    pub scopes: Vec<BlockScope>,
 }
 
-impl LocalScopes {
+impl StackFrame {
     pub fn push_local(&mut self, scope_index: ScopeIndex, local: Local) -> LocalIndex {
         let scope = self
             .scopes
@@ -196,7 +196,7 @@ pub struct Function {
     pub export: bool,
     pub name: SymbolU32,
     pub ty: FunctionType,
-    pub scopes: LocalScopes,
+    pub scopes: StackFrame,
     pub expressions: Box<[Expression]>,
     pub result: Option<Expression>,
 }
@@ -290,13 +290,13 @@ struct FunctionContext {
     pub lookup: HashMap<LookupKey, LookupValue>,
     pub func_index: FunctionIndex,
     pub scope_index: ScopeIndex,
-    pub scopes: LocalScopes,
+    pub frame: StackFrame,
 }
 
 impl FunctionContext {
     pub fn push_local(&mut self, local: Local) -> LocalIndex {
         let name = local.name;
-        let index = self.scopes.push_local(self.scope_index, local);
+        let index = self.frame.push_local(self.scope_index, local);
         self.lookup.insert(
             (LookupType::Local, self.scope_index, name),
             LookupValue::Local(index),
@@ -318,7 +318,7 @@ impl FunctionContext {
                         },
                     ));
                 }
-                None => match self.scopes.scopes.get(scope_index.0 as usize) {
+                None => match self.frame.scopes.get(scope_index.0 as usize) {
                     Some(scope) => scope_index = scope.parent_scope?,
                     None => break,
                 },
@@ -334,7 +334,7 @@ impl FunctionContext {
         loop {
             match self.lookup.get(&(LookupType::Label, scope_index, symbol)) {
                 Some(&LookupValue::Label(label_index)) => return Some(label_index),
-                _ => match self.scopes.scopes.get(scope_index.0 as usize) {
+                _ => match self.frame.scopes.get(scope_index.0 as usize) {
                     Some(scope) => scope_index = scope.parent_scope?,
                     None => break,
                 },
@@ -345,27 +345,21 @@ impl FunctionContext {
     }
 
     pub fn enter_scope<T>(&mut self, handler: impl FnOnce(&mut Self) -> T) -> T {
-        let new_scope = LocalScope {
+        let new_scope = BlockScope {
             parent_scope: Some(self.scope_index),
             locals: Vec::new(),
+            result: None,
         };
-        self.scope_index = ScopeIndex(self.scopes.scopes.len() as u32);
-        self.scopes.scopes.push(new_scope);
+        self.scope_index = ScopeIndex(self.frame.scopes.len() as u32);
+        self.frame.scopes.push(new_scope);
 
         let result = handler(self);
 
-        self.scope_index = match self.scopes.scopes.get(self.scope_index.0 as usize) {
+        self.scope_index = match self.frame.scopes.get(self.scope_index.0 as usize) {
             Some(scope) => scope.parent_scope.unwrap(),
             None => unreachable!("invalid current scope index"),
         };
         result
-    }
-
-    pub fn set_label(&mut self, label: SymbolU32, index: ScopeIndex) -> Option<LookupValue> {
-        self.lookup.insert(
-            (LookupType::Label, self.scope_index, label),
-            LookupValue::Label(index),
-        )
     }
 
     pub fn enter_scope_with_label<T>(
@@ -375,7 +369,7 @@ impl FunctionContext {
     ) -> T {
         self.lookup.insert(
             (LookupType::Label, self.scope_index, label),
-            LookupValue::Label(ScopeIndex(self.scopes.scopes.len() as u32)),
+            LookupValue::Label(ScopeIndex(self.frame.scopes.len() as u32)),
         );
         self.enter_scope(handler)
     }

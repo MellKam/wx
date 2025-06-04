@@ -114,3 +114,9 @@ global x: i32 = 0;
 
 const x = if true { 5 as i32 } else { 5 }
 const y = if true { 5 } else { 5 }
+
+outer: block {
+  loop: i64 {
+    break :outer 5;
+  }
+}
