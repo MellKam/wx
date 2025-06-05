@@ -25,16 +25,6 @@ fn main() {
 
     let bump = Bump::new();
 
-    let x = 'a: {
-        break 'a 5;
-        // never
-    };
-
-    let x = {
-        loop {}
-        // never
-    };
-
     let mut files = Files::new();
     let main_file_id = files
         .add(
