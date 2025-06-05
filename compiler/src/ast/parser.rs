@@ -7,10 +7,10 @@ use string_interner::symbol::SymbolU32;
 use super::diagnostics::DiagnosticContext;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
-    Ast, BinaryExpression, BinaryOp, EnumVariant, ExprId, ExprKind, FunctionParam,
-    FunctionSignature, Identifier, ItemEnum, ItemFunctionDefinition, ItemId, ItemKind, Statement,
-    StmtId, StmtKind, UnaryOp,
+    Ast, BinaryExpression, BinaryOp, EnumVariant, ExprKind, FunctionParam, FunctionSignature,
+    Identifier, ItemEnum, ItemFunctionDefinition, ItemKind, Statement, StmtKind, UnaryOp,
 };
+use crate::ast::{Expression, Item};
 use crate::files::FileId;
 use crate::span::TextSpan;
 
@@ -147,7 +147,7 @@ impl<'input> Parser<'input> {
             }
 
             match parser.parse_item() {
-                Ok(_) => {}
+                Ok(item) => parser.ast.items.push(*item),
                 Err(_) => break,
             };
         }
@@ -155,9 +155,9 @@ impl<'input> Parser<'input> {
         (parser.ast, parser.diagnostics)
     }
 
-    fn parse_item(&mut self) -> Result<ItemId, ()> {
+    fn parse_item(&mut self) -> Result<Box<Item>, ()> {
         let token = self.lexer.peek();
-        let item_handler: fn(parser: &mut Parser) -> Result<ItemId, ()> =
+        let item_handler: fn(parser: &mut Parser) -> Result<Box<Item>, ()> =
             match self.intern_keyword(token.clone()) {
                 Ok(Keyword::Fn) => Parser::parse_function_definition,
                 Ok(Keyword::Enum) => Parser::parse_enum_item,
@@ -169,7 +169,7 @@ impl<'input> Parser<'input> {
         Ok(item_id)
     }
 
-    fn parse_function_definition(parser: &mut Parser) -> Result<ItemId, ()> {
+    fn parse_function_definition(parser: &mut Parser) -> Result<Box<Item>, ()> {
         let fn_keyword = parser.lexer.next();
         let signature = Parser::parse_function_signature(parser)?;
 
@@ -188,39 +188,42 @@ impl<'input> Parser<'input> {
             }
         }
 
-        let block_expr_id = Parser::parse_block_expression(parser)?;
-        let block = parser.ast.get_expr(block_expr_id).unwrap();
-        let item_id = parser.ast.push_item(
+        let block = Parser::parse_block_expression(parser)?;
+        let span = TextSpan::merge(fn_keyword.span, block.span);
+        Ok(Box::new(Item {
+            kind: ItemKind::FunctionDefinition(ItemFunctionDefinition {
+                export: None,
+                signature,
+                block,
+            }),
+            span,
+        }))
+    }
+
+    fn parse_exported_function_definition(parser: &mut Parser) -> Result<Box<Item>, ()> {
+        let export_keyword = parser.lexer.next();
+        let func = Parser::parse_function_definition(parser)?;
+
+        match func.kind {
             ItemKind::FunctionDefinition(ItemFunctionDefinition {
                 export: None,
                 signature,
-                block: block_expr_id,
-            }),
-            TextSpan::merge(fn_keyword.span, block.span),
-        );
-
-        Ok(item_id)
+                block,
+            }) => {
+                return Ok(Box::new(Item {
+                    kind: ItemKind::FunctionDefinition(ItemFunctionDefinition {
+                        export: Some(export_keyword.span),
+                        signature,
+                        block,
+                    }),
+                    span: TextSpan::merge(export_keyword.span, func.span),
+                }));
+            }
+            _ => unreachable!(),
+        }
     }
 
-    fn parse_exported_function_definition(parser: &mut Parser) -> Result<ItemId, ()> {
-        let export_keyword = parser.lexer.next();
-        let item_id = Parser::parse_function_definition(parser)?;
-
-        parser
-            .ast
-            .set_item(item_id, |item| match &mut item.kind {
-                ItemKind::FunctionDefinition(def) => {
-                    def.export = Some(export_keyword.span);
-                    item.span = TextSpan::merge(export_keyword.span, item.span);
-                }
-                _ => unreachable!(),
-            })
-            .unwrap();
-
-        Ok(item_id)
-    }
-
-    fn parse_enum_item(parser: &mut Parser) -> Result<ItemId, ()> {
+    fn parse_enum_item(parser: &mut Parser) -> Result<Box<Item>, ()> {
         let enum_keyword = parser.lexer.next();
 
         let name_token = parser.next_expect(TokenKind::Identifier)?;
@@ -267,8 +270,8 @@ impl<'input> Parser<'input> {
 
         let close_brace = parser.lexer.next();
 
-        let item_id = parser.ast.push_item(
-            ItemKind::Enum(ItemEnum {
+        Ok(Box::new(Item {
+            kind: ItemKind::Enum(ItemEnum {
                 name: Identifier {
                     symbol: name_symbol,
                     span: name_token.span,
@@ -279,12 +282,11 @@ impl<'input> Parser<'input> {
                 },
                 variants: variants.into_boxed_slice(),
             }),
-            TextSpan::merge(enum_keyword.span, close_brace.span),
-        );
-        Ok(item_id)
+            span: TextSpan::merge(enum_keyword.span, close_brace.span),
+        }))
     }
 
-    fn parse_expression(&mut self, limit_bp: BindingPower) -> Result<ExprId, ()> {
+    fn parse_expression(&mut self, limit_bp: BindingPower) -> Result<Box<Expression>, ()> {
         let token = self.lexer.peek();
         let nud_handler = match self.nud_lookup(token.clone()) {
             Some((nud_handler, _)) => nud_handler,
@@ -309,7 +311,10 @@ impl<'input> Parser<'input> {
     fn nud_lookup(
         &mut self,
         token: Token,
-    ) -> Option<(fn(parser: &mut Parser) -> Result<ExprId, ()>, BindingPower)> {
+    ) -> Option<(
+        fn(parser: &mut Parser) -> Result<Box<Expression>, ()>,
+        BindingPower,
+    )> {
         match token.kind {
             TokenKind::Identifier => {
                 let text = self
@@ -348,7 +353,11 @@ impl<'input> Parser<'input> {
         &mut self,
         token: Token,
     ) -> Option<(
-        fn(parser: &mut Parser, left: ExprId, bp: BindingPower) -> Result<ExprId, ()>,
+        fn(
+            parser: &mut Parser,
+            left: Box<Expression>,
+            bp: BindingPower,
+        ) -> Result<Box<Expression>, ()>,
         BindingPower,
     )> {
         match token.kind {
@@ -399,16 +408,6 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_identifier_expression(parser: &mut Parser) -> Result<ExprId, ()> {
-        let token = parser.lexer.next();
-        let symbol = parser.intern_identifier(token.clone())?;
-
-        let expr_id = parser
-            .ast
-            .push_expr(ExprKind::Identifier { symbol }, token.span);
-        Ok(expr_id)
-    }
-
     fn parse_identifier(&mut self) -> Result<Identifier, ()> {
         let name_token = self.next_expect(TokenKind::Identifier)?;
         let name_symbol = self.intern_identifier(name_token.clone())?;
@@ -419,7 +418,17 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_variable_definition(parser: &mut Parser) -> Result<StmtId, ()> {
+    fn parse_identifier_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+        let token = parser.lexer.next();
+        let symbol = parser.intern_identifier(token.clone())?;
+
+        Ok(Box::new(Expression {
+            kind: ExprKind::Identifier { symbol },
+            span: token.span,
+        }))
+    }
+
+    fn parse_variable_definition(parser: &mut Parser) -> Result<Box<Statement>, ()> {
         let mutability_token = parser.next_expect(TokenKind::Identifier)?;
         let mutability = match parser.intern_keyword(mutability_token.clone()) {
             Ok(Keyword::Const) => Mutability::Const,
@@ -437,143 +446,121 @@ impl<'input> Parser<'input> {
         };
 
         _ = parser.next_expect(TokenKind::Eq)?;
-        let value_expr_id = parser.parse_expression(BindingPower::Default)?;
-        let value_expr = parser.ast.get_expr(value_expr_id).unwrap();
+        let value = parser.parse_expression(BindingPower::Default)?;
+        let span = TextSpan::merge(mutability_token.span, value.span);
 
-        let stmt = Statement {
+        Ok(Box::new(Statement {
             kind: match mutability {
-                Mutability::Const => StmtKind::ConstDefinition {
-                    name,
-                    ty,
-                    value: value_expr_id,
-                },
-                Mutability::Mutable => StmtKind::MutableDefinition {
-                    name,
-                    ty,
-                    value: value_expr_id,
-                },
+                Mutability::Const => StmtKind::ConstDefinition { name, ty, value },
+                Mutability::Mutable => StmtKind::MutableDefinition { name, ty, value },
             },
-            span: TextSpan::merge(mutability_token.span, value_expr.span),
-        };
-        let stmt_id = parser.ast.push_stmt(stmt);
-        Ok(stmt_id)
+            span,
+        }))
     }
 
-    fn parse_return_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+    fn parse_return_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
         let return_keyword = parser.lexer.next();
         match parser.parse_expression(BindingPower::Default) {
-            Ok(expr_id) => {
-                let expr = parser.ast.get_expr(expr_id).unwrap();
-
-                Ok(parser.ast.push_expr(
-                    ExprKind::Return {
-                        value: Some(expr_id),
-                    },
-                    TextSpan::merge(return_keyword.span, expr.span),
-                ))
+            Ok(expr) => {
+                let span = TextSpan::merge(return_keyword.span, expr.span);
+                Ok(Box::new(Expression {
+                    kind: ExprKind::Return { value: Some(expr) },
+                    span,
+                }))
             }
-            Err(_) => Ok(parser
-                .ast
-                .push_expr(ExprKind::Return { value: None }, return_keyword.span)),
+            Err(_) => Ok(Box::new(Expression {
+                kind: ExprKind::Return { value: None },
+                span: return_keyword.span,
+            })),
         }
     }
 
-    fn parse_grouping_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+    fn parse_grouping_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
         let open_paren = parser.lexer.next();
-        let expr_id = parser.parse_expression(BindingPower::Default)?;
+        let value = parser.parse_expression(BindingPower::Default)?;
 
         match parser.lexer.peek().kind {
             TokenKind::CloseParen => {
                 let close_paren = parser.lexer.next();
-                let expr_id = parser.ast.push_expr(
-                    ExprKind::Grouping { value: expr_id },
-                    TextSpan::merge(open_paren.span, close_paren.span),
-                );
-                Ok(expr_id)
+
+                Ok(Box::new(Expression {
+                    kind: ExprKind::Grouping { value },
+                    span: TextSpan::merge(open_paren.span, close_paren.span),
+                }))
             }
             _ => {
-                let expr = parser.ast.get_expr(expr_id).unwrap();
                 parser
                     .diagnostics
                     .push(DiagnosticContext::MissingClosingParen {
                         file_id: parser.ast.file_id,
                         opening_paren: open_paren.span,
-                        expr_span: expr.span,
+                        expr_span: value.span,
                     });
 
-                let expr_id = parser.ast.push_expr(
-                    ExprKind::Grouping { value: expr_id },
-                    TextSpan::merge(open_paren.span, expr.span),
-                );
-                Ok(expr_id)
+                let span = TextSpan::merge(open_paren.span, value.span);
+                Ok(Box::new(Expression {
+                    kind: ExprKind::Grouping { value },
+                    span,
+                }))
             }
         }
     }
 
     fn parse_cast_expression(
         parser: &mut Parser,
-        operand_id: ExprId,
+        value: Box<Expression>,
         _: BindingPower,
-    ) -> Result<ExprId, ()> {
+    ) -> Result<Box<Expression>, ()> {
         _ = parser.lexer.next();
         let ty = parser.parse_identifier()?;
 
-        let operand = parser.ast.get_expr(operand_id).unwrap();
-        let span = TextSpan::merge(operand.span, ty.span);
-        let expr_id = parser.ast.push_expr(
-            ExprKind::Cast {
-                value: operand_id,
-                ty,
-            },
+        let span = TextSpan::merge(value.span, ty.span);
+        Ok(Box::new(Expression {
+            kind: ExprKind::Cast { value, ty },
             span,
-        );
-        Ok(expr_id)
+        }))
     }
 
-    fn parse_unary_expression(parser: &mut Parser) -> Result<ExprId, ()> {
-        let operator = parser.lexer.next();
-        let operator_kind = match UnaryOp::try_from(operator.kind) {
+    fn parse_unary_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+        let operator_token = parser.lexer.next();
+        let operator = match UnaryOp::try_from(operator_token.kind) {
             Ok(operator) => operator,
             Err(_) => panic!("invalid unary operator"),
         };
 
-        let operand_id = match parser.parse_expression(BindingPower::Unary) {
-            Ok(operand_id) => operand_id,
+        let operand = match parser.parse_expression(BindingPower::Unary) {
+            Ok(operand) => operand,
             Err(_) => {
                 parser
                     .diagnostics
                     .push(DiagnosticContext::MissingUnaryOperand {
                         file_id: parser.ast.file_id,
-                        span: operator.span.clone(),
+                        span: operator_token.span.clone(),
                     });
                 return Err(());
             }
         };
-        let operand = parser.ast.get_expr(operand_id).unwrap();
 
-        let expr_id = parser.ast.push_expr(
-            ExprKind::Unary {
-                operator: operator_kind,
-                operand: operand_id,
-            },
-            TextSpan::merge(operator.span, operand.span),
-        );
-        Ok(expr_id)
+        let span = TextSpan::merge(operator_token.span, operand.span);
+        Ok(Box::new(Expression {
+            kind: ExprKind::Unary { operator, operand },
+            span,
+        }))
     }
 
     fn parse_binary_expression(
         parser: &mut Parser,
-        left: ExprId,
+        left: Box<Expression>,
         bp: BindingPower,
-    ) -> Result<ExprId, ()> {
+    ) -> Result<Box<Expression>, ()> {
         let operator_token = parser.lexer.next();
-        let binary_op = match BinaryOp::try_from(operator_token.kind) {
+        let operator = match BinaryOp::try_from(operator_token.kind) {
             Ok(operator) => operator,
             Err(_) => unreachable!("invalid binary operator"),
         };
 
-        let right_id = match parser.parse_expression(bp) {
-            Ok(right_id) => right_id,
+        let right = match parser.parse_expression(bp) {
+            Ok(expr) => expr,
             Err(_) => {
                 parser
                     .diagnostics
@@ -584,11 +571,9 @@ impl<'input> Parser<'input> {
                 return Err(());
             }
         };
-        let right_expr = parser.ast.get_expr(right_id).unwrap();
 
-        let left_expr = parser.ast.get_expr(left).unwrap();
         if bp == BindingPower::Comparison {
-            match left_expr.kind {
+            match left.kind {
                 ExprKind::Binary(BinaryExpression {
                     operator,
                     operator_span,
@@ -604,7 +589,7 @@ impl<'input> Parser<'input> {
                 }
                 _ => {}
             }
-            match right_expr.kind {
+            match right.kind {
                 ExprKind::Binary(BinaryExpression {
                     operator,
                     operator_span,
@@ -622,19 +607,19 @@ impl<'input> Parser<'input> {
             }
         }
 
-        let expr_id = parser.ast.push_expr(
-            ExprKind::Binary(BinaryExpression {
+        let span = TextSpan::merge(left.span, right.span);
+        Ok(Box::new(Expression {
+            kind: ExprKind::Binary(BinaryExpression {
                 left,
-                right: right_id,
-                operator: binary_op,
+                right,
+                operator,
                 operator_span: operator_token.span,
             }),
-            TextSpan::merge(left_expr.span, right_expr.span),
-        );
-        Ok(expr_id)
+            span,
+        }))
     }
 
-    fn parse_int_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+    fn parse_int_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
         let token = parser.lexer.next();
         let text = parser
             .source
@@ -645,7 +630,7 @@ impl<'input> Parser<'input> {
             _ => unreachable!(),
         };
 
-        let expr = match value {
+        let kind = match value {
             Some(value) => ExprKind::Int { value },
             None => {
                 parser
@@ -659,8 +644,10 @@ impl<'input> Parser<'input> {
             }
         };
 
-        let expr_id = parser.ast.push_expr(expr, token.span);
-        Ok(expr_id)
+        Ok(Box::new(Expression {
+            kind,
+            span: token.span,
+        }))
     }
 
     fn intern_identifier(&mut self, token: Token) -> Result<SymbolU32, ()> {
@@ -698,10 +685,9 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_break_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+    fn parse_break_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
         let break_keyword = parser.lexer.next();
-
-        let label: Option<Identifier> = match parser.lexer.peek().kind {
+        let label = match parser.lexer.peek().kind {
             TokenKind::Colon => {
                 let _ = parser.lexer.next();
 
@@ -713,28 +699,24 @@ impl<'input> Parser<'input> {
             }
             _ => None,
         };
-
         let value = parser.parse_expression(BindingPower::Default).ok();
-        let value_expr = match value {
-            Some(value) => Some(parser.ast.get_expr(value).unwrap()),
-            None => None,
-        };
 
-        let span = match (label.clone(), value_expr) {
+        let span = match (label.clone(), &value) {
             (_, Some(value)) => TextSpan::merge(break_keyword.span, value.span),
             (Some(label), None) => TextSpan::merge(break_keyword.span, label.span),
             (None, None) => break_keyword.span,
         };
-
-        Ok(parser.ast.push_expr(ExprKind::Break { label, value }, span))
+        Ok(Box::new(Expression {
+            kind: ExprKind::Break { label, value },
+            span,
+        }))
     }
 
     fn parse_labelled_expression(
         parser: &mut Parser,
-        label_id: ExprId,
+        label_expr: Box<Expression>,
         _: BindingPower,
-    ) -> Result<ExprId, ()> {
-        let label_expr = parser.ast.get_expr(label_id).unwrap();
+    ) -> Result<Box<Expression>, ()> {
         let label = match label_expr.kind {
             ExprKind::Identifier { symbol } => Identifier {
                 symbol,
@@ -744,21 +726,17 @@ impl<'input> Parser<'input> {
         };
         _ = parser.next_expect(TokenKind::Colon)?;
 
-        let block_id = parser.parse_expression(BindingPower::Default)?;
-        let block = parser.ast.get_expr(block_id).unwrap();
+        let block = parser.parse_expression(BindingPower::Default)?;
         match block.kind {
             ExprKind::Block { .. } => {}
             _ => panic!("expected a block expression after label"),
         }
 
         let span = TextSpan::merge(label.span, block.span);
-        Ok(parser.ast.push_expr(
-            ExprKind::Label {
-                label,
-                block: block_id,
-            },
+        Ok(Box::new(Expression {
+            kind: ExprKind::Label { label, block },
             span,
-        ))
+        }))
     }
 
     fn parse_function_signature(parser: &mut Parser) -> Result<FunctionSignature, ()> {
@@ -862,10 +840,10 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_block_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+    fn parse_block_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
         let open_brace = parser.lexer.next();
         let mut statements = Vec::new();
-        let mut result: Option<ExprId> = None;
+        let mut result: Option<Box<Expression>> = None;
 
         loop {
             let token = parser.lexer.peek();
@@ -881,7 +859,7 @@ impl<'input> Parser<'input> {
                 _ => {}
             };
 
-            let handler: Option<fn(&mut Parser) -> Result<StmtId, ()>> =
+            let handler: Option<fn(&mut Parser) -> Result<Box<Statement>, ()>> =
                 match parser.intern_keyword(token.clone()) {
                     Ok(Keyword::Const) => Some(Parser::parse_variable_definition),
                     Ok(Keyword::Mut) => Some(Parser::parse_variable_definition),
@@ -891,7 +869,7 @@ impl<'input> Parser<'input> {
             match handler {
                 Some(handler) => {
                     match handler(parser) {
-                        Ok(stmt_id) => statements.push(stmt_id),
+                        Ok(stmt) => statements.push(*stmt),
                         Err(_) => parser.skip_to_next_statement(),
                     };
                     continue;
@@ -899,26 +877,25 @@ impl<'input> Parser<'input> {
                 None => {}
             }
 
-            let expr_id = match parser.parse_expression(BindingPower::Default) {
-                Ok(expr_id) => expr_id,
+            let value = match parser.parse_expression(BindingPower::Default) {
+                Ok(expr) => expr,
                 Err(_) => {
                     parser.skip_to_next_statement();
                     continue;
                 }
             };
-            let expr = parser.ast.get_expr(expr_id).unwrap();
 
             match parser.lexer.peek().kind {
                 TokenKind::SemiColon => {
                     let semicolon = parser.lexer.next();
-                    let stmt_id = parser.ast.push_stmt(Statement {
-                        kind: StmtKind::DelimitedExpression { value: expr_id },
-                        span: TextSpan::merge(expr.span, semicolon.span),
+                    let span = TextSpan::merge(value.span, semicolon.span);
+                    statements.push(Statement {
+                        kind: StmtKind::DelimitedExpression { value },
+                        span,
                     });
-                    statements.push(stmt_id);
                 }
                 TokenKind::CloseBrace => {
-                    result = Some(expr_id);
+                    result = Some(value);
                     break;
                 }
                 _ => {
@@ -926,35 +903,33 @@ impl<'input> Parser<'input> {
                         .diagnostics
                         .push(DiagnosticContext::MissingStatementDelimiter {
                             file_id: parser.ast.file_id,
-                            position: expr.span.end(),
+                            position: value.span.end(),
                         });
 
-                    let stmt_id = parser.ast.push_stmt(Statement {
-                        kind: StmtKind::DelimitedExpression { value: expr_id },
-                        span: expr.span,
+                    let span = value.span;
+                    statements.push(Statement {
+                        kind: StmtKind::DelimitedExpression { value },
+                        span,
                     });
-                    statements.push(stmt_id);
                 }
             }
         }
 
         let close_brace = parser.lexer.next();
-        let expr_id = parser.ast.push_expr(
-            ExprKind::Block {
+        Ok(Box::new(Expression {
+            kind: ExprKind::Block {
                 statements: statements.into_boxed_slice(),
                 result,
             },
-            TextSpan::merge(open_brace.span, close_brace.span),
-        );
-
-        Ok(expr_id)
+            span: TextSpan::merge(open_brace.span, close_brace.span),
+        }))
     }
 
     fn parse_call_expression(
         parser: &mut Parser,
-        callee: ExprId,
+        callee: Box<Expression>,
         _: BindingPower,
-    ) -> Result<ExprId, ()> {
+    ) -> Result<Box<Expression>, ()> {
         let _ = parser.lexer.next();
         let mut arguments = Vec::new();
         loop {
@@ -975,7 +950,7 @@ impl<'input> Parser<'input> {
                 Ok(argument) => argument,
                 Err(_) => continue,
             };
-            arguments.push(argument);
+            arguments.push(*argument);
 
             match parser.lexer.peek().kind {
                 TokenKind::CloseParen => break,
@@ -988,29 +963,29 @@ impl<'input> Parser<'input> {
         }
 
         let close_paren = parser.lexer.next();
+        let span = TextSpan::merge(callee.span, close_paren.span);
 
-        let callee_expr = parser.ast.get_expr(callee).unwrap();
-        let expr_id = parser.ast.push_expr(
-            ExprKind::Call {
+        Ok(Box::new(Expression {
+            kind: ExprKind::Call {
                 callee,
                 arguments: arguments.into_boxed_slice(),
             },
-            TextSpan::merge(callee_expr.span, close_paren.span),
-        );
-        Ok(expr_id)
+            span,
+        }))
     }
 
     fn parse_namespace_member_expression(
         parser: &mut Parser,
-        namespace_expr_id: ExprId,
+        namespace_expr: Box<Expression>,
         _: BindingPower,
-    ) -> Result<ExprId, ()> {
+    ) -> Result<Box<Expression>, ()> {
         let _double_colon = parser.lexer.next();
         let member = parser.parse_identifier()?;
-
-        let namespace_expr = parser.ast.get_expr(namespace_expr_id).unwrap();
-        let namespace_symbol = match namespace_expr.kind {
-            ExprKind::Identifier { symbol } => symbol,
+        let namespace = match namespace_expr.kind {
+            ExprKind::Identifier { symbol } => Identifier {
+                symbol,
+                span: namespace_expr.span,
+            },
             _ => {
                 parser
                     .diagnostics
@@ -1024,17 +999,10 @@ impl<'input> Parser<'input> {
         };
 
         let span = TextSpan::merge(namespace_expr.span, member.span);
-        let expr_id = parser.ast.push_expr(
-            ExprKind::NamespaceMember {
-                namespace: Identifier {
-                    symbol: namespace_symbol,
-                    span: namespace_expr.span,
-                },
-                member,
-            },
+        Ok(Box::new(Expression {
+            kind: ExprKind::NamespaceMember { namespace, member },
             span,
-        );
-        Ok(expr_id)
+        }))
     }
 
     fn next_expect(&mut self, kind: TokenKind) -> Result<Token, ()> {
@@ -1048,42 +1016,38 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_if_else_expression(parser: &mut Parser) -> Result<ExprId, ()> {
+    fn parse_if_else_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
         let if_keyword = parser.lexer.next();
         let condition = parser.parse_expression(BindingPower::Default)?;
 
-        let then_expr_id = Parser::parse_block_expression(parser)?;
-        let maybe_else_token = parser.lexer.peek();
-        match parser.intern_keyword(maybe_else_token) {
+        let then_block = Parser::parse_block_expression(parser)?;
+        let maybe_else_keyword = parser.lexer.peek();
+        match parser.intern_keyword(maybe_else_keyword) {
             Ok(Keyword::Else) => {
                 let _ = parser.lexer.next();
+                let else_block = Parser::parse_block_expression(parser)?;
+                let span = TextSpan::merge(if_keyword.span, else_block.span);
+                Ok(Box::new(Expression {
+                    kind: ExprKind::IfElse {
+                        condition,
+                        then_block,
+                        else_block: Some(else_block),
+                    },
+                    span,
+                }))
             }
             _ => {
-                let then_expr = parser.ast.get_expr(then_expr_id).unwrap();
-                let expr_id = parser.ast.push_expr(
-                    ExprKind::IfElse {
+                let span = TextSpan::merge(if_keyword.span, then_block.span);
+                Ok(Box::new(Expression {
+                    kind: ExprKind::IfElse {
                         condition,
-                        then_block: then_expr_id,
+                        then_block,
                         else_block: None,
                     },
-                    TextSpan::merge(if_keyword.span, then_expr.span),
-                );
-                return Ok(expr_id);
+                    span,
+                }))
             }
-        };
-
-        let else_expr_id = Parser::parse_block_expression(parser)?;
-        let else_expr = parser.ast.get_expr(else_expr_id).unwrap();
-
-        let expr_id = parser.ast.push_expr(
-            ExprKind::IfElse {
-                condition,
-                then_block: then_expr_id,
-                else_block: Some(else_expr_id),
-            },
-            TextSpan::merge(if_keyword.span, else_expr.span),
-        );
-        Ok(expr_id)
+        }
     }
 }
 

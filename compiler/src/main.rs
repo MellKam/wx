@@ -11,7 +11,7 @@ use string_interner::StringInterner;
 
 mod ast;
 mod files;
-mod hir;
+// mod hir;
 // mod mir;
 mod span;
 // mod wasm;
@@ -67,21 +67,21 @@ fn main() {
         ast
     };
 
-    let hir = {
-        let (hir, diagnostics) = hir::Builder::build(&ast, &interner);
-        println!("{:#?}", hir);
-        for diagnostic in diagnostics.iter() {
-            term::emit(
-                &mut writer.lock(),
-                &config,
-                &files,
-                &diagnostic.clone().to_diagnostic(),
-            )
-            .unwrap();
-        }
+    // let hir = {
+    //     let (hir, diagnostics) = hir::Builder::build(&ast, &interner);
+    //     println!("{:#?}", hir);
+    //     for diagnostic in diagnostics.iter() {
+    //         term::emit(
+    //             &mut writer.lock(),
+    //             &config,
+    //             &files,
+    //             &diagnostic.clone().to_diagnostic(),
+    //         )
+    //         .unwrap();
+    //     }
 
-        hir
-    };
+    //     hir
+    // };
 
     // let mir = {
     //     let mir = mir::Builder::build(&hir);

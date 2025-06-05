@@ -12,15 +12,6 @@ use crate::files::FileId;
 use crate::span::TextSpan;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ExprId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StmtId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ItemId(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnaryOp {
     InvertSign,
     Not,
@@ -171,10 +162,10 @@ pub struct Identifier {
 
 #[derive(Debug, Clone)]
 pub struct BinaryExpression {
-    pub left: ExprId,
+    pub left: Box<Expression>,
     pub operator: BinaryOp,
     pub operator_span: TextSpan,
-    pub right: ExprId,
+    pub right: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,19 +173,25 @@ pub enum ExprKind {
     /// `1`
     Int { value: i64 },
     /// `({expr})`
-    Grouping { value: ExprId },
+    Grouping { value: Box<Expression> },
     /// `x`
     Identifier { symbol: SymbolU32 },
     /// `5 as i32`
-    Cast { value: ExprId, ty: Identifier },
+    Cast {
+        value: Box<Expression>,
+        ty: Identifier,
+    },
     /// `-{expr}`
-    Unary { operator: UnaryOp, operand: ExprId },
+    Unary {
+        operator: UnaryOp,
+        operand: Box<Expression>,
+    },
     /// `{expr} + {expr}`
     Binary(BinaryExpression),
     /// `{expr}()`
     Call {
-        callee: ExprId,
-        arguments: Box<[ExprId]>,
+        callee: Box<Expression>,
+        arguments: Box<[Expression]>,
     },
     /// `{expr}::{expr}`
     NamespaceMember {
@@ -202,24 +199,27 @@ pub enum ExprKind {
         member: Identifier,
     },
     /// `return {expr}`
-    Return { value: Option<ExprId> },
+    Return { value: Option<Box<Expression>> },
     /// `{ ... }`
     Block {
-        statements: Box<[StmtId]>,
-        result: Option<ExprId>,
+        statements: Box<[Statement]>,
+        result: Option<Box<Expression>>,
     },
     /// `{identifier}: { ... }`
-    Label { label: Identifier, block: ExprId },
+    Label {
+        label: Identifier,
+        block: Box<Expression>,
+    },
     /// `break(: {label})? {expr}?`
     Break {
         label: Option<Identifier>,
-        value: Option<ExprId>,
+        value: Option<Box<Expression>>,
     },
     /// `if {expr} { ... }`
     IfElse {
-        condition: ExprId,
-        then_block: ExprId,
-        else_block: Option<ExprId>,
+        condition: Box<Expression>,
+        then_block: Box<Expression>,
+        else_block: Option<Box<Expression>>,
     },
 }
 
@@ -232,18 +232,18 @@ pub struct Expression {
 #[derive(Debug, Clone)]
 pub enum StmtKind {
     /// `{expr};`
-    DelimitedExpression { value: ExprId },
+    DelimitedExpression { value: Box<Expression> },
     /// `const {identifier}(: {type})? = {expr};`
     ConstDefinition {
         name: Identifier,
         ty: Option<Identifier>,
-        value: ExprId,
+        value: Box<Expression>,
     },
     /// `mut {identifier}(: {type})? = {expr};`
     MutableDefinition {
         name: Identifier,
         ty: Option<Identifier>,
-        value: ExprId,
+        value: Box<Expression>,
     },
 }
 
@@ -271,7 +271,7 @@ pub struct FunctionSignature {
 pub struct ItemFunctionDefinition {
     pub export: Option<TextSpan>,
     pub signature: FunctionSignature,
-    pub block: ExprId,
+    pub block: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,7 +284,7 @@ pub struct ItemEnum {
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: Identifier,
-    pub value: ExprId,
+    pub value: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -303,8 +303,6 @@ pub struct Item {
 #[derive(Debug)]
 pub struct Ast {
     pub file_id: FileId,
-    pub expressions: Vec<Expression>,
-    pub statements: Vec<Statement>,
     pub items: Vec<Item>,
 }
 
@@ -312,59 +310,7 @@ impl Ast {
     pub fn new(file_id: FileId) -> Self {
         Self {
             file_id,
-            expressions: Vec::new(),
-            statements: Vec::new(),
             items: Vec::new(),
-        }
-    }
-
-    pub fn push_expr(&mut self, kind: ExprKind, span: TextSpan) -> ExprId {
-        let id = ExprId(self.expressions.len() as u32);
-        self.expressions.push(Expression { kind, span });
-        return id;
-    }
-
-    pub fn get_expr(&self, id: ExprId) -> Option<&Expression> {
-        self.expressions.get(id.0 as usize)
-    }
-
-    pub fn set_expr(&mut self, id: ExprId, cb: impl FnOnce(&mut Expression)) -> Result<(), ()> {
-        match self.expressions.get_mut(id.0 as usize) {
-            Some(expr) => {
-                cb(expr);
-                Ok(())
-            }
-            None => Err(()),
-        }
-    }
-
-    pub fn push_item(&mut self, kind: ItemKind, span: TextSpan) -> ItemId {
-        let id = ItemId(self.items.len() as u32);
-        self.items.push(Item { kind, span });
-        return id;
-    }
-
-    pub fn get_stmt(&self, id: StmtId) -> Option<&Statement> {
-        self.statements.get(id.0 as usize)
-    }
-
-    pub fn push_stmt(&mut self, stmt: Statement) -> StmtId {
-        let id = StmtId(self.statements.len() as u32);
-        self.statements.push(stmt);
-        return id;
-    }
-
-    pub fn get_item(&self, id: ItemId) -> Option<&Item> {
-        self.items.get(id.0 as usize)
-    }
-
-    pub fn set_item(&mut self, id: ItemId, cb: impl FnOnce(&mut Item)) -> Result<(), ()> {
-        match self.items.get_mut(id.0 as usize) {
-            Some(item) => {
-                cb(item);
-                Ok(())
-            }
-            None => Err(()),
         }
     }
 }
