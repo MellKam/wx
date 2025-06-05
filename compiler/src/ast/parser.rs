@@ -1,6 +1,5 @@
 use core::panic;
 
-use bumpalo::collections::Vec as BumpVec;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
@@ -118,29 +117,28 @@ impl TryFrom<&str> for Keyword {
     }
 }
 
-pub struct Parser<'bump, 'input> {
+pub struct Parser<'input> {
     source: &'input str,
     lexer: PeekableLexer<'input>,
     interner: &'input mut StringInterner<StringBackend<SymbolU32>>,
-    diagnostics: BumpVec<'bump, DiagnosticContext>,
-    ast: Ast<'bump>,
+    diagnostics: Vec<DiagnosticContext>,
+    ast: Ast,
 }
 
-impl<'bump, 'input> Parser<'bump, 'input> {
+impl<'input> Parser<'input> {
     pub fn parse(
-        bump: &'bump bumpalo::Bump,
         file_id: FileId,
         source: &'input str,
         interner: &'input mut StringInterner<StringBackend<SymbolU32>>,
-    ) -> (Ast<'bump>, BumpVec<'bump, DiagnosticContext>) {
+    ) -> (Ast, Vec<DiagnosticContext>) {
         let lexer: PeekableLexer<'input> = PeekableLexer::new(Lexer::new(source));
 
         let mut parser = Self {
             source,
             lexer,
             interner,
-            diagnostics: BumpVec::new_in(bump),
-            ast: Ast::new(bump, file_id),
+            diagnostics: Vec::new(),
+            ast: Ast::new(file_id),
         };
         loop {
             let token = parser.lexer.peek();

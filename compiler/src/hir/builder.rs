@@ -8,37 +8,37 @@ use string_interner::symbol::SymbolU32;
 use super::diagnostics::DiagnosticContext;
 use crate::{ast, hir};
 
-pub struct Builder<'bump, 'interner> {
-    ast: &'bump ast::Ast<'bump>,
-    interner: &'interner StringInterner<StringBackend<SymbolU32>>,
-    global: hir::GlobalScope,
+pub struct Builder<'ast, 'interner> {
+    ast: &'ast ast::Ast,
+    global: hir::GlobalContext<'interner>,
     diagnostics: Vec<hir::diagnostics::DiagnosticContext>,
+    hir: hir::HIR,
 }
 
-impl<'bump, 'interner> Builder<'bump, 'interner> {
+impl<'ast, 'interner> Builder<'ast, 'interner> {
     pub fn build(
-        ast: &'bump ast::Ast,
+        ast: &'ast ast::Ast,
         interner: &'interner StringInterner<StringBackend<SymbolU32>>,
     ) -> (hir::HIR, Vec<DiagnosticContext>) {
         let mut builder = Builder {
             ast,
-            interner,
-            global: hir::GlobalScope::new(),
+            global: hir::GlobalContext::new(interner),
             diagnostics: Vec::new(),
+            hir: hir::HIR::new(),
         };
 
-        for (item_id, item) in builder.ast.items.iter().enumerate() {
+        for (index, item) in builder.ast.items.iter().enumerate() {
             match &item.kind {
                 ast::ItemKind::FunctionDefinition(def) => {
-                    let func_type = builder.create_function_type(&def.signature).unwrap();
+                    let func_type = builder.build_function_type(&def.signature).unwrap();
 
                     builder
                         .global
                         .add_function(def.signature.name.symbol, func_type);
                 }
                 ast::ItemKind::Enum(item_enum) => {
-                    let enum_ = builder.build_enum(ast::ItemId(item_id as u32), item_enum);
-                    builder.global.add_enum(enum_);
+                    let enum_ = builder.build_enum(ast::ItemId(index as u32), item_enum);
+                    builder.global.push_enum(enum_);
                 }
                 _ => unimplemented!("item kind not implemented"),
             }
@@ -59,42 +59,17 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             }
         }
 
-        let hir = hir::HIR {
-            functions,
-            enums: builder.global.enums,
-        };
-
         (hir, builder.diagnostics)
     }
 
-    fn resolve_type(&mut self, identifier: ast::Identifier) -> Option<hir::Type> {
-        use hir::{GlobalType, PrimitiveType, Type};
-
-        let text = self.interner.resolve(identifier.symbol).unwrap();
-        match PrimitiveType::try_from(text) {
-            Ok(ty) => return Some(Type::Primitive(ty)),
-            _ => {}
-        }
-        match text {
-            "bool" => return Some(Type::Bool),
-            "unit" => return Some(Type::Unit),
-            "never" => return Some(Type::Never),
-            _ => {}
-        }
-        match self.global.type_lookup.get(&identifier.symbol).cloned() {
-            Some(GlobalType::Enum(index)) => return Some(Type::Enum(index)),
-            _ => {}
-        }
-
-        self.diagnostics.push(DiagnosticContext::UnknownType {
-            file_id: self.ast.file_id,
-            span: identifier.span,
-        });
-
-        None
+    #[inline]
+    fn push_expr(&mut self, expr: hir::Expression) -> hir::ExprIndex {
+        let index = hir::ExprIndex(self.hir.expressions.len() as u32);
+        self.hir.expressions.push(expr);
+        index
     }
 
-    fn create_function_type(
+    fn build_function_type(
         &mut self,
         signature: &ast::FunctionSignature,
     ) -> Result<hir::FunctionType, ()> {
@@ -172,7 +147,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             name: def.name.symbol,
             ty,
             variants: variants.into_boxed_slice(),
-            variant_lookup: variants_lookup,
+            lookup: variants_lookup,
         }
     }
 
@@ -180,6 +155,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         &mut self,
         def: &ast::ItemFunctionDefinition,
     ) -> Result<hir::Function, ()> {
+        use hir::*;
         let global_value = self
             .global
             .value_lookup
@@ -187,137 +163,125 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             .cloned()
             .unwrap();
         let func_index = match global_value {
-            hir::GlobalValue::Function(index) => index,
+            GlobalValue::Function(index) => index,
             _ => panic!("expected function index"),
         };
         let func_type = self.global.get_function(func_index).unwrap().clone();
 
-        let locals: Vec<hir::Local> = def
+        let locals: Vec<Local> = def
             .signature
             .params
             .iter()
-            .map(|param| hir::Local {
+            .map(|param| Local {
                 name: param.name.symbol,
-                ty: self
-                    .resolve_type(param.ty.clone())
-                    .unwrap_or(hir::Type::Unknown),
-                mutability: hir::Mutability::Mutable,
+                ty: self.resolve_type(param.ty.clone()).unwrap_or(Type::Unknown),
+                mutability: Mutability::Mutable,
             })
             .collect();
 
-        let local_lookup: HashMap<hir::LookupKey, hir::LookupValue> = locals
+        let local_lookup: HashMap<LookupKey, LookupValue> = locals
             .iter()
             .enumerate()
             .map(|(index, param)| {
                 (
-                    (hir::LookupType::Local, hir::ScopeIndex(0), param.name),
-                    hir::LookupValue::Local(hir::LocalIndex(index as u32)),
+                    (LookupType::Local, ScopeIndex(0), param.name),
+                    LookupValue::Local(LocalIndex::from(index)),
                 )
             })
             .collect();
 
-        let mut ctx = hir::FunctionContext {
+        let mut ctx = FunctionContext {
             func_index,
-            frame: hir::StackFrame {
-                scopes: vec![hir::BlockScope {
+            frame: StackFrame {
+                scopes: vec![BlockScope {
                     parent_scope: None,
                     locals,
                     result: Some(func_type.result.clone()),
                 }],
             },
-            scope_index: hir::ScopeIndex(0),
+            scope_index: ScopeIndex(0),
             lookup: local_lookup,
         };
 
-        let expr = self.build_block_expression(&mut ctx, def.block)?;
-        println!("scopes: {:#?}", ctx.frame.scopes);
-        let (expressions, result) = match expr.kind {
-            hir::ExprKind::Block {
-                expressions,
-                result,
-                ..
-            } => {
-                let result = match result {
-                    Some(result) => {
-                        let ast_block = self.ast.get_expr(def.block).unwrap();
-                        let result_ast_id = match ast_block.kind {
-                            ast::ExprKind::Block { result, .. } => result.unwrap(),
-                            _ => unreachable!("expected block expression"),
-                        };
-                        Some(self.coerce_expr(*result, result_ast_id, func_type.result)?)
-                    }
-                    None => None,
-                };
-                (expressions, result)
-            }
-            _ => unreachable!("expected block expression"),
-        };
+        let block = self.build_block_expression(&mut ctx, def.block)?;
 
         Ok(hir::Function {
             ty: func_type,
             name: def.signature.name.symbol,
             export: def.export.is_some(),
-            scopes: ctx.frame,
-            expressions,
-            result,
+            stack: ctx.frame,
+            block,
         })
     }
 
     fn build_statement(
         &mut self,
         ctx: &mut hir::FunctionContext,
-        stmt: &ast::Statement,
+        stmt_id: ast::StmtId,
     ) -> Result<hir::Expression, ()> {
+        let stmt = self.ast.get_stmt(stmt_id).expect("invalid statement id");
         match &stmt.kind {
             ast::StmtKind::DelimitedExpression { value } => {
-                let expr = self.build_expression(ctx, *value)?;
-                match expr.ty {
-                    Some(hir::Type::Unit) => {}
-                    Some(hir::Type::Never) => {
-                        let scope = ctx
-                            .frame
-                            .scopes
-                            .get_mut(ctx.scope_index.0 as usize)
-                            .unwrap();
-                        match scope.result {
-                            Some(_) => {}
-                            None => {
-                                scope.result = Some(hir::Type::Never);
-                            }
-                        }
-                    }
-                    _ => {
-                        let ast_expr = self.ast.get_expr(*value).unwrap();
-                        self.diagnostics
-                            .push(DiagnosticContext::UnusedExpressionValue {
-                                file_id: self.ast.file_id,
-                                span: ast_expr.span,
-                            });
+                self.build_expression_statement(ctx, stmt_id, *value)
+            }
+            ast::StmtKind::ConstDefinition { .. } => self.build_declaration_statement(ctx, stmt_id),
+            ast::StmtKind::MutableDefinition { .. } => {
+                self.build_declaration_statement(ctx, stmt_id)
+            }
+        }
+    }
 
-                        return Ok(hir::Expression {
-                            kind: hir::ExprKind::Binary {
-                                operator: ast::BinaryOp::Assign,
-                                lhs: Box::new(hir::Expression {
-                                    kind: hir::ExprKind::Placeholder,
-                                    ty: expr.ty.clone(),
-                                }),
-                                rhs: Box::new(expr),
-                            },
-                            ty: Some(hir::Type::Unit),
-                        });
+    fn build_expression_statement(
+        &mut self,
+        ctx: &mut hir::FunctionContext,
+        stmt_id: ast::StmtId,
+        value: ast::ExprId,
+    ) -> Result<hir::ExprIndex, ()> {
+        let expr_index = self.build_expression(ctx, value)?;
+        let expr = self.expressions[expr_index.0 as usize].clone();
+        match expr.ty {
+            Some(hir::Type::Unit) => Ok(expr_index),
+            Some(hir::Type::Never) => {
+                let scope = ctx
+                    .frame
+                    .scopes
+                    .get_mut(ctx.scope_index.0 as usize)
+                    .unwrap();
+                match scope.result {
+                    Some(_) => Ok(expr),
+                    None => {
+                        scope.result = Some(hir::Type::Never);
+                        Ok(expr)
                     }
                 }
-                Ok(expr)
             }
-            ast::StmtKind::ConstDefinition { .. } => self.build_declaration_statement(ctx, stmt),
-            ast::StmtKind::MutableDefinition { .. } => self.build_declaration_statement(ctx, stmt),
+            _ => {
+                let ast_expr = self.ast.get_expr(expr_id).unwrap();
+                self.diagnostics
+                    .push(DiagnosticContext::UnusedExpressionValue {
+                        file_id: self.ast.file_id,
+                        span: ast_expr.span,
+                    });
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Binary {
+                        operator: ast::BinaryOp::Assign,
+                        lhs: Box::new(hir::Expression {
+                            kind: hir::ExprKind::Placeholder,
+                            ty: expr.ty.clone(),
+                        }),
+                        rhs: Box::new(expr),
+                    },
+                    ty: Some(hir::Type::Unit),
+                })
+            }
         }
     }
 
     fn build_declaration_statement(
         &mut self,
         ctx: &mut hir::FunctionContext,
-        stmt: &ast::Statement,
+        stmt_id: ast::StmtId,
     ) -> Result<hir::Expression, ()> {
         let (name, ty, value, mutability) = match &stmt.kind {
             ast::StmtKind::ConstDefinition { name, ty, value } => (
@@ -380,70 +344,23 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         &mut self,
         ctx: &hir::FunctionContext,
         expr_id: ast::ExprId,
-    ) -> Result<hir::Expression, ()> {
-        let symbol = match self.ast.get_expr(expr_id).unwrap().kind {
-            ast::ExprKind::Identifier { symbol } => symbol,
-            _ => unreachable!("expected identifier expression"),
-        };
-
-        // handle special identifiers
-        match self.interner.resolve(symbol).unwrap() {
-            "_" => {
-                return Ok(hir::Expression {
-                    kind: hir::ExprKind::Placeholder,
-                    ty: None,
-                });
-            }
-            "true" => {
-                return Ok(hir::Expression {
-                    kind: hir::ExprKind::Bool(true),
-                    ty: Some(hir::Type::Bool),
-                });
-            }
-            "false" => {
-                return Ok(hir::Expression {
-                    kind: hir::ExprKind::Bool(false),
-                    ty: Some(hir::Type::Bool),
-                });
-            }
-            _ => {}
-        };
-
+        symbol: SymbolU32,
+    ) -> Result<hir::ExprIndex, ()> {
         match ctx.resolve_local(symbol) {
             Some((scope_index, local_index)) => {
                 let local = ctx.frame.get_local(scope_index, local_index).unwrap();
-                return Ok(hir::Expression {
+                return Ok(self.push_expr(hir::Expression {
                     kind: hir::ExprKind::Local {
                         local_index,
                         scope_index,
                     },
                     ty: Some(local.ty),
-                });
+                }));
             }
             None => {}
         }
-
-        match self.global.value_lookup.get(&symbol).cloned() {
-            Some(value) => match value {
-                hir::GlobalValue::Function(func_index) => {
-                    return Ok(hir::Expression {
-                        kind: hir::ExprKind::Function(func_index),
-                        ty: Some(hir::Type::Function(func_index)),
-                    });
-                }
-                hir::GlobalValue::EnumVariant {
-                    enum_index,
-                    variant_index,
-                } => {
-                    return Ok(hir::Expression {
-                        kind: hir::ExprKind::EnumVariant {
-                            enum_index,
-                            variant_index,
-                        },
-                        ty: Some(hir::Type::Enum(enum_index)),
-                    });
-                }
-            },
+        match self.global.resolve_value(symbol) {
+            Some(expr) => return Ok(self.push_expr(expr)),
             None => {}
         };
 
@@ -464,36 +381,40 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             _ => unreachable!("expected namespace member expression"),
         };
 
-        let global_type = match self.global.type_lookup.get(&namespace.symbol).cloned() {
-            Some(item) => item,
+        let ty = match self.global.resolve_type(namespace.symbol) {
+            Some(ty) => ty,
             None => panic!("undeclared namespace"),
         };
-        let enum_index = match global_type {
-            hir::GlobalType::Enum(enum_index) => enum_index,
-        };
 
-        let enum_ = self.global.get_enum(enum_index).expect("invalid enum");
-        match enum_.variant_lookup.get(&member.symbol).copied() {
-            Some(variant_index) => Ok(hir::Expression {
-                kind: hir::ExprKind::EnumVariant {
-                    enum_index,
-                    variant_index,
-                },
-                ty: Some(hir::Type::Enum(enum_index)),
-            }),
-            None => {
-                self.diagnostics
-                    .push(DiagnosticContext::UnknownEnumVariant {
-                        file_id: self.ast.file_id,
-                        enum_index,
-                        span: member.span,
-                    });
+        match ty {
+            hir::Type::Enum(enum_index) => {
+                let enum_ = self.hir.get_enum(enum_index).unwrap();
+                let variant_index = match enum_.resolve_variant(member.symbol) {
+                    Some(index) => index,
+                    None => {
+                        self.diagnostics
+                            .push(DiagnosticContext::UnknownEnumVariant {
+                                file_id: self.ast.file_id,
+                                enum_index,
+                                span: member.span,
+                            });
+
+                        return Ok(hir::Expression {
+                            kind: hir::ExprKind::Placeholder,
+                            ty: Some(hir::Type::Enum(enum_index)),
+                        });
+                    }
+                };
 
                 Ok(hir::Expression {
-                    kind: hir::ExprKind::Placeholder,
+                    kind: hir::ExprKind::EnumVariant {
+                        enum_index,
+                        variant_index,
+                    },
                     ty: Some(hir::Type::Enum(enum_index)),
                 })
             }
+            _ => panic!("unknown namespace type"),
         }
     }
 
@@ -501,15 +422,17 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         &mut self,
         ctx: &mut hir::FunctionContext,
         expr_id: ast::ExprId,
-    ) -> Result<hir::Expression, ()> {
+    ) -> Result<hir::ExprIndex, ()> {
         let expr = self.ast.get_expr(expr_id).unwrap();
         use ast::ExprKind;
         match &expr.kind {
-            ExprKind::Int { value } => Ok(hir::Expression {
+            ExprKind::Int { value } => Ok(self.push_expr(hir::Expression {
                 kind: hir::ExprKind::Int(value.clone()),
                 ty: None,
-            }),
-            ExprKind::Identifier { .. } => self.build_identifier_expression(ctx, expr_id),
+            })),
+            ExprKind::Identifier { symbol } => {
+                self.build_identifier_expression(ctx, expr_id, *symbol)
+            }
             ExprKind::Binary { .. } => self.build_binary_expression(ctx, expr_id),
             ExprKind::Unary { operator, operand } => Ok(Builder::build_unary_expr(
                 *operator,
@@ -688,7 +611,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         &mut self,
         ctx: &mut hir::FunctionContext,
         block_id: ast::ExprId,
-    ) -> Result<hir::Expression, ()> {
+    ) -> Result<hir::ExprIndex, ()> {
         let block = self
             .ast
             .get_expr(block_id)
@@ -699,11 +622,12 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
             _ => panic!("expected block expression"),
         };
 
-        let expressions: Vec<_> = statements
-            .iter()
-            .map(|&stmt_id| self.ast.get_stmt(stmt_id).unwrap())
-            .map(|stmt| self.build_statement(ctx, stmt))
-            .collect::<Result<Vec<_>, _>>()?;
+        let expressions: Vec<hir::ExprIndex> = Vec::with_capacity(statements.len());
+        for stmt_index in statements.iter() {
+            let stmt = self.ast.get_stmt(*stmt_index).unwrap();
+            let expr = self.build_statement(ctx, stmt)?;
+            self.expressions.push(expr);
+        }
 
         let (result, result_type) = match *result {
             Some(result) => {
@@ -899,9 +823,9 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         &mut self,
         expr: hir::Expression,
         expr_id: ast::ExprId,
-        ty: hir::Type,
+        target_type: hir::Type,
     ) -> Result<hir::Expression, ()> {
-        match (expr.kind, ty) {
+        match (expr.kind, target_type) {
             (hir::ExprKind::Int(value), ty) => self.coerce_untyped_int_expr(value, expr_id, ty),
             (hir::ExprKind::Unary { operator, operand }, ty) => {
                 let ast_expr = self.ast.get_expr(expr_id).unwrap();
@@ -1053,42 +977,53 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
 
     fn coerce_untyped_int_expr(
         &mut self,
-        value: i64,
-        expr_id: ast::ExprId,
-        ty: hir::Type,
-    ) -> Result<hir::Expression, ()> {
+        hir_expr_id: hir::ExprIndex,
+        ast_expr_id: ast::ExprId,
+        target_type: hir::Type,
+    ) -> Result<hir::ExprIndex, ()> {
         use hir::{ExprKind, PrimitiveType, Type};
-        let ast_expr = self.ast.get_expr(expr_id).unwrap();
-        match ty {
+        let hir_expr = self
+            .hir
+            .expressions
+            .get_mut(hir_expr_id.0 as usize)
+            .unwrap();
+
+        match target_type {
             Type::Primitive(primitive) => match primitive {
                 PrimitiveType::I32 => {
+                    let value = match hir_expr.kind {
+                        hir::ExprKind::Int(value) => value,
+                        _ => unreachable!(),
+                    };
+
                     if value > i32::MAX as i64 || value < i32::MIN as i64 {
+                        let ast_expr = self.ast.get_expr(ast_expr_id).unwrap();
                         self.diagnostics.push(DiagnosticContext::LiteralOutOfRange {
                             file_id: self.ast.file_id,
                             primitive,
                             value,
                             span: ast_expr.span,
                         });
-                        Ok(hir::Expression {
+
+                        *hir_expr = hir::Expression {
                             kind: ExprKind::Int(0),
                             ty: Some(Type::Primitive(primitive)),
-                        })
+                        };
                     } else {
-                        Ok(hir::Expression {
-                            kind: ExprKind::Int(value),
-                            ty: Some(Type::Primitive(primitive)),
-                        })
+                        hir_expr.ty = Some(Type::Primitive(PrimitiveType::I32));
                     }
+                    Ok(hir_expr_id)
                 }
-                PrimitiveType::I64 => Ok(hir::Expression {
-                    kind: ExprKind::Int(value),
-                    ty: Some(Type::Primitive(primitive)),
-                }),
+                PrimitiveType::I64 => {
+                    hir_expr.ty = Some(Type::Primitive(PrimitiveType::I64));
+                    Ok(hir_expr_id)
+                }
             },
             _ => {
+                let ast_expr = self.ast.get_expr(ast_expr_id).unwrap();
                 self.diagnostics.push(DiagnosticContext::TypeMistmatch {
                     file_id: self.ast.file_id,
-                    expected: ty,
+                    expected: target_type,
                     actual: None,
                     span: ast_expr.span,
                 });
@@ -1101,7 +1036,7 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         &mut self,
         ctx: &mut hir::FunctionContext,
         expr_id: ast::ExprId,
-    ) -> Result<hir::Expression, ()> {
+    ) -> Result<hir::ExprIndex, ()> {
         let operator = match &self.ast.get_expr(expr_id).unwrap().kind {
             ast::ExprKind::Binary(expr) => expr.operator.clone(),
             _ => unreachable!("expected binary expression"),
@@ -1314,28 +1249,30 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
         &mut self,
         ctx: &mut hir::FunctionContext,
         expr_id: ast::ExprId,
-    ) -> Result<hir::Expression, ()> {
+    ) -> Result<hir::ExprIndex, ()> {
         let expr = match &self.ast.get_expr(expr_id).unwrap().kind {
             ast::ExprKind::Binary(expr) => expr.clone(),
             _ => unreachable!("expected binary expression"),
         };
 
-        let left = self.build_expression(ctx, expr.left)?;
-        let right = self.build_expression(ctx, expr.right)?;
+        let left_id = self.build_expression(ctx, expr.left)?;
+        let right_id = self.build_expression(ctx, expr.right)?;
+        let left = self.hir.get_expr(left_id).unwrap();
+        let right = self.hir.get_expr(right_id).unwrap();
 
         use hir::{ExprKind, Expression, Type};
         match (left.ty, right.ty) {
             (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
                 if primitive_1 == primitive_2 =>
             {
-                Ok(Expression {
+                Ok(self.push_expr(Expression {
                     kind: ExprKind::Binary {
                         operator: expr.operator,
-                        lhs: Box::new(left),
-                        rhs: Box::new(right),
+                        lhs: left_id,
+                        rhs: right_id,
                     },
                     ty: Some(Type::Primitive(primitive_1)),
-                })
+                }))
             }
             (None, Some(Type::Primitive(ty))) | (Some(Type::Primitive(ty)), None) => {
                 let (typed, untyped) = match left.ty {
@@ -1361,14 +1298,14 @@ impl<'bump, 'interner> Builder<'bump, 'interner> {
                     ty: Some(Type::Primitive(ty)),
                 })
             }
-            (None, None) => Ok(Expression {
+            (None, None) => Ok(self.push_expr(Expression {
                 kind: ExprKind::Binary {
                     operator: expr.operator,
-                    lhs: Box::new(left),
-                    rhs: Box::new(right),
+                    lhs: left_id,
+                    rhs: right_id,
                 },
                 ty: None,
-            }),
+            })),
             _ => panic!("type mismatch in binary expression"),
         }
     }

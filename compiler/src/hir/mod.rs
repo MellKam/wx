@@ -5,14 +5,71 @@ use std::collections::HashMap;
 use std::str;
 
 pub use builder::*;
+use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
+use string_interner::{StringInterner, Symbol};
 
 use crate::ast;
 
 #[derive(Debug, Clone)]
 pub struct HIR {
+    pub expressions: Vec<Expression>,
     pub functions: Vec<Function>,
     pub enums: Vec<Enum>,
+}
+
+impl HIR {
+    pub fn new() -> Self {
+        HIR {
+            expressions: Vec::new(),
+            functions: Vec::new(),
+            enums: Vec::new(),
+        }
+    }
+
+    pub fn push_expr(&mut self, expr: Expression) -> ExprIndex {
+        let index = ExprIndex(self.expressions.len() as u32);
+        self.expressions.push(expr);
+        index
+    }
+
+    pub fn set_expr(
+        &mut self,
+        index: ExprIndex,
+        cb: impl FnOnce(&mut Expression),
+    ) -> Result<(), ()> {
+        match self.expressions.get_mut(index.0 as usize) {
+            Some(expr) => {
+                cb(expr);
+                Ok(())
+            }
+            None => Err(()),
+        }
+    }
+
+    pub fn get_expr(&self, index: ExprIndex) -> Option<&Expression> {
+        self.expressions.get(index.0 as usize)
+    }
+
+    pub fn push_func(&mut self, function: Function) -> FuncIndex {
+        let index = FuncIndex(self.functions.len() as u32);
+        self.functions.push(function);
+        index
+    }
+
+    pub fn get_func(&self, index: FuncIndex) -> Option<&Function> {
+        self.functions.get(index.0 as usize)
+    }
+
+    pub fn push_enum(&mut self, enum_: Enum) -> EnumIndex {
+        let index = EnumIndex(self.enums.len() as u32);
+        self.enums.push(enum_);
+        index
+    }
+
+    pub fn get_enum(&self, index: EnumIndex) -> Option<&Enum> {
+        self.enums.get(index.0 as usize)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,27 +87,30 @@ impl std::fmt::Display for PrimitiveType {
     }
 }
 
-impl TryFrom<&str> for PrimitiveType {
-    type Error = ();
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "i32" => Ok(PrimitiveType::I32),
-            "i64" => Ok(PrimitiveType::I64),
-            _ => Err(()),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Type {
     Primitive(PrimitiveType),
-    Function(FunctionIndex),
+    Function(FuncIndex),
     Enum(EnumIndex),
     Bool,
     Unit,
     Never,
     Unknown,
+}
+
+impl TryFrom<&str> for Type {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "i32" => Ok(Type::Primitive(PrimitiveType::I32)),
+            "i64" => Ok(Type::Primitive(PrimitiveType::I64)),
+            "bool" => Ok(Type::Bool),
+            "unit" => Ok(Type::Unit),
+            "never" => Ok(Type::Never),
+            _ => Err(()),
+        }
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -73,20 +133,29 @@ pub struct FunctionType {
     pub result: Type,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Expression {
     pub kind: ExprKind,
     pub ty: Option<Type>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
+pub struct ExprIndex(pub u32);
+
+#[derive(Debug, Clone, Copy)]
 pub struct LocalIndex(pub u32);
+
+impl From<usize> for LocalIndex {
+    fn from(value: usize) -> Self {
+        LocalIndex(u32::try_from(value).expect("LocalIndex overflow"))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeIndex(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FunctionIndex(pub u32);
+pub struct FuncIndex(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnumIndex(pub u32);
@@ -94,7 +163,7 @@ pub struct EnumIndex(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnumVariantIndex(pub u32);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Placeholder,
     Int(i64),
@@ -102,15 +171,15 @@ pub enum ExprKind {
     LocalDeclaration {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
-        expr: Box<Expression>,
+        expr: ExprIndex,
     },
     Local {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
     },
-    Function(FunctionIndex),
+    Function(FuncIndex),
     Return {
-        value: Option<Box<Expression>>,
+        value: Option<ExprIndex>,
     },
     EnumVariant {
         enum_index: EnumIndex,
@@ -118,30 +187,30 @@ pub enum ExprKind {
     },
     Unary {
         operator: ast::UnaryOp,
-        operand: Box<Expression>,
+        operand: ExprIndex,
     },
     Binary {
         operator: ast::BinaryOp,
-        lhs: Box<Expression>,
-        rhs: Box<Expression>,
+        lhs: ExprIndex,
+        rhs: ExprIndex,
     },
     Call {
-        callee: Box<Expression>,
+        callee: ExprIndex,
         arguments: Vec<Expression>,
     },
     Block {
         scope_index: ScopeIndex,
-        expressions: Box<[Expression]>,
-        result: Option<Box<Expression>>,
+        expressions: Box<[ExprIndex]>,
+        result: Option<ExprIndex>,
     },
     IfElse {
-        condition: Box<Expression>,
-        then_block: Box<Expression>,
-        else_block: Option<Box<Expression>>,
+        condition: ExprIndex,
+        then_block: ExprIndex,
+        else_block: Option<ExprIndex>,
     },
     Break {
         scope_index: ScopeIndex,
-        value: Option<Box<Expression>>,
+        value: Option<ExprIndex>,
     },
 }
 
@@ -196,9 +265,8 @@ pub struct Function {
     pub export: bool,
     pub name: SymbolU32,
     pub ty: FunctionType,
-    pub scopes: StackFrame,
-    pub expressions: Box<[Expression]>,
-    pub result: Option<Expression>,
+    pub stack: StackFrame,
+    pub block: ExprIndex,
 }
 
 #[derive(Debug, Clone)]
@@ -206,7 +274,13 @@ pub struct Enum {
     pub name: SymbolU32,
     pub ty: PrimitiveType,
     pub variants: Box<[EnumVariant]>,
-    pub variant_lookup: HashMap<SymbolU32, EnumVariantIndex>,
+    pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
+}
+
+impl Enum {
+    pub fn resolve_variant(&self, symbol: SymbolU32) -> Option<EnumVariantIndex> {
+        self.lookup.get(&symbol).copied()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -217,57 +291,113 @@ pub struct EnumVariant {
 
 #[derive(Debug, Clone)]
 pub enum GlobalValue {
-    Function(FunctionIndex),
+    Function {
+        func_index: FuncIndex,
+    },
+    Enum {
+        enum_index: EnumIndex,
+    },
     EnumVariant {
         enum_index: EnumIndex,
         variant_index: EnumVariantIndex,
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GlobalType {
-    Enum(EnumIndex),
+    Type,
+    Value,
 }
 
 #[derive(Debug)]
-pub struct GlobalScope {
-    pub functions: Vec<FunctionType>,
-    pub enums: Vec<Enum>,
-    pub type_lookup: HashMap<SymbolU32, GlobalType>,
-    pub value_lookup: HashMap<SymbolU32, GlobalValue>,
+pub struct GlobalContext<'interner> {
+    pub interner: &'interner StringInterner<StringBackend>,
+    pub lookup: HashMap<(GlobalType, SymbolU32), GlobalValue>,
 }
 
-impl GlobalScope {
-    pub fn new() -> Self {
-        GlobalScope {
-            functions: Vec::new(),
-            enums: Vec::new(),
-            type_lookup: HashMap::new(),
-            value_lookup: HashMap::new(),
+impl<'interner> GlobalContext<'interner> {
+    pub fn new(interner: &'interner StringInterner<StringBackend>) -> Self {
+        GlobalContext {
+            interner,
+            lookup: HashMap::new(),
         }
     }
 
-    pub fn get_enum(&self, enum_index: EnumIndex) -> Option<&Enum> {
-        self.enums.get(enum_index.0 as usize)
+    pub fn add_enum(&mut self, name: SymbolU32, index: EnumIndex) {
+        self.lookup.insert(
+            (GlobalType::Type, name),
+            GlobalValue::Enum { enum_index: index },
+        );
     }
 
-    pub fn add_enum(&mut self, enum_: Enum) -> EnumIndex {
-        let index = EnumIndex(self.enums.len() as u32);
-        self.type_lookup.insert(enum_.name, GlobalType::Enum(index));
-        self.enums.push(enum_);
-        index
+    pub fn add_func(&mut self, name: SymbolU32, index: FuncIndex) {
+        self.lookup.insert(
+            (GlobalType::Value, name),
+            GlobalValue::Function { func_index: index },
+        );
     }
 
-    pub fn get_function(&self, func_index: FunctionIndex) -> Option<&FunctionType> {
-        self.functions.get(func_index.0 as usize)
+    pub fn resolve_type(&self, symbol: SymbolU32) -> Option<Type> {
+        let text = self.interner.resolve(symbol).unwrap();
+        match Type::try_from(text) {
+            Ok(ty) => return Some(ty),
+            Err(_) => {}
+        }
+        match self.lookup.get(&(GlobalType::Type, symbol)) {
+            Some(GlobalValue::Enum { enum_index }) => Some(Type::Enum(*enum_index)),
+            Some(_) => unreachable!(),
+            None => None,
+        }
     }
 
-    pub fn add_function(&mut self, func_name: SymbolU32, func_type: FunctionType) -> FunctionIndex {
-        let index = FunctionIndex(self.functions.len() as u32);
-        self.value_lookup
-            .insert(func_name, GlobalValue::Function(index));
-        self.functions.push(func_type);
-        index
+    pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<Expression> {
+        match self.interner.resolve(symbol).unwrap() {
+            "_" => {
+                return Some(Expression {
+                    kind: ExprKind::Placeholder,
+                    ty: None,
+                });
+            }
+            "true" => {
+                return Some(Expression {
+                    kind: ExprKind::Bool(true),
+                    ty: Some(Type::Bool),
+                });
+            }
+            "false" => {
+                return Some(Expression {
+                    kind: ExprKind::Bool(false),
+                    ty: Some(Type::Bool),
+                });
+            }
+            _ => {}
+        };
+        match self.lookup.get(&(GlobalType::Value, symbol)).cloned() {
+            Some(value) => match value {
+                GlobalValue::Function { func_index } => {
+                    return Some(Expression {
+                        kind: ExprKind::Function(func_index),
+                        ty: Some(Type::Function(func_index)),
+                    });
+                }
+                GlobalValue::EnumVariant {
+                    enum_index,
+                    variant_index,
+                } => {
+                    return Some(Expression {
+                        kind: ExprKind::EnumVariant {
+                            enum_index,
+                            variant_index,
+                        },
+                        ty: Some(Type::Enum(enum_index)),
+                    });
+                }
+                _ => unreachable!(),
+            },
+            None => {}
+        };
+
+        None
     }
 }
 
@@ -288,7 +418,7 @@ type LookupKey = (LookupType, ScopeIndex, SymbolU32);
 #[derive(Debug, Clone)]
 struct FunctionContext {
     pub lookup: HashMap<LookupKey, LookupValue>,
-    pub func_index: FunctionIndex,
+    pub func_index: FuncIndex,
     pub scope_index: ScopeIndex,
     pub frame: StackFrame,
 }

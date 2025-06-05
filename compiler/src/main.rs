@@ -1,10 +1,7 @@
-#![feature(allocator_api)]
-
 use std::io::Write;
 use std::time::Instant;
 
 use ast::Parser;
-use bumpalo::Bump;
 use codespan_reporting::diagnostic::Severity;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
@@ -22,8 +19,6 @@ mod span;
 fn main() {
     let start_time = Instant::now();
     let mut interner = StringInterner::new();
-
-    let bump = Bump::new();
 
     let mut files = Files::new();
     let main_file_id = files
@@ -48,7 +43,6 @@ fn main() {
 
     let ast = {
         let (ast, diagnostics) = Parser::parse(
-            &bump,
             main_file_id,
             files.get(main_file_id).unwrap().source.as_ref(),
             &mut interner,

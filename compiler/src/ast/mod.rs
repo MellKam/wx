@@ -1,4 +1,3 @@
-use bumpalo::collections::Vec;
 use lexer::TokenKind;
 use string_interner::symbol::SymbolU32;
 
@@ -302,20 +301,20 @@ pub struct Item {
 }
 
 #[derive(Debug)]
-pub struct Ast<'bump> {
+pub struct Ast {
     pub file_id: FileId,
-    pub expressions: Vec<'bump, Expression>,
-    pub statements: Vec<'bump, Statement>,
-    pub items: Vec<'bump, Item>,
+    pub expressions: Vec<Expression>,
+    pub statements: Vec<Statement>,
+    pub items: Vec<Item>,
 }
 
-impl<'bump> Ast<'bump> {
-    pub fn new(allocator: &'bump bumpalo::Bump, file_id: FileId) -> Self {
+impl Ast {
+    pub fn new(file_id: FileId) -> Self {
         Self {
             file_id,
-            expressions: Vec::new_in(allocator),
-            statements: Vec::new_in(allocator),
-            items: Vec::new_in(allocator),
+            expressions: Vec::new(),
+            statements: Vec::new(),
+            items: Vec::new(),
         }
     }
 
