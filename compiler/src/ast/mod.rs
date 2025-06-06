@@ -275,13 +275,6 @@ pub struct ItemFunctionDefinition {
 }
 
 #[derive(Debug, Clone)]
-pub struct ItemEnum {
-    pub name: Identifier,
-    pub ty: Identifier,
-    pub variants: Box<[EnumVariant]>,
-}
-
-#[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: Identifier,
     pub value: Box<Expression>,
@@ -289,9 +282,22 @@ pub struct EnumVariant {
 
 #[derive(Debug, Clone)]
 pub enum ItemKind {
-    FunctionDefinition(ItemFunctionDefinition),
-    Enum(ItemEnum),
-    FunctionDeclaration { signature: FunctionSignature },
+    FunctionDefinition {
+        signature: FunctionSignature,
+        block: Box<Expression>,
+    },
+    EnumDefinition {
+        name: Identifier,
+        ty: Identifier,
+        variants: Box<[EnumVariant]>,
+    },
+    ExportModifier {
+        export: TextSpan,
+        item: Box<Item>,
+    },
+    // FunctionDeclaration {
+    //     signature: FunctionSignature,
+    // },
 }
 
 #[derive(Debug, Clone)]

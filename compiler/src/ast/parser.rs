@@ -155,9 +155,9 @@ impl<'input> Parser<'input> {
         (parser.ast, parser.diagnostics)
     }
 
-    fn parse_item(&mut self) -> Result<Box<Item>, ()> {
+    fn parse_item(&mut self) -> Result<Item, ()> {
         let token = self.lexer.peek();
-        let item_handler: fn(parser: &mut Parser) -> Result<Box<Item>, ()> =
+        let item_handler: fn(parser: &mut Parser) -> Result<Item, ()> =
             match self.intern_keyword(token.clone()) {
                 Ok(Keyword::Fn) => Parser::parse_function_definition,
                 Ok(Keyword::Enum) => Parser::parse_enum_item,
@@ -169,7 +169,7 @@ impl<'input> Parser<'input> {
         Ok(item_id)
     }
 
-    fn parse_function_definition(parser: &mut Parser) -> Result<Box<Item>, ()> {
+    fn parse_function_definition(parser: &mut Parser) -> Result<Item, ()> {
         let fn_keyword = parser.lexer.next();
         let signature = Parser::parse_function_signature(parser)?;
 
@@ -190,14 +190,10 @@ impl<'input> Parser<'input> {
 
         let block = Parser::parse_block_expression(parser)?;
         let span = TextSpan::merge(fn_keyword.span, block.span);
-        Ok(Box::new(Item {
-            kind: ItemKind::FunctionDefinition(ItemFunctionDefinition {
-                export: None,
-                signature,
-                block,
-            }),
+        Ok(Item {
+            kind: ItemKind::FunctionDefinition { signature, block },
             span,
-        }))
+        })
     }
 
     fn parse_exported_function_definition(parser: &mut Parser) -> Result<Box<Item>, ()> {
@@ -223,15 +219,23 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_enum_item(parser: &mut Parser) -> Result<Box<Item>, ()> {
+    fn parse_enum_item(parser: &mut Parser) -> Result<Item, ()> {
         let enum_keyword = parser.lexer.next();
 
         let name_token = parser.next_expect(TokenKind::Identifier)?;
         let name_symbol = parser.intern_identifier(name_token.clone())?;
+        let name = Identifier {
+            symbol: name_symbol,
+            span: name_token.span,
+        };
 
         _ = parser.next_expect(TokenKind::Colon)?;
         let type_token = parser.next_expect(TokenKind::Identifier)?;
         let type_symbol = parser.intern_identifier(type_token.clone())?;
+        let ty = Identifier {
+            symbol: type_symbol,
+            span: type_token.span,
+        };
 
         _ = parser.next_expect(TokenKind::OpenBrace)?;
         let mut variants = Vec::new();
@@ -270,23 +274,17 @@ impl<'input> Parser<'input> {
 
         let close_brace = parser.lexer.next();
 
-        Ok(Box::new(Item {
-            kind: ItemKind::Enum(ItemEnum {
-                name: Identifier {
-                    symbol: name_symbol,
-                    span: name_token.span,
-                },
-                ty: Identifier {
-                    symbol: type_symbol,
-                    span: type_token.span,
-                },
+        Ok(Item {
+            kind: ItemKind::EnumDefinition {
+                name,
+                ty,
                 variants: variants.into_boxed_slice(),
-            }),
+            },
             span: TextSpan::merge(enum_keyword.span, close_brace.span),
-        }))
+        })
     }
 
-    fn parse_expression(&mut self, limit_bp: BindingPower) -> Result<Box<Expression>, ()> {
+    fn parse_expression(&mut self, limit_bp: BindingPower) -> Result<Expression, ()> {
         let token = self.lexer.peek();
         let nud_handler = match self.nud_lookup(token.clone()) {
             Some((nud_handler, _)) => nud_handler,
@@ -312,7 +310,7 @@ impl<'input> Parser<'input> {
         &mut self,
         token: Token,
     ) -> Option<(
-        fn(parser: &mut Parser) -> Result<Box<Expression>, ()>,
+        fn(parser: &mut Parser) -> Result<Expression, ()>,
         BindingPower,
     )> {
         match token.kind {
@@ -458,24 +456,26 @@ impl<'input> Parser<'input> {
         }))
     }
 
-    fn parse_return_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+    fn parse_return_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let return_keyword = parser.lexer.next();
         match parser.parse_expression(BindingPower::Default) {
             Ok(expr) => {
                 let span = TextSpan::merge(return_keyword.span, expr.span);
-                Ok(Box::new(Expression {
-                    kind: ExprKind::Return { value: Some(expr) },
+                Ok(Expression {
+                    kind: ExprKind::Return {
+                        value: Some(Box::new(expr)),
+                    },
                     span,
-                }))
+                })
             }
-            Err(_) => Ok(Box::new(Expression {
+            Err(_) => Ok(Expression {
                 kind: ExprKind::Return { value: None },
                 span: return_keyword.span,
-            })),
+            }),
         }
     }
 
-    fn parse_grouping_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+    fn parse_grouping_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let open_paren = parser.lexer.next();
         let value = parser.parse_expression(BindingPower::Default)?;
 
@@ -483,10 +483,12 @@ impl<'input> Parser<'input> {
             TokenKind::CloseParen => {
                 let close_paren = parser.lexer.next();
 
-                Ok(Box::new(Expression {
-                    kind: ExprKind::Grouping { value },
+                Ok(Expression {
+                    kind: ExprKind::Grouping {
+                        value: Box::new(value),
+                    },
                     span: TextSpan::merge(open_paren.span, close_paren.span),
-                }))
+                })
             }
             _ => {
                 parser
@@ -498,10 +500,12 @@ impl<'input> Parser<'input> {
                     });
 
                 let span = TextSpan::merge(open_paren.span, value.span);
-                Ok(Box::new(Expression {
-                    kind: ExprKind::Grouping { value },
+                Ok(Expression {
+                    kind: ExprKind::Grouping {
+                        value: Box::new(value),
+                    },
                     span,
-                }))
+                })
             }
         }
     }
