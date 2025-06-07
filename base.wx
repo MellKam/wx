@@ -120,3 +120,33 @@ outer: block {
     break :outer 5;
   }
 }
+
+export fn fibonacci(n: i32): i32 {
+  if n == 0 || n == 1 { return n };
+  return fibonacci(n + 1) + fibonacci(n + 2);
+}
+
+global mut X = 5;
+
+export fn binary_search(arr: []i32, n: i32): i32 {
+  local mut low: i32 = 0;
+  local mut high = arr.len() as i32 - 1;
+
+  loop {
+    if low >= high { return -1 };
+
+    local mid = (low + high) / 2;
+    if arr[mid] == n {
+      return mid;
+    } else if arr[mid] < n {
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+}
+
+
+fn a(): i32 {
+  _ = { 5 } + { 5 };
+}
