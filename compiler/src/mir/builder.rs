@@ -25,6 +25,7 @@ impl<'a> Builder<'a> {
                 .iter()
                 .map(|func| builder.build_function(func))
                 .collect(),
+            exports: hir.exports.clone(),
         }
     }
 
@@ -56,21 +57,27 @@ impl<'a> Builder<'a> {
     }
 
     fn build_function(&self, function: &hir::Function) -> mir::Function {
-        let block = self.build_block_expression(
-            ScopeIndex(0),
-            &function.expressions,
-            match &function.result {
-                Some(result) => Some(result),
-                None => None,
-            },
-            self.to_mir_type(function.ty.result),
-        );
+        let block = match &function.block.kind {
+            hir::ExprKind::Block {
+                expressions,
+                result,
+                ..
+            } => self.build_block_expression(
+                ScopeIndex(0),
+                expressions,
+                match result {
+                    Some(result) => Some(result),
+                    None => None,
+                },
+                self.to_mir_type(function.ty.result),
+            ),
+            _ => unreachable!(),
+        };
 
         mir::Function {
-            export: function.export,
             name: function.name,
             scopes: function
-                .scopes
+                .stack
                 .scopes
                 .iter()
                 .map(|scope| mir::LocalScope {
@@ -87,6 +94,7 @@ impl<'a> Builder<'a> {
                             mutability: local.mutability,
                         })
                         .collect(),
+                    result: self.to_mir_type(scope.result.expect("must be typed")),
                 })
                 .collect(),
             ty: self.to_mir_function_type(function.ty.clone()),
@@ -97,9 +105,11 @@ impl<'a> Builder<'a> {
     fn build_expression(&self, expr: &hir::Expression) -> mir::Expression {
         let ty = self.to_mir_type(expr.ty.unwrap());
         match &expr.kind {
-            hir::ExprKind::Binary { operator, lhs, rhs } => {
-                self.build_binary_expression(*operator, &lhs, &rhs, ty)
-            }
+            hir::ExprKind::Binary {
+                operator,
+                left,
+                right,
+            } => self.build_binary_expression(*operator, &left, &right, ty),
             hir::ExprKind::Unary { operator, operand } => {
                 self.build_unary_expression(*operator, &operand, ty)
             }
@@ -228,6 +238,16 @@ impl<'a> Builder<'a> {
                     ty,
                 }
             }
+            hir::ExprKind::Break { scope_index, value } => mir::Expression {
+                kind: mir::ExprKind::Break {
+                    scope_index: mir::ScopeIndex(scope_index.0),
+                    value: match value {
+                        Some(value) => Some(Box::new(self.build_expression(value))),
+                        None => None,
+                    },
+                },
+                ty,
+            },
         }
     }
 
@@ -250,18 +270,13 @@ impl<'a> Builder<'a> {
             }
             (0, Some(result)) => {
                 let result = self.build_expression(result);
-                match scope_index.0 {
-                    0 => {
-                        return mir::Expression {
-                            kind: mir::ExprKind::Block {
-                                scope_index: mir::ScopeIndex(scope_index.0),
-                                expressions: Box::new([result]),
-                            },
-                            ty,
-                        };
-                    }
-                    _ => return result,
-                }
+                return mir::Expression {
+                    kind: mir::ExprKind::Block {
+                        scope_index: mir::ScopeIndex(scope_index.0),
+                        expressions: Box::new([result]),
+                    },
+                    ty,
+                };
             }
             _ => {}
         }

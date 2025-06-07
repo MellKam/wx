@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 
-use crate::{mir, wasm};
+use crate::{hir, mir, wasm};
 
 pub struct Builder {
     expressions: Vec<wasm::Expression>,
@@ -32,12 +32,14 @@ impl From<mir::Type> for wasm::BlockResult {
 }
 
 #[derive(Debug)]
-struct FunctionContext<'a> {
-    locals: Box<[wasm::Local<'a>]>,
+struct FunctionContext<'mir, 'wasm> {
+    locals: Box<[wasm::Local<'wasm>]>,
     scope_offsets: Box<[usize]>,
+    scopes: &'mir Vec<mir::LocalScope>,
+    scope_index: mir::ScopeIndex,
 }
 
-impl FunctionContext<'_> {
+impl FunctionContext<'_, '_> {
     fn get_flat_index(
         &self,
         scope_index: mir::ScopeIndex,
@@ -45,6 +47,25 @@ impl FunctionContext<'_> {
     ) -> wasm::LocalIndex {
         let scope_offset = self.scope_offsets[scope_index.0 as usize];
         wasm::LocalIndex(scope_offset as u32 + local_index)
+    }
+
+    pub fn find_scope_depth(&self, target_scope: mir::ScopeIndex) -> Option<u32> {
+        let mut depth = 0;
+        let mut index = self.scope_index;
+        loop {
+            if index.0 == target_scope.0 {
+                return Some(depth);
+            }
+
+            let scope = self.scopes.get(index.0 as usize).unwrap();
+            match scope.parent_scope {
+                Some(scope_index) => {
+                    index = scope_index;
+                    depth += 1;
+                }
+                None => return None,
+            }
+        }
     }
 }
 
@@ -72,23 +93,25 @@ impl Builder {
 
         let mut types = HashMap::<wasm::FunctionType, wasm::TypeIndex>::new();
         let mut function_signatures = Vec::<wasm::TypeIndex>::with_capacity(mir.functions.len());
-        let mut exports = Vec::<wasm::ExportItem>::new();
+        let exports: Box<_> = mir
+            .exports
+            .iter()
+            .map(|item| match item {
+                hir::ExportItem::Function { func_index, name } => {
+                    wasm::ExportItem::Function(wasm::FunctionExport {
+                        index: wasm::FunctionIndex(func_index.0),
+                        name: interner.resolve(*name).unwrap(),
+                    })
+                }
+            })
+            .collect();
         let mut functions = Vec::<wasm::FunctionBody>::with_capacity(mir.functions.len());
 
-        for (func_index, func) in mir.functions.iter().enumerate() {
+        for func in mir.functions.iter() {
             let ty = wasm::FunctionType::from(func.ty.clone());
             let next_type_index = wasm::TypeIndex(types.len() as u32);
             let type_index = types.entry(ty).or_insert(next_type_index).clone();
             function_signatures.push(type_index);
-            match func.export {
-                true => {
-                    exports.push(wasm::ExportItem::Function(wasm::FunctionExport {
-                        name: interner.resolve(func.name).unwrap(),
-                        index: wasm::FunctionIndex(func_index as u32),
-                    }));
-                }
-                false => {}
-            }
 
             let func_expressions = match &func.block.kind {
                 mir::ExprKind::Block { expressions, .. } => expressions,
@@ -119,6 +142,8 @@ impl Builder {
             let mut ctx = FunctionContext {
                 locals: flat_locals,
                 scope_offsets,
+                scope_index: mir::ScopeIndex(0),
+                scopes: &func.scopes,
             };
 
             let func_expressions = func_expressions
@@ -140,9 +165,7 @@ impl Builder {
             functions: wasm::FunctionSection {
                 functions: function_signatures.into_boxed_slice(),
             },
-            exports: wasm::ExportSection {
-                items: exports.into_boxed_slice(),
-            },
+            exports: wasm::ExportSection { items: exports },
             code: wasm::CodeSection {
                 expressions: builder.expressions.into_boxed_slice(),
                 functions: functions.into_boxed_slice(),
@@ -156,9 +179,9 @@ impl Builder {
         wasm::ExprIndex(index)
     }
 
-    fn build_expression<'a>(
+    fn build_expression<'mir, 'wasm>(
         &mut self,
-        ctx: &FunctionContext<'a>,
+        ctx: &mut FunctionContext<'mir, 'wasm>,
         expr: &mir::Expression,
     ) -> wasm::ExprIndex {
         match &expr.kind {
@@ -314,7 +337,11 @@ impl Builder {
                     ty => panic!("unsupported type for eqz operation {:?}", ty),
                 })
             }
-            mir::ExprKind::Block { expressions, .. } => {
+            mir::ExprKind::Block {
+                expressions,
+                scope_index,
+            } => {
+                ctx.scope_index = mir::ScopeIndex(scope_index.0);
                 let expr = wasm::Expression::Block {
                     expressions: expressions
                         .iter()
@@ -332,13 +359,15 @@ impl Builder {
                 };
                 self.push_expr(expr)
             }
-            mir::ExprKind::Break { value, .. } => {
+            mir::ExprKind::Break { value, scope_index } => {
                 let value = match value {
                     Some(value) => Some(self.build_expression(ctx, value)),
                     None => None,
                 };
-                // hardcoded zero for now, fix this later
-                self.push_expr(wasm::Expression::Break { depth: 0, value })
+                self.push_expr(wasm::Expression::Break {
+                    depth: ctx.find_scope_depth(*scope_index).unwrap(),
+                    value,
+                })
             }
             mir::ExprKind::IfElse {
                 condition,

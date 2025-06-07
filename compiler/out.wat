@@ -1,9 +1,1 @@
-(module
-  (func $main (export "main") (result i32) (local $x_0 i32) (local $y_1 i32)
-    (local.set $x_0
-      (i32.const 5))
-    (local.set $y_1
-      (i32.const 10))
-    (i32.add
-      (local.get $x_0)
-      (local.get $y_1))))
+(module(func $main(result i32)(local $x_0 i32)(local $y_1 i32)(local $u_2 i64)(local.set $x_0 (block (result i32)(local.set $y_1 (i32.const 235))(local.set $u_2 (block (result i64)(if (result i64)(i32.eq (local.get $y_1)(i32.const 200))(then(block (result i64)(br 1 (i64.const 5))))(else(block (result i64)(br 2 (i32.const 10)))))))))(local.get $x_0)))

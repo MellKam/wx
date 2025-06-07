@@ -7,8 +7,8 @@ use string_interner::symbol::SymbolU32;
 use super::diagnostics::DiagnosticContext;
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
-    Ast, BinaryExpression, BinaryOp, EnumVariant, ExprKind, FunctionParam, FunctionSignature,
-    Identifier, ItemEnum, ItemFunctionDefinition, ItemKind, Statement, StmtKind, UnaryOp,
+    Ast, BinaryOp, EnumVariant, ExprKind, FunctionParam, FunctionSignature, Identifier, ItemKind,
+    Statement, StmtKind, UnaryOp,
 };
 use crate::ast::{Expression, Item};
 use crate::files::FileId;
@@ -80,14 +80,13 @@ enum Mutability {
 #[derive(Debug, Clone)]
 enum Keyword {
     Export,
-    Const,
+    Local,
     Mut,
     Enum,
     Fn,
     Loop,
     Break,
     Continue,
-    Match,
     Return,
     If,
     Else,
@@ -100,7 +99,7 @@ impl TryFrom<&str> for Keyword {
     fn try_from(text: &str) -> Result<Self, Self::Error> {
         match text {
             "export" => Ok(Keyword::Export),
-            "const" => Ok(Keyword::Const),
+            "local" => Ok(Keyword::Local),
             "mut" => Ok(Keyword::Mut),
             "enum" => Ok(Keyword::Enum),
             "fn" => Ok(Keyword::Fn),
@@ -109,7 +108,6 @@ impl TryFrom<&str> for Keyword {
             "loop" => Ok(Keyword::Loop),
             "break" => Ok(Keyword::Break),
             "continue" => Ok(Keyword::Continue),
-            "match" => Ok(Keyword::Match),
             "return" => Ok(Keyword::Return),
             "as" => Ok(Keyword::As),
             _ => Err(()),
@@ -147,7 +145,7 @@ impl<'input> Parser<'input> {
             }
 
             match parser.parse_item() {
-                Ok(item) => parser.ast.items.push(*item),
+                Ok(item) => parser.ast.items.push(item),
                 Err(_) => break,
             };
         }
@@ -158,7 +156,7 @@ impl<'input> Parser<'input> {
     fn parse_item(&mut self) -> Result<Item, ()> {
         let token = self.lexer.peek();
         let item_handler: fn(parser: &mut Parser) -> Result<Item, ()> =
-            match self.intern_keyword(token.clone()) {
+            match self.resolve_keyword(token.clone()) {
                 Ok(Keyword::Fn) => Parser::parse_function_definition,
                 Ok(Keyword::Enum) => Parser::parse_enum_item,
                 Ok(Keyword::Export) => Parser::parse_exported_function_definition,
@@ -191,29 +189,28 @@ impl<'input> Parser<'input> {
         let block = Parser::parse_block_expression(parser)?;
         let span = TextSpan::merge(fn_keyword.span, block.span);
         Ok(Item {
-            kind: ItemKind::FunctionDefinition { signature, block },
+            kind: ItemKind::FunctionDefinition {
+                signature,
+                block: Box::new(block),
+            },
             span,
         })
     }
 
-    fn parse_exported_function_definition(parser: &mut Parser) -> Result<Box<Item>, ()> {
+    fn parse_exported_function_definition(parser: &mut Parser) -> Result<Item, ()> {
         let export_keyword = parser.lexer.next();
         let func = Parser::parse_function_definition(parser)?;
 
-        match func.kind {
-            ItemKind::FunctionDefinition(ItemFunctionDefinition {
-                export: None,
-                signature,
-                block,
-            }) => {
-                return Ok(Box::new(Item {
-                    kind: ItemKind::FunctionDefinition(ItemFunctionDefinition {
-                        export: Some(export_keyword.span),
-                        signature,
-                        block,
-                    }),
-                    span: TextSpan::merge(export_keyword.span, func.span),
-                }));
+        match &func.kind {
+            ItemKind::FunctionDefinition { .. } => {
+                let span = TextSpan::merge(export_keyword.span, func.span);
+                return Ok(Item {
+                    kind: ItemKind::ExportModifier {
+                        export: export_keyword.span,
+                        item: Box::new(func),
+                    },
+                    span,
+                });
             }
             _ => unreachable!(),
         }
@@ -261,14 +258,14 @@ impl<'input> Parser<'input> {
             let variant_name_token = parser.next_expect(TokenKind::Identifier)?;
             let variant_name_symbol = parser.intern_identifier(variant_name_token.clone())?;
             _ = parser.next_expect(TokenKind::Eq)?;
-            let value_expr_id = parser.parse_expression(BindingPower::Default)?;
+            let value_expr = parser.parse_expression(BindingPower::Default)?;
 
             variants.push(EnumVariant {
                 name: Identifier {
                     symbol: variant_name_symbol,
                     span: variant_name_token.span,
                 },
-                value: value_expr_id,
+                value: Box::new(value_expr),
             });
         }
 
@@ -326,8 +323,14 @@ impl<'input> Parser<'input> {
                     Ok(Keyword::If) => {
                         Some((Parser::parse_if_else_expression, BindingPower::Primary))
                     }
+                    Ok(Keyword::Loop) => {
+                        Some((Parser::parse_loop_expression, BindingPower::Primary))
+                    }
                     Ok(Keyword::Break) => {
                         Some((Parser::parse_break_expression, BindingPower::Primary))
+                    }
+                    Ok(Keyword::Continue) => {
+                        Some((Parser::parse_continue_expression, BindingPower::Primary))
                     }
                     _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
                 }
@@ -351,11 +354,7 @@ impl<'input> Parser<'input> {
         &mut self,
         token: Token,
     ) -> Option<(
-        fn(
-            parser: &mut Parser,
-            left: Box<Expression>,
-            bp: BindingPower,
-        ) -> Result<Box<Expression>, ()>,
+        fn(parser: &mut Parser, left: Expression, bp: BindingPower) -> Result<Expression, ()>,
         BindingPower,
     )> {
         match token.kind {
@@ -396,7 +395,7 @@ impl<'input> Parser<'input> {
                 Parser::parse_namespace_member_expression,
                 BindingPower::Member,
             )),
-            TokenKind::Identifier => match self.intern_keyword(token) {
+            TokenKind::Identifier => match self.resolve_keyword(token) {
                 Ok(Keyword::As) => Some((Parser::parse_cast_expression, BindingPower::Cast)),
                 _ => None,
             },
@@ -416,25 +415,60 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_identifier_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+    fn parse_identifier_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let token = parser.lexer.next();
         let symbol = parser.intern_identifier(token.clone())?;
 
-        Ok(Box::new(Expression {
+        Ok(Expression {
             kind: ExprKind::Identifier { symbol },
             span: token.span,
-        }))
+        })
     }
 
-    fn parse_variable_definition(parser: &mut Parser) -> Result<Box<Statement>, ()> {
-        let mutability_token = parser.next_expect(TokenKind::Identifier)?;
-        let mutability = match parser.intern_keyword(mutability_token.clone()) {
-            Ok(Keyword::Const) => Mutability::Const,
-            Ok(Keyword::Mut) => Mutability::Mutable,
+    fn parse_local_definition(parser: &mut Parser) -> Result<Statement, ()> {
+        let local_keyword = parser.lexer.next();
+
+        let mut_or_name_token = parser.next_expect(TokenKind::Identifier)?;
+        let mut_or_name_text = match mut_or_name_token.kind {
+            TokenKind::Identifier => parser
+                .source
+                .get(
+                    mut_or_name_token.span.start().to_usize()
+                        ..mut_or_name_token.span.end().to_usize(),
+                )
+                .unwrap(),
             _ => unreachable!(),
         };
 
-        let name = parser.parse_identifier()?;
+        let (mutable, name) = match Keyword::try_from(mut_or_name_text) {
+            Ok(Keyword::Mut) => {
+                let mutable_token = mut_or_name_token;
+                let mutable_symbol = parser.interner.get_or_intern(mut_or_name_text);
+                let name = parser.parse_identifier()?;
+
+                (
+                    Some(Identifier {
+                        symbol: mutable_symbol,
+                        span: mutable_token.span,
+                    }),
+                    name,
+                )
+            }
+            Ok(_) => panic!("can't use keyword as variable identifier"),
+            Err(_) => {
+                let name_token = mut_or_name_token;
+                let name_symbol = parser.interner.get_or_intern(mut_or_name_text);
+
+                (
+                    None,
+                    Identifier {
+                        symbol: name_symbol,
+                        span: name_token.span,
+                    },
+                )
+            }
+        };
+
         let ty = match parser.lexer.peek().kind {
             TokenKind::Colon => {
                 let _ = parser.lexer.next();
@@ -445,15 +479,16 @@ impl<'input> Parser<'input> {
 
         _ = parser.next_expect(TokenKind::Eq)?;
         let value = parser.parse_expression(BindingPower::Default)?;
-        let span = TextSpan::merge(mutability_token.span, value.span);
-
-        Ok(Box::new(Statement {
-            kind: match mutability {
-                Mutability::Const => StmtKind::ConstDefinition { name, ty, value },
-                Mutability::Mutable => StmtKind::MutableDefinition { name, ty, value },
+        let span = TextSpan::merge(local_keyword.span, value.span);
+        Ok(Statement {
+            kind: StmtKind::LocalDefinition {
+                mutable,
+                name,
+                ty,
+                value: Box::new(value),
             },
             span,
-        }))
+        })
     }
 
     fn parse_return_expression(parser: &mut Parser) -> Result<Expression, ()> {
@@ -512,20 +547,23 @@ impl<'input> Parser<'input> {
 
     fn parse_cast_expression(
         parser: &mut Parser,
-        value: Box<Expression>,
+        value: Expression,
         _: BindingPower,
-    ) -> Result<Box<Expression>, ()> {
+    ) -> Result<Expression, ()> {
         _ = parser.lexer.next();
         let ty = parser.parse_identifier()?;
 
         let span = TextSpan::merge(value.span, ty.span);
-        Ok(Box::new(Expression {
-            kind: ExprKind::Cast { value, ty },
+        Ok(Expression {
+            kind: ExprKind::Cast {
+                value: Box::new(value),
+                ty,
+            },
             span,
-        }))
+        })
     }
 
-    fn parse_unary_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+    fn parse_unary_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let operator_token = parser.lexer.next();
         let operator = match UnaryOp::try_from(operator_token.kind) {
             Ok(operator) => operator,
@@ -546,17 +584,20 @@ impl<'input> Parser<'input> {
         };
 
         let span = TextSpan::merge(operator_token.span, operand.span);
-        Ok(Box::new(Expression {
-            kind: ExprKind::Unary { operator, operand },
+        Ok(Expression {
+            kind: ExprKind::Unary {
+                operator,
+                operand: Box::new(operand),
+            },
             span,
-        }))
+        })
     }
 
     fn parse_binary_expression(
         parser: &mut Parser,
-        left: Box<Expression>,
+        left: Expression,
         bp: BindingPower,
-    ) -> Result<Box<Expression>, ()> {
+    ) -> Result<Expression, ()> {
         let operator_token = parser.lexer.next();
         let operator = match BinaryOp::try_from(operator_token.kind) {
             Ok(operator) => operator,
@@ -578,11 +619,11 @@ impl<'input> Parser<'input> {
 
         if bp == BindingPower::Comparison {
             match left.kind {
-                ExprKind::Binary(BinaryExpression {
+                ExprKind::Binary {
                     operator,
                     operator_span,
                     ..
-                }) if BindingPower::from(operator) == BindingPower::Comparison => {
+                } if BindingPower::from(operator) == BindingPower::Comparison => {
                     parser
                         .diagnostics
                         .push(DiagnosticContext::ChainedComparisons {
@@ -594,11 +635,11 @@ impl<'input> Parser<'input> {
                 _ => {}
             }
             match right.kind {
-                ExprKind::Binary(BinaryExpression {
+                ExprKind::Binary {
                     operator,
                     operator_span,
                     ..
-                }) if BindingPower::from(operator) == BindingPower::Comparison => {
+                } if BindingPower::from(operator) == BindingPower::Comparison => {
                     parser
                         .diagnostics
                         .push(DiagnosticContext::ChainedComparisons {
@@ -612,18 +653,18 @@ impl<'input> Parser<'input> {
         }
 
         let span = TextSpan::merge(left.span, right.span);
-        Ok(Box::new(Expression {
-            kind: ExprKind::Binary(BinaryExpression {
-                left,
-                right,
+        Ok(Expression {
+            kind: ExprKind::Binary {
+                left: Box::new(left),
+                right: Box::new(right),
                 operator,
                 operator_span: operator_token.span,
-            }),
+            },
             span,
-        }))
+        })
     }
 
-    fn parse_int_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+    fn parse_int_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let token = parser.lexer.next();
         let text = parser
             .source
@@ -634,24 +675,22 @@ impl<'input> Parser<'input> {
             _ => unreachable!(),
         };
 
-        let kind = match value {
-            Some(value) => ExprKind::Int { value },
-            None => {
-                parser
-                    .diagnostics
-                    .push(DiagnosticContext::InvalidIntegerLiteral {
-                        file_id: parser.ast.file_id,
-                        span: token.span.clone(),
-                    });
+        Ok(Expression {
+            kind: match value {
+                Some(value) => ExprKind::Int { value },
+                None => {
+                    parser
+                        .diagnostics
+                        .push(DiagnosticContext::InvalidIntegerLiteral {
+                            file_id: parser.ast.file_id,
+                            span: token.span.clone(),
+                        });
 
-                ExprKind::Int { value: 0 }
-            }
-        };
-
-        Ok(Box::new(Expression {
-            kind,
+                    ExprKind::Int { value: 0 }
+                }
+            },
             span: token.span,
-        }))
+        })
     }
 
     fn intern_identifier(&mut self, token: Token) -> Result<SymbolU32, ()> {
@@ -677,7 +716,7 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn intern_keyword(&mut self, token: Token) -> Result<Keyword, ()> {
+    fn resolve_keyword(&mut self, token: Token) -> Result<Keyword, ()> {
         match token.kind {
             TokenKind::Identifier => self
                 .source
@@ -689,17 +728,14 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_break_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+    fn parse_break_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let break_keyword = parser.lexer.next();
         let label = match parser.lexer.peek().kind {
             TokenKind::Colon => {
                 let _ = parser.lexer.next();
+                let label = parser.parse_identifier()?;
 
-                let label_token = parser.next_expect(TokenKind::Identifier)?;
-                let span = label_token.span;
-                let symbol = parser.intern_identifier(label_token)?;
-
-                Some(Identifier { symbol, span })
+                Some(label)
             }
             _ => None,
         };
@@ -710,17 +746,42 @@ impl<'input> Parser<'input> {
             (Some(label), None) => TextSpan::merge(break_keyword.span, label.span),
             (None, None) => break_keyword.span,
         };
-        Ok(Box::new(Expression {
-            kind: ExprKind::Break { label, value },
+        Ok(Expression {
+            kind: ExprKind::Break {
+                label,
+                value: value.map(Box::new),
+            },
             span,
-        }))
+        })
+    }
+
+    fn parse_continue_expression(parser: &mut Parser) -> Result<Expression, ()> {
+        let continue_keyword = parser.lexer.next();
+        let label = match parser.lexer.peek().kind {
+            TokenKind::Colon => {
+                let _ = parser.lexer.next();
+                let label = parser.parse_identifier()?;
+
+                Some(label)
+            }
+            _ => None,
+        };
+
+        let span = match &label {
+            Some(label) => TextSpan::merge(continue_keyword.span, label.span),
+            None => continue_keyword.span,
+        };
+        Ok(Expression {
+            kind: ExprKind::Continue { label },
+            span,
+        })
     }
 
     fn parse_labelled_expression(
         parser: &mut Parser,
-        label_expr: Box<Expression>,
+        label_expr: Expression,
         _: BindingPower,
-    ) -> Result<Box<Expression>, ()> {
+    ) -> Result<Expression, ()> {
         let label = match label_expr.kind {
             ExprKind::Identifier { symbol } => Identifier {
                 symbol,
@@ -733,14 +794,31 @@ impl<'input> Parser<'input> {
         let block = parser.parse_expression(BindingPower::Default)?;
         match block.kind {
             ExprKind::Block { .. } => {}
+            ExprKind::Loop { .. } => {}
             _ => panic!("expected a block expression after label"),
         }
 
         let span = TextSpan::merge(label.span, block.span);
-        Ok(Box::new(Expression {
-            kind: ExprKind::Label { label, block },
+        Ok(Expression {
+            kind: ExprKind::Label {
+                label,
+                block: Box::new(block),
+            },
             span,
-        }))
+        })
+    }
+
+    fn parse_loop_expression(parser: &mut Parser) -> Result<Expression, ()> {
+        let loop_keyword = parser.lexer.next();
+        let block = parser.parse_expression(BindingPower::Default)?;
+
+        let span = TextSpan::merge(loop_keyword.span, block.span);
+        Ok(Expression {
+            kind: ExprKind::Loop {
+                block: Box::new(block),
+            },
+            span,
+        })
     }
 
     fn parse_function_signature(parser: &mut Parser) -> Result<FunctionSignature, ()> {
@@ -844,10 +922,10 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn parse_block_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+    fn parse_block_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let open_brace = parser.lexer.next();
         let mut statements = Vec::new();
-        let mut result: Option<Box<Expression>> = None;
+        let mut result: Option<Expression> = None;
 
         loop {
             let token = parser.lexer.peek();
@@ -863,77 +941,64 @@ impl<'input> Parser<'input> {
                 _ => {}
             };
 
-            let handler: Option<fn(&mut Parser) -> Result<Box<Statement>, ()>> =
-                match parser.intern_keyword(token.clone()) {
-                    Ok(Keyword::Const) => Some(Parser::parse_variable_definition),
-                    Ok(Keyword::Mut) => Some(Parser::parse_variable_definition),
-                    _ => None,
-                };
+            match parser.resolve_keyword(token.clone()) {
+                Ok(Keyword::Local) => match Parser::parse_local_definition(parser) {
+                    Ok(stmt) => statements.push(stmt),
+                    Err(_) => parser.skip_to_next_statement(),
+                },
+                _ => match parser.parse_expression(BindingPower::Default) {
+                    Ok(value) => match parser.lexer.peek().kind {
+                        TokenKind::SemiColon => {
+                            let semicolon = parser.lexer.next();
+                            let span = TextSpan::merge(value.span, semicolon.span);
+                            statements.push(Statement {
+                                kind: StmtKind::DelimitedExpression {
+                                    value: Box::new(value),
+                                },
+                                span,
+                            });
+                        }
+                        TokenKind::CloseBrace => {
+                            result = Some(value);
+                            break;
+                        }
+                        _ => {
+                            parser
+                                .diagnostics
+                                .push(DiagnosticContext::MissingStatementDelimiter {
+                                    file_id: parser.ast.file_id,
+                                    position: value.span.end(),
+                                });
 
-            match handler {
-                Some(handler) => {
-                    match handler(parser) {
-                        Ok(stmt) => statements.push(*stmt),
-                        Err(_) => parser.skip_to_next_statement(),
-                    };
-                    continue;
-                }
-                None => {}
-            }
-
-            let value = match parser.parse_expression(BindingPower::Default) {
-                Ok(expr) => expr,
-                Err(_) => {
-                    parser.skip_to_next_statement();
-                    continue;
-                }
+                            let span = value.span;
+                            statements.push(Statement {
+                                kind: StmtKind::DelimitedExpression {
+                                    value: Box::new(value),
+                                },
+                                span,
+                            });
+                        }
+                    },
+                    Err(_) => parser.skip_to_next_statement(),
+                },
             };
-
-            match parser.lexer.peek().kind {
-                TokenKind::SemiColon => {
-                    let semicolon = parser.lexer.next();
-                    let span = TextSpan::merge(value.span, semicolon.span);
-                    statements.push(Statement {
-                        kind: StmtKind::DelimitedExpression { value },
-                        span,
-                    });
-                }
-                TokenKind::CloseBrace => {
-                    result = Some(value);
-                    break;
-                }
-                _ => {
-                    parser
-                        .diagnostics
-                        .push(DiagnosticContext::MissingStatementDelimiter {
-                            file_id: parser.ast.file_id,
-                            position: value.span.end(),
-                        });
-
-                    let span = value.span;
-                    statements.push(Statement {
-                        kind: StmtKind::DelimitedExpression { value },
-                        span,
-                    });
-                }
-            }
         }
 
         let close_brace = parser.lexer.next();
-        Ok(Box::new(Expression {
+        Ok(Expression {
             kind: ExprKind::Block {
                 statements: statements.into_boxed_slice(),
-                result,
+                result: result.map(Box::new),
             },
             span: TextSpan::merge(open_brace.span, close_brace.span),
-        }))
+        })
     }
 
     fn parse_call_expression(
         parser: &mut Parser,
-        callee: Box<Expression>,
+        callee: Expression,
         _: BindingPower,
-    ) -> Result<Box<Expression>, ()> {
+    ) -> Result<Expression, ()> {
         let _ = parser.lexer.next();
         let mut arguments = Vec::new();
         loop {
@@ -954,7 +1019,7 @@ impl<'input> Parser<'input> {
                 Ok(argument) => argument,
                 Err(_) => continue,
             };
-            arguments.push(*argument);
+            arguments.push(argument);
 
             match parser.lexer.peek().kind {
                 TokenKind::CloseParen => break,
@@ -969,20 +1034,20 @@ impl<'input> Parser<'input> {
         let close_paren = parser.lexer.next();
         let span = TextSpan::merge(callee.span, close_paren.span);
 
-        Ok(Box::new(Expression {
+        Ok(Expression {
             kind: ExprKind::Call {
-                callee,
+                callee: Box::new(callee),
                 arguments: arguments.into_boxed_slice(),
             },
             span,
-        }))
+        })
     }
 
     fn parse_namespace_member_expression(
         parser: &mut Parser,
-        namespace_expr: Box<Expression>,
+        namespace_expr: Expression,
         _: BindingPower,
-    ) -> Result<Box<Expression>, ()> {
+    ) -> Result<Expression, ()> {
         let _double_colon = parser.lexer.next();
         let member = parser.parse_identifier()?;
         let namespace = match namespace_expr.kind {
@@ -1003,10 +1068,10 @@ impl<'input> Parser<'input> {
         };
 
         let span = TextSpan::merge(namespace_expr.span, member.span);
-        Ok(Box::new(Expression {
-            kind: ExprKind::NamespaceMember { namespace, member },
+        Ok(Expression {
+            kind: ExprKind::Namespace { namespace, member },
             span,
-        }))
+        })
     }
 
     fn next_expect(&mut self, kind: TokenKind) -> Result<Token, ()> {
@@ -1020,36 +1085,36 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_if_else_expression(parser: &mut Parser) -> Result<Box<Expression>, ()> {
+    fn parse_if_else_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let if_keyword = parser.lexer.next();
         let condition = parser.parse_expression(BindingPower::Default)?;
 
         let then_block = Parser::parse_block_expression(parser)?;
         let maybe_else_keyword = parser.lexer.peek();
-        match parser.intern_keyword(maybe_else_keyword) {
+        match parser.resolve_keyword(maybe_else_keyword) {
             Ok(Keyword::Else) => {
                 let _ = parser.lexer.next();
                 let else_block = Parser::parse_block_expression(parser)?;
                 let span = TextSpan::merge(if_keyword.span, else_block.span);
-                Ok(Box::new(Expression {
+                Ok(Expression {
                     kind: ExprKind::IfElse {
-                        condition,
-                        then_block,
-                        else_block: Some(else_block),
+                        condition: Box::new(condition),
+                        then_block: Box::new(then_block),
+                        else_block: Some(Box::new(else_block)),
                     },
                     span,
-                }))
+                })
             }
             _ => {
                 let span = TextSpan::merge(if_keyword.span, then_block.span);
-                Ok(Box::new(Expression {
+                Ok(Expression {
                     kind: ExprKind::IfElse {
-                        condition,
-                        then_block,
+                        condition: Box::new(condition),
+                        then_block: Box::new(then_block),
                         else_block: None,
                     },
                     span,
-                }))
+                })
             }
         }
     }

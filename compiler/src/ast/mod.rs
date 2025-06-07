@@ -161,14 +161,6 @@ pub struct Identifier {
 }
 
 #[derive(Debug, Clone)]
-pub struct BinaryExpression {
-    pub left: Box<Expression>,
-    pub operator: BinaryOp,
-    pub operator_span: TextSpan,
-    pub right: Box<Expression>,
-}
-
-#[derive(Debug, Clone)]
 pub enum ExprKind {
     /// `1`
     Int { value: i64 },
@@ -187,14 +179,19 @@ pub enum ExprKind {
         operand: Box<Expression>,
     },
     /// `{expr} + {expr}`
-    Binary(BinaryExpression),
+    Binary {
+        left: Box<Expression>,
+        operator: BinaryOp,
+        operator_span: TextSpan,
+        right: Box<Expression>,
+    },
     /// `{expr}()`
     Call {
         callee: Box<Expression>,
         arguments: Box<[Expression]>,
     },
     /// `{expr}::{expr}`
-    NamespaceMember {
+    Namespace {
         namespace: Identifier,
         member: Identifier,
     },
@@ -210,7 +207,7 @@ pub enum ExprKind {
         label: Identifier,
         block: Box<Expression>,
     },
-    /// `break(: {label})? {expr}?`
+    /// `break (:{label})? {expr}?`
     Break {
         label: Option<Identifier>,
         value: Option<Box<Expression>>,
@@ -221,6 +218,10 @@ pub enum ExprKind {
         then_block: Box<Expression>,
         else_block: Option<Box<Expression>>,
     },
+    /// `continue (:{label})?`
+    Continue { label: Option<Identifier> },
+    /// `loop { ... }`
+    Loop { block: Box<Expression> },
 }
 
 #[derive(Debug, Clone)]
@@ -233,14 +234,9 @@ pub struct Expression {
 pub enum StmtKind {
     /// `{expr};`
     DelimitedExpression { value: Box<Expression> },
-    /// `const {identifier}(: {type})? = {expr};`
-    ConstDefinition {
-        name: Identifier,
-        ty: Option<Identifier>,
-        value: Box<Expression>,
-    },
-    /// `mut {identifier}(: {type})? = {expr};`
-    MutableDefinition {
+    /// `local (mut)? {identifier}(: {type})? = {expr};`
+    LocalDefinition {
+        mutable: Option<Identifier>,
         name: Identifier,
         ty: Option<Identifier>,
         value: Box<Expression>,
@@ -265,13 +261,6 @@ pub struct FunctionSignature {
     pub params: Box<[FunctionParam]>,
     pub result: Option<Identifier>,
     pub span: TextSpan,
-}
-
-#[derive(Debug, Clone)]
-pub struct ItemFunctionDefinition {
-    pub export: Option<TextSpan>,
-    pub signature: FunctionSignature,
-    pub block: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]

@@ -27,13 +27,11 @@ pub enum DiagnosticContext {
     },
     InvalidEnumRepresentation {
         file_id: FileId,
-        item_id: ast::ItemId,
         type_: hir::Type,
         span: TextSpan,
     },
     InvalidEnumValue {
         file_id: FileId,
-        item_id: ast::ItemId,
         variant_index: usize,
     },
     UndeclaredIdentifier {
@@ -55,7 +53,7 @@ pub enum DiagnosticContext {
     TypeMistmatch {
         file_id: FileId,
         expected: hir::Type,
-        actual: Option<hir::Type>,
+        actual: hir::Type,
         span: TextSpan,
     },
     LiteralOutOfRange {
@@ -63,6 +61,11 @@ pub enum DiagnosticContext {
         primitive: hir::PrimitiveType,
         value: i64,
         span: TextSpan,
+    },
+    ComparisonTypeAnnotationRequired {
+        file_id: FileId,
+        left: TextSpan,
+        right: TextSpan,
     },
 }
 
@@ -125,7 +128,6 @@ impl DiagnosticContext {
                 file_id,
                 type_,
                 span,
-                item_id: _,
             } => Diagnostic::error()
                 .with_message(format!(
                     "can't represent enum with `{}`: expected i32 or i64",
@@ -134,7 +136,6 @@ impl DiagnosticContext {
                 .with_label(Label::primary(file_id, span)),
             InvalidEnumValue {
                 file_id,
-                item_id: _,
                 variant_index,
             } => Diagnostic::error().with_message("invalid enum variant value"),
             UndeclaredIdentifier { file_id, span } => Diagnostic::error()
@@ -162,7 +163,7 @@ impl DiagnosticContext {
                 .with_label(Label::primary(file_id, span).with_message(format!(
                     "expected `{}`, found `{}`",
                     expected,
-                    actual.unwrap_or(hir::Type::Unknown)
+                    actual
                 ))),
             LiteralOutOfRange {
                 file_id,
@@ -175,6 +176,7 @@ impl DiagnosticContext {
                     value, primitive
                 ))
                 .with_label(Label::primary(file_id, span)),
+            ComparisonTypeAnnotationRequired { file_id, left, right } => Diagnostic::error().with_message("type annotation required for at least one of binary operands of comparison expression").with_label(Label::primary(file_id, left)).with_label(Label::primary(file_id, right))
         }
     }
 }

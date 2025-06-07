@@ -245,7 +245,7 @@ pub struct FunctionExport<'a> {
 }
 
 #[derive(Debug, Clone)]
-enum ExportItem<'a> {
+pub enum ExportItem<'a> {
     Function(FunctionExport<'a>),
     // Table,
     // Memory,

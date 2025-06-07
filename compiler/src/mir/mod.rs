@@ -8,6 +8,7 @@ use crate::hir;
 #[derive(Debug)]
 pub struct MIR {
     pub functions: Vec<Function>,
+    pub exports: Vec<hir::ExportItem>,
 }
 
 pub type FunctionIndex = u32;
@@ -16,7 +17,7 @@ pub type LocalIndex = u32;
 #[derive(Debug, Clone)]
 pub struct FunctionType {
     pub param_count: usize,
-    pub params_results: Vec<Type>,
+    pub params_results: Box<[Type]>,
 }
 
 impl FunctionType {
@@ -182,7 +183,6 @@ pub struct Local {
 
 #[derive(Debug)]
 pub struct Function {
-    pub export: bool,
     pub name: SymbolU32,
     pub ty: FunctionType,
     pub scopes: Vec<LocalScope>,
@@ -196,4 +196,5 @@ pub struct ScopeIndex(pub u32);
 pub struct LocalScope {
     pub parent_scope: Option<ScopeIndex>,
     pub locals: Vec<Local>,
+    pub result: Type,
 }
