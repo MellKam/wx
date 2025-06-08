@@ -4,7 +4,8 @@ use crate::hir::*;
 pub struct BlockScope {
     pub parent_scope: Option<ScopeIndex>,
     pub locals: Vec<Local>,
-    pub result: Option<Type>,
+    pub inferred_type: Option<Type>,
+    pub expected_type: Option<Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,7 +37,9 @@ impl StackFrame {
 #[derive(Debug, Clone, Copy)]
 pub enum LocalValue {
     Local(LocalIndex),
-    Label(ScopeIndex),
+    /// Storing `ScopeIndex` here is unnecessary since each block has at most
+    /// one label. The `ScopeIndex` can be retrieved from the lookup key
+    Label,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,74 +71,67 @@ impl LocalContext {
         let mut scope_index = self.scope_index;
 
         loop {
-            match self.lookup.get(&(LocalType::Local, scope_index, symbol)) {
-                Some(&value) => {
-                    return Some((
-                        scope_index,
-                        match value {
-                            LocalValue::Local(local_index) => local_index,
-                            _ => unreachable!(),
-                        },
-                    ));
-                }
-                None => match self.frame.scopes.get(scope_index.0 as usize) {
-                    Some(scope) => scope_index = scope.parent_scope?,
-                    None => break,
-                },
+            if let Some(&value) = self.lookup.get(&(LocalType::Local, scope_index, symbol)) {
+                return Some((
+                    scope_index,
+                    match value {
+                        LocalValue::Local(local_index) => local_index,
+                        _ => unreachable!(),
+                    },
+                ));
             }
-        }
 
-        None
+            scope_index = self
+                .frame
+                .scopes
+                .get(scope_index.0 as usize)
+                .expect("scope should be found")
+                .parent_scope?;
+        }
     }
 
     pub fn resolve_label(&self, symbol: SymbolU32) -> Option<ScopeIndex> {
         let mut scope_index = self.scope_index;
 
         loop {
-            match self.lookup.get(&(LocalType::Label, scope_index, symbol)) {
-                Some(&LocalValue::Label(label_index)) => return Some(label_index),
-                _ => match self.frame.scopes.get(scope_index.0 as usize) {
-                    Some(scope) => scope_index = scope.parent_scope?,
-                    None => break,
-                },
+            if let Some(_) = self.lookup.get(&(LocalType::Label, scope_index, symbol)) {
+                return Some(scope_index);
             }
-        }
 
-        None
+            scope_index = self
+                .frame
+                .scopes
+                .get(scope_index.0 as usize)
+                .expect("scope should be found")
+                .parent_scope?;
+        }
     }
 
     pub fn enter_scope<T>(
         &mut self,
-        result: Option<Type>,
+        expected_type: Option<Type>,
         handler: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        let parent_scope_index = self.scope_index;
         let new_scope = BlockScope {
-            parent_scope: Some(self.scope_index),
+            parent_scope: Some(parent_scope_index),
             locals: Vec::new(),
-            result,
+            expected_type,
+            inferred_type: None,
         };
         self.scope_index = ScopeIndex(self.frame.scopes.len() as u32);
         self.frame.scopes.push(new_scope);
 
         let result = handler(self);
 
-        self.scope_index = match self.frame.scopes.get(self.scope_index.0 as usize) {
-            Some(scope) => scope.parent_scope.unwrap(),
-            None => unreachable!("invalid current scope index"),
-        };
+        self.scope_index = parent_scope_index;
         result
     }
 
-    pub fn enter_scope_with_label<T>(
-        &mut self,
-        label: SymbolU32,
-        result: Option<Type>,
-        handler: impl FnOnce(&mut Self) -> T,
-    ) -> T {
+    pub fn set_scope_label(&mut self, label: SymbolU32) {
         self.lookup.insert(
             (LocalType::Label, self.scope_index, label),
-            LocalValue::Label(ScopeIndex(self.frame.scopes.len() as u32)),
+            LocalValue::Label,
         );
-        self.enter_scope(result, handler)
     }
 }

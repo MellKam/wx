@@ -67,6 +67,25 @@ pub enum DiagnosticContext {
         left: TextSpan,
         right: TextSpan,
     },
+    UnreachableCode {
+        file_id: FileId,
+        span: TextSpan,
+    },
+    UnableToCoerce {
+        file_id: FileId,
+        to: hir::Type,
+        span: TextSpan,
+    },
+    OperatorCannotBeApplied {
+        file_id: FileId,
+        operator: BinaryOp,
+        ty: hir::Type,
+        span: TextSpan,
+    },
+    CannotMutateImmutable {
+        file_id: FileId,
+        span: TextSpan,
+    }
 }
 
 impl ast::BinaryOp {
@@ -176,7 +195,24 @@ impl DiagnosticContext {
                     value, primitive
                 ))
                 .with_label(Label::primary(file_id, span)),
-            ComparisonTypeAnnotationRequired { file_id, left, right } => Diagnostic::error().with_message("type annotation required for at least one of binary operands of comparison expression").with_label(Label::primary(file_id, left)).with_label(Label::primary(file_id, right))
+            ComparisonTypeAnnotationRequired { 
+                file_id, left, right 
+            } => Diagnostic::error()
+                .with_message("type annotation required for at least one of binary operands of comparison expression")
+                .with_label(Label::primary(file_id, left))
+            .with_label(Label::primary(file_id, right)),
+            UnreachableCode { file_id, span } => Diagnostic::warning()
+                .with_message("unreachable code")
+                .with_label(Label::primary(file_id, span).with_message("this code will never be executed")),
+            UnableToCoerce { file_id, to, span } => Diagnostic::error()
+                .with_message(format!("unable to coerce to `{}`", to))
+                .with_label(Label::primary(file_id, span)),
+            OperatorCannotBeApplied { file_id, operator, ty, span } => Diagnostic::error()
+                .with_message(format!("operator `{}` cannot be applied to type `{}`", operator, ty))
+                .with_label(Label::primary(file_id, span)),
+            CannotMutateImmutable { file_id, span } => Diagnostic::error()
+                .with_message("cannot mutate immutable variable")
+                .with_label(Label::primary(file_id, span)),
         }
     }
 }

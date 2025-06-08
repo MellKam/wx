@@ -12,9 +12,9 @@ use string_interner::StringInterner;
 mod ast;
 mod files;
 mod hir;
-mod mir;
+// mod mir;
 mod span;
-mod wasm;
+// mod wasm;
 
 fn main() {
     let start_time = Instant::now();
@@ -25,19 +25,8 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            fn main(): i32 {
-                local x: i32 = x: {
-                    local y = 235 as i32;
-                    local u: i64 = z: {
-                        if y == 200 {
-                            5
-                        } else {
-                            break :x 10
-                        }
-                    };
-                };
-
-                x
+            func max(a: i32, b: i32): i32 {
+                loop { }
             }
             "# }
             .to_string(),
@@ -89,23 +78,23 @@ fn main() {
         hir
     };
 
-    let mir = {
-        let mir = mir::Builder::build(&hir);
-        // println!("{:#?}", mir);
+    // let mir = {
+    //     let mir = mir::Builder::build(&hir);
+    //     // println!("{:#?}", mir);
 
-        mir
-    };
+    //     mir
+    // };
 
-    let wasm_module = wasm::Builder::build(&mir, &interner);
-    let bytecode = wasm::Encoder::encode(&wasm_module);
+    // let wasm_module = wasm::Builder::build(&mir, &interner);
+    // let bytecode = wasm::Encoder::encode(&wasm_module);
 
     let duration = start_time.elapsed();
     println!("Time to compile: {:?}", duration);
 
-    let mut file = std::fs::File::create("out.wat").unwrap();
-    file.write(wasm_module.to_wat().as_bytes()).unwrap();
+    // let mut file = std::fs::File::create("out.wat").unwrap();
+    // file.write(wasm_module.to_wat().as_bytes()).unwrap();
 
-    let mut file = std::fs::File::create("out.wasm").unwrap();
-    file.write(&bytecode).unwrap();
-    println!("Wrote {} bytes to out.wasm", bytecode.len());
+    // let mut file = std::fs::File::create("out.wasm").unwrap();
+    // file.write(&bytecode).unwrap();
+    // println!("Wrote {} bytes to out.wasm", bytecode.len());
 }

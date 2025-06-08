@@ -83,7 +83,7 @@ enum Keyword {
     Local,
     Mut,
     Enum,
-    Fn,
+    Func,
     Loop,
     Break,
     Continue,
@@ -91,6 +91,7 @@ enum Keyword {
     If,
     Else,
     As,
+    Unreachable,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -102,7 +103,7 @@ impl TryFrom<&str> for Keyword {
             "local" => Ok(Keyword::Local),
             "mut" => Ok(Keyword::Mut),
             "enum" => Ok(Keyword::Enum),
-            "fn" => Ok(Keyword::Fn),
+            "func" => Ok(Keyword::Func),
             "if" => Ok(Keyword::If),
             "else" => Ok(Keyword::Else),
             "loop" => Ok(Keyword::Loop),
@@ -110,6 +111,7 @@ impl TryFrom<&str> for Keyword {
             "continue" => Ok(Keyword::Continue),
             "return" => Ok(Keyword::Return),
             "as" => Ok(Keyword::As),
+            "unreachable" => Ok(Keyword::Unreachable),
             _ => Err(()),
         }
     }
@@ -157,7 +159,7 @@ impl<'input> Parser<'input> {
         let token = self.lexer.peek();
         let item_handler: fn(parser: &mut Parser) -> Result<Item, ()> =
             match self.resolve_keyword(token.clone()) {
-                Ok(Keyword::Fn) => Parser::parse_function_definition,
+                Ok(Keyword::Func) => Parser::parse_function_definition,
                 Ok(Keyword::Enum) => Parser::parse_enum_item,
                 Ok(Keyword::Export) => Parser::parse_exported_function_definition,
                 _ => return Err(()),
@@ -332,6 +334,9 @@ impl<'input> Parser<'input> {
                     Ok(Keyword::Continue) => {
                         Some((Parser::parse_continue_expression, BindingPower::Primary))
                     }
+                    Ok(Keyword::Unreachable) => {
+                        Some((Parser::parse_unreachable_expression, BindingPower::Primary))
+                    }
                     _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
                 }
             }
@@ -422,6 +427,14 @@ impl<'input> Parser<'input> {
         Ok(Expression {
             kind: ExprKind::Identifier { symbol },
             span: token.span,
+        })
+    }
+
+    fn parse_unreachable_expression(parser: &mut Parser) -> Result<Expression, ()> {
+        let unreachable_keyword = parser.lexer.next();
+        Ok(Expression {
+            kind: ExprKind::Unreachable,
+            span: unreachable_keyword.span,
         })
     }
 
@@ -787,13 +800,14 @@ impl<'input> Parser<'input> {
                 symbol,
                 span: label_expr.span,
             },
-            _ => panic!("expected an identifier for label"),
+            expr => panic!("expected an identifier for label, got: {:#?}", expr),
         };
         _ = parser.next_expect(TokenKind::Colon)?;
 
         let block = parser.parse_expression(BindingPower::Default)?;
         match block.kind {
             ExprKind::Block { .. } => {}
+            ExprKind::IfElse { .. } => {}
             ExprKind::Loop { .. } => {}
             _ => panic!("expected a block expression after label"),
         }

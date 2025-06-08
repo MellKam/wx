@@ -94,7 +94,7 @@ impl<'a> Builder<'a> {
                             mutability: local.mutability,
                         })
                         .collect(),
-                    result: self.to_mir_type(scope.result.expect("must be typed")),
+                    result: self.to_mir_type(scope.inferred_type.expect("must be typed")),
                 })
                 .collect(),
             ty: self.to_mir_function_type(function.ty.clone()),
@@ -248,6 +248,42 @@ impl<'a> Builder<'a> {
                 },
                 ty,
             },
+            hir::ExprKind::Continue { scope_index } => mir::Expression {
+                kind: mir::ExprKind::Continue {
+                    scope_index: mir::ScopeIndex(scope_index.0),
+                },
+                ty: mir::Type::Never,
+            },
+            hir::ExprKind::Unreachable => mir::Expression {
+                kind: mir::ExprKind::Unreachable,
+                ty: mir::Type::Never,
+            },
+            hir::ExprKind::Loop { block, scope_index } => {
+                let block = match &block.kind {
+                    hir::ExprKind::Block {
+                        expressions,
+                        result,
+                        ..
+                    } => self.build_block_expression(
+                        *scope_index,
+                        expressions,
+                        match result {
+                            Some(result) => Some(result),
+                            None => None,
+                        },
+                        mir::Type::Never,
+                    ),
+                    _ => unreachable!(),
+                };
+
+                mir::Expression {
+                    kind: mir::ExprKind::Loop {
+                        scope_index: mir::ScopeIndex(scope_index.0),
+                        block: Box::new(block),
+                    },
+                    ty: mir::Type::Never,
+                }
+            }
         }
     }
 

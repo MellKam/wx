@@ -5,6 +5,7 @@ mod global;
 mod local;
 
 use std::collections::HashMap;
+use std::slice::SliceIndex;
 use std::str;
 
 pub use builder::*;
@@ -194,6 +195,14 @@ pub enum ExprKind {
     Break {
         scope_index: ScopeIndex,
         value: Option<Box<Expression>>,
+    },
+    Continue {
+        scope_index: ScopeIndex,
+    },
+    Unreachable,
+    Loop {
+        scope_index: ScopeIndex,
+        block: Box<Expression>,
     },
 }
 

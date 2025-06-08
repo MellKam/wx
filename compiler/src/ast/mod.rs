@@ -154,6 +154,38 @@ impl TryFrom<TokenKind> for BinaryOp {
     }
 }
 
+impl std::fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let symbol = match self {
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Rem => "%",
+            BinaryOp::Eq => "==",
+            BinaryOp::NotEq => "!=",
+            BinaryOp::Less => "<",
+            BinaryOp::LessEq => "<=",
+            BinaryOp::Greater => ">",
+            BinaryOp::GreaterEq => ">=",
+            BinaryOp::And => "&&",
+            BinaryOp::Or => "||",
+            BinaryOp::Assign => "=",
+            BinaryOp::AddAssign => "+=",
+            BinaryOp::SubAssign => "-=",
+            BinaryOp::MulAssign => "*=",
+            BinaryOp::DivAssign => "/=",
+            BinaryOp::RemAssign => "%=",
+            BinaryOp::BitAnd => "&",
+            BinaryOp::BitOr => "|",
+            BinaryOp::BitXor => "^",
+            BinaryOp::LeftShift => "<<",
+            BinaryOp::RightShift => ">>",
+        };
+        write!(f, "{}", symbol)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Identifier {
     pub symbol: SymbolU32,
@@ -222,6 +254,8 @@ pub enum ExprKind {
     Continue { label: Option<Identifier> },
     /// `loop { ... }`
     Loop { block: Box<Expression> },
+    /// `unreachable`
+    Unreachable,
 }
 
 #[derive(Debug, Clone)]

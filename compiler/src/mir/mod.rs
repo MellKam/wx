@@ -122,6 +122,10 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         value: Option<Box<Expression>>,
     },
+    Continue {
+        scope_index: ScopeIndex,
+    },
+    Unreachable,
     IfElse {
         condition: Box<Expression>,
         then_block: Box<Expression>,
@@ -165,6 +169,10 @@ pub enum ExprKind {
     GreaterEq {
         left: Box<Expression>,
         right: Box<Expression>,
+    },
+    Loop {
+        scope_index: ScopeIndex,
+        block: Box<Expression>,
     },
 }
 

@@ -8,6 +8,7 @@ use super::diagnostics::DiagnosticContext;
 use crate::hir::global::{GlobalContext, GlobalValue};
 use crate::hir::local::{BlockScope, LocalContext, LocalType, LocalValue};
 use crate::hir::*;
+use crate::span::TextSpan;
 use crate::{ast, hir};
 
 pub struct Builder<'ast, 'interner> {
@@ -103,7 +104,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 scopes: vec![BlockScope {
                     parent_scope: None,
                     locals,
-                    result: Some(func_type.result),
+                    expected_type: Some(func_type.result),
+                    inferred_type: None,
                 }],
             },
             scope_index: ScopeIndex(0),
@@ -117,6 +119,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             stack: ctx.frame,
             block: Box::new(block),
         })
+    }
+
+    fn unify_types(a: Type, b: Type) -> Result<Type, ()> {
+        match (a, b) {
+            (a, b) if a == b => Ok(a),
+            (Type::Never, ty) | (ty, Type::Never) => Ok(ty),
+            _ => Err(()),
+        }
     }
 
     fn build_statement(
@@ -153,13 +163,9 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .scopes
                     .get_mut(ctx.scope_index.0 as usize)
                     .unwrap();
-                match scope.result {
-                    Some(_) => Ok(value),
-                    None => {
-                        scope.result = Some(hir::Type::Never);
-                        Ok(value)
-                    }
-                }
+                scope.inferred_type = scope.inferred_type.or(Some(Type::Never));
+
+                Ok(value)
             }
             _ => {
                 self.diagnostics
@@ -168,16 +174,17 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                         span: ast_value.span,
                     });
 
-                Ok(hir::Expression {
-                    kind: hir::ExprKind::Binary {
+                // construct drop expression
+                Ok(Expression {
+                    kind: ExprKind::Binary {
                         operator: ast::BinaryOp::Assign,
-                        left: Box::new(hir::Expression {
-                            kind: hir::ExprKind::Placeholder,
+                        left: Box::new(Expression {
+                            kind: ExprKind::Placeholder,
                             ty: value.ty.clone(),
                         }),
                         right: Box::new(value),
                     },
-                    ty: Some(hir::Type::Unit),
+                    ty: Some(Type::Unit),
                 })
             }
         }
@@ -188,7 +195,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut LocalContext,
         stmt: &ast::Statement,
     ) -> Result<Expression, ()> {
-        let (maybe_mutable, name, ty, ast_value) = match &stmt.kind {
+        let (maybe_mutable, name, ast_ty, ast_value) = match &stmt.kind {
             ast::StmtKind::LocalDefinition {
                 mutable,
                 name,
@@ -198,25 +205,52 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let expected_type = match ty {
+        let expected_type = match &ast_ty {
             Some(ty) => match self.global.resolve_type(ty.symbol) {
                 Some(ty) => Some(ty),
-                None => panic!("failed to resolve type"),
+                None => {
+                    self.diagnostics
+                        .push(DiagnosticContext::UndeclaredIdentifier {
+                            file_id: self.ast.file_id,
+                            span: ty.span,
+                        });
+                    None
+                }
             },
             None => None,
         };
-        let value = self.build_expression(ctx, ast_value, expected_type)?;
+        let mut value = self.build_expression(ctx, ast_value, expected_type)?;
+
         let ty = match value.ty {
             Some(ty) => ty,
-            None => {
-                self.diagnostics
-                    .push(DiagnosticContext::TypeAnnotationRequired {
-                        file_id: self.ast.file_id,
-                        span: name.span,
-                    });
-                return Err(());
-            }
+            None => match expected_type {
+                Some(expected) => {
+                    value = self.coerce_untyped_expr(value, ast_value, expected)?;
+
+                    value.ty.expect("expression must have a type")
+                }
+                None => {
+                    self.diagnostics
+                        .push(DiagnosticContext::TypeAnnotationRequired {
+                            file_id: self.ast.file_id,
+                            span: name.span,
+                        });
+                    return Err(());
+                }
+            },
         };
+
+        match expected_type {
+            Some(expected) if expected != ty => {
+                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                    file_id: self.ast.file_id,
+                    expected,
+                    actual: ty,
+                    span: ast_value.span,
+                });
+            }
+            _ => {}
+        }
 
         let local_index = ctx.push_local(hir::Local {
             name: name.symbol,
@@ -233,7 +267,10 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 local_index,
                 expr: Box::new(value),
             },
-            ty: Some(Type::Unit),
+            ty: match ty {
+                Type::Never => Some(Type::Never),
+                _ => Some(Type::Unit),
+            },
         })
     }
 
@@ -245,7 +282,10 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     ) -> Result<Expression, ()> {
         use ast::ExprKind;
         match &expr.kind {
-            ExprKind::Int { .. } => self.build_int_expression(expr, expected_type),
+            ExprKind::Int { value } => Ok(hir::Expression {
+                kind: hir::ExprKind::Int(*value),
+                ty: None,
+            }),
             ExprKind::Grouping { value } => self.build_expression(ctx, value, expected_type),
             ExprKind::Identifier { .. } => {
                 self.build_identifier_expression(ctx, expr, expected_type)
@@ -258,42 +298,44 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             ExprKind::Block { .. } => {
                 ctx.enter_scope(expected_type, |ctx| self.build_block_expression(ctx, expr))
             }
-            ExprKind::Label { label, block } => {
-                ctx.enter_scope_with_label(label.symbol, expected_type, |ctx| {
-                    self.build_block_expression(ctx, block)
-                })
+            ExprKind::Label { .. } => self.build_label_expression(ctx, expr, expected_type),
+            ExprKind::IfElse { .. } => {
+                self.build_if_else_expression(ctx, expr, None, expected_type)
             }
-            ExprKind::IfElse { .. } => self.build_if_else_expression(ctx, expr, expected_type),
             ExprKind::Cast { .. } => self.build_cast_expression(ctx, expr, expected_type),
-            ExprKind::Break { .. } => self.build_break_expression(ctx, expr, expected_type),
-            ExprKind::Continue { .. } => unimplemented!(),
-            ExprKind::Loop { .. } => unimplemented!(),
+            ExprKind::Break { .. } => self.build_break_expression(ctx, expr),
+            ExprKind::Continue { .. } => self.build_continue_expression(ctx, expr),
+            ExprKind::Loop { .. } => self.build_loop_expression(ctx, expr, None, expected_type),
+            ExprKind::Unreachable => Ok(hir::Expression {
+                kind: hir::ExprKind::Unreachable,
+                ty: Some(Type::Never),
+            }),
         }
     }
 
-    fn build_int_expression(
+    fn build_label_expression(
         &mut self,
+        ctx: &mut LocalContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
-    ) -> Result<Expression, ()> {
-        let value = match expr.kind {
-            ast::ExprKind::Int { value } => value,
-            _ => unreachable!(),
+    ) -> Result<hir::Expression, ()> {
+        let (label, block) = match &expr.kind {
+            ast::ExprKind::Label { label, block } => (label.clone(), block),
+            _ => unreachable!("expected label expression"),
         };
 
-        match expected_type {
-            Some(ty) => Ok(self.coerce_untyped_int_expr(
-                hir::Expression {
-                    kind: hir::ExprKind::Int(value),
-                    ty: None,
-                },
-                expr,
-                ty,
-            )?),
-            None => Ok(hir::Expression {
-                kind: hir::ExprKind::Int(value),
-                ty: None,
+        match block.kind {
+            ast::ExprKind::Block { .. } => ctx.enter_scope(expected_type, |ctx| {
+                ctx.set_scope_label(label.symbol);
+                self.build_block_expression(ctx, block)
             }),
+            ast::ExprKind::IfElse { .. } => {
+                self.build_if_else_expression(ctx, block, Some(label), expected_type)
+            }
+            ast::ExprKind::Loop { .. } => {
+                self.build_loop_expression(ctx, block, Some(label), expected_type)
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -310,18 +352,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         match ctx.resolve_local(symbol) {
             Some((scope_index, local_index)) => {
                 let local = ctx.frame.get_local(scope_index, local_index).unwrap();
-                match expected_type {
-                    Some(ty) if ty != local.ty => {
-                        self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                            file_id: self.ast.file_id,
-                            expected: ty,
-                            actual: local.ty,
-                            span: expr.span,
-                        });
-                        return Err(());
-                    }
-                    _ => {}
-                }
 
                 return Ok(hir::Expression {
                     kind: hir::ExprKind::Local {
@@ -333,23 +363,10 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             }
             None => {}
         }
+
         match self.global.resolve_value(symbol) {
             Some(global) => match global {
                 GlobalValue::Bool { value } => {
-                    match expected_type {
-                        Some(Type::Bool) => {}
-                        Some(ty) => {
-                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                                file_id: self.ast.file_id,
-                                expected: ty,
-                                actual: Type::Bool,
-                                span: expr.span,
-                            });
-                            return Err(());
-                        }
-                        None => {}
-                    }
-
                     return Ok(Expression {
                         kind: ExprKind::Bool(value),
                         ty: Some(Type::Bool),
@@ -362,20 +379,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     });
                 }
                 GlobalValue::Function { func_index } => {
-                    match expected_type {
-                        Some(Type::Function(index)) if index == func_index => {}
-                        Some(ty) => {
-                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                                file_id: self.ast.file_id,
-                                expected: ty,
-                                actual: Type::Function(func_index),
-                                span: expr.span,
-                            });
-                            return Err(());
-                        }
-                        None => {}
-                    }
-
                     return Ok(Expression {
                         kind: ExprKind::Function(func_index),
                         ty: Some(Type::Function(func_index)),
@@ -385,20 +388,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     enum_index,
                     variant_index,
                 } => {
-                    match expected_type {
-                        Some(Type::Enum(index)) if index == enum_index => {}
-                        Some(ty) => {
-                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                                file_id: self.ast.file_id,
-                                expected: ty,
-                                actual: Type::Enum(enum_index),
-                                span: expr.span,
-                            });
-                            return Err(());
-                        }
-                        None => {}
-                    }
-
                     return Ok(Expression {
                         kind: ExprKind::EnumVariant {
                             enum_index,
@@ -485,20 +474,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut LocalContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
-        match expected_type {
-            Some(Type::Never) | None => {}
-            Some(expected) => {
-                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                    file_id: self.ast.file_id,
-                    expected,
-                    actual: Type::Never,
-                    span: expr.span,
-                });
-            }
-        }
-
         let (label, maybe_ast_value) = match &expr.kind {
             ast::ExprKind::Break { label, value } => (label.clone(), value),
             _ => unreachable!("expected break expression"),
@@ -509,17 +485,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             None => ctx.scope_index,
         };
         let scope = ctx.frame.scopes.get(scope_index.0 as usize).unwrap();
-        println!("{:#?}", ctx.frame.scopes);
 
         let maybe_value = match maybe_ast_value {
             Some(ast_value) => {
-                println!("scope.result {:?}", scope.result);
-                let value = self.build_expression(ctx, ast_value, scope.result)?;
-                println!("got type: {:?}", value.ty);
+                let value = self.build_expression(ctx, ast_value, scope.expected_type)?;
                 match value.ty {
                     Some(value_type) => {
                         let scope = ctx.frame.scopes.get_mut(scope_index.0 as usize).unwrap();
-                        match scope.result {
+                        match scope.inferred_type {
                             Some(ty) if ty == value_type => {}
                             Some(expected) => {
                                 self.diagnostics.push(DiagnosticContext::TypeMistmatch {
@@ -530,21 +503,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 });
                                 return Err(());
                             }
-                            None => scope.result = Some(value_type),
+                            None => scope.inferred_type = Some(value_type),
                         }
                     }
-                    None => panic!("break expression value must have a type"),
+                    None => panic!("break value must have a type"),
                 }
 
                 Some(value)
             }
             None => {
                 let scope = ctx.frame.scopes.get_mut(scope_index.0 as usize).unwrap();
-                match scope.result {
+                match scope.inferred_type {
                     Some(hir::Type::Unit) => None,
                     Some(ty) => panic!("can't break without a value, expected {ty}"),
                     None => {
-                        scope.result = Some(hir::Type::Unit);
+                        scope.inferred_type = Some(hir::Type::Unit);
                         None
                     }
                 }
@@ -560,6 +533,56 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         })
     }
 
+    fn build_continue_expression(
+        &mut self,
+        ctx: &mut LocalContext,
+        expr: &ast::Expression,
+    ) -> Result<hir::Expression, ()> {
+        let label = match &expr.kind {
+            ast::ExprKind::Continue { label } => label.clone(),
+            _ => unreachable!("expected continue expression"),
+        };
+
+        let scope_index = match label {
+            Some(label) => ctx.resolve_label(label.symbol).expect("invalid label"),
+            None => ctx.scope_index,
+        };
+
+        Ok(hir::Expression {
+            kind: hir::ExprKind::Continue { scope_index },
+            ty: Some(hir::Type::Never),
+        })
+    }
+
+    fn build_loop_expression(
+        &mut self,
+        ctx: &mut LocalContext,
+        expr: &ast::Expression,
+        label: Option<ast::Identifier>,
+        expected_type: Option<Type>,
+    ) -> Result<hir::Expression, ()> {
+        let block = match &expr.kind {
+            ast::ExprKind::Loop { block } => block,
+            _ => unreachable!("expected loop expression"),
+        };
+
+        let block = ctx.enter_scope(expected_type, |ctx| {
+            match label {
+                Some(label) => ctx.set_scope_label(label.symbol),
+                None => {}
+            }
+            self.build_block_expression(ctx, block)
+        })?;
+
+        Ok(hir::Expression {
+            kind: hir::ExprKind::Loop {
+                scope_index,
+                block: Box::new(block),
+            },
+            ty: match block.ty {},
+        })
+    }
+
     fn build_cast_expression(
         &mut self,
         ctx: &mut LocalContext,
@@ -572,23 +595,17 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         let cast_type = match self.global.resolve_type(ty.symbol) {
-            Some(ty) => ty,
-            None => panic!("invalid type in cast expression"),
-        };
-        let value = self.build_expression(ctx, ast_value, Some(cast_type))?;
-
-        match expected_type {
-            Some(ty) if ty == cast_type => {}
-            None => {}
-            Some(expected) => {
-                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                    file_id: self.ast.file_id,
-                    expected,
-                    actual: cast_type,
-                    span: expr.span,
-                });
+            Some(ty) => Some(ty),
+            None => {
+                self.diagnostics
+                    .push(DiagnosticContext::UndeclaredIdentifier {
+                        file_id: self.ast.file_id,
+                        span: ty.span,
+                    });
+                expected_type
             }
-        }
+        };
+        let value = self.build_expression(ctx, ast_value, cast_type)?;
 
         Ok(value)
     }
@@ -597,6 +614,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut LocalContext,
         expr: &ast::Expression,
+        label: Option<ast::Identifier>,
         expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
         let (ast_condition, ast_then_block, maybe_ast_else_block) = match &expr.kind {
@@ -611,15 +629,29 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         let condition = self.build_expression(ctx, ast_condition, Some(Type::Bool))?;
 
         let mut then_block = match ast_then_block.kind {
-            ast::ExprKind::Block { .. } => ctx.enter_scope(expected_type, |ctx| {
-                self.build_block_expression(ctx, ast_then_block)
-            })?,
+            ast::ExprKind::Block { .. } => ctx.enter_scope(
+                match maybe_ast_else_block {
+                    Some(_) => expected_type,
+                    None => Some(Type::Unit),
+                },
+                |ctx| {
+                    match label.clone() {
+                        Some(label) => ctx.set_scope_label(label.symbol),
+                        None => {}
+                    }
+                    self.build_block_expression(ctx, ast_then_block)
+                },
+            )?,
             _ => unreachable!(),
         };
         let (else_block, ty) = match maybe_ast_else_block {
             Some(ast_else_block) => {
                 let else_block = match ast_else_block.kind {
                     ast::ExprKind::Block { .. } => ctx.enter_scope(expected_type, |ctx| {
+                        match label {
+                            Some(label) => ctx.set_scope_label(label.symbol),
+                            None => {}
+                        }
                         self.build_block_expression(ctx, ast_else_block)
                     })?,
                     _ => unreachable!("expected block expression"),
@@ -627,9 +659,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
                 match (then_block.ty, else_block.ty) {
                     (Some(ty1), Some(ty2)) if ty1 == ty2 => (Some(else_block), Some(ty1)),
-                    (Some(ty1), Some(ty2)) => {
-                        todo!("handle type mistmatch in if-else {} {}", ty1, ty2)
-                    }
+                    (Some(ty1), Some(ty2)) => match Builder::unify_types(ty1, ty2) {
+                        Ok(ty) => (Some(else_block), Some(ty)),
+                        Err(_) => {
+                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                                file_id: self.ast.file_id,
+                                expected: ty1,
+                                actual: ty2,
+                                span: ast_else_block.span,
+                            });
+                            return Err(());
+                        }
+                    },
                     (None, None) => (Some(else_block), None),
                     (Some(ty), None) => {
                         let coerced = self
@@ -675,74 +716,141 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => panic!("expected block expression"),
         };
 
-        let x = 'a: {
-            if 5 == 0 {
-                break 'a 5;
-            };
-
-            loop {}
-        };
-
         let mut expressions: Vec<_> = Vec::with_capacity(statements.len());
-        for stmt in statements.iter() {
-            let expr = self.build_statement(ctx, stmt)?;
+        for (index, stmt) in statements.iter().enumerate() {
+            let expr = match self.build_statement(ctx, stmt) {
+                Ok(expr) => expr,
+                Err(_) => continue,
+            };
             let ty = expr.ty;
             expressions.push(expr);
 
             match ty {
                 Some(Type::Unit) => {}
                 Some(Type::Never) => {
-                    // don't process the rest of statements as they are unreachable
-                    // TODO: report warning about unreachable code if any
+                    if maybe_ast_result.is_some() || index + 1 < statements.len() {
+                        let start = statements
+                            .get(index + 1)
+                            .map(|stmt| stmt.span)
+                            .or(maybe_ast_result.as_ref().map(|ast_result| ast_result.span))
+                            .unwrap();
 
-                    break;
+                        let end = match maybe_ast_result {
+                            Some(ast_result) => ast_result.span,
+                            None => statements.last().unwrap().span,
+                        };
+
+                        self.diagnostics.push(DiagnosticContext::UnreachableCode {
+                            file_id: self.ast.file_id,
+                            span: TextSpan::merge(start, end),
+                        });
+                    }
+
+                    let scope = ctx
+                        .frame
+                        .scopes
+                        .get_mut(ctx.scope_index.0 as usize)
+                        .unwrap();
+                    scope.inferred_type = scope.inferred_type.or(Some(Type::Never));
+
+                    // no need to continue processing, as the rest of code is unreachable
+                    return Ok(hir::Expression {
+                        kind: ExprKind::Block {
+                            scope_index: ctx.scope_index,
+                            expressions: expressions.into_boxed_slice(),
+                            result: None,
+                        },
+                        ty: scope.inferred_type,
+                    });
                 }
                 ty => unreachable!("statement must return either unit or never: {ty:?}"),
             }
         }
 
-        let (result, result_type) = match maybe_ast_result {
+        match maybe_ast_result {
             Some(ast_result) => {
                 let expected_type = ctx
                     .frame
                     .scopes
                     .get(ctx.scope_index.0 as usize)
                     .unwrap()
-                    .result;
-                let expr = self.build_expression(ctx, ast_result, expected_type)?;
+                    .expected_type;
+                let mut result = self.build_expression(
+                    ctx,
+                    ast_result,
+                    ctx.frame
+                        .scopes
+                        .get(ctx.scope_index.0 as usize)
+                        .unwrap()
+                        .expected_type,
+                )?;
                 let scope = ctx
                     .frame
                     .scopes
                     .get_mut(ctx.scope_index.0 as usize)
                     .unwrap();
 
-                match (expr.ty, scope.result) {
-                    (Some(expr_type), Some(result_type)) => {
-                        if expr_type != result_type {
+                let expr_type = match result.ty {
+                    Some(ty) => ty,
+                    None => match expected_type {
+                        Some(expected) => {
+                            result = self.coerce_untyped_expr(result, ast_result, expected)?;
+                            result.ty.expect("expression must have a type")
+                        }
+                        None => {
+                            self.diagnostics
+                                .push(DiagnosticContext::TypeAnnotationRequired {
+                                    file_id: self.ast.file_id,
+                                    span: ast_result.span,
+                                });
+                            return Err(());
+                        }
+                    },
+                };
+
+                let inferred_type = match scope.inferred_type {
+                    Some(inferred_type) => match Builder::unify_types(inferred_type, expr_type) {
+                        Ok(ty) => ty,
+                        Err(_) => {
                             self.diagnostics.push(DiagnosticContext::TypeMistmatch {
                                 file_id: self.ast.file_id,
-                                expected: result_type,
+                                expected: inferred_type,
                                 actual: expr_type,
                                 span: ast_result.span,
                             });
                             return Err(());
                         }
-                        (Some(expr), Some(result_type))
-                    }
-                    (Some(expr_type), None) => {
-                        scope.result = Some(expr_type);
-                        (Some(expr), Some(expr_type))
-                    }
-                    (None, Some(_)) => unreachable!("probably"),
-                    (None, None) => {
-                        self.diagnostics
-                            .push(DiagnosticContext::TypeAnnotationRequired {
+                    },
+                    None => expr_type,
+                };
+                scope.inferred_type = Some(inferred_type);
+
+                let scope = ctx.frame.scopes.get(ctx.scope_index.0 as usize).unwrap();
+                let ty = match (scope.expected_type, inferred_type) {
+                    (_, Type::Never) => Type::Never,
+                    (Some(expected), inferred) => match expected == inferred {
+                        true => inferred,
+                        false => {
+                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
                                 file_id: self.ast.file_id,
+                                expected,
+                                actual: inferred,
                                 span: ast_result.span,
                             });
-                        return Err(());
-                    }
-                }
+                            expected // recover expression to expected type
+                        }
+                    },
+                    (_, inferred) => inferred,
+                };
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Block {
+                        scope_index: ctx.scope_index,
+                        expressions: expressions.into_boxed_slice(),
+                        result: Some(Box::new(result)),
+                    },
+                    ty: Some(ty),
+                })
             }
             None => {
                 let scope = ctx
@@ -750,20 +858,32 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .scopes
                     .get_mut(ctx.scope_index.0 as usize)
                     .unwrap();
-                scope.result = Some(scope.result.unwrap_or(hir::Type::Unit));
+                scope.inferred_type = Some(Type::Unit);
 
-                (None, scope.result)
+                let ty = match scope.expected_type {
+                    Some(Type::Unit) | None => Type::Unit,
+                    Some(expected) => {
+                        self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                            file_id: self.ast.file_id,
+                            expected,
+                            actual: Type::Unit,
+                            span: expr.span,
+                        });
+
+                        expected // recover expression to expected type
+                    }
+                };
+
+                Ok(hir::Expression {
+                    kind: ExprKind::Block {
+                        scope_index: ctx.scope_index,
+                        expressions: expressions.into_boxed_slice(),
+                        result: None,
+                    },
+                    ty: Some(ty),
+                })
             }
-        };
-
-        Ok(hir::Expression {
-            kind: hir::ExprKind::Block {
-                scope_index: ctx.scope_index,
-                expressions: expressions.into_boxed_slice(),
-                result: result.map(Box::new),
-            },
-            ty: result_type,
-        })
+        }
     }
 
     fn build_return_expression(
@@ -789,17 +909,30 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let expected_type = ctx
+        let expected_return_type = ctx
             .frame
             .scopes
             .get(0)
             .unwrap()
-            .result
+            .expected_type
             .expect("function must have return type");
 
         match maybe_ast_value {
             Some(ast_value) => {
-                let value = self.build_expression(ctx, ast_value, Some(expected_type))?;
+                let value = self.build_expression(ctx, ast_value, Some(expected_return_type))?;
+
+                match value.ty {
+                    Some(value_type) if value_type != expected_return_type => {
+                        self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                            file_id: self.ast.file_id,
+                            expected: expected_return_type,
+                            actual: value_type,
+                            span: ast_value.span,
+                        });
+                    }
+                    Some(_) => {}
+                    None => unreachable!("return value must have a type"),
+                }
 
                 Ok(hir::Expression {
                     kind: hir::ExprKind::Return {
@@ -809,9 +942,16 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 })
             }
             None => {
-                match expected_type {
+                match expected_return_type {
                     hir::Type::Unit => {}
-                    _ => panic!("return type mistmatch, can't return unit"),
+                    expected => {
+                        self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                            file_id: self.ast.file_id,
+                            expected,
+                            actual: hir::Type::Unit,
+                            span: expr.span,
+                        });
+                    }
                 }
                 Ok(hir::Expression {
                     kind: hir::ExprKind::Return { value: None },
@@ -1162,7 +1302,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     })
                 }
             },
-            _ => panic!("WTF! can't coerce this thing to primitive number"),
+            to => {
+                self.diagnostics.push(DiagnosticContext::UnableToCoerce {
+                    file_id: self.ast.file_id,
+                    to,
+                    span: ast_expr.span,
+                });
+
+                Err(())
+            }
         }
     }
 
@@ -1182,23 +1330,19 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
                 self.build_arithmetic_expr(ctx, expr, expected_type)
             }
-            BinaryOp::Assign => self.build_assignment_expr(ctx, expr, expected_type),
+            BinaryOp::Assign => self.build_assignment_expr(ctx, expr),
             BinaryOp::AddAssign
             | BinaryOp::SubAssign
             | BinaryOp::MulAssign
             | BinaryOp::DivAssign
-            | BinaryOp::RemAssign => {
-                self.build_arithmetic_assignment_expr(ctx, expr, expected_type)
-            }
+            | BinaryOp::RemAssign => self.build_arithmetic_assignment_expr(ctx, expr),
             BinaryOp::Eq
             | BinaryOp::NotEq
             | BinaryOp::Less
             | BinaryOp::LessEq
             | BinaryOp::Greater
-            | BinaryOp::GreaterEq => self.build_comparison_binary_expr(ctx, expr, expected_type),
-            BinaryOp::And | BinaryOp::Or => {
-                self.build_logical_binary_expr(ctx, expr, expected_type)
-            }
+            | BinaryOp::GreaterEq => self.build_comparison_binary_expr(ctx, expr),
+            BinaryOp::And | BinaryOp::Or => self.build_logical_binary_expr(ctx, expr),
             BinaryOp::BitAnd
             | BinaryOp::BitOr
             | BinaryOp::BitXor
@@ -1211,20 +1355,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut LocalContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
     ) -> Result<Expression, ()> {
-        match expected_type {
-            None | Some(Type::Unit) => {}
-            Some(expected) => {
-                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                    file_id: self.ast.file_id,
-                    expected,
-                    actual: Type::Unit,
-                    span: expr.span,
-                });
-            }
-        }
-
         let (ast_left, ast_right) = match &expr.kind {
             ast::ExprKind::Binary { left, right, .. } => (left, right),
             _ => unreachable!("expected binary expression"),
@@ -1262,7 +1393,13 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             None => panic!("can't assign to undeclared variable"),
         };
         match local.mutability {
-            hir::Mutability::Const => panic!("can't assign to const variable"),
+            hir::Mutability::Const => {
+                self.diagnostics
+                    .push(DiagnosticContext::CannotMutateImmutable {
+                        file_id: self.ast.file_id,
+                        span: expr.span,
+                    });
+            }
             hir::Mutability::Mutable => {}
         }
 
@@ -1282,20 +1419,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut LocalContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
     ) -> Result<Expression, ()> {
-        match expected_type {
-            None | Some(Type::Unit) => {}
-            Some(expected) => {
-                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                    file_id: self.ast.file_id,
-                    expected,
-                    actual: Type::Unit,
-                    span: expr.span,
-                });
-            }
-        }
-
         let (ast_left, ast_right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
                 left,
@@ -1307,6 +1431,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         let left = self.build_expression(ctx, ast_left, None)?;
+
         let (scope_index, local_index) = match left.kind {
             hir::ExprKind::Local {
                 scope_index,
@@ -1319,8 +1444,29 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             Some(local) => local.clone(),
             None => panic!("can't assign to undeclared variable"),
         };
+        match local.ty {
+            Type::Primitive(PrimitiveType::I32 | PrimitiveType::I64) => {}
+            ty => {
+                self.diagnostics
+                    .push(DiagnosticContext::OperatorCannotBeApplied {
+                        file_id: self.ast.file_id,
+                        operator,
+                        ty,
+                        span: expr.span,
+                    });
+
+                return Err(());
+            }
+        }
+
         match local.mutability {
-            hir::Mutability::Const => panic!("can't assign to const variable"),
+            hir::Mutability::Const => {
+                self.diagnostics
+                    .push(DiagnosticContext::CannotMutateImmutable {
+                        file_id: self.ast.file_id,
+                        span: expr.span,
+                    });
+            }
             hir::Mutability::Mutable => {}
         }
 
@@ -1483,7 +1629,27 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 },
                 ty: None,
             }),
-            _ => panic!("type mismatch in binary expression"),
+            (Some(left_type), Some(right_type)) => {
+                self.diagnostics
+                    .push(DiagnosticContext::BinaryExpressionMistmatch {
+                        file_id: self.ast.file_id,
+                        left: ast_left.span,
+                        left_type,
+                        operator,
+                        right: ast_right.span,
+                        right_type,
+                    });
+
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ty: expected_type,
+                })
+            }
+            _ => todo!(),
         }
     }
 
@@ -1491,20 +1657,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut LocalContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
-        match expected_type {
-            None | Some(Type::Bool) => {}
-            Some(expected) => {
-                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                    file_id: self.ast.file_id,
-                    expected,
-                    actual: Type::Bool,
-                    span: expr.span,
-                });
-            }
-        }
-
         let (ast_left, ast_right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
                 left,
@@ -1554,16 +1707,12 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             (None, Some(ty)) | (Some(ty), None) => {
                 let (left, right) = match left.ty {
                     Some(_) => {
-                        let coerced = self
-                            .coerce_untyped_expr(right, &ast_right, ty)
-                            .expect("invalid coercion");
+                        let coerced = self.coerce_untyped_expr(right, &ast_right, ty)?;
 
                         (left, coerced)
                     }
                     None => {
-                        let coerced = self
-                            .coerce_untyped_expr(left, &ast_left, ty)
-                            .expect("invalid coercion");
+                        let coerced = self.coerce_untyped_expr(left, &ast_left, ty)?;
 
                         (coerced, right)
                     }
@@ -1603,20 +1752,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut LocalContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
-        match expected_type {
-            None | Some(Type::Bool) => {}
-            Some(expected) => {
-                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                    file_id: self.ast.file_id,
-                    expected,
-                    actual: Type::Bool,
-                    span: expr.span,
-                });
-            }
-        }
-
         let (ast_left, ast_right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
                 left,
