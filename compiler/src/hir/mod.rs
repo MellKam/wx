@@ -91,6 +91,16 @@ pub enum Type {
     Unknown,
 }
 
+impl Type {
+    pub fn unify(a: Type, b: Type) -> Result<Type, ()> {
+        match (a, b) {
+            (a, b) if a == b => Ok(a),
+            (Type::Never, ty) | (ty, Type::Never) => Ok(ty),
+            _ => Err(()),
+        }
+    }
+}
+
 impl TryFrom<&str> for Type {
     type Error = ();
 

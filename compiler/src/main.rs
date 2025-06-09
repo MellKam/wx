@@ -16,6 +16,14 @@ mod hir;
 mod span;
 // mod wasm;
 
+// fn max(mut a: i32, b: i32) -> i32 {
+//     let x: i32 = loop {
+//         break 6 as i64;
+//     };
+
+//     x
+// }
+
 fn main() {
     let start_time = Instant::now();
     let mut interner = StringInterner::new();
@@ -25,8 +33,16 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            func max(a: i32, b: i32): i32 {
-                loop { }
+            func exponent(base: i32, exp: i32): i32 {
+                if exp == 0 { return 1 };
+                if exp < 0 { return 0 };
+
+                local mut result: i32 = 1;
+                loop {
+                    if exp == 0 { break result };
+                    result *= base;
+                    exp -= 1;
+                }
             }
             "# }
             .to_string(),
@@ -64,7 +80,7 @@ fn main() {
 
     let hir = {
         let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
-        println!("{:#?}", hir);
+        // println!("{:#?}", hir);
         for diagnostic in diagnostics.iter() {
             term::emit(
                 &mut writer.lock(),

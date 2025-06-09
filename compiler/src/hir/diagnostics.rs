@@ -85,6 +85,14 @@ pub enum DiagnosticContext {
     CannotMutateImmutable {
         file_id: FileId,
         span: TextSpan,
+    },
+    UndeclaredLabel {
+        file_id: FileId,
+        span: TextSpan,
+    },
+    BreakOutsideOfLoop {
+        file_id: FileId,
+        span: TextSpan,
     }
 }
 
@@ -213,6 +221,13 @@ impl DiagnosticContext {
             CannotMutateImmutable { file_id, span } => Diagnostic::error()
                 .with_message("cannot mutate immutable variable")
                 .with_label(Label::primary(file_id, span)),
+            UndeclaredLabel { file_id, span } => Diagnostic::error()
+                .with_message("undeclared label")
+                .with_label(Label::primary(file_id, span)),
+            BreakOutsideOfLoop { file_id, span } => Diagnostic::error()
+                .with_message("break outside of loop")
+                .with_label(Label::primary(file_id, span))
+                .with_note("cannot `break` outside of a loop or labeled block"),
         }
     }
 }
