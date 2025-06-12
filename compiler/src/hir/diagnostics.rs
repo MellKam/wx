@@ -93,7 +93,7 @@ pub enum DiagnosticContext {
     BreakOutsideOfLoop {
         file_id: FileId,
         span: TextSpan,
-    }
+    },
 }
 
 impl ast::BinaryOp {
@@ -187,11 +187,10 @@ impl DiagnosticContext {
                 expected,
             } => Diagnostic::error()
                 .with_message("type mismatch")
-                .with_label(Label::primary(file_id, span).with_message(format!(
-                    "expected `{}`, found `{}`",
-                    expected,
-                    actual
-                ))),
+                .with_label(
+                    Label::primary(file_id, span)
+                        .with_message(format!("expected `{}`, found `{}`", expected, actual)),
+                ),
             LiteralOutOfRange {
                 file_id,
                 primitive,
@@ -203,20 +202,33 @@ impl DiagnosticContext {
                     value, primitive
                 ))
                 .with_label(Label::primary(file_id, span)),
-            ComparisonTypeAnnotationRequired { 
-                file_id, left, right 
+            ComparisonTypeAnnotationRequired {
+                file_id,
+                left,
+                right,
             } => Diagnostic::error()
-                .with_message("type annotation required for at least one of binary operands of comparison expression")
+                .with_message("type annotation required")
                 .with_label(Label::primary(file_id, left))
-            .with_label(Label::primary(file_id, right)),
+                .with_note("at least one side of the comparison must have a known type")
+                .with_label(Label::primary(file_id, right)),
             UnreachableCode { file_id, span } => Diagnostic::warning()
                 .with_message("unreachable code")
-                .with_label(Label::primary(file_id, span).with_message("this code will never be executed")),
+                .with_label(
+                    Label::primary(file_id, span).with_message("this code will never be executed"),
+                ),
             UnableToCoerce { file_id, to, span } => Diagnostic::error()
-                .with_message(format!("unable to coerce to `{}`", to))
+                .with_message(format!("unable to coerce to type `{}`", to))
                 .with_label(Label::primary(file_id, span)),
-            OperatorCannotBeApplied { file_id, operator, ty, span } => Diagnostic::error()
-                .with_message(format!("operator `{}` cannot be applied to type `{}`", operator, ty))
+            OperatorCannotBeApplied {
+                file_id,
+                operator,
+                ty,
+                span,
+            } => Diagnostic::error()
+                .with_message(format!(
+                    "operator `{}` cannot be applied to type `{}`",
+                    operator, ty
+                ))
                 .with_label(Label::primary(file_id, span)),
             CannotMutateImmutable { file_id, span } => Diagnostic::error()
                 .with_message("cannot mutate immutable variable")
@@ -225,9 +237,9 @@ impl DiagnosticContext {
                 .with_message("undeclared label")
                 .with_label(Label::primary(file_id, span)),
             BreakOutsideOfLoop { file_id, span } => Diagnostic::error()
-                .with_message("break outside of loop")
+                .with_message("`break` outside of loop")
                 .with_label(Label::primary(file_id, span))
-                .with_note("cannot `break` outside of a loop or labeled block"),
+                .with_note("`break` can only be used inside loops or labeled blocks"),
         }
     }
 }

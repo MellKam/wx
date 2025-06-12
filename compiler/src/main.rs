@@ -16,12 +16,15 @@ mod hir;
 mod span;
 // mod wasm;
 
-// fn max(mut a: i32, b: i32) -> i32 {
-//     let x: i32 = loop {
-//         break 6 as i64;
-//     };
+// fn x() {
+//     let x = 2 == 2;
 
-//     x
+//     let x = {
+//         if false {
+//             break 1;
+//         };
+//         break 2;
+//     } + 4;
 // }
 
 fn main() {
@@ -39,10 +42,14 @@ fn main() {
 
                 local mut result: i32 = 1;
                 loop {
-                    if exp == 0 { break result };
+                    // if exp == 0 { break result };
                     result *= base;
                     exp -= 1;
                 }
+            }
+
+            export func main(): i32 {
+                exponent(2, 3)
             }
             "# }
             .to_string(),

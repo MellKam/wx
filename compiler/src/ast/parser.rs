@@ -824,7 +824,7 @@ impl<'input> Parser<'input> {
 
     fn parse_loop_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let loop_keyword = parser.lexer.next();
-        let block = parser.parse_expression(BindingPower::Default)?;
+        let block = Parser::parse_block_expression(parser)?;
 
         let span = TextSpan::merge(loop_keyword.span, block.span);
         Ok(Expression {

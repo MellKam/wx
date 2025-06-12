@@ -19,7 +19,7 @@ pub enum GlobalValue {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GlobalType {
+pub enum LookupCategory {
     Type,
     Value,
 }
@@ -30,7 +30,7 @@ pub struct GlobalContext<'interner> {
     pub functions: Vec<FunctionType>,
     pub enums: Vec<Enum>,
     pub interner: &'interner StringInterner<StringBackend>,
-    pub lookup: HashMap<(GlobalType, SymbolU32), GlobalValue>,
+    pub lookup: HashMap<(LookupCategory, SymbolU32), GlobalValue>,
 }
 
 impl<'interner> GlobalContext<'interner> {
@@ -40,15 +40,15 @@ impl<'interner> GlobalContext<'interner> {
     ) -> Self {
         let mut lookup = HashMap::new();
         lookup.insert(
-            (GlobalType::Value, interner.get_or_intern("_")),
+            (LookupCategory::Value, interner.get_or_intern("_")),
             GlobalValue::Placeholder,
         );
         lookup.insert(
-            (GlobalType::Value, interner.get_or_intern("true")),
+            (LookupCategory::Value, interner.get_or_intern("true")),
             GlobalValue::Bool { value: true },
         );
         lookup.insert(
-            (GlobalType::Value, interner.get_or_intern("false")),
+            (LookupCategory::Value, interner.get_or_intern("false")),
             GlobalValue::Bool { value: false },
         );
 
@@ -74,13 +74,11 @@ impl<'interner> GlobalContext<'interner> {
         let params = signature
             .params
             .iter()
-            .map(|param| self.resolve_type(param.ty.symbol).unwrap_or(Type::Unknown))
+            .map(|param| self.resolve_type(param.ty.symbol).unwrap_or(Type::Unit))
             .collect();
 
         let result = match &signature.result {
-            Some(ty) => self
-                .resolve_type(ty.symbol.clone())
-                .unwrap_or(Type::Unknown),
+            Some(ty) => self.resolve_type(ty.symbol.clone()).unwrap_or(Type::Unit),
             None => Type::Unit,
         };
 
@@ -147,7 +145,7 @@ impl<'interner> GlobalContext<'interner> {
         match &item.kind {
             ast::ItemKind::FunctionDefinition { signature, .. } => {
                 self.lookup.insert(
-                    (GlobalType::Value, signature.name.symbol),
+                    (LookupCategory::Value, signature.name.symbol),
                     GlobalValue::Function {
                         func_index: FuncIndex(self.functions.len() as u32),
                     },
@@ -157,7 +155,7 @@ impl<'interner> GlobalContext<'interner> {
             ast::ItemKind::EnumDefinition { name, .. } => {
                 let enum_index = EnumIndex(self.enums.len() as u32);
                 self.lookup.insert(
-                    (GlobalType::Type, name.symbol),
+                    (LookupCategory::Type, name.symbol),
                     GlobalValue::Enum { enum_index },
                 );
                 self.enums.push(self.build_enum(&item));
@@ -172,24 +170,24 @@ impl<'interner> GlobalContext<'interner> {
             Ok(ty) => return Some(ty),
             Err(_) => {}
         }
-        match self.lookup.get(&(GlobalType::Type, symbol)) {
+        match self.lookup.get(&(LookupCategory::Type, symbol)) {
             Some(GlobalValue::Enum { enum_index }) => Some(Type::Enum(*enum_index)),
             Some(_) => unreachable!(),
             None => None,
         }
     }
 
-    pub fn resolve_function(&self, symbol: SymbolU32) -> Option<FuncIndex> {
-        match self.lookup.get(&(GlobalType::Value, symbol)).cloned() {
-            Some(GlobalValue::Function { func_index }) => Some(func_index),
-            _ => None,
+    pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<GlobalValue> {
+        match self.lookup.get(&(LookupCategory::Value, symbol)).cloned() {
+            Some(value) => Some(value),
+            None => None,
         }
     }
 
-    pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<GlobalValue> {
-        match self.lookup.get(&(GlobalType::Value, symbol)).cloned() {
-            Some(value) => Some(value),
-            None => None,
+    pub fn resolve_function(&self, symbol: SymbolU32) -> Option<FuncIndex> {
+        match self.lookup.get(&(LookupCategory::Value, symbol)).cloned() {
+            Some(GlobalValue::Function { func_index }) => Some(func_index),
+            _ => None,
         }
     }
 }

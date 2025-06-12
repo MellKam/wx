@@ -5,8 +5,6 @@ mod global;
 mod local;
 
 use std::collections::HashMap;
-use std::slice::SliceIndex;
-use std::str;
 
 pub use builder::*;
 use string_interner::StringInterner;
@@ -88,14 +86,21 @@ pub enum Type {
     Bool,
     Unit,
     Never,
-    Unknown,
 }
 
 impl Type {
+    pub fn coercible_to(self, other: Type) -> Result<(), ()> {
+        match (self, other) {
+            (a, b) if a == b => Ok(()),
+            (Type::Never, _) => Ok(()),
+            _ => Err(()),
+        }
+    }
+
     pub fn unify(a: Type, b: Type) -> Result<Type, ()> {
         match (a, b) {
             (a, b) if a == b => Ok(a),
-            (Type::Never, ty) | (ty, Type::Never) => Ok(ty),
+            (_, Type::Never) | (Type::Never, _) => Ok(b),
             _ => Err(()),
         }
     }
@@ -125,7 +130,6 @@ impl std::fmt::Display for Type {
             Type::Bool => write!(f, "bool"),
             Type::Unit => write!(f, "unit"),
             Type::Never => write!(f, "never"),
-            Type::Unknown => write!(f, "unknown"),
         }
     }
 }

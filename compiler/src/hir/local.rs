@@ -3,19 +3,19 @@ use crate::hir::*;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BlockKind {
     Block,
+    /// Loop blocks have an implicit `continue` at the end.
+    /// Their type is inferred from `break` expressions, not the final
+    /// expression.
     Loop,
 }
 
 #[derive(Debug, Clone)]
 pub struct BlockScope {
-    pub label: Option<SymbolU32>,
     pub kind: BlockKind,
+    pub label: Option<SymbolU32>,
     pub parent: Option<ScopeIndex>,
     pub locals: Vec<Local>,
-    /// The type inferred so far from `break` or `return` or the result
-    /// expression.
     pub inferred_type: Option<Type>,
-    /// The type expected by the surrounding context.
     pub expected_type: Option<Type>,
 }
 
