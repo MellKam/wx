@@ -222,7 +222,7 @@ impl<'input> Parser<'input> {
         let enum_keyword = parser.lexer.next();
 
         let name_token = parser.next_expect(TokenKind::Identifier)?;
-        let name_symbol = parser.intern_identifier(name_token.clone())?;
+        let name_symbol = parser.intern_identifier(name_token.span)?;
         let name = Identifier {
             symbol: name_symbol,
             span: name_token.span,
@@ -230,7 +230,7 @@ impl<'input> Parser<'input> {
 
         _ = parser.next_expect(TokenKind::Colon)?;
         let type_token = parser.next_expect(TokenKind::Identifier)?;
-        let type_symbol = parser.intern_identifier(type_token.clone())?;
+        let type_symbol = parser.intern_identifier(type_token.span)?;
         let ty = Identifier {
             symbol: type_symbol,
             span: type_token.span,
@@ -258,7 +258,7 @@ impl<'input> Parser<'input> {
             }
 
             let variant_name_token = parser.next_expect(TokenKind::Identifier)?;
-            let variant_name_symbol = parser.intern_identifier(variant_name_token.clone())?;
+            let variant_name_symbol = parser.intern_identifier(variant_name_token.span)?;
             _ = parser.next_expect(TokenKind::Eq)?;
             let value_expr = parser.parse_expression(BindingPower::Default)?;
 
@@ -313,33 +313,21 @@ impl<'input> Parser<'input> {
         BindingPower,
     )> {
         match token.kind {
-            TokenKind::Identifier => {
-                let text = self
-                    .source
-                    .get(token.span.start().to_usize()..token.span.end().to_usize())
-                    .expect("token span shouldn't be empty");
-                match Keyword::try_from(text) {
-                    Ok(Keyword::Return) => {
-                        Some((Parser::parse_return_expression, BindingPower::Primary))
-                    }
-                    Ok(Keyword::If) => {
-                        Some((Parser::parse_if_else_expression, BindingPower::Primary))
-                    }
-                    Ok(Keyword::Loop) => {
-                        Some((Parser::parse_loop_expression, BindingPower::Primary))
-                    }
-                    Ok(Keyword::Break) => {
-                        Some((Parser::parse_break_expression, BindingPower::Primary))
-                    }
-                    Ok(Keyword::Continue) => {
-                        Some((Parser::parse_continue_expression, BindingPower::Primary))
-                    }
-                    Ok(Keyword::Unreachable) => {
-                        Some((Parser::parse_unreachable_expression, BindingPower::Primary))
-                    }
-                    _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
+            TokenKind::Identifier => match Keyword::try_from(token.span.text(self.source)) {
+                Ok(Keyword::Return) => {
+                    Some((Parser::parse_return_expression, BindingPower::Primary))
                 }
-            }
+                Ok(Keyword::If) => Some((Parser::parse_if_else_expression, BindingPower::Primary)),
+                Ok(Keyword::Loop) => Some((Parser::parse_loop_expression, BindingPower::Primary)),
+                Ok(Keyword::Break) => Some((Parser::parse_break_expression, BindingPower::Primary)),
+                Ok(Keyword::Continue) => {
+                    Some((Parser::parse_continue_expression, BindingPower::Primary))
+                }
+                Ok(Keyword::Unreachable) => {
+                    Some((Parser::parse_unreachable_expression, BindingPower::Primary))
+                }
+                _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
+            },
             TokenKind::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
             TokenKind::OpenBrace => Some((Parser::parse_block_expression, BindingPower::Primary)),
             TokenKind::OpenParen => {
@@ -412,7 +400,7 @@ impl<'input> Parser<'input> {
 
     fn parse_identifier(&mut self) -> Result<Identifier, ()> {
         let name_token = self.next_expect(TokenKind::Identifier)?;
-        let name_symbol = self.intern_identifier(name_token.clone())?;
+        let name_symbol = self.intern_identifier(name_token.span)?;
 
         Ok(Identifier {
             symbol: name_symbol,
@@ -422,7 +410,7 @@ impl<'input> Parser<'input> {
 
     fn parse_identifier_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let token = parser.lexer.next();
-        let symbol = parser.intern_identifier(token.clone())?;
+        let symbol = parser.intern_identifier(token.span)?;
 
         Ok(Expression {
             kind: ExprKind::Identifier { symbol },
@@ -443,13 +431,7 @@ impl<'input> Parser<'input> {
 
         let mut_or_name_token = parser.next_expect(TokenKind::Identifier)?;
         let mut_or_name_text = match mut_or_name_token.kind {
-            TokenKind::Identifier => parser
-                .source
-                .get(
-                    mut_or_name_token.span.start().to_usize()
-                        ..mut_or_name_token.span.end().to_usize(),
-                )
-                .unwrap(),
+            TokenKind::Identifier => mut_or_name_token.span.text(parser.source),
             _ => unreachable!(),
         };
 
@@ -679,12 +661,8 @@ impl<'input> Parser<'input> {
 
     fn parse_int_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let token = parser.lexer.next();
-        let text = parser
-            .source
-            .get(token.span.start().to_usize()..token.span.end().to_usize())
-            .expect("failed to get text");
         let value = match token.kind {
-            TokenKind::Int => text.parse::<i64>().ok(),
+            TokenKind::Int => token.span.text(parser.source).parse::<i64>().ok(),
             _ => unreachable!(),
         };
 
@@ -706,21 +684,15 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn intern_identifier(&mut self, token: Token) -> Result<SymbolU32, ()> {
-        let text = match token.kind {
-            TokenKind::Identifier => self
-                .source
-                .get(token.span.start().to_usize()..token.span.end().to_usize())
-                .expect("failed to get text"),
-            _ => return Err(()),
-        };
+    fn intern_identifier(&mut self, span: TextSpan) -> Result<SymbolU32, ()> {
+        let text = span.text(self.source);
 
         match Keyword::try_from(text) {
             Ok(_) => {
                 self.diagnostics
                     .push(DiagnosticContext::ReservedIdentifier {
                         file_id: self.ast.file_id,
-                        span: token.span,
+                        span,
                     });
 
                 Err(())
@@ -731,12 +703,7 @@ impl<'input> Parser<'input> {
 
     fn resolve_keyword(&mut self, token: Token) -> Result<Keyword, ()> {
         match token.kind {
-            TokenKind::Identifier => self
-                .source
-                .get(token.span.start().to_usize()..token.span.end().to_usize())
-                .map(|text| Keyword::try_from(text))
-                .ok_or(())
-                .and_then(|result| result),
+            TokenKind::Identifier => Keyword::try_from(token.span.text(self.source)),
             _ => Err(()),
         }
     }
@@ -837,7 +804,7 @@ impl<'input> Parser<'input> {
 
     fn parse_function_signature(parser: &mut Parser) -> Result<FunctionSignature, ()> {
         let name_token = parser.next_expect(TokenKind::Identifier)?;
-        let name_symbol = parser.intern_identifier(name_token.clone())?;
+        let name_symbol = parser.intern_identifier(name_token.span)?;
 
         _ = parser.next_expect(TokenKind::OpenParen)?;
         let mut params = Vec::new();
@@ -859,17 +826,46 @@ impl<'input> Parser<'input> {
                 _ => {}
             }
 
-            let param_name_token = parser.next_expect(TokenKind::Identifier)?;
-            let param_name_symbol = parser.intern_identifier(param_name_token.clone())?;
+            let name_or_mut_token = parser.next_expect(TokenKind::Identifier)?;
+            let (mutable, name) =
+                match Keyword::try_from(name_or_mut_token.span.text(parser.source)) {
+                    Ok(Keyword::Mut) => {
+                        let name_token = parser.next_expect(TokenKind::Identifier)?;
+                        let name_symbol = parser.intern_identifier(name_token.span)?;
+
+                        (
+                            Some(name_or_mut_token.span),
+                            Identifier {
+                                symbol: name_symbol,
+                                span: name_token.span,
+                            },
+                        )
+                    }
+                    Ok(_) => {
+                        parser
+                            .diagnostics
+                            .push(DiagnosticContext::ReservedIdentifier {
+                                file_id: parser.ast.file_id,
+                                span: name_or_mut_token.span,
+                            });
+                        return Err(());
+                    }
+                    Err(_) => (
+                        None,
+                        Identifier {
+                            symbol: parser.intern_identifier(name_or_mut_token.span)?,
+                            span: name_or_mut_token.span,
+                        },
+                    ),
+                };
+
             _ = parser.next_expect(TokenKind::Colon)?;
             let param_type = parser.next_expect(TokenKind::Identifier)?;
-            let param_type_symbol = parser.intern_identifier(param_type.clone())?;
+            let param_type_symbol = parser.intern_identifier(param_type.span)?;
 
             params.push(FunctionParam {
-                name: Identifier {
-                    symbol: param_name_symbol,
-                    span: param_name_token.span,
-                },
+                mutable,
+                name,
                 ty: Identifier {
                     symbol: param_type_symbol,
                     span: param_type.span,
@@ -882,7 +878,7 @@ impl<'input> Parser<'input> {
             TokenKind::Colon => {
                 let _ = parser.lexer.next();
                 let return_type_token = parser.next_expect(TokenKind::Identifier)?;
-                let return_type_symbol = parser.intern_identifier(return_type_token.clone())?;
+                let return_type_symbol = parser.intern_identifier(return_type_token.span)?;
 
                 Ok(FunctionSignature {
                     name: Identifier {

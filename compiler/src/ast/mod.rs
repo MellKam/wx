@@ -285,6 +285,7 @@ pub struct Statement {
 
 #[derive(Debug, Clone)]
 pub struct FunctionParam {
+    pub mutable: Option<TextSpan>,
     pub name: Identifier,
     pub ty: Identifier,
 }

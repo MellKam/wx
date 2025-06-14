@@ -25,7 +25,7 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            export func exponent(base: i32, exp: i32): i32 {
+            export func exponent(base: i32, mut exp: i32): i32 {
                 if exp == 0 { return 1 };
                 if exp < 0 { return 0 };
 
@@ -42,7 +42,7 @@ fn main() {
                 fibonacci_recursive(n - 1) + fibonacci_recursive(n - 2)
             }
 
-            export func fibonacci_iterative(n: i32): i32 {
+            export func fibonacci_iterative(mut n: i32): i32 {
                 if n <= 1 { return n };
 
                 local mut a: i32 = 0;

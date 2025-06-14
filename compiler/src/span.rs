@@ -58,6 +58,10 @@ impl TextSpan {
         first.end.0 <= last.start.0
     }
 
+    pub fn text<'a>(&self, source: &'a str) -> &'a str {
+        &source[self.start.to_usize()..self.end.to_usize()]
+    }
+
     #[inline]
     pub const fn start(&self) -> ByteIndex {
         self.start

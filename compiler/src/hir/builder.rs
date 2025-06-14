@@ -97,7 +97,10 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .global
                     .resolve_type(param.ty.symbol)
                     .unwrap_or(Type::Unit),
-                mutability: Mutability::Mutable,
+                mutability: match param.mutable {
+                    Some(_) => Mutability::Mutable,
+                    None => Mutability::Const,
+                },
             })
             .collect();
 
