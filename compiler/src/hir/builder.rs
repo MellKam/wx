@@ -18,6 +18,11 @@ pub struct Builder<'ast, 'interner> {
     hir: HIR,
 }
 
+enum BlockState<T> {
+    Exhaustive(T),
+    Incomplete(T),
+}
+
 impl<'ast, 'interner> Builder<'ast, 'interner> {
     pub fn build(
         ast: &'ast ast::Ast,
@@ -32,8 +37,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         for item in builder.ast.items.iter() {
             match &item.kind {
-                ast::ItemKind::ExportModifier { item, .. } => builder.build_item(item),
-                ast::ItemKind::FunctionDefinition { .. } => builder.build_item(item),
+                ast::ItemKind::ExportModifier { item, .. } => builder.build_item(item, true),
+                ast::ItemKind::FunctionDefinition { .. } => builder.build_item(item, false),
                 _ => unimplemented!("item kind not implemented"),
             }
         }
@@ -49,11 +54,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         (hir, diagnostics)
     }
 
-    fn build_item(&mut self, item: &ast::Item) {
+    fn build_item(&mut self, item: &ast::Item, export: bool) {
         match &item.kind {
             ast::ItemKind::FunctionDefinition { .. } => {
                 match self.build_function_definition(item) {
-                    Ok(func) => self.hir.functions.push(func),
+                    Ok(func) => {
+                        let func_index = FuncIndex(self.hir.functions.len() as u32);
+                        if export {
+                            self.hir.exports.push(hir::ExportItem::Function {
+                                func_index,
+                                name: func.name,
+                            });
+                        }
+                        self.hir.functions.push(func);
+                    }
                     Err(_) => {}
                 }
             }
@@ -534,14 +548,29 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             |ctx| {
                 let block = self.build_block_expression(ctx, block)?;
 
-                let scope = ctx.frame.scopes.get(ctx.scope_index.0 as usize).unwrap();
+                let scope = &ctx.frame.scopes[ctx.scope_index.0 as usize];
+                match (scope.expected_type, scope.inferred_type) {
+                    (Some(expected_type), Some(inferred_type))
+                        if !inferred_type.coercible_to(expected_type) =>
+                    {
+                        self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                            file_id: self.ast.file_id,
+                            expected: expected_type,
+                            actual: inferred_type,
+                            span: expr.span,
+                        });
+                        return Err(());
+                    }
+                    _ => {}
+                }
 
+                let ty = Some(block.ty.expect("loop block should have a type"));
                 Ok(hir::Expression {
                     kind: hir::ExprKind::Loop {
                         scope_index: ctx.scope_index,
                         block: Box::new(block),
                     },
-                    ty: scope.inferred_type.or(Some(Type::Never)),
+                    ty,
                 })
             },
         )
@@ -581,8 +610,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         match value.ty {
             Some(result_type) => match scope.inferred_type {
                 Some(inferred) => match result_type.coercible_to(inferred) {
-                    Ok(_) => Ok(inferred),
-                    Err(_) => {
+                    true => Ok(inferred),
+                    false => {
                         self.diagnostics.push(DiagnosticContext::TypeMistmatch {
                             file_id: self.ast.file_id,
                             expected: inferred,
@@ -608,18 +637,13 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         }
     }
 
-    fn build_block_expression(
+    fn build_block_statements(
         &mut self,
         ctx: &mut LocalContext,
-        expr: &ast::Expression,
-    ) -> Result<hir::Expression, ()> {
-        let (statements, maybe_ast_result) = match &expr.kind {
-            ast::ExprKind::Block { statements, result } => (statements, result),
-            _ => panic!("expected block expression"),
-        };
-
+        statements: &[ast::Statement],
+    ) -> BlockState<Vec<hir::Expression>> {
         let mut expressions = Vec::with_capacity(statements.len());
-        for (index, stmt) in statements.iter().enumerate() {
+        for stmt in statements.iter() {
             let stmt_expr = match self.build_statement(ctx, stmt) {
                 Ok(expr) => expr,
                 Err(_) => continue,
@@ -629,150 +653,157 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 Some(Type::Unit) => expressions.push(stmt_expr),
                 Some(Type::Never) => {
                     expressions.push(stmt_expr);
-
-                    if maybe_ast_result.is_some() || index + 1 < statements.len() {
-                        let span = TextSpan::merge(
-                            statements
-                                .get(index + 1)
-                                .map(|stmt| stmt.span)
-                                .or(maybe_ast_result.as_ref().map(|ast_result| ast_result.span))
-                                .unwrap(),
-                            match maybe_ast_result {
-                                Some(ast_result) => ast_result.span,
-                                None => statements.last().unwrap().span,
-                            },
-                        );
-
-                        self.diagnostics.push(DiagnosticContext::UnreachableCode {
-                            file_id: self.ast.file_id,
-                            span,
-                        });
-                    }
-
-                    let scope = ctx
-                        .frame
-                        .scopes
-                        .get_mut(ctx.scope_index.0 as usize)
-                        .unwrap();
-
-                    let inferred_type = scope.inferred_type.unwrap_or(Type::Never);
-                    scope.inferred_type = Some(inferred_type);
-
-                    match scope.expected_type {
-                        Some(expected_type) => match inferred_type.coercible_to(expected_type) {
-                            Ok(_) => {}
-                            Err(_) => {
-                                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                                    file_id: self.ast.file_id,
-                                    expected: expected_type,
-                                    actual: inferred_type,
-                                    span: expr.span,
-                                });
-                                return Err(());
-                            }
-                        },
-                        None => {}
-                    }
-
-                    return Ok(hir::Expression {
-                        kind: ExprKind::Block {
-                            scope_index: ctx.scope_index,
-                            expressions: expressions.into_boxed_slice(),
-                            result: None,
-                        },
-                        ty: scope.inferred_type,
-                    });
+                    // doesn't make sense to continue checking after that
+                    return BlockState::Exhaustive(expressions);
                 }
                 _ => unreachable!(),
             }
         }
 
-        match maybe_ast_result {
-            Some(ast_result) => {
-                let mut result = self.build_expression(
-                    ctx,
-                    ast_result,
-                    ctx.frame
-                        .scopes
-                        .get(ctx.scope_index.0 as usize)
-                        .unwrap()
-                        .expected_type,
-                )?;
+        BlockState::Incomplete(expressions)
+    }
 
-                let scope = ctx
-                    .frame
-                    .scopes
-                    .get_mut(ctx.scope_index.0 as usize)
-                    .unwrap();
+    fn build_block_expression(
+        &mut self,
+        ctx: &mut LocalContext,
+        block: &ast::Expression,
+    ) -> Result<hir::Expression, ()> {
+        let (statements, maybe_ast_result) = match &block.kind {
+            ast::ExprKind::Block { statements, result } => (statements, result),
+            _ => panic!("expected block expression"),
+        };
 
-                let inferred_type = self.infer_block_type(scope, &result, ast_result)?;
-                match result.ty {
-                    None => {
-                        self.coerce_untyped_expr(&mut result, ast_result, inferred_type)?;
-                    }
-                    _ => {}
-                }
-                scope.inferred_type = Some(inferred_type);
-
-                match scope.expected_type {
-                    Some(expected_type) => match inferred_type.coercible_to(expected_type) {
-                        Ok(_) => {}
-                        Err(_) => {
-                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                                file_id: self.ast.file_id,
-                                expected: expected_type,
-                                actual: inferred_type,
-                                span: ast_result.span,
-                            });
-                            return Err(());
-                        }
-                    },
-                    None => {}
+        let expressions = match self.build_block_statements(ctx, statements) {
+            BlockState::Exhaustive(expressions) => {
+                if maybe_ast_result.is_some() || expressions.len() < statements.len() {
+                    self.diagnostics.push(DiagnosticContext::UnreachableCode {
+                        file_id: self.ast.file_id,
+                        span: TextSpan::merge(
+                            statements.get(expressions.len()).unwrap().span,
+                            match maybe_ast_result {
+                                Some(ast_result) => ast_result.span,
+                                None => statements.last().unwrap().span,
+                            },
+                        ),
+                    });
                 }
 
-                Ok(hir::Expression {
-                    kind: hir::ExprKind::Block {
-                        scope_index: ctx.scope_index,
-                        expressions: expressions.into_boxed_slice(),
-                        result: Some(Box::new(result)),
-                    },
-                    ty: Some(inferred_type),
-                })
-            }
-            None => {
-                let scope = ctx
-                    .frame
-                    .scopes
-                    .get_mut(ctx.scope_index.0 as usize)
-                    .unwrap();
-
-                let inferred_type = scope.inferred_type.unwrap_or(Type::Unit);
+                let scope = &mut ctx.frame.scopes[ctx.scope_index.0 as usize];
+                let inferred_type = scope.inferred_type.unwrap_or(Type::Never);
                 scope.inferred_type = Some(inferred_type);
 
-                match scope.expected_type {
-                    Some(expected_type) => match inferred_type.coercible_to(expected_type) {
-                        Ok(_) => {}
-                        Err(_) => {
-                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                                file_id: self.ast.file_id,
-                                expected: expected_type,
-                                actual: inferred_type,
-                                span: expr.span,
-                            });
-                            return Err(());
-                        }
-                    },
-                    None => {}
-                };
-
-                Ok(hir::Expression {
+                return Ok(hir::Expression {
                     kind: ExprKind::Block {
                         scope_index: ctx.scope_index,
                         expressions: expressions.into_boxed_slice(),
                         result: None,
                     },
                     ty: Some(inferred_type),
+                });
+            }
+            BlockState::Incomplete(expressions) => expressions,
+        };
+
+        let BlockScope {
+            kind: block_kind, ..
+        } = ctx.frame.scopes[ctx.scope_index.0 as usize];
+        match block_kind {
+            BlockKind::Loop => match maybe_ast_result {
+                Some(ast_result) => {
+                    let result = self.build_expression(ctx, ast_result, Some(Type::Unit))?;
+                    let result = match result.ty {
+                        Some(ty) if ty.coercible_to(Type::Unit) => Some(result),
+                        _ => todo!("loop result must be coercible to unit"),
+                    };
+
+                    Ok(hir::Expression {
+                        kind: ExprKind::Block {
+                            scope_index: ctx.scope_index,
+                            expressions: expressions.into_boxed_slice(),
+                            result: result.map(Box::new),
+                        },
+                        ty: Some(
+                            ctx.frame.scopes[ctx.scope_index.0 as usize]
+                                .inferred_type
+                                .unwrap_or(Type::Never),
+                        ),
+                    })
+                }
+                None => Ok(hir::Expression {
+                    kind: ExprKind::Block {
+                        scope_index: ctx.scope_index,
+                        expressions: expressions.into_boxed_slice(),
+                        result: None,
+                    },
+                    ty: Some(
+                        ctx.frame.scopes[ctx.scope_index.0 as usize]
+                            .inferred_type
+                            .unwrap_or(Type::Never),
+                    ),
+                }),
+            },
+            BlockKind::Block => {
+                let result =
+                    self.build_block_result_expression(ctx, maybe_ast_result.as_deref())?;
+
+                let scope = &ctx.frame.scopes[ctx.scope_index.0 as usize];
+                let inferred_type = scope.inferred_type.expect("should have inferred type");
+                match scope.expected_type {
+                    Some(expected_type) if !inferred_type.coercible_to(expected_type) => {
+                        self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                            file_id: self.ast.file_id,
+                            expected: expected_type,
+                            actual: inferred_type,
+                            span: block.span,
+                        });
+                        return Err(());
+                    }
+                    _ => {}
+                }
+
+                Ok(hir::Expression {
+                    kind: ExprKind::Block {
+                        scope_index: ctx.scope_index,
+                        expressions: expressions.into_boxed_slice(),
+                        result: result.map(Box::new),
+                    },
+                    ty: Some(inferred_type),
                 })
+            }
+        }
+    }
+
+    fn build_block_result_expression(
+        &mut self,
+        ctx: &mut LocalContext,
+        ast_result: Option<&ast::Expression>,
+    ) -> Result<Option<hir::Expression>, ()> {
+        match ast_result {
+            Some(ast_result) => {
+                let mut result = self.build_expression(
+                    ctx,
+                    ast_result,
+                    ctx.frame.scopes[ctx.scope_index.0 as usize].expected_type,
+                )?;
+
+                let scope = &mut ctx.frame.scopes[ctx.scope_index.0 as usize];
+                let inferred_type = self.infer_block_type(scope, &result, ast_result)?;
+                scope.inferred_type = Some(inferred_type);
+                match result.ty {
+                    None => {
+                        self.coerce_untyped_expr(&mut result, ast_result, inferred_type)?;
+                    }
+                    _ => {}
+                }
+
+                Ok(Some(result))
+            }
+            None => {
+                let scope = &mut ctx.frame.scopes[ctx.scope_index.0 as usize];
+                let inferred_type = scope.inferred_type.unwrap_or(Type::Unit);
+                scope.inferred_type = Some(inferred_type);
+
+                Ok(None)
             }
         }
     }
@@ -806,19 +837,16 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     }
 
                     match scope.expected_type {
-                        Some(expected_type) => match inferred_type.coercible_to(expected_type) {
-                            Ok(_) => {}
-                            Err(_) => {
-                                self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                                    file_id: self.ast.file_id,
-                                    expected: expected_type,
-                                    actual: inferred_type,
-                                    span: expr.span,
-                                });
-                                return Err(());
-                            }
-                        },
-                        None => {}
+                        Some(expected_type) if !inferred_type.coercible_to(expected_type) => {
+                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                                file_id: self.ast.file_id,
+                                expected: expected_type,
+                                actual: inferred_type,
+                                span: expr.span,
+                            });
+                            return Err(());
+                        }
+                        _ => {}
                     };
 
                     Ok(hir::Expression {
@@ -843,19 +871,16 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 scope.inferred_type = Some(inferred_type);
 
                 match scope.expected_type {
-                    Some(expected_type) => match inferred_type.coercible_to(expected_type) {
-                        Ok(_) => {}
-                        Err(_) => {
-                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
-                                file_id: self.ast.file_id,
-                                expected: expected_type,
-                                actual: inferred_type,
-                                span: expr.span,
-                            });
-                            return Err(());
-                        }
-                    },
-                    None => {}
+                    Some(expected_type) if inferred_type.coercible_to(expected_type) => {
+                        self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                            file_id: self.ast.file_id,
+                            expected: expected_type,
+                            actual: inferred_type,
+                            span: expr.span,
+                        });
+                        return Err(());
+                    }
+                    _ => {}
                 };
 
                 Ok(hir::Expression {
@@ -946,8 +971,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 let scope = ctx.frame.scopes.get_mut(scope_index.0 as usize).unwrap();
                 match scope.inferred_type {
                     Some(inferred) => match Type::Unit.coercible_to(inferred) {
-                        Ok(_) => {}
-                        Err(_) => {
+                        true => {}
+                        false => {
                             self.diagnostics.push(DiagnosticContext::TypeMistmatch {
                                 file_id: self.ast.file_id,
                                 expected: inferred,
@@ -1103,7 +1128,24 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             .enumerate()
             .map(|(index, ast_argument)| {
                 let expected_type = func_type.params.get(index).copied().unwrap();
-                self.build_expression(ctx, ast_argument, Some(expected_type))
+                let mut argument = self.build_expression(ctx, ast_argument, Some(expected_type))?;
+                match argument.ty {
+                    Some(ty) => {
+                        if !ty.coercible_to(expected_type) {
+                            self.diagnostics.push(DiagnosticContext::TypeMistmatch {
+                                file_id: self.ast.file_id,
+                                expected: expected_type,
+                                actual: ty,
+                                span: ast_argument.span,
+                            });
+                        }
+                    }
+                    None => {
+                        self.coerce_untyped_expr(&mut argument, ast_argument, expected_type)?;
+                    }
+                }
+
+                Ok(argument)
             })
             .collect::<Result<_, _>>()?;
 
@@ -1315,7 +1357,25 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             hir::Mutability::Mutable => {}
         }
 
-        let right = self.build_expression(ctx, ast_right, Some(local.ty))?;
+        let mut right = self.build_expression(ctx, ast_right, Some(local.ty))?;
+        match right.ty {
+            Some(ty) => {
+                if !ty.coercible_to(local.ty) {
+                    self.diagnostics
+                        .push(DiagnosticContext::BinaryExpressionMistmatch {
+                            file_id: self.ast.file_id,
+                            left: ast_left.span,
+                            left_type: local.ty,
+                            operator,
+                            right: ast_right.span,
+                            right_type: ty,
+                        });
+                }
+            }
+            None => {
+                self.coerce_untyped_expr(&mut right, &ast_right, local.ty)?;
+            }
+        }
 
         Ok(hir::Expression {
             kind: hir::ExprKind::Binary {

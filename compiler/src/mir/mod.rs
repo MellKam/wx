@@ -34,7 +34,7 @@ impl FunctionType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Type {
     I32,
     I64,
@@ -193,16 +193,23 @@ pub struct Local {
 pub struct Function {
     pub name: SymbolU32,
     pub ty: FunctionType,
-    pub scopes: Vec<LocalScope>,
+    pub frame: Vec<BlockScope>,
     pub block: Expression,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ScopeIndex(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockKind {
+    Block,
+    Loop,
+}
+
 #[derive(Debug)]
-pub struct LocalScope {
-    pub parent_scope: Option<ScopeIndex>,
+pub struct BlockScope {
+    pub kind: BlockKind,
+    pub parent: Option<ScopeIndex>,
     pub locals: Vec<Local>,
     pub result: Type,
 }

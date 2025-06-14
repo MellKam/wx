@@ -2,8 +2,13 @@ const bytes = await Deno.readFile("./out.wasm");
 // console.log(bytes);
 const module = await WebAssembly.compile(bytes);
 const instance = await WebAssembly.instantiate(module);
-const { fibonacci } = instance.exports as {
-	fibonacci: (n: number) => number;
-};
+const { exponent, fibonacci_iterative, fibonacci_recursive } =
+	instance.exports as {
+		exponent: (base: number, exp: number) => number;
+		fibonacci_recursive: (n: number) => number;
+		fibonacci_iterative: (n: number) => number;
+	};
 
-console.log(fibonacci(10)); // Should print 55
+console.log(exponent(3, 9));
+console.log(fibonacci_recursive(10));
+console.log(fibonacci_iterative(10));

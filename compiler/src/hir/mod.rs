@@ -2,7 +2,7 @@ pub mod builder;
 pub mod diagnostics;
 pub mod evaluator;
 mod global;
-mod local;
+pub mod local;
 
 use std::collections::HashMap;
 
@@ -89,11 +89,11 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn coercible_to(self, other: Type) -> Result<(), ()> {
+    pub fn coercible_to(self, other: Type) -> bool {
         match (self, other) {
-            (a, b) if a == b => Ok(()),
-            (Type::Never, _) => Ok(()),
-            _ => Err(()),
+            (a, b) if a == b => true,
+            (Type::Never, _) => true,
+            _ => false,
         }
     }
 

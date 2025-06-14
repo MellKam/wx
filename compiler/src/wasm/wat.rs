@@ -143,6 +143,28 @@ impl EncodeWithContext for wasm::Expression {
                 }
                 sink.push_str(")");
             }
+            Expression::Loop {
+                expressions,
+                result,
+            } => {
+                sink.push_str("(loop ");
+                match result {
+                    wasm::BlockResult::Empty => {}
+                    wasm::BlockResult::SingleValue(ty) => {
+                        sink.push_str("(result ");
+                        ty.encode(sink);
+                        sink.push_str(")");
+                    }
+                }
+
+                for expr_index in expressions {
+                    ctx.encode(sink, *expr_index);
+                }
+                sink.push_str(")");
+            }
+            Expression::Unreachable => {
+                sink.push_str("(unreachable)");
+            }
             Expression::Break { value, depth } => {
                 sink.push_str("(br ");
                 depth.encode(sink);

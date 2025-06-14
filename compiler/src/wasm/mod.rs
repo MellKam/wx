@@ -76,6 +76,11 @@ pub enum Expression {
         depth: u32,
         value: Option<ExprIndex>,
     },
+    Unreachable,
+    Loop {
+        expressions: Box<[ExprIndex]>,
+        result: BlockResult,
+    },
     IfElse {
         condition: ExprIndex,
         result: BlockResult,
@@ -230,7 +235,7 @@ pub struct TypeSection {
     signatures: Box<[FunctionType]>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
 pub struct TypeIndex(pub u32);
 
 #[derive(Debug, Clone)]

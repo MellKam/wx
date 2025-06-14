@@ -116,6 +116,21 @@ impl ast::BinaryOp {
             | BinaryOp::GreaterEq => {
                 format!("cannot compare `{}` to `{}`", left, right)
             }
+            BinaryOp::MulAssign => {
+                format!("cannot multiply-assign `{}` to `{}`", right, left)
+            }
+            BinaryOp::DivAssign => {
+                format!("cannot divide-assign `{}` by `{}`", right, left)
+            }
+            BinaryOp::RemAssign => {
+                format!("cannot remainder-assign `{}` by `{}`", right, left)
+            }
+            BinaryOp::AddAssign => {
+                format!("cannot add-assign `{}` to `{}`", right, left)
+            }
+            BinaryOp::SubAssign => {
+                format!("cannot subtract-assign `{}` from `{}`", right, left)
+            }
             _ => {
                 format!("cannot perform operation on `{}` and `{}`", left, right)
             }
@@ -145,8 +160,12 @@ impl DiagnosticContext {
                 let message = operator.get_error_message(left_type, right_type);
                 Diagnostic::error()
                     .with_message(message)
-                    .with_label(Label::primary(file_id, left))
-                    .with_label(Label::primary(file_id, right))
+                    .with_label(
+                        Label::secondary(file_id, left).with_message(format!("`{}`", left_type)),
+                    )
+                    .with_label(
+                        Label::primary(file_id, right).with_message(format!("`{}`", right_type)),
+                    )
             }
             UnknownType { file_id, span } => Diagnostic::error()
                 .with_message("unknown type")

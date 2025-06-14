@@ -12,20 +12,9 @@ use string_interner::StringInterner;
 mod ast;
 mod files;
 mod hir;
-// mod mir;
+mod mir;
 mod span;
-// mod wasm;
-
-// fn x() {
-//     let x = 2 == 2;
-
-//     let x = {
-//         if false {
-//             break 1;
-//         };
-//         break 2;
-//     } + 4;
-// }
+mod wasm;
 
 fn main() {
     let start_time = Instant::now();
@@ -36,20 +25,39 @@ fn main() {
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            func exponent(base: i32, exp: i32): i32 {
+            export func exponent(base: i32, exp: i32): i32 {
                 if exp == 0 { return 1 };
                 if exp < 0 { return 0 };
 
                 local mut result: i32 = 1;
                 loop {
-                    // if exp == 0 { break result };
+                    if exp == 0 { break result };
                     result *= base;
                     exp -= 1;
                 }
             }
 
-            export func main(): i32 {
-                exponent(2, 3)
+            export func fibonacci_recursive(n: i32): i32 {
+                if n <= 1 { return n };
+                fibonacci_recursive(n - 1) + fibonacci_recursive(n - 2)
+            }
+
+            export func fibonacci_iterative(n: i32): i32 {
+                if n <= 1 { return n };
+
+                local mut a: i32 = 0;
+                local mut b: i32 = 1;
+                local mut c: i32 = 0;
+
+                loop {
+                    if n == 0 { break a };
+                    if n == 1 { break b };
+
+                    c = a + b;
+                    a = b;
+                    b = c;
+                    n -= 1;
+                }
             }
             "# }
             .to_string(),
@@ -87,37 +95,43 @@ fn main() {
 
     let hir = {
         let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
-        // println!("{:#?}", hir);
+        let diagnostics = diagnostics
+            .into_iter()
+            .map(|d| d.to_diagnostic())
+            .collect::<Vec<_>>();
+
         for diagnostic in diagnostics.iter() {
-            term::emit(
-                &mut writer.lock(),
-                &config,
-                &files,
-                &diagnostic.clone().to_diagnostic(),
-            )
-            .unwrap();
+            term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+        }
+
+        if diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error || d.severity == Severity::Bug)
+        {
+            std::process::exit(1);
         }
 
         hir
     };
 
-    // let mir = {
-    //     let mir = mir::Builder::build(&hir);
-    //     // println!("{:#?}", mir);
+    let mir = {
+        let mir = mir::Builder::build(&hir);
+        // println!("{:#?}", mir);
 
-    //     mir
-    // };
+        mir
+    };
 
-    // let wasm_module = wasm::Builder::build(&mir, &interner);
-    // let bytecode = wasm::Encoder::encode(&wasm_module);
+    let wasm_module = wasm::Builder::build(&mir, &interner);
+    // println!("{:#?}", wasm_module);
+    let bytecode = wasm::Encoder::encode(&wasm_module);
 
     let duration = start_time.elapsed();
     println!("Time to compile: {:?}", duration);
 
-    // let mut file = std::fs::File::create("out.wat").unwrap();
-    // file.write(wasm_module.to_wat().as_bytes()).unwrap();
+    let mut file = std::fs::File::create("out.wat").unwrap();
+    file.write(wasm_module.to_wat().as_bytes()).unwrap();
 
-    // let mut file = std::fs::File::create("out.wasm").unwrap();
-    // file.write(&bytecode).unwrap();
-    // println!("Wrote {} bytes to out.wasm", bytecode.len());
+    let mut file = std::fs::File::create("out.wasm").unwrap();
+    file.write(&bytecode).unwrap();
+    println!("Wrote {} bytes to out.wasm", bytecode.len());
 }
