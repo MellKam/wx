@@ -25,6 +25,7 @@ impl<'a> Builder<'a> {
                 .iter()
                 .map(|func| builder.build_function(func))
                 .collect(),
+            exports: hir.exports.clone(),
         }
     }
 
@@ -51,30 +52,39 @@ impl<'a> Builder<'a> {
             }
             hir::Type::Unit => mir::Type::Unit,
             hir::Type::Never => mir::Type::Never,
-            hir::Type::Unknown => panic!("unknown type"),
         }
     }
 
     fn build_function(&self, function: &hir::Function) -> mir::Function {
-        let block = self.build_block_expression(
-            ScopeIndex(0),
-            &function.expressions,
-            match &function.result {
-                Some(result) => Some(result),
-                None => None,
-            },
-            self.to_mir_type(function.ty.result),
-        );
+        let block = match &function.block.kind {
+            hir::ExprKind::Block {
+                expressions,
+                result,
+                ..
+            } => self.build_block_expression(
+                ScopeIndex(0),
+                expressions,
+                match result {
+                    Some(result) => Some(result),
+                    None => None,
+                },
+                self.to_mir_type(function.ty.result),
+            ),
+            _ => unreachable!(),
+        };
 
         mir::Function {
-            export: function.export,
             name: function.name,
-            scopes: function
-                .scopes
+            frame: function
+                .stack
                 .scopes
                 .iter()
-                .map(|scope| mir::LocalScope {
-                    parent_scope: match scope.parent_scope {
+                .map(|scope| mir::BlockScope {
+                    kind: match scope.kind {
+                        hir::local::BlockKind::Block => mir::BlockKind::Block,
+                        hir::local::BlockKind::Loop => mir::BlockKind::Loop,
+                    },
+                    parent: match scope.parent {
                         Some(index) => Some(mir::ScopeIndex(index.0)),
                         None => None,
                     },
@@ -87,6 +97,7 @@ impl<'a> Builder<'a> {
                             mutability: local.mutability,
                         })
                         .collect(),
+                    result: self.to_mir_type(scope.inferred_type.expect("must be typed")),
                 })
                 .collect(),
             ty: self.to_mir_function_type(function.ty.clone()),
@@ -95,11 +106,16 @@ impl<'a> Builder<'a> {
     }
 
     fn build_expression(&self, expr: &hir::Expression) -> mir::Expression {
-        let ty = self.to_mir_type(expr.ty.unwrap());
+        let ty = self.to_mir_type(match expr.ty {
+            Some(ty) => ty,
+            None => panic!("expression type must be defined {expr:?}"),
+        });
         match &expr.kind {
-            hir::ExprKind::Binary { operator, lhs, rhs } => {
-                self.build_binary_expression(*operator, &lhs, &rhs, ty)
-            }
+            hir::ExprKind::Binary {
+                operator,
+                left,
+                right,
+            } => self.build_binary_expression(*operator, &left, &right, ty),
             hir::ExprKind::Unary { operator, operand } => {
                 self.build_unary_expression(*operator, &operand, ty)
             }
@@ -228,6 +244,52 @@ impl<'a> Builder<'a> {
                     ty,
                 }
             }
+            hir::ExprKind::Break { scope_index, value } => mir::Expression {
+                kind: mir::ExprKind::Break {
+                    scope_index: mir::ScopeIndex(scope_index.0),
+                    value: match value {
+                        Some(value) => Some(Box::new(self.build_expression(value))),
+                        None => None,
+                    },
+                },
+                ty,
+            },
+            hir::ExprKind::Continue { scope_index } => mir::Expression {
+                kind: mir::ExprKind::Continue {
+                    scope_index: mir::ScopeIndex(scope_index.0),
+                },
+                ty: mir::Type::Never,
+            },
+            hir::ExprKind::Unreachable => mir::Expression {
+                kind: mir::ExprKind::Unreachable,
+                ty: mir::Type::Never,
+            },
+            hir::ExprKind::Loop { block, scope_index } => {
+                let block = match &block.kind {
+                    hir::ExprKind::Block {
+                        expressions,
+                        result,
+                        ..
+                    } => self.build_block_expression(
+                        *scope_index,
+                        expressions,
+                        match result {
+                            Some(result) => Some(result),
+                            None => None,
+                        },
+                        mir::Type::Never,
+                    ),
+                    _ => unreachable!(),
+                };
+
+                mir::Expression {
+                    kind: mir::ExprKind::Loop {
+                        scope_index: mir::ScopeIndex(scope_index.0),
+                        block: Box::new(block),
+                    },
+                    ty: mir::Type::Never,
+                }
+            }
         }
     }
 
@@ -238,55 +300,10 @@ impl<'a> Builder<'a> {
         result: Option<&hir::Expression>,
         ty: mir::Type,
     ) -> mir::Expression {
-        match (expressions.len(), result) {
-            (0, None) => {
-                return mir::Expression {
-                    kind: mir::ExprKind::Block {
-                        scope_index: mir::ScopeIndex(scope_index.0),
-                        expressions: Box::new([]),
-                    },
-                    ty: mir::Type::Unit,
-                };
-            }
-            (0, Some(result)) => {
-                let result = self.build_expression(result);
-                match scope_index.0 {
-                    0 => {
-                        return mir::Expression {
-                            kind: mir::ExprKind::Block {
-                                scope_index: mir::ScopeIndex(scope_index.0),
-                                expressions: Box::new([result]),
-                            },
-                            ty,
-                        };
-                    }
-                    _ => return result,
-                }
-            }
-            _ => {}
-        }
-
         let expressions: Box<_> = expressions
             .iter()
             .map(|expr| self.build_expression(expr))
-            .chain(match result {
-                Some(result) => {
-                    let expr = self.build_expression(result);
-
-                    // 0 is the root scope of the function
-                    match scope_index.0 == 0 {
-                        true => Some(expr),
-                        false => Some(mir::Expression {
-                            kind: mir::ExprKind::Break {
-                                scope_index: mir::ScopeIndex(scope_index.0),
-                                value: Some(Box::new(expr)),
-                            },
-                            ty: mir::Type::Never,
-                        }),
-                    }
-                }
-                None => None,
-            })
+            .chain(result.map(|result| self.build_expression(result)))
             .collect();
 
         mir::Expression {

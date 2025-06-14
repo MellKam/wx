@@ -1,10 +1,7 @@
-#![feature(allocator_api)]
-
 use std::io::Write;
 use std::time::Instant;
 
 use ast::Parser;
-use bumpalo::Bump;
 use codespan_reporting::diagnostic::Severity;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
@@ -23,15 +20,44 @@ fn main() {
     let start_time = Instant::now();
     let mut interner = StringInterner::new();
 
-    let bump = Bump::new();
-
     let mut files = Files::new();
     let main_file_id = files
         .add(
             "main.wax".to_string(),
             indoc! { r#"
-            export fn main(): bool {
-                5 * 5 == 25 as i32
+            export func exponent(base: i32, exp: i32): i32 {
+                if exp == 0 { return 1 };
+                if exp < 0 { return 0 };
+
+                local mut result: i32 = 1;
+                loop {
+                    if exp == 0 { break result };
+                    result *= base;
+                    exp -= 1;
+                }
+            }
+
+            export func fibonacci_recursive(n: i32): i32 {
+                if n <= 1 { return n };
+                fibonacci_recursive(n - 1) + fibonacci_recursive(n - 2)
+            }
+
+            export func fibonacci_iterative(n: i32): i32 {
+                if n <= 1 { return n };
+
+                local mut a: i32 = 0;
+                local mut b: i32 = 1;
+                local mut c: i32 = 0;
+
+                loop {
+                    if n == 0 { break a };
+                    if n == 1 { break b };
+
+                    c = a + b;
+                    a = b;
+                    b = c;
+                    n -= 1;
+                }
             }
             "# }
             .to_string(),
@@ -43,7 +69,6 @@ fn main() {
 
     let ast = {
         let (ast, diagnostics) = Parser::parse(
-            &bump,
             main_file_id,
             files.get(main_file_id).unwrap().source.as_ref(),
             &mut interner,
@@ -69,16 +94,21 @@ fn main() {
     };
 
     let hir = {
-        let (hir, diagnostics) = hir::Builder::build(&ast, &interner);
-        // println!("{:#?}", hir);
+        let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
+        let diagnostics = diagnostics
+            .into_iter()
+            .map(|d| d.to_diagnostic())
+            .collect::<Vec<_>>();
+
         for diagnostic in diagnostics.iter() {
-            term::emit(
-                &mut writer.lock(),
-                &config,
-                &files,
-                &diagnostic.clone().to_diagnostic(),
-            )
-            .unwrap();
+            term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+        }
+
+        if diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error || d.severity == Severity::Bug)
+        {
+            std::process::exit(1);
         }
 
         hir
@@ -86,12 +116,13 @@ fn main() {
 
     let mir = {
         let mir = mir::Builder::build(&hir);
-        println!("{:#?}", mir);
+        // println!("{:#?}", mir);
 
         mir
     };
 
     let wasm_module = wasm::Builder::build(&mir, &interner);
+    // println!("{:#?}", wasm_module);
     let bytecode = wasm::Encoder::encode(&wasm_module);
 
     let duration = start_time.elapsed();

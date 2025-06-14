@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "bumpalo"
-version = "3.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1628fb46dfa0b37568d12e5edd512553eccf6a22a78e8bde00bb4aed84d5bdbf"
-
-[[package]]
 name = "codespan-reporting"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -23,7 +17,6 @@ dependencies = [
 name = "compiler"
 version = "0.1.0"
 dependencies = [
- "bumpalo",
  "codespan-reporting",
  "indoc",
  "leb128fmt",

@@ -27,13 +27,11 @@ pub enum DiagnosticContext {
     },
     InvalidEnumRepresentation {
         file_id: FileId,
-        item_id: ast::ItemId,
         type_: hir::Type,
         span: TextSpan,
     },
     InvalidEnumValue {
         file_id: FileId,
-        item_id: ast::ItemId,
         variant_index: usize,
     },
     UndeclaredIdentifier {
@@ -55,13 +53,45 @@ pub enum DiagnosticContext {
     TypeMistmatch {
         file_id: FileId,
         expected: hir::Type,
-        actual: Option<hir::Type>,
+        actual: hir::Type,
         span: TextSpan,
     },
     LiteralOutOfRange {
         file_id: FileId,
         primitive: hir::PrimitiveType,
         value: i64,
+        span: TextSpan,
+    },
+    ComparisonTypeAnnotationRequired {
+        file_id: FileId,
+        left: TextSpan,
+        right: TextSpan,
+    },
+    UnreachableCode {
+        file_id: FileId,
+        span: TextSpan,
+    },
+    UnableToCoerce {
+        file_id: FileId,
+        to: hir::Type,
+        span: TextSpan,
+    },
+    OperatorCannotBeApplied {
+        file_id: FileId,
+        operator: BinaryOp,
+        ty: hir::Type,
+        span: TextSpan,
+    },
+    CannotMutateImmutable {
+        file_id: FileId,
+        span: TextSpan,
+    },
+    UndeclaredLabel {
+        file_id: FileId,
+        span: TextSpan,
+    },
+    BreakOutsideOfLoop {
+        file_id: FileId,
         span: TextSpan,
     },
 }
@@ -85,6 +115,21 @@ impl ast::BinaryOp {
             | BinaryOp::Greater
             | BinaryOp::GreaterEq => {
                 format!("cannot compare `{}` to `{}`", left, right)
+            }
+            BinaryOp::MulAssign => {
+                format!("cannot multiply-assign `{}` to `{}`", right, left)
+            }
+            BinaryOp::DivAssign => {
+                format!("cannot divide-assign `{}` by `{}`", right, left)
+            }
+            BinaryOp::RemAssign => {
+                format!("cannot remainder-assign `{}` by `{}`", right, left)
+            }
+            BinaryOp::AddAssign => {
+                format!("cannot add-assign `{}` to `{}`", right, left)
+            }
+            BinaryOp::SubAssign => {
+                format!("cannot subtract-assign `{}` from `{}`", right, left)
             }
             _ => {
                 format!("cannot perform operation on `{}` and `{}`", left, right)
@@ -115,8 +160,12 @@ impl DiagnosticContext {
                 let message = operator.get_error_message(left_type, right_type);
                 Diagnostic::error()
                     .with_message(message)
-                    .with_label(Label::primary(file_id, left))
-                    .with_label(Label::primary(file_id, right))
+                    .with_label(
+                        Label::secondary(file_id, left).with_message(format!("`{}`", left_type)),
+                    )
+                    .with_label(
+                        Label::primary(file_id, right).with_message(format!("`{}`", right_type)),
+                    )
             }
             UnknownType { file_id, span } => Diagnostic::error()
                 .with_message("unknown type")
@@ -125,7 +174,6 @@ impl DiagnosticContext {
                 file_id,
                 type_,
                 span,
-                item_id: _,
             } => Diagnostic::error()
                 .with_message(format!(
                     "can't represent enum with `{}`: expected i32 or i64",
@@ -134,7 +182,6 @@ impl DiagnosticContext {
                 .with_label(Label::primary(file_id, span)),
             InvalidEnumValue {
                 file_id,
-                item_id: _,
                 variant_index,
             } => Diagnostic::error().with_message("invalid enum variant value"),
             UndeclaredIdentifier { file_id, span } => Diagnostic::error()
@@ -159,11 +206,10 @@ impl DiagnosticContext {
                 expected,
             } => Diagnostic::error()
                 .with_message("type mismatch")
-                .with_label(Label::primary(file_id, span).with_message(format!(
-                    "expected `{}`, found `{}`",
-                    expected,
-                    actual.unwrap_or(hir::Type::Unknown)
-                ))),
+                .with_label(
+                    Label::primary(file_id, span)
+                        .with_message(format!("expected `{}`, found `{}`", expected, actual)),
+                ),
             LiteralOutOfRange {
                 file_id,
                 primitive,
@@ -175,6 +221,44 @@ impl DiagnosticContext {
                     value, primitive
                 ))
                 .with_label(Label::primary(file_id, span)),
+            ComparisonTypeAnnotationRequired {
+                file_id,
+                left,
+                right,
+            } => Diagnostic::error()
+                .with_message("type annotation required")
+                .with_label(Label::primary(file_id, left))
+                .with_note("at least one side of the comparison must have a known type")
+                .with_label(Label::primary(file_id, right)),
+            UnreachableCode { file_id, span } => Diagnostic::warning()
+                .with_message("unreachable code")
+                .with_label(
+                    Label::primary(file_id, span).with_message("this code will never be executed"),
+                ),
+            UnableToCoerce { file_id, to, span } => Diagnostic::error()
+                .with_message(format!("unable to coerce to type `{}`", to))
+                .with_label(Label::primary(file_id, span)),
+            OperatorCannotBeApplied {
+                file_id,
+                operator,
+                ty,
+                span,
+            } => Diagnostic::error()
+                .with_message(format!(
+                    "operator `{}` cannot be applied to type `{}`",
+                    operator, ty
+                ))
+                .with_label(Label::primary(file_id, span)),
+            CannotMutateImmutable { file_id, span } => Diagnostic::error()
+                .with_message("cannot mutate immutable variable")
+                .with_label(Label::primary(file_id, span)),
+            UndeclaredLabel { file_id, span } => Diagnostic::error()
+                .with_message("undeclared label")
+                .with_label(Label::primary(file_id, span)),
+            BreakOutsideOfLoop { file_id, span } => Diagnostic::error()
+                .with_message("`break` outside of loop")
+                .with_label(Label::primary(file_id, span))
+                .with_note("`break` can only be used inside loops or labeled blocks"),
         }
     }
 }

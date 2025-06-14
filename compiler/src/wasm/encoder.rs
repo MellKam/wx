@@ -335,6 +335,22 @@ impl EncodeWithContext for wasm::Expression {
                 }
                 sink.push(Instruction::End as u8);
             }
+            Expression::Loop {
+                expressions,
+                result,
+            } => {
+                sink.push(Instruction::Loop as u8);
+                result.encode(sink);
+                for expr_index in expressions.iter() {
+                    module
+                        .get_expr(*expr_index)
+                        .encode_with_context(sink, module);
+                }
+                sink.push(Instruction::End as u8);
+            }
+            Expression::Unreachable => {
+                sink.push(Instruction::Unreachable as u8);
+            }
             Expression::Break { depth, value } => {
                 match value {
                     Some(value) => {

@@ -1,18 +1,66 @@
 pub mod builder;
 pub mod diagnostics;
 pub mod evaluator;
+mod global;
+pub mod local;
+
 use std::collections::HashMap;
-use std::str;
 
 pub use builder::*;
+use string_interner::StringInterner;
+use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
 use crate::ast;
+use crate::files::FileId;
+use crate::hir::local::StackFrame;
+
+#[derive(Debug, Clone)]
+pub enum ExportItem {
+    Function {
+        func_index: FuncIndex,
+        name: SymbolU32,
+    },
+    // TODO: Global
+}
 
 #[derive(Debug, Clone)]
 pub struct HIR {
+    pub file_id: FileId,
     pub functions: Vec<Function>,
     pub enums: Vec<Enum>,
+    pub exports: Vec<ExportItem>,
+}
+
+impl HIR {
+    pub fn new(file_id: FileId) -> Self {
+        HIR {
+            file_id,
+            functions: Vec::new(),
+            enums: Vec::new(),
+            exports: Vec::new(),
+        }
+    }
+
+    pub fn push_func(&mut self, function: Function) -> FuncIndex {
+        let index = FuncIndex(self.functions.len() as u32);
+        self.functions.push(function);
+        index
+    }
+
+    pub fn get_func(&self, index: FuncIndex) -> Option<&Function> {
+        self.functions.get(index.0 as usize)
+    }
+
+    pub fn push_enum(&mut self, enum_: Enum) -> EnumIndex {
+        let index = EnumIndex(self.enums.len() as u32);
+        self.enums.push(enum_);
+        index
+    }
+
+    pub fn get_enum(&self, index: EnumIndex) -> Option<&Enum> {
+        self.enums.get(index.0 as usize)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -30,27 +78,47 @@ impl std::fmt::Display for PrimitiveType {
     }
 }
 
-impl TryFrom<&str> for PrimitiveType {
-    type Error = ();
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Type {
+    Primitive(PrimitiveType),
+    Function(FuncIndex),
+    Enum(EnumIndex),
+    Bool,
+    Unit,
+    Never,
+}
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "i32" => Ok(PrimitiveType::I32),
-            "i64" => Ok(PrimitiveType::I64),
+impl Type {
+    pub fn coercible_to(self, other: Type) -> bool {
+        match (self, other) {
+            (a, b) if a == b => true,
+            (Type::Never, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn unify(a: Type, b: Type) -> Result<Type, ()> {
+        match (a, b) {
+            (a, b) if a == b => Ok(a),
+            (_, Type::Never) | (Type::Never, _) => Ok(b),
             _ => Err(()),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Type {
-    Primitive(PrimitiveType),
-    Function(FunctionIndex),
-    Enum(EnumIndex),
-    Bool,
-    Unit,
-    Never,
-    Unknown,
+impl TryFrom<&str> for Type {
+    type Error = ();
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "i32" => Ok(Type::Primitive(PrimitiveType::I32)),
+            "i64" => Ok(Type::Primitive(PrimitiveType::I64)),
+            "bool" => Ok(Type::Bool),
+            "unit" => Ok(Type::Unit),
+            "never" => Ok(Type::Never),
+            _ => Err(()),
+        }
+    }
 }
 
 impl std::fmt::Display for Type {
@@ -62,7 +130,6 @@ impl std::fmt::Display for Type {
             Type::Bool => write!(f, "bool"),
             Type::Unit => write!(f, "unit"),
             Type::Never => write!(f, "never"),
-            Type::Unknown => write!(f, "unknown"),
         }
     }
 }
@@ -73,20 +140,20 @@ pub struct FunctionType {
     pub result: Type,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Expression {
     pub kind: ExprKind,
     pub ty: Option<Type>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub struct LocalIndex(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeIndex(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FunctionIndex(pub u32);
+pub struct FuncIndex(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnumIndex(pub u32);
@@ -94,7 +161,7 @@ pub struct EnumIndex(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnumVariantIndex(pub u32);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Placeholder,
     Int(i64),
@@ -108,7 +175,7 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
     },
-    Function(FunctionIndex),
+    Function(FuncIndex),
     Return {
         value: Option<Box<Expression>>,
     },
@@ -122,12 +189,12 @@ pub enum ExprKind {
     },
     Binary {
         operator: ast::BinaryOp,
-        lhs: Box<Expression>,
-        rhs: Box<Expression>,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     Call {
         callee: Box<Expression>,
-        arguments: Vec<Expression>,
+        arguments: Box<[Expression]>,
     },
     Block {
         scope_index: ScopeIndex,
@@ -138,6 +205,18 @@ pub enum ExprKind {
         condition: Box<Expression>,
         then_block: Box<Expression>,
         else_block: Option<Box<Expression>>,
+    },
+    Break {
+        scope_index: ScopeIndex,
+        value: Option<Box<Expression>>,
+    },
+    Continue {
+        scope_index: ScopeIndex,
+    },
+    Unreachable,
+    Loop {
+        scope_index: ScopeIndex,
+        block: Box<Expression>,
     },
 }
 
@@ -155,45 +234,11 @@ pub struct Local {
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalScope {
-    pub parent_scope: Option<ScopeIndex>,
-    pub locals: Vec<Local>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LocalScopes {
-    pub scopes: Vec<LocalScope>,
-}
-
-impl LocalScopes {
-    pub fn push_local(&mut self, scope_index: ScopeIndex, local: Local) -> LocalIndex {
-        let scope = self
-            .scopes
-            .get_mut(scope_index.0 as usize)
-            .expect("invalid scope index");
-        let local_index = LocalIndex(scope.locals.len() as u32);
-        scope.locals.push(local);
-        local_index
-    }
-
-    pub fn get_local(&self, scope_index: ScopeIndex, local_index: LocalIndex) -> Option<&Local> {
-        let scope = self
-            .scopes
-            .get(scope_index.0 as usize)
-            .expect("invalid scope index");
-
-        scope.locals.get(local_index.0 as usize)
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct Function {
-    pub export: bool,
     pub name: SymbolU32,
     pub ty: FunctionType,
-    pub scopes: LocalScopes,
-    pub expressions: Box<[Expression]>,
-    pub result: Option<Expression>,
+    pub stack: StackFrame,
+    pub block: Box<Expression>,
 }
 
 #[derive(Debug, Clone)]
@@ -201,118 +246,11 @@ pub struct Enum {
     pub name: SymbolU32,
     pub ty: PrimitiveType,
     pub variants: Box<[EnumVariant]>,
-    pub variant_lookup: HashMap<SymbolU32, EnumVariantIndex>,
+    pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: SymbolU32,
     pub value: i64,
-}
-
-#[derive(Debug, Clone)]
-pub enum GlobalValue {
-    Function(FunctionIndex),
-    EnumVariant {
-        enum_index: EnumIndex,
-        variant_index: EnumVariantIndex,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub enum GlobalType {
-    Enum(EnumIndex),
-}
-
-#[derive(Debug)]
-pub struct GlobalScope {
-    pub functions: Vec<FunctionType>,
-    pub enums: Vec<Enum>,
-    pub type_lookup: HashMap<SymbolU32, GlobalType>,
-    pub value_lookup: HashMap<SymbolU32, GlobalValue>,
-}
-
-impl GlobalScope {
-    pub fn new() -> Self {
-        GlobalScope {
-            functions: Vec::new(),
-            enums: Vec::new(),
-            type_lookup: HashMap::new(),
-            value_lookup: HashMap::new(),
-        }
-    }
-
-    pub fn get_enum(&self, enum_index: EnumIndex) -> Option<&Enum> {
-        self.enums.get(enum_index.0 as usize)
-    }
-
-    pub fn add_enum(&mut self, enum_: Enum) -> EnumIndex {
-        let index = EnumIndex(self.enums.len() as u32);
-        self.type_lookup.insert(enum_.name, GlobalType::Enum(index));
-        self.enums.push(enum_);
-        index
-    }
-
-    pub fn get_function(&self, func_index: FunctionIndex) -> Option<&FunctionType> {
-        self.functions.get(func_index.0 as usize)
-    }
-
-    pub fn add_function(&mut self, func_name: SymbolU32, func_type: FunctionType) -> FunctionIndex {
-        let index = FunctionIndex(self.functions.len() as u32);
-        self.value_lookup
-            .insert(func_name, GlobalValue::Function(index));
-        self.functions.push(func_type);
-        index
-    }
-}
-
-#[derive(Debug, Clone)]
-struct FunctionContext {
-    pub local_lookup: HashMap<(ScopeIndex, SymbolU32), LocalIndex>,
-    pub func_index: FunctionIndex,
-    pub scope_index: ScopeIndex,
-    pub scopes: LocalScopes,
-}
-
-impl FunctionContext {
-    pub fn push_local(&mut self, local: Local) -> LocalIndex {
-        let name = local.name;
-        let index = self.scopes.push_local(self.scope_index, local);
-        self.local_lookup.insert((self.scope_index, name), index);
-        index
-    }
-
-    pub fn resolve_local(&self, symbol: SymbolU32) -> Option<(ScopeIndex, LocalIndex)> {
-        let mut scope_index = self.scope_index;
-        loop {
-            match self.local_lookup.get(&(scope_index, symbol)) {
-                Some(&local_index) => {
-                    return Some((scope_index, local_index));
-                }
-                None => match self.scopes.scopes.get(scope_index.0 as usize) {
-                    Some(scope) => scope_index = scope.parent_scope?,
-                    None => break,
-                },
-            }
-        }
-
-        None
-    }
-
-    pub fn enter_scope<T>(&mut self, handler: impl FnOnce(&mut Self) -> T) -> T {
-        let new_scope = LocalScope {
-            parent_scope: Some(self.scope_index),
-            locals: Vec::new(),
-        };
-        self.scope_index = ScopeIndex(self.scopes.scopes.len() as u32);
-        self.scopes.scopes.push(new_scope);
-
-        let result = handler(self);
-
-        self.scope_index = match self.scopes.scopes.get(self.scope_index.0 as usize) {
-            Some(scope) => scope.parent_scope.unwrap(),
-            None => unreachable!("invalid current scope index"),
-        };
-        result
-    }
 }

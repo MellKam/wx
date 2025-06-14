@@ -8,6 +8,7 @@ use crate::hir;
 #[derive(Debug)]
 pub struct MIR {
     pub functions: Vec<Function>,
+    pub exports: Vec<hir::ExportItem>,
 }
 
 pub type FunctionIndex = u32;
@@ -16,7 +17,7 @@ pub type LocalIndex = u32;
 #[derive(Debug, Clone)]
 pub struct FunctionType {
     pub param_count: usize,
-    pub params_results: Vec<Type>,
+    pub params_results: Box<[Type]>,
 }
 
 impl FunctionType {
@@ -33,7 +34,7 @@ impl FunctionType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Type {
     I32,
     I64,
@@ -121,6 +122,10 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         value: Option<Box<Expression>>,
     },
+    Continue {
+        scope_index: ScopeIndex,
+    },
+    Unreachable,
     IfElse {
         condition: Box<Expression>,
         then_block: Box<Expression>,
@@ -165,6 +170,10 @@ pub enum ExprKind {
         left: Box<Expression>,
         right: Box<Expression>,
     },
+    Loop {
+        scope_index: ScopeIndex,
+        block: Box<Expression>,
+    },
 }
 
 #[derive(Debug)]
@@ -182,18 +191,25 @@ pub struct Local {
 
 #[derive(Debug)]
 pub struct Function {
-    pub export: bool,
     pub name: SymbolU32,
     pub ty: FunctionType,
-    pub scopes: Vec<LocalScope>,
+    pub frame: Vec<BlockScope>,
     pub block: Expression,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ScopeIndex(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockKind {
+    Block,
+    Loop,
+}
+
 #[derive(Debug)]
-pub struct LocalScope {
-    pub parent_scope: Option<ScopeIndex>,
+pub struct BlockScope {
+    pub kind: BlockKind,
+    pub parent: Option<ScopeIndex>,
     pub locals: Vec<Local>,
+    pub result: Type,
 }
