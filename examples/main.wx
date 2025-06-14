@@ -1,0 +1,22 @@
+export func main(): i32 {
+  if true {
+    return 0;
+  };
+
+  local x: i32 = 5 + 5;
+
+  local u = a: {
+    local mut y: i32 = 10;
+    if y > 5 {
+      break :a 10 as i64;
+
+      hwagewageaw
+    } else {
+      y = 0;
+    };
+
+    y
+  };
+
+  if x > 5 { 5 as i64 } else { x + 10 }
+}

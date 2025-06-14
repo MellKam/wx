@@ -1,0 +1,22 @@
+export func fibonacci(n: i32): i32 {
+  if n <= 1 { return n };
+  fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+export func fibonacci_iterative(mut n: i32): i32 {
+  if n <= 1 { return n };
+
+  local mut a: i32 = 0;
+  local mut b: i32 = 1;
+  local mut c: i32 = 0;
+
+  loop {
+    if n == 0 { break a };
+    if n == 1 { break b };
+
+    c = a + b;
+    a = b;
+    b = c;
+    n -= 1;
+  }
+}

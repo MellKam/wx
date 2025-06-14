@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["wx-compiler", "wx-compiler-wasm", "wx-compiler-cli"]
