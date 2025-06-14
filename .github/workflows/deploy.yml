@@ -40,5 +40,5 @@ jobs:
           project: "wx-lang"
           entrypoint: "https://deno.land/std@0.217.0/http/file_server.ts"
           root: "web"
-          include: dist
+          include: "web/dist/**"
           
