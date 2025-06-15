@@ -13,7 +13,3 @@ func pow(base: i32, mut exp: i32): i32 {
     exp -= 1;
   }
 }
-
-export func main(): i32 {
-  pow(3, 3)
-}

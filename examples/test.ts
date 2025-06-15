@@ -1,5 +1,5 @@
 const bytes = await Deno.readFile("./out.wasm");
-// console.log(bytes);
+
 const module = await WebAssembly.compile(bytes);
 const instance = await WebAssembly.instantiate(module);
 const { exponent, fibonacci_iterative, fibonacci_recursive } =

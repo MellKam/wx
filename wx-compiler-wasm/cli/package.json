@@ -1,0 +1,22 @@
+{
+	"name": "wx-compiler",
+	"version": "0.0.3",
+	"files": [
+		"wx-compiler"
+	],
+	"description": "CLI for wx-compiler-wasm",
+	"author": {
+		"name": "Artem Melnyk"
+	},
+	"type": "module",
+	"bin": {
+		"wx-compiler": "./wx-compiler"
+	},
+	"dependencies": {
+		"wx-compiler-wasm": "0.0.1",
+		"commander": "14.0.0"
+	},
+	"devDependencies": {
+		"@types/node": "24.0.1"
+	}
+}

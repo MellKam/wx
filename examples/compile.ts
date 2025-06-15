@@ -1,12 +1,14 @@
 import { compile } from "npm:wx-compiler-wasm";
 
 const bytecode = compile(
-	"main.wax",
+	"main.wx",
 	"export func add(a: i32, b: i32): i32 { a + b }"
 );
+
 if (!bytecode) {
 	throw new Error("Compilation failed");
 }
+console.log(bytecode);
 
 const module = await WebAssembly.compile(bytecode);
 const instance = await WebAssembly.instantiate(module);
