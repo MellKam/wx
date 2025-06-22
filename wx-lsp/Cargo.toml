@@ -1,0 +1,12 @@
+[package]
+name = "wx-lsp"
+version = "0.0.1"
+authors = ["Artem Melnyk <melkam464@gmail.com>"]
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+lsp-server = "0.7.6"
+lsp-types = { version = "0.97.0", features = ["proposed"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }

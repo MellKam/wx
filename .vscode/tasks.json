@@ -1,0 +1,16 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "deno",
+			"command": "task",
+			"args": ["--cwd", "${workspaceFolder}/wx-vscode", "watch"],
+			"problemMatcher": ["$tsc-watch"],
+			"isBackground": true,
+			"presentation": {
+				"reveal": "never"
+			},
+			"label": "deno: watch"
+		}
+	]
+}
