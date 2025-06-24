@@ -28,7 +28,7 @@ You can also access compiler functionality directly with `wx-compiler-wasm` pack
 ```ts
 import { compile } from "wx-compiler-wasm";
 
-const bytecode = compile("main.wx", `export func main(): i32 { 2 + 2 }`);
+const bytecode = compile("main.wx", `export func main() -> i32 { 2 + 2 }`);
 ```
 
 Diagnostics are currently unavailable in the WASM version, so the code will panic on any error and you won't be able to understand what went wrong. This will be fixed in the future.
@@ -240,7 +240,7 @@ Labels can be used with plain blocks, loops and if expressions. Only loops don't
 Functions are defined using the `func` keyword. They can have parameters and a return type. If the return type is not specified, it defaults to `unit`(no return value).
 
 ```wx
-func add(a: i32, b: i32): i32 {
+func add(a: i32, b: i32) -> i32 {
     a + b
 }
 ```
@@ -248,7 +248,7 @@ func add(a: i32, b: i32): i32 {
 To export a function from the module, add an export keyword before the function definition:
 
 ```wx
-export func main(): i32 {
+export func main() -> i32 {
     2 + 2
 }
 ```

@@ -35,7 +35,7 @@ impl<'a> Builder<'a> {
             params_results: ty
                 .params
                 .into_iter()
-                .map(|ty| self.to_mir_type(ty))
+                .map(|param| self.to_mir_type(param.ty))
                 .chain(std::iter::once(self.to_mir_type(ty.result)))
                 .collect(),
         }
@@ -74,7 +74,7 @@ impl<'a> Builder<'a> {
         };
 
         mir::Function {
-            name: function.name,
+            name: function.name.symbol,
             frame: function
                 .stack
                 .scopes
@@ -92,7 +92,7 @@ impl<'a> Builder<'a> {
                         .locals
                         .iter()
                         .map(|local| mir::Local {
-                            name: local.name,
+                            name: local.name.symbol,
                             ty: self.to_mir_type(local.ty),
                             mutability: local.mutability,
                         })
@@ -172,6 +172,7 @@ impl<'a> Builder<'a> {
                 local_index,
                 scope_index,
                 expr,
+                ..
             } => match expr.kind {
                 hir::ExprKind::Int(value) if value == 0 => {
                     return mir::Expression {

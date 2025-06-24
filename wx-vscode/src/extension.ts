@@ -11,7 +11,7 @@ let client: LanguageClient;
 
 export function activate(context: ExtensionContext) {
 	const serverModule = context.asAbsolutePath(
-		path.join("..", "target", "release", "wx-lsp")
+		path.join("..", "target", "debug", "wx-lsp")
 	);
 	console.log("serverModule:", serverModule);
 
@@ -44,7 +44,7 @@ export function activate(context: ExtensionContext) {
 	console.log("WX Language Server is now active!");
 }
 
-export function deactivate(): Thenable<void> | undefined {
+export function deactivate() {
 	if (!client) return;
 	return client.stop();
 }

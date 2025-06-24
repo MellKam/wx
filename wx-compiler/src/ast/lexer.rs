@@ -47,6 +47,7 @@ pub enum TokenKind {
     Vbar,
     VbarVbar,
     Caret,
+    Arrow,
     // Special
     Comment,
     Whitespace,
@@ -102,6 +103,7 @@ impl std::fmt::Display for TokenKind {
             Vbar => "vertical bar",
             VbarVbar => "vertical bar vertical bar",
             Caret => "caret",
+            Arrow => "arrow",
 
             Comment => "comment",
             Whitespace => "whitespace",
@@ -158,7 +160,7 @@ impl<'a> Lexer<'a> {
 
             // Moderately Frequent
             '+' => self.consume_and_check('=', TokenKind::PlusEq, TokenKind::Plus),
-            '-' => self.consume_and_check('=', TokenKind::MinusEq, TokenKind::Minus),
+            '-' => self.consume_dash(),
             '*' => self.consume_and_check('=', TokenKind::StarEq, TokenKind::Star),
             '<' => self.consume_open_angle(),
             '>' => self.consume_close_angle(),
@@ -197,6 +199,21 @@ impl<'a> Lexer<'a> {
                 return token;
             }
             _ => return fallback,
+        }
+    }
+
+    fn consume_dash(&mut self) -> TokenKind {
+        let mut peeker = self.chars.clone();
+        match peeker.next().unwrap_or(EOF_CHAR) {
+            '=' => {
+                _ = self.chars.next();
+                return TokenKind::MinusEq;
+            }
+            '>' => {
+                _ = self.chars.next();
+                return TokenKind::Arrow;
+            }
+            _ => return TokenKind::Minus,
         }
     }
 

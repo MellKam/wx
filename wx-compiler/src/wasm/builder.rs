@@ -125,10 +125,12 @@ impl Builder {
             .exports
             .iter()
             .map(|item| match item {
-                hir::ExportItem::Function { func_index, name } => {
+                hir::ExportItem::Function { func_index } => {
+                    let func = mir.functions.get(func_index.0 as usize).unwrap();
+
                     wasm::ExportItem::Function(wasm::FunctionExport {
                         index: wasm::FunctionIndex(func_index.0),
-                        name: interner.resolve(*name).unwrap(),
+                        name: interner.resolve(func.name).unwrap(),
                     })
                 }
             })
@@ -138,10 +140,10 @@ impl Builder {
         for func in mir.functions.iter() {
             let ty = wasm::FunctionType::from(func.ty.clone());
             let next_type_index = wasm::TypeIndex(types.len() as u32);
-            let type_index = types.entry(ty).or_insert(next_type_index).clone();
+            let type_index = types.entry(ty.clone()).or_insert(next_type_index).clone();
             function_signatures.push(type_index);
 
-            let func_expressions = match &func.block.kind {
+            let expressions = match &func.block.kind {
                 mir::ExprKind::Block { expressions, .. } => expressions,
                 _ => unreachable!(),
             };
@@ -174,7 +176,7 @@ impl Builder {
                 scopes: &func.frame,
             };
 
-            let func_expressions = func_expressions
+            let expressions = expressions
                 .iter()
                 .map(|expr| builder.build_expression(&mut ctx, expr))
                 .collect();
@@ -182,7 +184,7 @@ impl Builder {
             functions.push(wasm::FunctionBody {
                 name: interner.resolve(func.name).unwrap(),
                 locals: ctx.locals,
-                expressions: func_expressions,
+                expressions,
             });
         }
 

@@ -49,9 +49,9 @@ pub struct LocalContext {
 
 impl LocalContext {
     pub fn push_local(&mut self, local: Local) -> LocalIndex {
-        let name = local.name;
+        let name_symbol = local.name.symbol;
         let index = self.frame.push_local(self.scope_index, local);
-        self.lookup.insert((self.scope_index, name), index);
+        self.lookup.insert((self.scope_index, name_symbol), index);
         index
     }
 

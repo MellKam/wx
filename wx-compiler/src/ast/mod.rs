@@ -186,7 +186,7 @@ impl std::fmt::Display for BinaryOp {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Identifier {
     pub symbol: SymbolU32,
     pub span: TextSpan,
@@ -295,7 +295,6 @@ pub struct FunctionSignature {
     pub name: Identifier,
     pub params: Box<[FunctionParam]>,
     pub result: Option<Identifier>,
-    pub span: TextSpan,
 }
 
 #[derive(Debug, Clone)]

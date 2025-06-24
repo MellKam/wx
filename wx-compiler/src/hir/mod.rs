@@ -1,6 +1,5 @@
 pub mod builder;
 pub mod diagnostics;
-pub mod evaluator;
 mod global;
 pub mod local;
 
@@ -14,13 +13,11 @@ use string_interner::symbol::SymbolU32;
 use crate::ast;
 use crate::files::FileId;
 use crate::hir::local::StackFrame;
+use crate::span::TextSpan;
 
 #[derive(Debug, Clone)]
 pub enum ExportItem {
-    Function {
-        func_index: FuncIndex,
-        name: SymbolU32,
-    },
+    Function { func_index: FuncIndex },
     // TODO: Global
 }
 
@@ -134,16 +131,10 @@ impl std::fmt::Display for Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct FunctionType {
-    pub params: Box<[Type]>,
-    pub result: Type,
-}
-
 #[derive(Debug, Clone)]
-pub struct Expression {
-    pub kind: ExprKind,
-    pub ty: Option<Type>,
+pub struct FunctionType {
+    pub params: Box<[Local]>,
+    pub result: Type,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -167,6 +158,8 @@ pub enum ExprKind {
     Int(i64),
     Bool(bool),
     LocalDeclaration {
+        name: ast::Identifier,
+        type_annotation: Option<ast::Identifier>,
         scope_index: ScopeIndex,
         local_index: LocalIndex,
         expr: Box<Expression>,
@@ -220,22 +213,29 @@ pub enum ExprKind {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct Expression {
+    pub kind: ExprKind,
+    pub span: TextSpan,
+    pub ty: Option<Type>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mutability {
     Mutable,
     Const,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Local {
-    pub name: SymbolU32,
+    pub name: ast::Identifier,
     pub ty: Type,
     pub mutability: Mutability,
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub name: SymbolU32,
+    pub name: ast::Identifier,
     pub ty: FunctionType,
     pub stack: StackFrame,
     pub block: Box<Expression>,
@@ -243,7 +243,7 @@ pub struct Function {
 
 #[derive(Debug, Clone)]
 pub struct Enum {
-    pub name: SymbolU32,
+    pub name: ast::Identifier,
     pub ty: PrimitiveType,
     pub variants: Box<[EnumVariant]>,
     pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
@@ -251,6 +251,6 @@ pub struct Enum {
 
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
-    pub name: SymbolU32,
+    pub name: ast::Identifier,
     pub value: i64,
 }
