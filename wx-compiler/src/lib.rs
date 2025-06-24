@@ -6,12 +6,12 @@ use string_interner::backend::StringBackend;
 
 use crate::files::FileId;
 
-mod ast;
+pub mod ast;
 pub mod files;
-mod hir;
-mod mir;
-mod span;
-mod wasm;
+pub mod hir;
+pub mod mir;
+pub mod span;
+pub mod wasm;
 
 pub struct CompilationResult<'a> {
     pub module: Option<wasm::Module<'a>>,

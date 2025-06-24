@@ -531,4 +531,6 @@ dependencies = [
  "lsp-types",
  "serde",
  "serde_json",
+ "string-interner",
+ "wx-compiler",
 ]

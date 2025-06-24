@@ -6,15 +6,29 @@
 		"vscode": "^1.101.0"
 	},
 	"categories": [
-		"Other"
+		"Programming Languages"
 	],
 	"activationEvents": [],
 	"main": "./out/extension.js",
+	"publisher": "Artem Melnyk",
 	"contributes": {
 		"commands": [
 			{
 				"command": "wx-vscode.helloWorld",
 				"title": "Hello World"
+			}
+		],
+		"languages": [
+			{
+				"id": "wx",
+				"aliases": [
+					"WX",
+					"wx"
+				],
+				"extensions": [
+					".wx"
+				],
+				"configuration": "./language-configuration.json"
 			}
 		]
 	},

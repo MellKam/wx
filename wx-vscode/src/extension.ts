@@ -27,9 +27,9 @@ export function activate(context: ExtensionContext) {
 	};
 
 	const clientOptions: LanguageClientOptions = {
-		documentSelector: [{ scheme: "file", language: "plaintext" }],
+		documentSelector: [{ scheme: "file", language: "wx" }],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
+			fileEvents: workspace.createFileSystemWatcher("**/*.wx"),
 		},
 	};
 
@@ -45,8 +45,6 @@ export function activate(context: ExtensionContext) {
 }
 
 export function deactivate(): Thenable<void> | undefined {
-	if (!client) {
-		return undefined;
-	}
+	if (!client) return;
 	return client.stop();
 }
