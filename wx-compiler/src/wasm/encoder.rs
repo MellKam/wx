@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use leb128fmt;
 
 use crate::wasm;
@@ -18,59 +16,6 @@ enum SectionId {
     Element = 9,
     Code = 10,
     Data = 11,
-}
-
-trait Encode {
-    fn encode(&self, sink: &mut Vec<u8>);
-}
-
-trait EncodeWithContext {
-    fn encode_with_context(&self, sink: &mut Vec<u8>, module: &wasm::Module);
-}
-
-impl Encode for i32 {
-    fn encode(&self, sink: &mut Vec<u8>) {
-        let (value, pos) = leb128fmt::encode_s32(*self).unwrap();
-        sink.extend_from_slice(&value[..pos]);
-    }
-}
-
-impl Encode for i64 {
-    fn encode(&self, sink: &mut Vec<u8>) {
-        let (value, pos) = leb128fmt::encode_s64(*self).unwrap();
-        sink.extend_from_slice(&value[..pos]);
-    }
-}
-
-impl Encode for u32 {
-    fn encode(&self, sink: &mut Vec<u8>) {
-        let (value, pos) = leb128fmt::encode_u32(*self).unwrap();
-        sink.extend_from_slice(&value[..pos]);
-    }
-}
-
-impl Encode for wasm::ValueType {
-    fn encode(&self, sink: &mut Vec<u8>) {
-        let opcode = match self {
-            wasm::ValueType::I32 => 0x7F,
-            wasm::ValueType::I64 => 0x7E,
-        };
-
-        sink.push(opcode);
-    }
-}
-
-impl Encode for wasm::BlockResult {
-    fn encode(&self, sink: &mut Vec<u8>) {
-        match self {
-            wasm::BlockResult::Empty => {
-                sink.push(0x40);
-            }
-            wasm::BlockResult::SingleValue(ty) => {
-                ty.encode(sink);
-            }
-        }
-    }
 }
 
 #[repr(u8)]
@@ -282,8 +227,75 @@ enum Instruction {
     F64ReinterpretI64 = 0xBF,
 }
 
+trait Encode {
+    fn encode(&self, sink: &mut Vec<u8>);
+}
+
+impl Encode for i32 {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        let (value, pos) = leb128fmt::encode_s32(*self).unwrap();
+        sink.extend_from_slice(&value[..pos]);
+    }
+}
+
+impl Encode for i64 {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        let (value, pos) = leb128fmt::encode_s64(*self).unwrap();
+        sink.extend_from_slice(&value[..pos]);
+    }
+}
+
+impl Encode for u32 {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        let (value, pos) = leb128fmt::encode_u32(*self).unwrap();
+        sink.extend_from_slice(&value[..pos]);
+    }
+}
+
+impl Encode for wasm::ValueType {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        let opcode = match self {
+            wasm::ValueType::I32 => 0x7F,
+            wasm::ValueType::I64 => 0x7E,
+        };
+
+        sink.push(opcode);
+    }
+}
+
+impl Encode for wasm::BlockResult {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        match self {
+            wasm::BlockResult::Empty => {
+                sink.push(0x40);
+            }
+            wasm::BlockResult::SingleValue(ty) => {
+                ty.encode(sink);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+struct EncodeContext<'a> {
+    module: &'a wasm::Module<'a>,
+    func_index: wasm::FunctionIndex,
+}
+
+impl EncodeContext<'_> {
+    fn encode_expr(&self, sink: &mut Vec<u8>, expr_index: wasm::ExprIndex) {
+        self.module
+            .get_expr(expr_index)
+            .encode_with_context(sink, self.clone());
+    }
+}
+
+trait EncodeWithContext {
+    fn encode_with_context(&self, sink: &mut Vec<u8>, ctx: EncodeContext);
+}
+
 impl EncodeWithContext for wasm::Expression {
-    fn encode_with_context(&self, sink: &mut Vec<u8>, module: &wasm::Module) {
+    fn encode_with_context(&self, sink: &mut Vec<u8>, ctx: EncodeContext) {
         use wasm::Expression;
         match self {
             Expression::Nop => {
@@ -294,32 +306,32 @@ impl EncodeWithContext for wasm::Expression {
                 local.0.encode(sink);
             }
             Expression::LocalSet { local, value } => {
-                module.get_expr(*value).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *value);
                 sink.push(Instruction::LocalSet as u8);
                 local.0.encode(sink);
             }
             Expression::Return { value } => {
                 match value {
                     Some(value) => {
-                        module.get_expr(*value).encode_with_context(sink, module);
+                        ctx.encode_expr(sink, *value);
                     }
                     None => {}
                 };
                 sink.push(Instruction::Return as u8);
             }
             Expression::I32Add { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32Add as u8);
             }
             Expression::I32Sub { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32Sub as u8);
             }
             Expression::I32Mul { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32Mul as u8);
             }
             Expression::Block {
@@ -329,9 +341,7 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push(Instruction::Block as u8);
                 result.encode(sink);
                 for expr_index in expressions.iter() {
-                    module
-                        .get_expr(*expr_index)
-                        .encode_with_context(sink, module);
+                    ctx.encode_expr(sink, *expr_index);
                 }
                 sink.push(Instruction::End as u8);
             }
@@ -342,9 +352,7 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push(Instruction::Loop as u8);
                 result.encode(sink);
                 for expr_index in expressions.iter() {
-                    module
-                        .get_expr(*expr_index)
-                        .encode_with_context(sink, module);
+                    ctx.encode_expr(sink, *expr_index);
                 }
                 sink.push(Instruction::End as u8);
             }
@@ -354,7 +362,7 @@ impl EncodeWithContext for wasm::Expression {
             Expression::Break { depth, value } => {
                 match value {
                     Some(value) => {
-                        module.get_expr(*value).encode_with_context(sink, module);
+                        ctx.encode_expr(sink, *value);
                     }
                     None => {}
                 };
@@ -366,7 +374,7 @@ impl EncodeWithContext for wasm::Expression {
                 arguments,
             } => {
                 for arg in arguments.iter() {
-                    module.get_expr(*arg).encode_with_context(sink, module);
+                    ctx.encode_expr(sink, *arg);
                 }
                 sink.push(Instruction::Call as u8);
                 function.0.encode(sink);
@@ -380,27 +388,27 @@ impl EncodeWithContext for wasm::Expression {
                 value.encode(sink);
             }
             Expression::I32Eq { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32Eq as u8);
             }
             Expression::I32Eqz { value } => {
-                module.get_expr(*value).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *value);
                 sink.push(Instruction::I32Eqz as u8);
             }
             Expression::I32Ne { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32Ne as u8);
             }
             Expression::I32And { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32And as u8);
             }
             Expression::I32Or { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32Or as u8);
             }
             Expression::IfElse {
@@ -409,156 +417,150 @@ impl EncodeWithContext for wasm::Expression {
                 then_branch,
                 else_branch,
             } => {
-                module
-                    .get_expr(*condition)
-                    .encode_with_context(sink, module);
+                ctx.encode_expr(sink, *condition);
                 sink.push(Instruction::If as u8);
                 result.encode(sink);
-                module
-                    .get_expr(*then_branch)
-                    .encode_with_context(sink, module);
+                ctx.encode_expr(sink, *then_branch);
                 match else_branch {
                     Some(else_branch) => {
                         sink.push(Instruction::Else as u8);
-                        module
-                            .get_expr(*else_branch)
-                            .encode_with_context(sink, module);
+                        ctx.encode_expr(sink, *else_branch);
                     }
                     None => {}
                 }
                 sink.push(Instruction::End as u8);
             }
             Expression::Drop { value } => {
-                module.get_expr(*value).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *value);
                 sink.push(Instruction::Drop as u8);
             }
             Expression::I64Add { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Add as u8);
             }
             Expression::I64Sub { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Sub as u8);
             }
             Expression::I64Mul { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Mul as u8);
             }
             Expression::I64Eq { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Eq as u8);
             }
             Expression::I64Eqz { value } => {
-                module.get_expr(*value).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *value);
                 sink.push(Instruction::I64Eqz as u8);
             }
             Expression::I64Ne { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Ne as u8);
             }
             Expression::I64And { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64And as u8);
             }
             Expression::I64Or { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Or as u8);
             }
             Expression::I32DivS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32DivS as u8);
             }
             Expression::I32GeS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32GeS as u8);
             }
             Expression::I32ShrS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32ShrS as u8);
             }
             Expression::I32LtS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32LtS as u8);
             }
             Expression::I32GtS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32GtS as u8);
             }
             Expression::I32LeS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32LeS as u8);
             }
             Expression::I32RemS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32RemS as u8);
             }
             Expression::I64DivS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64DivS as u8);
             }
             Expression::I64GeS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64GeS as u8);
             }
             Expression::I64ShrS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64ShrS as u8);
             }
             Expression::I64LtS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64LtS as u8);
             }
             Expression::I64GtS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64GtS as u8);
             }
             Expression::I64LeS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64LeS as u8);
             }
             Expression::I64RemS { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64RemS as u8);
             }
             Expression::I32Xor { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32Xor as u8);
             }
             Expression::I64Xor { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Xor as u8);
             }
             Expression::I32Shl { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I32Shl as u8);
             }
             Expression::I64Shl { left, right } => {
-                module.get_expr(*left).encode_with_context(sink, module);
-                module.get_expr(*right).encode_with_context(sink, module);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Shl as u8);
             }
         }
@@ -571,11 +573,11 @@ impl Encode for wasm::FunctionType {
 
         let param_count = self.param_count as u32;
         param_count.encode(sink);
-        for param in self.params().iter() {
+        for param in self.params() {
             param.encode(sink);
         }
 
-        let result_count = self.results().len() as u32;
+        let result_count = (self.param_results.len() - self.param_count) as u32;
         result_count.encode(sink);
         for result in self.results().iter() {
             result.encode(sink);
@@ -588,14 +590,12 @@ impl Encode for wasm::TypeSection {
         sink.push(SectionId::Type as u8);
 
         let mut section_sink: Vec<u8> = Vec::new();
-        let size = self.signatures.len() as u32;
-        size.encode(&mut section_sink);
+        (self.signatures.len() as u32).encode(&mut section_sink);
         for signature in &self.signatures {
             signature.encode(&mut section_sink);
         }
 
-        let section_size = section_sink.len() as u32;
-        section_size.encode(sink);
+        (section_sink.len() as u32).encode(sink);
         sink.extend_from_slice(&section_sink);
     }
 }
@@ -605,9 +605,9 @@ impl Encode for wasm::FunctionSection {
         sink.push(SectionId::Function as u8);
 
         let mut section_sink: Vec<u8> = Vec::new();
-        let size = self.functions.len() as u32;
+        let size = self.types.len() as u32;
         size.encode(&mut section_sink);
-        for type_index in &self.functions {
+        for type_index in &self.types {
             type_index.0.encode(&mut section_sink);
         }
 
@@ -656,26 +656,38 @@ impl Encode for wasm::ExportSection<'_> {
     }
 }
 
-impl<'a> wasm::FunctionBody<'a> {
-    fn encode(&self, sink: &mut Vec<u8>, module: &wasm::Module) {
+impl<'a> EncodeWithContext for wasm::FunctionBody<'a> {
+    fn encode_with_context(&self, sink: &mut Vec<u8>, ctx: EncodeContext) {
         let mut body_content: Vec<u8> = Vec::new();
 
-        let mut grouped_locals: HashMap<wasm::ValueType, u32> = HashMap::new();
-        for local in self.locals.iter() {
-            *grouped_locals.entry(local.ty).or_insert(0) += 1;
+        let func_type = ctx.module.get_type(
+            *ctx.module
+                .functions
+                .types
+                .get(ctx.func_index.0 as usize)
+                .unwrap(),
+        );
+
+        let mut grouped_locals = Vec::<(wasm::ValueType, u32)>::new();
+        for local in self.locals.iter().skip(func_type.param_count) {
+            match grouped_locals.last_mut() {
+                Some((last_ty, count)) if *last_ty == local.ty => {
+                    *count += 1;
+                }
+                _ => {
+                    grouped_locals.push((local.ty, 1));
+                }
+            }
         }
 
-        let local_groups_count = grouped_locals.len() as u32;
-        local_groups_count.encode(&mut body_content);
-        for (local_type, count) in grouped_locals {
+        (grouped_locals.len() as u32).encode(&mut body_content);
+        for (group_type, count) in grouped_locals {
             count.encode(&mut body_content);
-            local_type.encode(&mut body_content);
+            group_type.encode(&mut body_content);
         }
 
-        for expr_id in self.expressions.iter() {
-            module
-                .get_expr(*expr_id)
-                .encode_with_context(&mut body_content, module);
+        for expr_index in self.expressions.iter() {
+            ctx.encode_expr(&mut body_content, *expr_index);
         }
         body_content.push(Instruction::End as u8);
 
@@ -692,8 +704,14 @@ impl<'a> wasm::CodeSection<'a> {
         let mut section_sink: Vec<u8> = Vec::new();
         let function_count = self.functions.len() as u32;
         function_count.encode(&mut section_sink);
-        for function in &self.functions {
-            function.encode(&mut section_sink, module);
+        for (index, func) in self.functions.iter().enumerate() {
+            func.encode_with_context(
+                &mut section_sink,
+                EncodeContext {
+                    module,
+                    func_index: wasm::FunctionIndex(index as u32),
+                },
+            );
         }
 
         let section_size = section_sink.len() as u32;

@@ -55,6 +55,12 @@ pub enum TokenKind {
     Eof,
 }
 
+impl TokenKind {
+    pub fn discriminant_equals(self, other: TokenKind) -> bool {
+        std::mem::discriminant(&self) == std::mem::discriminant(&other)
+    }
+}
+
 impl std::fmt::Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use TokenKind::*;
@@ -418,14 +424,6 @@ impl<'a> PeekableLexer<'a> {
                 self.peeked = Some(token.clone());
                 return token;
             }
-        }
-    }
-
-    pub fn next_expect(&mut self, expected: TokenKind) -> Result<Token, Token> {
-        let token = self.next();
-        match std::mem::discriminant(&token.kind) == std::mem::discriminant(&expected) {
-            true => Ok(token),
-            false => Err(token),
         }
     }
 }

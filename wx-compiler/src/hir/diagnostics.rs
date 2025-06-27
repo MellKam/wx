@@ -4,6 +4,7 @@ use super::EnumIndex;
 use crate::ast::BinaryOp;
 use crate::files::FileId;
 use crate::hir;
+use crate::hir::global::GlobalContext;
 use crate::span::TextSpan;
 
 pub struct UnknownEnumVariantDiagnostic {
@@ -42,28 +43,19 @@ pub struct BinaryExpressionMistmatchDiagnostic {
 }
 
 impl BinaryExpressionMistmatchDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+        let left = global.display_type(self.left_type);
+        let right = global.display_type(self.right_type);
+
         let message = match self.operator {
-            BinaryOp::Add => format!("cannot add `{}` to `{}`", self.left_type, self.right_type),
-            BinaryOp::Sub => format!(
-                "cannot subtract `{}` from `{}`",
-                self.left_type, self.right_type
-            ),
-            BinaryOp::Assign => format!(
-                "cannot assign `{}` to `{}`",
-                self.left_type, self.right_type
-            ),
-            BinaryOp::Mul => format!(
-                "cannot multiply `{}` by `{}`",
-                self.left_type, self.right_type
-            ),
-            BinaryOp::Div => format!(
-                "cannot divide `{}` by `{}`",
-                self.left_type, self.right_type
-            ),
+            BinaryOp::Add => format!("cannot add `{}` to `{}`", left, right),
+            BinaryOp::Sub => format!("cannot subtract `{}` from `{}`", left, right),
+            BinaryOp::Assign => format!("cannot assign `{}` to `{}`", left, right),
+            BinaryOp::Mul => format!("cannot multiply `{}` by `{}`", left, right),
+            BinaryOp::Div => format!("cannot divide `{}` by `{}`", left, right),
             BinaryOp::Rem => format!(
                 "cannot calculate the remainder of `{}` by `{}`",
-                self.left_type, self.right_type
+                left, right
             ),
             BinaryOp::Eq
             | BinaryOp::NotEq
@@ -71,58 +63,35 @@ impl BinaryExpressionMistmatchDiagnostic {
             | BinaryOp::LessEq
             | BinaryOp::Greater
             | BinaryOp::GreaterEq => {
-                format!(
-                    "cannot compare `{}` to `{}`",
-                    self.left_type, self.right_type
-                )
+                format!("cannot compare `{}` to `{}`", left, right)
             }
             BinaryOp::MulAssign => {
-                format!(
-                    "cannot multiply-assign `{}` to `{}`",
-                    self.right_type, self.left_type
-                )
+                format!("cannot multiply-assign `{}` to `{}`", right, left)
             }
             BinaryOp::DivAssign => {
-                format!(
-                    "cannot divide-assign `{}` by `{}`",
-                    self.right_type, self.left_type
-                )
+                format!("cannot divide-assign `{}` by `{}`", right, left)
             }
             BinaryOp::RemAssign => {
-                format!(
-                    "cannot remainder-assign `{}` by `{}`",
-                    self.right_type, self.left_type
-                )
+                format!("cannot remainder-assign `{}` by `{}`", right, left)
             }
             BinaryOp::AddAssign => {
-                format!(
-                    "cannot add-assign `{}` to `{}`",
-                    self.right_type, self.left_type
-                )
+                format!("cannot add-assign `{}` to `{}`", right, left)
             }
             BinaryOp::SubAssign => {
-                format!(
-                    "cannot subtract-assign `{}` from `{}`",
-                    self.right_type, self.left_type
-                )
+                format!("cannot subtract-assign `{}` from `{}`", right, left)
             }
             _ => {
-                format!(
-                    "cannot perform operation on `{}` and `{}`",
-                    self.left_type, self.right_type
-                )
+                format!("cannot perform operation on `{}` and `{}`", left, right)
             }
         };
 
         Diagnostic::error()
             .with_message(message)
             .with_label(
-                Label::secondary(self.file_id, self.left_span)
-                    .with_message(format!("`{}`", self.left_type)),
+                Label::secondary(self.file_id, self.left_span).with_message(format!("`{}`", left)),
             )
             .with_label(
-                Label::primary(self.file_id, self.right_span)
-                    .with_message(format!("`{}`", self.right_type)),
+                Label::primary(self.file_id, self.right_span).with_message(format!("`{}`", right)),
             )
     }
 }
@@ -134,11 +103,11 @@ pub struct InvalidEnumRepresentationDiagnostic {
 }
 
 impl InvalidEnumRepresentationDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message(format!(
                 "can't represent enum with `{}`: expected i32 or i64",
-                self.ty
+                global.display_type(self.ty)
             ))
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -219,13 +188,14 @@ pub struct TypeMistmatchDiagnostic {
 }
 
 impl TypeMistmatchDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message("type mismatch")
             .with_label(
                 Label::primary(self.file_id, self.span).with_message(format!(
                     "expected `{}`, found `{}`",
-                    self.expected, self.actual
+                    global.display_type(self.expected),
+                    global.display_type(self.actual)
                 )),
             )
     }
@@ -288,9 +258,12 @@ pub struct UnableToCoerceDiagnostic {
 }
 
 impl UnableToCoerceDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
-            .with_message(format!("unable to coerce to type `{}`", self.target_type))
+            .with_message(format!(
+                "unable to coerce to type `{}`",
+                global.display_type(self.target_type)
+            ))
             .with_label(Label::primary(self.file_id, self.span))
     }
 }
@@ -303,11 +276,12 @@ pub struct OperatorCannotBeAppliedDiagnostic {
 }
 
 impl OperatorCannotBeAppliedDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message(format!(
                 "operator `{}` cannot be applied to type `{}`",
-                self.operator, self.to_type
+                self.operator,
+                global.display_type(self.to_type)
             ))
             .with_label(Label::primary(self.file_id, self.span))
     }

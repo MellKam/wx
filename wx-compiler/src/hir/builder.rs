@@ -1,4 +1,5 @@
 use core::panic;
+use std::process::Termination;
 
 use codespan_reporting::diagnostic::Diagnostic;
 use string_interner::StringInterner;
@@ -87,6 +88,26 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             ast::ItemKind::FunctionDefinition { signature, block } => (signature, block),
             _ => unreachable!(),
         };
+
+        let locals = signature
+            .params
+            .iter()
+            .map(|param| hir::Local {
+                name: param.name,
+                ty: self.resolve_type(&param.ty).unwrap(),
+                mutability: match param.mutable {
+                    Some(_) => Mutability::Mutable,
+                    None => Mutability::Const,
+                },
+            })
+            .collect::<Vec<_>>();
+
+        let lookup = locals
+            .iter()
+            .enumerate()
+            .map(|(index, param)| ((ScopeIndex(0), param.name.symbol), LocalIndex(index as u32)))
+            .collect();
+
         let func_index = self.global.resolve_function(signature.name.symbol).unwrap();
         let func_type = self
             .global
@@ -95,18 +116,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             .unwrap()
             .clone();
 
-        let lookup = func_type
-            .params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| ((ScopeIndex(0), param.name.symbol), LocalIndex(index as u32)))
-            .collect();
-
         let root_scope = BlockScope {
             parent: None,
             label: None,
             kind: BlockKind::Block,
-            locals: func_type.params.to_vec(),
+            locals,
             inferred_type: None,
             expected_type: Some(func_type.result),
         };
@@ -196,14 +210,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         }
     }
 
-    fn resolve_type(&mut self, identifier: ast::Identifier) -> Result<Type, ()> {
-        match self.global.resolve_type(identifier.symbol) {
-            Some(ty) => Ok(ty),
-            None => {
+    fn resolve_type(&mut self, type_expr: &ast::TypeExpression) -> Result<Type, ()> {
+        match self.global.resolve_type(type_expr) {
+            Ok(ty) => Ok(ty),
+            Err(_) => {
                 self.diagnostics.push(
                     UndeclaredIdentifierDiagnostic {
                         file_id: self.ast.file_id,
-                        span: identifier.span,
+                        span: type_expr.span,
                     }
                     .report(),
                 );
@@ -217,21 +231,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut LocalContext,
         stmt: &ast::Statement,
     ) -> Result<Expression, ()> {
-        let (maybe_mutable, name, ast_ty, ast_value) = match &stmt.kind {
+        let (maybe_mutable, name, ty, value) = match &stmt.kind {
             ast::StmtKind::LocalDefinition {
                 mutable,
                 name,
                 ty,
                 value,
-            } => (mutable.clone(), name.clone(), ty.clone(), value),
+            } => (mutable.clone(), name.clone(), ty, value),
             _ => unreachable!(),
         };
 
-        let expected_type = match ast_ty {
-            Some(identifier) => self.resolve_type(identifier).ok(),
+        let expected_type = match ty {
+            Some(ty) => Some(self.resolve_type(ty).unwrap()),
             None => None,
         };
-        let mut value = self.build_expression(ctx, ast_value, expected_type)?;
+        let mut value = self.build_expression(ctx, value, expected_type)?;
 
         let ty = match (value.ty, expected_type) {
             (Some(ty), None) => ty,
@@ -244,9 +258,9 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             file_id: self.ast.file_id,
                             expected: expected_type,
                             actual: actual_type,
-                            span: ast_value.span,
+                            span: value.span,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                     expected_type // Recover by using the expected type
                 }
@@ -280,7 +294,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         Ok(hir::Expression {
             kind: hir::ExprKind::LocalDeclaration {
                 name,
-                type_annotation: ast_ty,
                 scope_index: ctx.scope_index,
                 local_index,
                 expr: Box::new(value),
@@ -313,7 +326,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             ExprKind::Grouping { value } => self.build_expression(ctx, value, expected_type),
             ExprKind::Unary { .. } => self.build_unary_expression(ctx, expr, expected_type),
             ExprKind::Call { .. } => self.build_call_expression(ctx, expr),
-            ExprKind::Namespace { .. } => self.build_namespace_expression(expr, expected_type),
+            ExprKind::Namespace { .. } => self.build_namespace_expression(expr),
             ExprKind::Return { .. } => self.build_return_expression(ctx, expr),
             ExprKind::Block { .. } => ctx.enter_block(
                 BlockScope {
@@ -447,35 +460,13 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     fn build_namespace_expression(
         &mut self,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
         let (namespace, member) = match &expr.kind {
             ast::ExprKind::Namespace { namespace, member } => (namespace, member),
             _ => unreachable!("expected namespace member expression"),
         };
 
-        let namespace_type = match self.global.resolve_type(namespace.symbol) {
-            Some(ty) => ty,
-            None => panic!("undeclared namespace"),
-        };
-
-        match expected_type {
-            Some(ty) if ty == namespace_type => {}
-            Some(ty) => {
-                self.diagnostics.push(
-                    TypeMistmatchDiagnostic {
-                        file_id: self.ast.file_id,
-                        expected: ty,
-                        actual: namespace_type,
-                        span: expr.span,
-                    }
-                    .report(),
-                );
-                return Err(());
-            }
-            None => {}
-        }
-
+        let namespace_type = self.global.resolve_type(namespace).unwrap();
         match namespace_type {
             hir::Type::Enum(enum_index) => {
                 let enum_ = self.hir.get_enum(enum_index).unwrap();
@@ -583,7 +574,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 actual: inferred_type,
                                 span: expr.span,
                             }
-                            .report(),
+                            .report(&self.global),
                         );
                         return Err(());
                     }
@@ -610,7 +601,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
         let (ast_value, ast_type) = match &expr.kind {
-            ast::ExprKind::Cast { value, ty } => (value, ty.clone()),
+            ast::ExprKind::Cast { value, ty } => (value, ty),
             _ => unreachable!("expected cast expression"),
         };
 
@@ -646,7 +637,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 actual: result_type,
                                 span: ast_value.span,
                             }
-                            .report(),
+                            .report(&self.global),
                         );
                         Ok(inferred)
                     }
@@ -660,7 +651,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 actual: result_type,
                                 span: ast_value.span,
                             }
-                            .report(),
+                            .report(&self.global),
                         );
                         Err(())
                     }
@@ -812,7 +803,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 actual: inferred_type,
                                 span: block.span,
                             }
-                            .report(),
+                            .report(&self.global),
                         );
                         return Err(());
                     }
@@ -904,7 +895,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                     actual: inferred_type,
                                     span: ast_value.span,
                                 }
-                                .report(),
+                                .report(&self.global),
                             );
                             return Err(());
                         }
@@ -943,7 +934,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 actual: inferred_type,
                                 span: expr.span,
                             }
-                            .report(),
+                            .report(&self.global),
                         );
                         return Err(());
                     }
@@ -1057,7 +1048,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                     actual: Type::Unit,
                                     span: expr.span,
                                 }
-                                .report(),
+                                .report(&self.global),
                             );
                         }
                     },
@@ -1141,7 +1132,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                     actual: ty2,
                                     span: ast_else_block.span,
                                 }
-                                .report(),
+                                .report(&self.global),
                             );
                             return Err(());
                         }
@@ -1179,8 +1170,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         let callee = self.build_expression(ctx, ast_callee, None)?;
-        let func_index = match callee.kind {
-            hir::ExprKind::Function(func_index) => func_index,
+        let func_index = match callee.ty {
+            Some(Type::Function(func_index)) => func_index,
             _ => {
                 self.diagnostics.push(
                     NonCallableIdentifierDiagnostic {
@@ -1198,7 +1189,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             .enumerate()
             .map(|(index, ast_argument)| {
                 let func_type = self.global.functions.get(func_index.0 as usize).unwrap();
-                let expected_type = func_type.params.get(index).unwrap().ty;
+                let expected_type = func_type.params.get(index).copied().unwrap();
 
                 let mut argument = self.build_expression(ctx, ast_argument, Some(expected_type))?;
                 match argument.ty {
@@ -1210,7 +1201,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 actual: ty,
                                 span: ast_argument.span,
                             }
-                            .report(),
+                            .report(&self.global),
                         );
                     }
                     Some(_) => {}
@@ -1430,7 +1421,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                         to_type,
                         span: expr.span,
                     }
-                    .report(),
+                    .report(&self.global),
                 );
 
                 return Err(());
@@ -1463,7 +1454,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             right_span: ast_right.span,
                             right_type: ty,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                 }
             }
@@ -1577,7 +1568,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                         right_span: ast_right.span,
                         right_type,
                     }
-                    .report(),
+                    .report(&self.global),
                 );
 
                 Ok(Expression {
@@ -1599,7 +1590,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<Expression, ()> {
-        let (ast_left, ast_right, operator) = match &expr.kind {
+        let (left, right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
                 left,
                 right,
@@ -1609,8 +1600,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!("expected binary expression"),
         };
 
-        let mut left = self.build_expression(ctx, ast_left, expected_type)?;
-        let mut right = self.build_expression(ctx, ast_right, expected_type)?;
+        let mut left = self.build_expression(ctx, left, expected_type)?;
+        let mut right = self.build_expression(ctx, right, expected_type)?;
 
         match (left.ty, right.ty) {
             (Some(Type::Primitive(ty1)), Some(Type::Primitive(ty2))) if ty1 == ty2 => {
@@ -1642,12 +1633,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 })
             }
             (Some(ty), None) => {
-                match ty {
-                    Type::Primitive(_) => {}
-                    ty => panic!(
-                        "arithmetic operator can only be applied to primitive types, got {ty}"
-                    ),
-                }
                 self.coerce_untyped_expr(&mut right, ty)?;
 
                 Ok(Expression {
@@ -1685,13 +1670,13 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
                         file_id: self.ast.file_id,
-                        left_span: ast_left.span,
+                        left_span: left.span,
                         left_type,
                         operator,
-                        right_span: ast_right.span,
+                        right_span: right.span,
                         right_type,
                     }
-                    .report(),
+                    .report(&self.global),
                 );
 
                 match expected_type {
@@ -1820,7 +1805,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                         right_type,
                         operator,
                     }
-                    .report(),
+                    .report(&self.global),
                 );
 
                 Ok(Expression {
@@ -1918,7 +1903,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                         target_type,
                         span: expr.span,
                     }
-                    .report(),
+                    .report(&self.global),
                 );
 
                 Err(())
@@ -1977,7 +1962,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             target_type,
                             span: expr.span,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                     return Err(());
                 }

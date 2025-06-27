@@ -35,7 +35,7 @@ impl<'a> Builder<'a> {
             params_results: ty
                 .params
                 .into_iter()
-                .map(|param| self.to_mir_type(param.ty))
+                .map(|ty| self.to_mir_type(ty))
                 .chain(std::iter::once(self.to_mir_type(ty.result)))
                 .collect(),
         }
@@ -145,9 +145,9 @@ impl<'a> Builder<'a> {
 
                 mir::Expression {
                     kind: mir::ExprKind::Call {
-                        callee: match callee.kind {
-                            hir::ExprKind::Function(index) => index.0,
-                            _ => panic!("expected function"),
+                        callee: match callee.ty {
+                            Some(hir::Type::Function(func_index)) => func_index.0,
+                            _ => panic!("expected a function type for callee"),
                         },
                         arguments: args,
                     },

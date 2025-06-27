@@ -28,6 +28,7 @@ pub enum LookupCategory {
 pub struct GlobalContext<'interner> {
     pub exports: Vec<ExportItem>,
     pub functions: Vec<FunctionType>,
+    pub function_lookup: HashMap<FunctionType, FuncIndex>,
     pub enums: Vec<Enum>,
     pub interner: &'interner StringInterner<StringBackend>,
     pub lookup: HashMap<(LookupCategory, SymbolU32), GlobalValue>,
@@ -57,6 +58,7 @@ impl<'interner> GlobalContext<'interner> {
             functions: Vec::new(),
             enums: Vec::new(),
             interner,
+            function_lookup: HashMap::new(),
             lookup,
         };
 
@@ -70,38 +72,32 @@ impl<'interner> GlobalContext<'interner> {
         global
     }
 
-    fn build_function(&self, signature: &ast::FunctionSignature) -> FunctionType {
+    fn build_function_type(
+        &mut self,
+        signature: &ast::FunctionSignature,
+    ) -> Result<FunctionType, ()> {
         let params = signature
             .params
             .iter()
-            .map(|param| Local {
-                name: param.name.clone(),
-                ty: self.resolve_type(param.ty.symbol).unwrap_or(Type::Unit),
-                mutability: match param.mutable {
-                    Some(_) => Mutability::Mutable,
-                    None => Mutability::Const,
-                },
-            })
-            .collect();
+            .map(|param| self.resolve_type(&param.ty))
+            .collect::<Result<Box<_>, ()>>()?;
 
         let result = match &signature.result {
-            Some(ty) => self.resolve_type(ty.symbol).unwrap_or(Type::Unit),
+            Some(ty) => self.resolve_type(ty)?,
             None => Type::Unit,
         };
 
-        FunctionType { params, result }
+        Ok(FunctionType { params, result })
     }
 
-    fn build_enum(&self, item: &ast::Item) -> Enum {
+    fn build_enum(&mut self, item: &ast::Item) -> Enum {
         let (name, ty, variants) = match &item.kind {
-            ast::ItemKind::EnumDefinition { name, ty, variants } => {
-                (name.clone(), ty.clone(), variants)
-            }
+            ast::ItemKind::EnumDefinition { name, ty, variants } => (name.clone(), ty, variants),
             _ => unreachable!(),
         };
 
-        let ty = match self.resolve_type(ty.symbol.clone()) {
-            Some(Type::Primitive(ty)) => ty,
+        let ty = match self.resolve_type(ty) {
+            Ok(Type::Primitive(ty)) => ty,
             _ => panic!("invalid enum representation type"),
         };
 
@@ -149,36 +145,64 @@ impl<'interner> GlobalContext<'interner> {
     fn add_item(&mut self, item: &ast::Item) {
         match &item.kind {
             ast::ItemKind::FunctionDefinition { signature, .. } => {
+                let func_type = self.build_function_type(&signature).unwrap();
+                let func_index = FuncIndex(self.functions.len() as u32);
                 self.lookup.insert(
                     (LookupCategory::Value, signature.name.symbol),
-                    GlobalValue::Function {
-                        func_index: FuncIndex(self.functions.len() as u32),
-                    },
+                    GlobalValue::Function { func_index },
                 );
-                self.functions.push(self.build_function(&signature));
+                self.function_lookup.insert(func_type.clone(), func_index);
+                self.functions.push(func_type);
             }
             ast::ItemKind::EnumDefinition { name, .. } => {
                 let enum_index = EnumIndex(self.enums.len() as u32);
+                let enum_ = self.build_enum(&item);
+                self.enums.push(enum_);
                 self.lookup.insert(
                     (LookupCategory::Type, name.symbol),
                     GlobalValue::Enum { enum_index },
                 );
-                self.enums.push(self.build_enum(&item));
             }
             _ => unreachable!(),
         }
     }
 
-    pub fn resolve_type(&self, symbol: SymbolU32) -> Option<Type> {
-        let text = self.interner.resolve(symbol).unwrap();
-        match Type::try_from(text) {
-            Ok(ty) => return Some(ty),
-            Err(_) => {}
-        }
-        match self.lookup.get(&(LookupCategory::Type, symbol)) {
-            Some(GlobalValue::Enum { enum_index }) => Some(Type::Enum(*enum_index)),
-            Some(_) => unreachable!(),
-            None => None,
+    pub fn resolve_type(&mut self, type_expr: &ast::TypeExpression) -> Result<Type, ()> {
+        match &type_expr.kind {
+            ast::TypeExprKind::Identifier(id) => {
+                let text = self.interner.resolve(id.symbol).unwrap();
+                match Type::try_from(text) {
+                    Ok(ty) => return Ok(ty),
+                    Err(_) => {}
+                }
+                match self.lookup.get(&(LookupCategory::Type, id.symbol)) {
+                    Some(GlobalValue::Enum { enum_index }) => Ok(Type::Enum(*enum_index)),
+                    Some(_) => Err(()),
+                    None => Err(()),
+                }
+            }
+            ast::TypeExprKind::Function { params, result } => {
+                let params = params
+                    .iter()
+                    .map(|ty| self.resolve_type(&ty).unwrap())
+                    .collect::<Box<_>>();
+
+                let result = match result {
+                    Some(ty) => self.resolve_type(ty).unwrap(),
+                    None => Type::Unit,
+                };
+
+                let func_type = FunctionType { params, result };
+                match self.function_lookup.get(&func_type) {
+                    Some(index) => Ok(Type::Function(*index)),
+                    None => {
+                        let index = FuncIndex(self.functions.len() as u32);
+                        self.function_lookup.insert(func_type.clone(), index);
+                        self.functions.push(func_type);
+                        Ok(Type::Function(index))
+                    }
+                }
+            }
         }
     }
 
@@ -196,7 +220,7 @@ impl<'interner> GlobalContext<'interner> {
         }
     }
 
-    pub fn get_type_display(&self, ty: Type) -> String {
+    pub fn display_type(&self, ty: Type) -> String {
         match ty {
             Type::Unit => "unit".to_string(),
             Type::Bool => "bool".to_string(),
@@ -214,18 +238,17 @@ impl<'interner> GlobalContext<'interner> {
             }
             Type::Function(func_index) => {
                 let func = self.functions.get(func_index.0 as usize).unwrap();
-                let mut result = String::from("fn(");
+                let mut result = String::from("func(");
 
-                for param in func.params.iter() {
-                    let name = self.interner.resolve(param.name.symbol).unwrap();
-                    let ty = self.get_type_display(param.ty).to_string();
-                    result.push_str(name);
-                    result.push_str(": ");
-                    result.push_str(&ty);
+                for (index, param) in func.params.iter().enumerate() {
+                    result.push_str(&self.display_type(*param));
+                    if index < func.params.len() - 1 {
+                        result.push_str(", ");
+                    }
                 }
 
                 result.push_str(") -> ");
-                result.push_str(&self.get_type_display(func.result));
+                result.push_str(&self.display_type(func.result));
 
                 result
             }

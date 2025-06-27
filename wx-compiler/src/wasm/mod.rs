@@ -240,7 +240,7 @@ pub struct TypeIndex(pub u32);
 
 #[derive(Debug, Clone)]
 pub struct FunctionSection {
-    functions: Box<[TypeIndex]>,
+    types: Box<[TypeIndex]>,
 }
 
 #[derive(Debug, Clone)]

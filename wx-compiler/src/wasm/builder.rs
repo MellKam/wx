@@ -200,7 +200,7 @@ impl Builder {
                 },
             },
             functions: wasm::FunctionSection {
-                functions: function_signatures.into_boxed_slice(),
+                types: function_signatures.into_boxed_slice(),
             },
             exports: wasm::ExportSection { items: exports },
             code: wasm::CodeSection {
