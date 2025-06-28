@@ -31,9 +31,7 @@ import { compile } from "wx-compiler-wasm";
 const bytecode = compile("main.wx", `export func main() -> i32 { 2 + 2 }`);
 ```
 
-Diagnostics are currently unavailable in the WASM version, so the code will panic on any error and you won't be able to understand what went wrong. This will be fixed in the future.
-
-To see diagnostics, compile the compiler by yourself by going to the `wx-compier-cli` directory and running:
+Alternatively, you can build the compiler from source by going to `wx-compiler-cli` directory and running:
 
 ```bash
 cargo run -- ../examples/fibonacci.wx

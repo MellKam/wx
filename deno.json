@@ -1,4 +1,4 @@
 {
-	"workspace": ["examples", "web", "wx-vscode"],
+	"workspace": ["examples", "web", "wx-vscode", "wx-compiler-wasm/cli"],
 	"nodeModulesDir": "manual"
 }
