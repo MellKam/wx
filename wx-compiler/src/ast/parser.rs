@@ -7,8 +7,8 @@ use string_interner::symbol::SymbolU32;
 
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
-    Ast, BinaryOp, EnumVariant, ExprKind, FunctionParam, FunctionSignature, Identifier, ItemKind,
-    Statement, StmtKind, UnaryOp,
+    Ast, BinaryOp, EnumVariant, ExprKind, FunctionParam, Identifier, ItemKind, Statement, StmtKind,
+    UnaryOp,
 };
 use crate::ast::diagnostics::{
     ChainedComparisonsDiagnostic, IncompleteBinaryExpressionDiagnostic,
@@ -16,7 +16,7 @@ use crate::ast::diagnostics::{
     MissingStatementDelimiterDiagnostic, MissingUnaryOperandDiagnostic,
     ReservedIdentifierDiagnostic, UnexpectedEofDiagnostic, UnexpectedTokenDiagnostic,
 };
-use crate::ast::{Expression, Item};
+use crate::ast::{Expression, FunctionSignature, Item, TypeExprKind, TypeExpression};
 use crate::files::FileId;
 use crate::span::TextSpan;
 
@@ -75,12 +75,6 @@ impl From<BinaryOp> for BindingPower {
             BinaryOp::Rem => BindingPower::Multiplicative,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Mutability {
-    Mutable,
-    Const,
 }
 
 #[derive(Debug, Clone)]
@@ -177,17 +171,145 @@ impl<'input> Parser<'input> {
 
     fn parse_function_definition(parser: &mut Parser) -> Result<Item, ()> {
         let fn_keyword = parser.lexer.next();
-        let signature = Parser::parse_function_signature(parser)?;
+        let name_token = parser.next_expect(TokenKind::Identifier)?;
+        let name_symbol = parser.intern_identifier(name_token.span)?;
+        let name = Identifier {
+            symbol: name_symbol,
+            span: name_token.span,
+        };
+
+        let params = Parser::parse_function_params(parser)?;
+
+        let token = parser.lexer.peek();
+        let result = match token.kind {
+            TokenKind::Arrow => {
+                _ = parser.lexer.next();
+                let ty = parser.parse_type_expr()?;
+
+                Some(ty)
+            }
+            TokenKind::OpenBrace => None,
+            _ => {
+                parser.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: parser.ast.file_id,
+                        received: token,
+                        expected_kind: TokenKind::Arrow,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+        };
 
         let block = Parser::parse_block_expression(parser)?;
         let span = TextSpan::merge(fn_keyword.span, block.span);
         Ok(Item {
             kind: ItemKind::FunctionDefinition {
-                signature,
+                signature: FunctionSignature {
+                    name,
+                    params: params.into_boxed_slice(),
+                    result: result.map(Box::new),
+                },
                 block: Box::new(block),
             },
             span,
         })
+    }
+
+    fn parse_function_params(parser: &mut Parser) -> Result<Vec<FunctionParam>, ()> {
+        parser.next_expect(TokenKind::OpenParen)?;
+
+        let mut params = Vec::new();
+
+        loop {
+            let token = parser.lexer.peek();
+            match token.kind {
+                TokenKind::CloseParen => {
+                    _ = parser.lexer.next();
+                    break;
+                }
+                TokenKind::Identifier => {}
+                TokenKind::Comma => {
+                    let token = parser.lexer.next();
+                    parser.diagnostics.push(
+                        UnexpectedTokenDiagnostic {
+                            file_id: parser.ast.file_id,
+                            received: token,
+                            expected_kind: TokenKind::Identifier,
+                        }
+                        .report(),
+                    );
+                    continue;
+                }
+                _ => {
+                    parser.diagnostics.push(
+                        UnexpectedTokenDiagnostic {
+                            file_id: parser.ast.file_id,
+                            received: token,
+                            expected_kind: TokenKind::Identifier,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+            }
+
+            let mutable = match Keyword::try_from(token.span.text(parser.source)) {
+                Ok(Keyword::Mut) => {
+                    let mut_token = parser.lexer.next();
+                    Some(mut_token.span)
+                }
+                _ => None,
+            };
+
+            let name_token = parser.next_expect(TokenKind::Identifier)?;
+            match Keyword::try_from(name_token.span.text(parser.source)) {
+                Ok(_) => {
+                    parser.diagnostics.push(
+                        ReservedIdentifierDiagnostic {
+                            file_id: parser.ast.file_id,
+                            span: name_token.span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+                _ => {}
+            }
+            let name = Identifier {
+                symbol: parser.intern_identifier(name_token.span)?,
+                span: name_token.span,
+            };
+            parser.next_expect(TokenKind::Colon)?;
+            let ty = parser.parse_type_expr()?;
+
+            params.push(FunctionParam { mutable, name, ty });
+
+            let token = parser.lexer.peek();
+            match token.kind {
+                TokenKind::Comma => {
+                    parser.lexer.next();
+                }
+                TokenKind::CloseParen => {
+                    parser.lexer.next();
+                    break;
+                }
+                _ => {
+                    parser.diagnostics.push(
+                        UnexpectedTokenDiagnostic {
+                            file_id: parser.ast.file_id,
+                            expected_kind: TokenKind::CloseParen,
+                            received: token,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+            }
+        }
+
+        Ok(params)
     }
 
     fn parse_exported_function_definition(parser: &mut Parser) -> Result<Item, ()> {
@@ -220,12 +342,7 @@ impl<'input> Parser<'input> {
         };
 
         _ = parser.next_expect(TokenKind::Colon)?;
-        let type_token = parser.next_expect(TokenKind::Identifier)?;
-        let type_symbol = parser.intern_identifier(type_token.span)?;
-        let ty = Identifier {
-            symbol: type_symbol,
-            span: type_token.span,
-        };
+        let ty = parser.parse_type_expr()?;
 
         _ = parser.next_expect(TokenKind::OpenBrace)?;
         let mut variants = Vec::new();
@@ -431,37 +548,29 @@ impl<'input> Parser<'input> {
 
         let (mutable, name) = match Keyword::try_from(mut_or_name_text) {
             Ok(Keyword::Mut) => {
-                let mutable_token = mut_or_name_token;
-                let mutable_symbol = parser.interner.get_or_intern(mut_or_name_text);
+                let mutable = Identifier {
+                    symbol: parser.interner.get_or_intern(mut_or_name_text),
+                    span: mut_or_name_token.span,
+                };
                 let name = parser.parse_identifier()?;
 
-                (
-                    Some(Identifier {
-                        symbol: mutable_symbol,
-                        span: mutable_token.span,
-                    }),
-                    name,
-                )
+                (Some(mutable), name)
             }
             Ok(_) => panic!("can't use keyword as variable identifier"),
             Err(_) => {
-                let name_token = mut_or_name_token;
-                let name_symbol = parser.interner.get_or_intern(mut_or_name_text);
+                let name = Identifier {
+                    symbol: parser.interner.get_or_intern(mut_or_name_text),
+                    span: mut_or_name_token.span,
+                };
 
-                (
-                    None,
-                    Identifier {
-                        symbol: name_symbol,
-                        span: name_token.span,
-                    },
-                )
+                (None, name)
             }
         };
 
         let ty = match parser.lexer.peek().kind {
             TokenKind::Colon => {
-                let _ = parser.lexer.next();
-                Some(parser.parse_identifier()?)
+                _ = parser.lexer.next();
+                Some(parser.parse_type_expr()?)
             }
             _ => None,
         };
@@ -473,7 +582,7 @@ impl<'input> Parser<'input> {
             kind: StmtKind::LocalDefinition {
                 mutable,
                 name,
-                ty,
+                ty: ty.map(Box::new),
                 value: Box::new(value),
             },
             span,
@@ -541,13 +650,13 @@ impl<'input> Parser<'input> {
         _: BindingPower,
     ) -> Result<Expression, ()> {
         _ = parser.lexer.next();
-        let ty = parser.parse_identifier()?;
+        let ty = parser.parse_type_expr()?;
 
         let span = TextSpan::merge(value.span, ty.span);
         Ok(Expression {
             kind: ExprKind::Cast {
                 value: Box::new(value),
-                ty,
+                ty: Box::new(ty),
             },
             span,
         })
@@ -804,124 +913,6 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_function_signature(parser: &mut Parser) -> Result<FunctionSignature, ()> {
-        let name_token = parser.next_expect(TokenKind::Identifier)?;
-        let name_symbol = parser.intern_identifier(name_token.span)?;
-
-        _ = parser.next_expect(TokenKind::OpenParen)?;
-        let mut params = Vec::new();
-        loop {
-            let token = parser.lexer.peek();
-            match token.kind {
-                TokenKind::CloseParen => break,
-                TokenKind::Comma => {
-                    let _ = parser.lexer.next();
-                    continue;
-                }
-                TokenKind::Eof => {
-                    parser.diagnostics.push(
-                        UnexpectedEofDiagnostic {
-                            file_id: parser.ast.file_id,
-                            span: token.span,
-                        }
-                        .report(),
-                    );
-                    return Err(());
-                }
-                _ => {}
-            }
-
-            let name_or_mut_token = parser.next_expect(TokenKind::Identifier)?;
-            let (mutable, name) =
-                match Keyword::try_from(name_or_mut_token.span.text(parser.source)) {
-                    Ok(Keyword::Mut) => {
-                        let name_token = parser.next_expect(TokenKind::Identifier)?;
-                        let name_symbol = parser.intern_identifier(name_token.span)?;
-
-                        (
-                            Some(name_or_mut_token.span),
-                            Identifier {
-                                symbol: name_symbol,
-                                span: name_token.span,
-                            },
-                        )
-                    }
-                    Ok(_) => {
-                        parser.diagnostics.push(
-                            ReservedIdentifierDiagnostic {
-                                file_id: parser.ast.file_id,
-                                span: name_or_mut_token.span,
-                            }
-                            .report(),
-                        );
-                        return Err(());
-                    }
-                    Err(_) => (
-                        None,
-                        Identifier {
-                            symbol: parser.intern_identifier(name_or_mut_token.span)?,
-                            span: name_or_mut_token.span,
-                        },
-                    ),
-                };
-
-            _ = parser.next_expect(TokenKind::Colon)?;
-            let param_type = parser.next_expect(TokenKind::Identifier)?;
-            let param_type_symbol = parser.intern_identifier(param_type.span)?;
-
-            params.push(FunctionParam {
-                mutable,
-                name,
-                ty: Identifier {
-                    symbol: param_type_symbol,
-                    span: param_type.span,
-                },
-            });
-        }
-
-        let close_paren = parser.lexer.next();
-        match parser.lexer.peek().kind {
-            TokenKind::Colon => {
-                let _ = parser.lexer.next();
-                let return_type_token = parser.next_expect(TokenKind::Identifier)?;
-                let return_type_symbol = parser.intern_identifier(return_type_token.span)?;
-
-                Ok(FunctionSignature {
-                    name: Identifier {
-                        symbol: name_symbol,
-                        span: name_token.span,
-                    },
-                    params: params.into_boxed_slice(),
-                    result: Some(Identifier {
-                        symbol: return_type_symbol,
-                        span: return_type_token.span,
-                    }),
-                    span: TextSpan::merge(name_token.span, return_type_token.span),
-                })
-            }
-            _ => Ok(FunctionSignature {
-                name: Identifier {
-                    symbol: name_symbol,
-                    span: name_token.span,
-                },
-                params: params.into_boxed_slice(),
-                result: None,
-                span: TextSpan::merge(name_token.span, close_paren.span),
-            }),
-        }
-    }
-
-    // fn parse_function_declaration(parser: &mut Parser) -> Option<ItemId> {
-    //     let fn_keyword = parser.lexer.next();
-    //     let signature = Parser::parse_function_signature(parser)?;
-
-    //     let item_span = Span::merge(fn_keyword.span, signature.span);
-    //     let item_id = parser
-    //         .ast
-    //         .push_item(ItemKind::FunctionDeclaration { signature }, item_span);
-    //     Some(item_id)
-    // }
-
     fn skip_to_next_statement(&mut self) {
         loop {
             match self.lexer.peek().kind {
@@ -1044,13 +1035,24 @@ impl<'input> Parser<'input> {
             };
             arguments.push(argument);
 
-            match parser.lexer.peek().kind {
+            let token = parser.lexer.peek();
+            match token.kind {
                 TokenKind::CloseParen => break,
                 TokenKind::Comma => {
                     let _ = parser.lexer.next();
                     continue;
                 }
-                _ => panic!("unexpected token"),
+                _ => {
+                    parser.diagnostics.push(
+                        UnexpectedTokenDiagnostic {
+                            file_id: parser.ast.file_id,
+                            received: token,
+                            expected_kind: TokenKind::Comma,
+                        }
+                        .report(),
+                    );
+                    continue;
+                }
             }
         }
 
@@ -1074,8 +1076,11 @@ impl<'input> Parser<'input> {
         let _double_colon = parser.lexer.next();
         let member = parser.parse_identifier()?;
         let namespace = match namespace_expr.kind {
-            ExprKind::Identifier { symbol } => Identifier {
-                symbol,
+            ExprKind::Identifier { symbol } => TypeExpression {
+                kind: TypeExprKind::Identifier(Identifier {
+                    symbol,
+                    span: namespace_expr.span,
+                }),
                 span: namespace_expr.span,
             },
             _ => {
@@ -1093,23 +1098,48 @@ impl<'input> Parser<'input> {
 
         let span = TextSpan::merge(namespace_expr.span, member.span);
         Ok(Expression {
-            kind: ExprKind::Namespace { namespace, member },
+            kind: ExprKind::Namespace {
+                namespace: Box::new(namespace),
+                member,
+            },
             span,
         })
     }
 
-    fn next_expect(&mut self, kind: TokenKind) -> Result<Token, ()> {
-        self.lexer.next_expect(kind).map_err(|token| {
-            self.diagnostics.push(
-                UnexpectedTokenDiagnostic {
-                    file_id: self.ast.file_id,
-                    received: token,
-                    expected_kind: kind,
-                }
-                .report(),
-            );
-            ()
-        })
+    fn next_expect(&mut self, expected_kind: TokenKind) -> Result<Token, ()> {
+        let token = self.lexer.next();
+        match TokenKind::discriminant_equals(token.kind, expected_kind) {
+            true => Ok(token),
+            false => {
+                self.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: self.ast.file_id,
+                        received: token,
+                        expected_kind,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
+    }
+
+    fn peek_expect(&mut self, expected_kind: TokenKind) -> Result<Token, ()> {
+        let token = self.lexer.peek();
+        match TokenKind::discriminant_equals(token.kind, expected_kind) {
+            true => Ok(token.clone()),
+            false => {
+                self.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: self.ast.file_id,
+                        received: token.clone(),
+                        expected_kind,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
     }
 
     fn parse_if_else_expression(parser: &mut Parser) -> Result<Expression, ()> {
@@ -1144,6 +1174,87 @@ impl<'input> Parser<'input> {
                 })
             }
         }
+    }
+
+    fn parse_type_expr(&mut self) -> Result<TypeExpression, ()> {
+        let token = self.peek_expect(TokenKind::Identifier)?;
+
+        match Keyword::try_from(token.span.text(self.source)) {
+            Ok(Keyword::Func) => Parser::parse_function_type_expression(self),
+            Ok(_) => panic!("invalid type"),
+            Err(_) => Parser::parse_identifier_type_expression(self),
+        }
+    }
+
+    fn parse_function_type_params(parser: &mut Parser) -> Result<Vec<TypeExpression>, ()> {
+        _ = parser.next_expect(TokenKind::OpenParen)?;
+        let mut params = Vec::new();
+
+        loop {
+            let token = parser.lexer.peek();
+            match token.kind {
+                TokenKind::CloseParen => {
+                    _ = parser.lexer.next();
+                    break;
+                }
+                TokenKind::Eof => {
+                    parser.diagnostics.push(
+                        UnexpectedEofDiagnostic {
+                            file_id: parser.ast.file_id,
+                            span: token.span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+                _ => {}
+            }
+
+            let param = parser.parse_type_expr()?;
+            params.push(param);
+            let token = parser.lexer.peek();
+            match token.kind {
+                TokenKind::Comma => {
+                    _ = parser.lexer.next();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(params)
+    }
+
+    fn parse_function_type_expression(parser: &mut Parser) -> Result<TypeExpression, ()> {
+        let func_keyword = parser.lexer.next();
+        let params = Parser::parse_function_type_params(parser)?;
+        let result = match parser.lexer.peek().kind {
+            TokenKind::Arrow => {
+                let _ = parser.lexer.next();
+                Some(parser.parse_type_expr()?)
+            }
+            _ => None,
+        };
+
+        Ok(TypeExpression {
+            kind: TypeExprKind::Function {
+                params: params.into_boxed_slice(),
+                result: result.map(Box::new),
+            },
+            span: func_keyword.span,
+        })
+    }
+
+    fn parse_identifier_type_expression(parser: &mut Parser) -> Result<TypeExpression, ()> {
+        let token = parser.next_expect(TokenKind::Identifier)?;
+        let symbol = parser.intern_identifier(token.span)?;
+
+        Ok(TypeExpression {
+            kind: TypeExprKind::Identifier(Identifier {
+                symbol,
+                span: token.span,
+            }),
+            span: token.span,
+        })
     }
 }
 

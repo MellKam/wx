@@ -74,7 +74,7 @@ impl<'a> Builder<'a> {
         };
 
         mir::Function {
-            name: function.name,
+            name: function.name.symbol,
             frame: function
                 .stack
                 .scopes
@@ -92,7 +92,7 @@ impl<'a> Builder<'a> {
                         .locals
                         .iter()
                         .map(|local| mir::Local {
-                            name: local.name,
+                            name: local.name.symbol,
                             ty: self.to_mir_type(local.ty),
                             mutability: local.mutability,
                         })
@@ -137,23 +137,16 @@ impl<'a> Builder<'a> {
                 kind: mir::ExprKind::Function { index: index.0 },
                 ty,
             },
-            hir::ExprKind::Call { callee, arguments } => {
-                let args = arguments
-                    .into_iter()
-                    .map(|arg| self.build_expression(&arg))
-                    .collect();
-
-                mir::Expression {
-                    kind: mir::ExprKind::Call {
-                        callee: match callee.kind {
-                            hir::ExprKind::Function(index) => index.0,
-                            _ => panic!("expected function"),
-                        },
-                        arguments: args,
-                    },
-                    ty,
-                }
-            }
+            hir::ExprKind::Call { callee, arguments } => mir::Expression {
+                kind: mir::ExprKind::Call {
+                    callee: Box::new(self.build_expression(callee)),
+                    arguments: arguments
+                        .into_iter()
+                        .map(|arg| self.build_expression(&arg))
+                        .collect(),
+                },
+                ty,
+            },
             hir::ExprKind::EnumVariant {
                 enum_index,
                 variant_index,
@@ -172,6 +165,7 @@ impl<'a> Builder<'a> {
                 local_index,
                 scope_index,
                 expr,
+                ..
             } => match expr.kind {
                 hir::ExprKind::Int(value) if value == 0 => {
                     return mir::Expression {

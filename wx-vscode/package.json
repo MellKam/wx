@@ -1,0 +1,48 @@
+{
+	"name": "wx-vscode",
+	"displayName": "WX Language Server",
+	"version": "0.0.1",
+	"engines": {
+		"vscode": "^1.101.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"activationEvents": [],
+	"main": "./out/extension.js",
+	"publisher": "Artem Melnyk",
+	"contributes": {
+		"commands": [
+			{
+				"command": "wx-vscode.helloWorld",
+				"title": "Hello World"
+			}
+		],
+		"languages": [
+			{
+				"id": "wx",
+				"aliases": [
+					"WX",
+					"wx"
+				],
+				"extensions": [
+					".wx"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		]
+	},
+	"scripts": {
+		"vscode:prepublish": "deno run build",
+		"build": "tsc -p ./",
+		"watch": "tsc -watch -p ./"
+	},
+	"dependencies": {
+		"vscode-languageclient": "9.0.1"
+	},
+	"devDependencies": {
+		"@types/vscode": "^1.101.0",
+		"@types/node": "^24.0.3",
+		"typescript": "5.8.3"
+	}
+}

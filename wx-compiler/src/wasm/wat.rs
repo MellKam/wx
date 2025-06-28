@@ -4,39 +4,21 @@ trait Encode {
     fn encode(&self, sink: &mut String);
 }
 
-#[derive(Clone)]
-struct EncodeContext<'a> {
-    module: &'a wasm::Module<'a>,
-    func_index: wasm::FunctionIndex,
-}
-
-impl EncodeContext<'_> {
-    fn encode(&self, sink: &mut String, expr_index: wasm::ExprIndex) {
-        self.module
-            .get_expr(expr_index)
-            .encode_with_context(sink, self.clone());
-    }
-}
-
-trait EncodeWithContext {
-    fn encode_with_context(&self, sink: &mut String, ctx: EncodeContext);
-}
-
 impl Encode for i32 {
     fn encode(&self, sink: &mut String) {
-        sink.push_str(self.to_string().as_str());
+        sink.push_str(&self.to_string());
     }
 }
 
 impl Encode for i64 {
     fn encode(&self, sink: &mut String) {
-        sink.push_str(self.to_string().as_str());
+        sink.push_str(&self.to_string());
     }
 }
 
 impl Encode for u32 {
     fn encode(&self, sink: &mut String) {
-        sink.push_str(self.to_string().as_str());
+        sink.push_str(&self.to_string());
     }
 }
 
@@ -49,6 +31,24 @@ impl Encode for wasm::ValueType {
     }
 }
 
+#[derive(Clone)]
+struct EncodeContext<'a> {
+    module: &'a wasm::Module<'a>,
+    func_index: wasm::FuncIndex,
+}
+
+impl EncodeContext<'_> {
+    fn encode_expr(&self, sink: &mut String, expr_index: wasm::ExprIndex) {
+        self.module
+            .get_expr(expr_index)
+            .encode_with_context(sink, self.clone());
+    }
+}
+
+trait EncodeWithContext {
+    fn encode_with_context(&self, sink: &mut String, ctx: EncodeContext);
+}
+
 impl EncodeWithContext for wasm::Expression {
     fn encode_with_context(&self, sink: &mut String, ctx: EncodeContext) {
         use wasm::Expression;
@@ -57,20 +57,18 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push_str("(nop)");
             }
             Expression::LocalGet { local: local_index } => {
-                sink.push_str("(local.get $");
                 let local = ctx
                     .module
                     .get_function(ctx.func_index)
                     .locals
                     .get(local_index.0 as usize)
                     .unwrap();
-                sink.push_str(format!("{}_{})", local.name, local_index.0).as_str());
+                sink.push_str(format!("(local.get ${}_{})", local.name, local_index.0).as_str());
             }
             Expression::LocalSet {
                 local: local_index,
                 value,
             } => {
-                sink.push_str("(local.set $");
                 let local = ctx
                     .module
                     .get_function(ctx.func_index)
@@ -78,15 +76,14 @@ impl EncodeWithContext for wasm::Expression {
                     .get(local_index.0 as usize)
                     .unwrap();
 
-                sink.push_str(format!("{}_{}", local.name, local_index.0).as_str());
-                sink.push_str(" ");
-                ctx.encode(sink, *value);
+                sink.push_str(format!("(local.set ${}_{} ", local.name, local_index.0).as_str());
+                ctx.encode_expr(sink, *value);
                 sink.push_str(")");
             }
             Expression::Return { value } => match value {
                 Some(value) => {
                     sink.push_str("(return ");
-                    ctx.encode(sink, *value);
+                    ctx.encode_expr(sink, *value);
                     sink.push_str(")");
                 }
                 None => {
@@ -108,16 +105,16 @@ impl EncodeWithContext for wasm::Expression {
                         sink.push_str(")");
                     }
                 }
-                ctx.encode(sink, *condition);
+                ctx.encode_expr(sink, *condition);
 
                 sink.push_str("(then");
-                ctx.encode(sink, *then_branch);
+                ctx.encode_expr(sink, *then_branch);
                 sink.push_str(")");
 
                 match else_branch {
                     Some(else_branch) => {
                         sink.push_str("(else");
-                        ctx.encode(sink, *else_branch);
+                        ctx.encode_expr(sink, *else_branch);
                         sink.push_str(")");
                     }
                     None => {}
@@ -139,7 +136,7 @@ impl EncodeWithContext for wasm::Expression {
                 }
 
                 for expr_index in expressions {
-                    ctx.encode(sink, *expr_index);
+                    ctx.encode_expr(sink, *expr_index);
                 }
                 sink.push_str(")");
             }
@@ -158,7 +155,7 @@ impl EncodeWithContext for wasm::Expression {
                 }
 
                 for expr_index in expressions {
-                    ctx.encode(sink, *expr_index);
+                    ctx.encode_expr(sink, *expr_index);
                 }
                 sink.push_str(")");
             }
@@ -171,7 +168,7 @@ impl EncodeWithContext for wasm::Expression {
                 match *value {
                     Some(value) => {
                         sink.push_str(" ");
-                        ctx.encode(sink, value);
+                        ctx.encode_expr(sink, value);
                     }
                     None => {}
                 }
@@ -179,7 +176,7 @@ impl EncodeWithContext for wasm::Expression {
             }
             Expression::Drop { value } => {
                 sink.push_str("(drop ");
-                ctx.encode(sink, *value);
+                ctx.encode_expr(sink, *value);
                 sink.push_str(")");
             }
             Expression::Call {
@@ -191,7 +188,22 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push_str(func_name);
                 sink.push_str(" ");
                 for arg in arguments {
-                    ctx.encode(sink, *arg);
+                    ctx.encode_expr(sink, *arg);
+                }
+                sink.push_str(")");
+            }
+            Expression::CallIndirect {
+                expr,
+                type_index,
+                arguments,
+                ..
+            } => {
+                ctx.encode_expr(sink, *expr);
+                sink.push_str("(call_indirect (type ");
+                type_index.0.encode(sink);
+                sink.push_str(") ");
+                for arg in arguments {
+                    ctx.encode_expr(sink, *arg);
                 }
                 sink.push_str(")");
             }
@@ -207,204 +219,204 @@ impl EncodeWithContext for wasm::Expression {
             }
             Expression::I32Add { left, right } => {
                 sink.push_str("(i32.add ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32Sub { left, right } => {
                 sink.push_str("(i32.sub ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32Mul { left, right } => {
                 sink.push_str("(i32.mul ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32Eq { left, right } => {
                 sink.push_str("(i32.eq ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Add { left, right } => {
                 sink.push_str("(i64.add ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Sub { left, right } => {
                 sink.push_str("(i64.sub ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Mul { left, right } => {
                 sink.push_str("(i64.mul ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Eq { left, right } => {
                 sink.push_str("(i64.eq ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32And { left, right } => {
                 sink.push_str("(i32.and ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32Or { left, right } => {
                 sink.push_str("(i32.or ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32Eqz { value } => {
                 sink.push_str("(i32.eqz ");
-                ctx.encode(sink, *value);
+                ctx.encode_expr(sink, *value);
                 sink.push_str(")");
             }
             Expression::I64And { left, right } => {
                 sink.push_str("(i64.and ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Or { left, right } => {
                 sink.push_str("(i64.or ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Eqz { value } => {
                 sink.push_str("(i64.eqz ");
-                ctx.encode(sink, *value);
+                ctx.encode_expr(sink, *value);
                 sink.push_str(")");
             }
             Expression::I32Ne { left, right } => {
                 sink.push_str("(i32.ne ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Ne { left, right } => {
                 sink.push_str("(i64.ne ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32LtS { left, right } => {
                 sink.push_str("(i32.lt_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32GtS { left, right } => {
                 sink.push_str("(i32.gt_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32LeS { left, right } => {
                 sink.push_str("(i32.le_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32GeS { left, right } => {
                 sink.push_str("(i32.ge_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64LtS { left, right } => {
                 sink.push_str("(i64.lt_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64GtS { left, right } => {
                 sink.push_str("(i64.gt_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64LeS { left, right } => {
                 sink.push_str("(i64.le_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64GeS { left, right } => {
                 sink.push_str("(i64.ge_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32Shl { left, right } => {
                 sink.push_str("(i32.shl ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32ShrS { left, right } => {
                 sink.push_str("(i32.shr_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Shl { left, right } => {
                 sink.push_str("(i64.shl ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64ShrS { left, right } => {
                 sink.push_str("(i64.shr_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32DivS { left, right } => {
                 sink.push_str("(i32.div_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32RemS { left, right } => {
                 sink.push_str("(i32.rem_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64DivS { left, right } => {
                 sink.push_str("(i64.div_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64RemS { left, right } => {
                 sink.push_str("(i64.rem_s ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I32Xor { left, right } => {
                 sink.push_str("(i32.xor ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
             Expression::I64Xor { left, right } => {
                 sink.push_str("(i64.xor ");
-                ctx.encode(sink, *left);
-                ctx.encode(sink, *right);
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
         }
@@ -428,7 +440,7 @@ impl EncodeWithContext for wasm::FunctionBody<'_> {
         let func_type = ctx.module.get_type(
             ctx.module
                 .functions
-                .functions
+                .types
                 .get(ctx.func_index.0 as usize)
                 .unwrap()
                 .clone(),
@@ -461,7 +473,7 @@ impl EncodeWithContext for wasm::FunctionBody<'_> {
         }
 
         for expr_index in &self.expressions {
-            ctx.encode(sink, *expr_index);
+            ctx.encode_expr(sink, *expr_index);
         }
         sink.push_str(")");
     }
@@ -476,7 +488,7 @@ impl wasm::Module<'_> {
                 &mut sink,
                 EncodeContext {
                     module: self,
-                    func_index: wasm::FunctionIndex(index as u32),
+                    func_index: wasm::FuncIndex(index as u32),
                 },
             );
         }

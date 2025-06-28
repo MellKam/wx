@@ -100,7 +100,7 @@ pub enum ExprKind {
         value: Box<Expression>,
     },
     Call {
-        callee: FunctionIndex,
+        callee: Box<Expression>,
         arguments: Box<[Expression]>,
     },
     Eq {

@@ -19,6 +19,9 @@ const program = new Command("wx-compiler")
 			const outputFile = filepath.replace(/\.wx$/, ".wasm");
 			await writeFile(outputFile, bytecode);
 		} catch (error) {
+			if (Array.isArray(error)) {
+				console.error(JSON.stringify(error, null, 2));
+			}
 			if (error instanceof Error) {
 				console.error(error.message);
 			}

@@ -1,6 +1,5 @@
 pub mod builder;
 pub mod diagnostics;
-pub mod evaluator;
 mod global;
 pub mod local;
 
@@ -13,14 +12,13 @@ use string_interner::symbol::SymbolU32;
 
 use crate::ast;
 use crate::files::FileId;
+use crate::hir::global::FuncTypeIndex;
 use crate::hir::local::StackFrame;
+use crate::span::TextSpan;
 
 #[derive(Debug, Clone)]
 pub enum ExportItem {
-    Function {
-        func_index: FuncIndex,
-        name: SymbolU32,
-    },
+    Function { func_index: FuncIndex },
     // TODO: Global
 }
 
@@ -63,7 +61,7 @@ impl HIR {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrimitiveType {
     I32,
     I64,
@@ -78,10 +76,10 @@ impl std::fmt::Display for PrimitiveType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
     Primitive(PrimitiveType),
-    Function(FuncIndex),
+    Function(FuncTypeIndex),
     Enum(EnumIndex),
     Bool,
     Unit,
@@ -121,29 +119,10 @@ impl TryFrom<&str> for Type {
     }
 }
 
-impl std::fmt::Display for Type {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Type::Primitive(ty) => write!(f, "{}", ty),
-            Type::Function(index) => write!(f, "function({})", index.0),
-            Type::Enum(index) => write!(f, "enum({})", index.0),
-            Type::Bool => write!(f, "bool"),
-            Type::Unit => write!(f, "unit"),
-            Type::Never => write!(f, "never"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionType {
     pub params: Box<[Type]>,
     pub result: Type,
-}
-
-#[derive(Debug, Clone)]
-pub struct Expression {
-    pub kind: ExprKind,
-    pub ty: Option<Type>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -152,10 +131,10 @@ pub struct LocalIndex(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScopeIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FuncIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumIndex(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -167,6 +146,7 @@ pub enum ExprKind {
     Int(i64),
     Bool(bool),
     LocalDeclaration {
+        name: ast::Identifier,
         scope_index: ScopeIndex,
         local_index: LocalIndex,
         expr: Box<Expression>,
@@ -220,22 +200,29 @@ pub enum ExprKind {
     },
 }
 
+#[derive(Debug, Clone)]
+pub struct Expression {
+    pub kind: ExprKind,
+    pub span: TextSpan,
+    pub ty: Option<Type>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Mutability {
     Mutable,
     Const,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Local {
-    pub name: SymbolU32,
+    pub name: ast::Identifier,
     pub ty: Type,
     pub mutability: Mutability,
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub name: SymbolU32,
+    pub name: ast::Identifier,
     pub ty: FunctionType,
     pub stack: StackFrame,
     pub block: Box<Expression>,
@@ -243,7 +230,7 @@ pub struct Function {
 
 #[derive(Debug, Clone)]
 pub struct Enum {
-    pub name: SymbolU32,
+    pub name: ast::Identifier,
     pub ty: PrimitiveType,
     pub variants: Box<[EnumVariant]>,
     pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
@@ -251,6 +238,6 @@ pub struct Enum {
 
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
-    pub name: SymbolU32,
+    pub name: ast::Identifier,
     pub value: i64,
 }

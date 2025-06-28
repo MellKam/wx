@@ -186,7 +186,7 @@ impl std::fmt::Display for BinaryOp {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Identifier {
     pub symbol: SymbolU32,
     pub span: TextSpan,
@@ -203,7 +203,7 @@ pub enum ExprKind {
     /// `5 as i32`
     Cast {
         value: Box<Expression>,
-        ty: Identifier,
+        ty: Box<TypeExpression>,
     },
     /// `-{expr}`
     Unary {
@@ -224,7 +224,7 @@ pub enum ExprKind {
     },
     /// `{expr}::{expr}`
     Namespace {
-        namespace: Identifier,
+        namespace: Box<TypeExpression>,
         member: Identifier,
     },
     /// `return {expr}`
@@ -265,6 +265,23 @@ pub struct Expression {
 }
 
 #[derive(Debug, Clone)]
+pub enum TypeExprKind {
+    /// `i32`
+    Identifier(Identifier),
+    /// `func(i32, i32) -> i32`
+    Function {
+        params: Box<[TypeExpression]>,
+        result: Option<Box<TypeExpression>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeExpression {
+    pub kind: TypeExprKind,
+    pub span: TextSpan,
+}
+
+#[derive(Debug, Clone)]
 pub enum StmtKind {
     /// `{expr};`
     DelimitedExpression { value: Box<Expression> },
@@ -272,7 +289,7 @@ pub enum StmtKind {
     LocalDefinition {
         mutable: Option<Identifier>,
         name: Identifier,
-        ty: Option<Identifier>,
+        ty: Option<Box<TypeExpression>>,
         value: Box<Expression>,
     },
 }
@@ -287,15 +304,14 @@ pub struct Statement {
 pub struct FunctionParam {
     pub mutable: Option<TextSpan>,
     pub name: Identifier,
-    pub ty: Identifier,
+    pub ty: TypeExpression,
 }
 
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
     pub name: Identifier,
     pub params: Box<[FunctionParam]>,
-    pub result: Option<Identifier>,
-    pub span: TextSpan,
+    pub result: Option<Box<TypeExpression>>,
 }
 
 #[derive(Debug, Clone)]
@@ -312,7 +328,7 @@ pub enum ItemKind {
     },
     EnumDefinition {
         name: Identifier,
-        ty: Identifier,
+        ty: TypeExpression,
         variants: Box<[EnumVariant]>,
     },
     ExportModifier {

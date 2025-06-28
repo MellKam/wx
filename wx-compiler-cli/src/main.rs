@@ -4,8 +4,7 @@ use std::io::Write;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use codespan_reporting::term::{self};
 use string_interner::StringInterner;
-use wx_compiler::files::Files;
-use wx_compiler::{compile_module, encode_module};
+use wx_compiler::*;
 
 fn main() {
     let matches = clap::Command::new("WX Compiler")
@@ -42,27 +41,45 @@ fn main() {
 
     let filename = file_path.split('/').last().unwrap().to_string();
 
-    let mut files = Files::new();
+    let mut files = files::Files::new();
     let main_file = files.add(filename.clone(), file_content).unwrap();
 
     let mut interner = StringInterner::new();
-    let result = compile_module(&mut interner, &files, main_file);
+    let (ast, diagnostics) = ast::Parser::parse(
+        main_file,
+        &files.get(main_file).unwrap().source,
+        &mut interner,
+    );
 
-    let module = match result.module {
-        Some(module) => module,
-        None => {
-            let writer = StandardStream::stderr(ColorChoice::Always);
-            let config = codespan_reporting::term::Config::default();
+    if !diagnostics.is_empty() {
+        let writer = StandardStream::stderr(ColorChoice::Always);
+        let config = codespan_reporting::term::Config::default();
 
-            for diagnostic in result.diagnostics.iter() {
-                term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
-            }
-
-            std::process::exit(1);
+        for diagnostic in diagnostics.iter() {
+            term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
         }
-    };
+        std::process::exit(1);
+    }
 
-    let bytecode = encode_module(&module);
+    let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
+
+    if !diagnostics.is_empty() {
+        let writer = StandardStream::stderr(ColorChoice::Always);
+        let config = codespan_reporting::term::Config::default();
+
+        for diagnostic in diagnostics.iter() {
+            term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+        }
+        std::process::exit(1);
+    }
+
+    let mir = mir::Builder::build(&hir);
+    println!("{:#?}", mir.functions);
+    let module = wasm::Builder::build(&mir, &mut interner);
+    let bytecode = wasm::Encoder::encode(&module);
+
+    let parts = filename.split('.').collect::<Vec<&str>>();
+    let filename = parts[0..parts.len() - 1].join(".");
     let mut file = fs::File::create(filename.clone() + ".wasm").unwrap();
     file.write(&bytecode).unwrap();
     println!("Wrote {} bytes to out.wasm", bytecode.len());

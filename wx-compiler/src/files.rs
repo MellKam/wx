@@ -1,6 +1,7 @@
 use core::ops::Range;
 
 use codespan_reporting::files;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
 pub struct File {
@@ -27,7 +28,7 @@ impl File {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileId(u32);
 
 #[derive(Debug, Clone)]

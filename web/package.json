@@ -16,7 +16,7 @@
 		"typescript": "5.8.3",
 		"vite": "6.3.5",
 		"vue-tsc": "2.2.10",
-		"wx-compiler-wasm": "0.0.1",
+		"wx-compiler-wasm": "0.0.3",
 		"vite-plugin-wasm": "3.4.1"
 	}
 }

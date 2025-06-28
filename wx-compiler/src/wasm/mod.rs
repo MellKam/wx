@@ -28,7 +28,7 @@ pub struct Local<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct FunctionIndex(pub u32);
+pub struct FuncIndex(pub u32);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionType {
@@ -91,7 +91,13 @@ pub enum Expression {
         value: ExprIndex,
     },
     Call {
-        function: FunctionIndex,
+        function: FuncIndex,
+        arguments: Box<[ExprIndex]>,
+    },
+    CallIndirect {
+        expr: ExprIndex,
+        table_index: TableIndex,
+        type_index: TypeIndex,
         arguments: Box<[ExprIndex]>,
     },
     I32Add {
@@ -238,15 +244,18 @@ pub struct TypeSection {
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
 pub struct TypeIndex(pub u32);
 
+#[derive(Debug, Clone, Copy)]
+pub struct TableIndex(pub u32);
+
 #[derive(Debug, Clone)]
 pub struct FunctionSection {
-    functions: Box<[TypeIndex]>,
+    types: Box<[TypeIndex]>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FunctionExport<'a> {
     name: &'a str,
-    index: FunctionIndex,
+    index: FuncIndex,
 }
 
 #[derive(Debug, Clone)]
@@ -275,9 +284,46 @@ pub struct CodeSection<'a> {
     functions: Box<[FunctionBody<'a>]>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum RefType {
+    FuncRef,
+    ExternRef,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResizableLimits {
+    Initial(u32),
+    InitialAndMax { initial: u32, maximum: u32 },
+}
+
+#[derive(Debug, Clone)]
+pub struct TableType {
+    ty: RefType,
+    limits: ResizableLimits,
+}
+
+#[derive(Debug, Clone)]
+pub struct TableSection {
+    tables: Box<[TableType]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElementSegment {
+    table_index: TableIndex,
+    offset: u32,
+    indices: Box<[FuncIndex]>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ElementSection {
+    segments: Box<[ElementSegment]>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Module<'a> {
     types: TypeSection,
+    tables: TableSection,
+    elements: ElementSection,
     functions: FunctionSection,
     exports: ExportSection<'a>,
     code: CodeSection<'a>,
@@ -288,7 +334,7 @@ impl Module<'_> {
         self.code.expressions.get(index.0 as usize).unwrap()
     }
 
-    pub fn get_function(&self, index: FunctionIndex) -> &FunctionBody {
+    pub fn get_function(&self, index: FuncIndex) -> &FunctionBody {
         self.code.functions.get(index.0 as usize).unwrap()
     }
 

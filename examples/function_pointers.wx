@@ -1,0 +1,18 @@
+func add(a: i32, b: i32) -> i32 { a + b }
+func sub(a: i32, b: i32) -> i32 { a - b }
+
+func apply(
+  binop: func(i32, i32) -> i32, 
+  a: i32, 
+  b: i32,
+) -> i32 {
+  binop(a, b)
+}
+
+export func main() -> i32 {
+  local a = apply(add, 5, 10);
+  local b = apply(sub, 10, 5);
+
+  a + b
+}
+
