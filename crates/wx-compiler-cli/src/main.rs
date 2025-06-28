@@ -8,7 +8,7 @@ use wx_compiler::*;
 
 fn main() {
     let matches = clap::Command::new("WX Compiler")
-        .name("wxc")
+        .name("wx-compiler")
         .arg(
             clap::Arg::new("path")
                 .help("Path to the source file to compile")

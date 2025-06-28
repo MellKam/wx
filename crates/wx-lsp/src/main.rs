@@ -69,8 +69,8 @@ fn main_loop(
                 }
                 eprintln!("info: received request: {:?}", req.method);
                 match cast_request::<lsp_types::request::HoverRequest>(req) {
-                    Ok((id, params)) => {
-                        let x = params.text_document_position_params.position;
+                    Ok((id, _params)) => {
+                        // let x = params.text_document_position_params.position;
                         let hover_contents =
                             HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
                                 language: "rust".to_string(),
