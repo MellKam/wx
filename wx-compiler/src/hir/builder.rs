@@ -1,5 +1,4 @@
 use core::panic;
-use std::process::Termination;
 
 use codespan_reporting::diagnostic::Diagnostic;
 use string_interner::StringInterner;
@@ -108,11 +107,17 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             .map(|(index, param)| ((ScopeIndex(0), param.name.symbol), LocalIndex(index as u32)))
             .collect();
 
-        let func_index = self.global.resolve_function(signature.name.symbol).unwrap();
-        let func_type = self
+        let func_index = self.global.resolve_func(signature.name.symbol).unwrap();
+        let type_index = self
             .global
             .functions
             .get(func_index.0 as usize)
+            .copied()
+            .unwrap();
+        let func_type = self
+            .global
+            .function_types
+            .get(type_index.0 as usize)
             .unwrap()
             .clone();
 
@@ -137,7 +142,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         Ok(hir::Function {
             ty: func_type,
-            name: signature.name.clone(),
+            name: signature.name,
             stack: ctx.frame,
             block: Box::new(block),
         })
@@ -428,7 +433,13 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 }),
                 GlobalValue::Function { func_index } => Ok(Expression {
                     kind: ExprKind::Function(func_index),
-                    ty: Some(Type::Function(func_index)),
+                    ty: Some(Type::Function(
+                        self.global
+                            .functions
+                            .get(func_index.0 as usize)
+                            .copied()
+                            .unwrap(),
+                    )),
                     span: expr.span,
                 }),
                 GlobalValue::EnumVariant {
@@ -1188,7 +1199,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             .iter()
             .enumerate()
             .map(|(index, ast_argument)| {
-                let func_type = self.global.functions.get(func_index.0 as usize).unwrap();
+                let func_type = self
+                    .global
+                    .function_types
+                    .get(func_index.0 as usize)
+                    .unwrap();
                 let expected_type = func_type.params.get(index).copied().unwrap();
 
                 let mut argument = self.build_expression(ctx, ast_argument, Some(expected_type))?;
@@ -1221,7 +1236,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             },
             ty: Some(
                 self.global
-                    .functions
+                    .function_types
                     .get(func_index.0 as usize)
                     .unwrap()
                     .result,

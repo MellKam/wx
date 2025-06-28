@@ -24,14 +24,18 @@ pub enum LookupCategory {
     Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FuncTypeIndex(pub u32);
+
 #[derive(Debug)]
 pub struct GlobalContext<'interner> {
-    pub exports: Vec<ExportItem>,
-    pub functions: Vec<FunctionType>,
-    pub function_lookup: HashMap<FunctionType, FuncIndex>,
-    pub enums: Vec<Enum>,
     pub interner: &'interner StringInterner<StringBackend>,
-    pub lookup: HashMap<(LookupCategory, SymbolU32), GlobalValue>,
+    pub exports: Vec<ExportItem>,
+    pub functions: Vec<FuncTypeIndex>,
+    pub function_types: Vec<FunctionType>,
+    pub function_lookup: HashMap<FunctionType, FuncTypeIndex>,
+    pub enums: Vec<Enum>,
+    pub symbol_lookup: HashMap<(LookupCategory, SymbolU32), GlobalValue>,
 }
 
 impl<'interner> GlobalContext<'interner> {
@@ -55,11 +59,12 @@ impl<'interner> GlobalContext<'interner> {
 
         let mut global = GlobalContext {
             exports: Vec::new(),
-            functions: Vec::new(),
+            function_types: Vec::new(),
             enums: Vec::new(),
             interner,
+            functions: Vec::new(),
             function_lookup: HashMap::new(),
-            lookup,
+            symbol_lookup: lookup,
         };
 
         for item in items.iter() {
@@ -133,12 +138,11 @@ impl<'interner> GlobalContext<'interner> {
     fn add_exported_item(&mut self, item: &ast::Item) {
         match &item.kind {
             ast::ItemKind::FunctionDefinition { .. } => {
-                let index = FuncIndex(self.functions.len() as u32);
-                self.exports
-                    .push(ExportItem::Function { func_index: index });
+                let func_index = FuncIndex(self.functions.len() as u32);
+                self.exports.push(ExportItem::Function { func_index });
                 self.add_item(item);
             }
-            _ => panic!("only functions can be exported"),
+            _ => unreachable!("only functions can be exported"),
         }
     }
 
@@ -146,19 +150,30 @@ impl<'interner> GlobalContext<'interner> {
         match &item.kind {
             ast::ItemKind::FunctionDefinition { signature, .. } => {
                 let func_type = self.build_function_type(&signature).unwrap();
+                let type_index = match self.function_lookup.get(&func_type).copied() {
+                    Some(type_index) => type_index,
+                    None => {
+                        let type_index = FuncTypeIndex(self.function_types.len() as u32);
+                        self.function_types.push(func_type.clone());
+                        self.function_lookup.insert(func_type, type_index);
+
+                        type_index
+                    }
+                };
+
                 let func_index = FuncIndex(self.functions.len() as u32);
-                self.lookup.insert(
+                self.functions.push(type_index);
+
+                self.symbol_lookup.insert(
                     (LookupCategory::Value, signature.name.symbol),
                     GlobalValue::Function { func_index },
                 );
-                self.function_lookup.insert(func_type.clone(), func_index);
-                self.functions.push(func_type);
             }
             ast::ItemKind::EnumDefinition { name, .. } => {
                 let enum_index = EnumIndex(self.enums.len() as u32);
                 let enum_ = self.build_enum(&item);
                 self.enums.push(enum_);
-                self.lookup.insert(
+                self.symbol_lookup.insert(
                     (LookupCategory::Type, name.symbol),
                     GlobalValue::Enum { enum_index },
                 );
@@ -175,7 +190,7 @@ impl<'interner> GlobalContext<'interner> {
                     Ok(ty) => return Ok(ty),
                     Err(_) => {}
                 }
-                match self.lookup.get(&(LookupCategory::Type, id.symbol)) {
+                match self.symbol_lookup.get(&(LookupCategory::Type, id.symbol)) {
                     Some(GlobalValue::Enum { enum_index }) => Ok(Type::Enum(*enum_index)),
                     Some(_) => Err(()),
                     None => Err(()),
@@ -193,13 +208,13 @@ impl<'interner> GlobalContext<'interner> {
                 };
 
                 let func_type = FunctionType { params, result };
-                match self.function_lookup.get(&func_type) {
-                    Some(index) => Ok(Type::Function(*index)),
+                match self.function_lookup.get(&func_type).copied() {
+                    Some(type_index) => Ok(Type::Function(type_index)),
                     None => {
-                        let index = FuncIndex(self.functions.len() as u32);
-                        self.function_lookup.insert(func_type.clone(), index);
-                        self.functions.push(func_type);
-                        Ok(Type::Function(index))
+                        let type_index = FuncTypeIndex(self.function_types.len() as u32);
+                        self.function_lookup.insert(func_type.clone(), type_index);
+                        self.function_types.push(func_type);
+                        Ok(Type::Function(type_index))
                     }
                 }
             }
@@ -207,14 +222,22 @@ impl<'interner> GlobalContext<'interner> {
     }
 
     pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<GlobalValue> {
-        match self.lookup.get(&(LookupCategory::Value, symbol)).cloned() {
+        match self
+            .symbol_lookup
+            .get(&(LookupCategory::Value, symbol))
+            .cloned()
+        {
             Some(value) => Some(value),
             None => None,
         }
     }
 
-    pub fn resolve_function(&self, symbol: SymbolU32) -> Option<FuncIndex> {
-        match self.lookup.get(&(LookupCategory::Value, symbol)).cloned() {
+    pub fn resolve_func(&self, symbol: SymbolU32) -> Option<FuncIndex> {
+        match self
+            .symbol_lookup
+            .get(&(LookupCategory::Value, symbol))
+            .cloned()
+        {
             Some(GlobalValue::Function { func_index }) => Some(func_index),
             _ => None,
         }
@@ -237,7 +260,7 @@ impl<'interner> GlobalContext<'interner> {
                     .to_string()
             }
             Type::Function(func_index) => {
-                let func = self.functions.get(func_index.0 as usize).unwrap();
+                let func = self.function_types.get(func_index.0 as usize).unwrap();
                 let mut result = String::from("func(");
 
                 for (index, param) in func.params.iter().enumerate() {

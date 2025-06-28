@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 
-use crate::{hir, mir, wasm};
+use crate::wasm::{self, TableIndex};
+use crate::{hir, mir};
 
 pub struct Builder {
     expressions: Vec<wasm::Expression>,
+    table: Vec<wasm::FuncIndex>,
 }
 
 impl TryFrom<mir::Type> for wasm::ValueType {
@@ -117,6 +119,7 @@ impl Builder {
     ) -> wasm::Module<'a> {
         let mut builder = Builder {
             expressions: Vec::new(),
+            table: Vec::new(),
         };
 
         let mut types = HashMap::<wasm::FunctionType, wasm::TypeIndex>::new();
@@ -129,7 +132,7 @@ impl Builder {
                     let func = mir.functions.get(func_index.0 as usize).unwrap();
 
                     wasm::ExportItem::Function(wasm::FunctionExport {
-                        index: wasm::FunctionIndex(func_index.0),
+                        index: wasm::FuncIndex(func_index.0),
                         name: interner.resolve(func.name).unwrap(),
                     })
                 }
@@ -189,6 +192,25 @@ impl Builder {
         }
 
         wasm::Module {
+            tables: wasm::TableSection {
+                tables: match builder.table.len() {
+                    0 => Box::new([]),
+                    _ => Box::new([wasm::TableType {
+                        ty: wasm::RefType::FuncRef,
+                        limits: wasm::ResizableLimits::Initial(builder.table.len() as u32),
+                    }]),
+                },
+            },
+            elements: wasm::ElementSection {
+                segments: match builder.table.len() {
+                    0 => Box::new([]),
+                    _ => Box::new([wasm::ElementSegment {
+                        table_index: wasm::TableIndex(0),
+                        offset: 0,
+                        indices: builder.table.into_boxed_slice(),
+                    }]),
+                },
+            },
             types: wasm::TypeSection {
                 signatures: {
                     let mut sorted_types: Vec<_> = types.into_iter().collect();
@@ -223,19 +245,40 @@ impl Builder {
     ) -> wasm::ExprIndex {
         match &expr.kind {
             mir::ExprKind::Noop => self.push_expr(wasm::Expression::Nop),
-            mir::ExprKind::Function { index } => self.push_expr(wasm::Expression::I32Const {
-                value: *index as i32,
-            }),
+            mir::ExprKind::Function { index } => {
+                let table_index = self.table.len() as i32;
+                self.table.push(wasm::FuncIndex(*index));
+                let expr = wasm::Expression::I32Const { value: table_index };
+                self.push_expr(expr)
+            }
             mir::ExprKind::Bool { value } => self.push_expr(wasm::Expression::I32Const {
                 value: if *value { 1 } else { 0 },
             }),
             mir::ExprKind::Call { callee, arguments } => {
-                let expr = wasm::Expression::Call {
-                    function: wasm::FunctionIndex(*callee),
-                    arguments: arguments
-                        .iter()
-                        .map(|arg| self.build_expression(ctx, arg))
-                        .collect(),
+                let arguments = arguments
+                    .iter()
+                    .map(|arg| self.build_expression(ctx, arg))
+                    .collect();
+
+                let expr = match callee.kind {
+                    mir::ExprKind::Function { index } => wasm::Expression::Call {
+                        function: wasm::FuncIndex(index),
+                        arguments,
+                    },
+                    _ => {
+                        let type_index = match callee.ty {
+                            mir::Type::Function(type_index) => wasm::TypeIndex(type_index),
+                            _ => unreachable!("callee must be a function type"),
+                        };
+                        let function = self.build_expression(ctx, callee);
+
+                        wasm::Expression::CallIndirect {
+                            expr: function,
+                            table_index: TableIndex(0),
+                            type_index,
+                            arguments,
+                        }
+                    }
                 };
                 self.push_expr(expr)
             }
@@ -347,13 +390,15 @@ impl Builder {
                 })
             }
             mir::ExprKind::Drop { value } => {
-                let value = self.build_expression(ctx, &value);
-                match wasm::ValueType::try_from(expr.ty.clone()) {
+                match wasm::ValueType::try_from(value.ty) {
                     Ok(wasm::ValueType::I32 | wasm::ValueType::I64) => {
-                        self.push_expr(wasm::Expression::Drop { value })
+                        let expr = wasm::Expression::Drop {
+                            value: self.build_expression(ctx, &value),
+                        };
+                        self.push_expr(expr)
                     }
                     // TODO: fix drop of empty types
-                    _ => unreachable!(),
+                    ty => unreachable!("drop of: {:?}", ty),
                 }
             }
             mir::ExprKind::Eq { left, right } => {

@@ -279,7 +279,7 @@ impl Encode for wasm::BlockResult {
 #[derive(Clone)]
 struct EncodeContext<'a> {
     module: &'a wasm::Module<'a>,
-    func_index: wasm::FunctionIndex,
+    func_index: wasm::FuncIndex,
 }
 
 impl EncodeContext<'_> {
@@ -373,11 +373,26 @@ impl EncodeWithContext for wasm::Expression {
                 function,
                 arguments,
             } => {
-                for arg in arguments.iter() {
-                    ctx.encode_expr(sink, *arg);
+                for arg in arguments.iter().copied() {
+                    ctx.encode_expr(sink, arg);
                 }
                 sink.push(Instruction::Call as u8);
                 function.0.encode(sink);
+            }
+            Expression::CallIndirect {
+                expr,
+                type_index,
+                arguments,
+                table_index,
+            } => {
+                for arg in arguments.iter().copied() {
+                    ctx.encode_expr(sink, arg);
+                }
+                ctx.encode_expr(sink, *expr);
+
+                sink.push(Instruction::CallIndirect as u8);
+                type_index.0.encode(sink);
+                table_index.0.encode(sink);
             }
             Expression::I32Const { value } => {
                 sink.push(Instruction::I32Const as u8);
@@ -709,9 +724,91 @@ impl<'a> wasm::CodeSection<'a> {
                 &mut section_sink,
                 EncodeContext {
                     module,
-                    func_index: wasm::FunctionIndex(index as u32),
+                    func_index: wasm::FuncIndex(index as u32),
                 },
             );
+        }
+
+        let section_size = section_sink.len() as u32;
+        section_size.encode(sink);
+        sink.extend_from_slice(&section_sink);
+    }
+}
+
+impl Encode for wasm::RefType {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        let ref_type = match self {
+            wasm::RefType::FuncRef => 0x70,
+            wasm::RefType::ExternRef => 0x6F,
+        };
+        sink.push(ref_type);
+    }
+}
+
+impl Encode for wasm::ResizableLimits {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        match self {
+            wasm::ResizableLimits::Initial(initial) => {
+                sink.push(0x00);
+                initial.encode(sink);
+            }
+            wasm::ResizableLimits::InitialAndMax { initial, maximum } => {
+                sink.push(0x01);
+                initial.encode(sink);
+                maximum.encode(sink);
+            }
+        }
+    }
+}
+
+impl Encode for wasm::TableType {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        self.ty.encode(sink);
+        self.limits.encode(sink);
+    }
+}
+
+impl Encode for wasm::TableSection {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        sink.push(SectionId::Table as u8);
+
+        let mut section_sink: Vec<u8> = Vec::new();
+        let table_count = self.tables.len() as u32;
+        table_count.encode(&mut section_sink);
+        for table in &self.tables {
+            table.encode(&mut section_sink);
+        }
+
+        let section_size = section_sink.len() as u32;
+        section_size.encode(sink);
+        sink.extend_from_slice(&section_sink);
+    }
+}
+
+impl Encode for wasm::ElementSegment {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        self.table_index.0.encode(sink);
+        sink.push(Instruction::I32Const as u8);
+        self.offset.encode(sink);
+        sink.push(Instruction::End as u8);
+
+        let indicies_count = self.indices.len() as u32;
+        indicies_count.encode(sink);
+        for index in self.indices.iter().copied() {
+            index.0.encode(sink);
+        }
+    }
+}
+
+impl Encode for wasm::ElementSection {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        sink.push(SectionId::Element as u8);
+
+        let mut section_sink: Vec<u8> = Vec::new();
+        let segment_count = self.segments.len() as u32;
+        segment_count.encode(&mut section_sink);
+        for segment in &self.segments {
+            segment.encode(&mut section_sink);
         }
 
         let section_size = section_sink.len() as u32;
@@ -732,7 +829,15 @@ impl Encoder {
 
         module.types.encode(&mut sink);
         module.functions.encode(&mut sink);
+        match module.tables.tables.len() {
+            0 => {}
+            _ => module.tables.encode(&mut sink),
+        }
         module.exports.encode(&mut sink);
+        match module.elements.segments.len() {
+            0 => {}
+            _ => module.elements.encode(&mut sink),
+        }
         module.code.encode(&mut sink, module);
 
         sink

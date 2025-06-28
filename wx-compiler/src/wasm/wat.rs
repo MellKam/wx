@@ -34,7 +34,7 @@ impl Encode for wasm::ValueType {
 #[derive(Clone)]
 struct EncodeContext<'a> {
     module: &'a wasm::Module<'a>,
-    func_index: wasm::FunctionIndex,
+    func_index: wasm::FuncIndex,
 }
 
 impl EncodeContext<'_> {
@@ -187,6 +187,21 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push_str("(call $");
                 sink.push_str(func_name);
                 sink.push_str(" ");
+                for arg in arguments {
+                    ctx.encode_expr(sink, *arg);
+                }
+                sink.push_str(")");
+            }
+            Expression::CallIndirect {
+                expr,
+                type_index,
+                arguments,
+                ..
+            } => {
+                ctx.encode_expr(sink, *expr);
+                sink.push_str("(call_indirect (type ");
+                type_index.0.encode(sink);
+                sink.push_str(") ");
                 for arg in arguments {
                     ctx.encode_expr(sink, *arg);
                 }
@@ -473,7 +488,7 @@ impl wasm::Module<'_> {
                 &mut sink,
                 EncodeContext {
                     module: self,
-                    func_index: wasm::FunctionIndex(index as u32),
+                    func_index: wasm::FuncIndex(index as u32),
                 },
             );
         }

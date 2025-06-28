@@ -221,16 +221,40 @@ impl<'input> Parser<'input> {
         parser.next_expect(TokenKind::OpenParen)?;
 
         let mut params = Vec::new();
-        match parser.lexer.peek().kind {
-            TokenKind::CloseParen => {
-                _ = parser.lexer.next();
-                return Ok(params);
-            }
-            _ => {}
-        }
 
         loop {
-            let token = parser.peek_expect(TokenKind::Identifier)?;
+            let token = parser.lexer.peek();
+            match token.kind {
+                TokenKind::CloseParen => {
+                    _ = parser.lexer.next();
+                    break;
+                }
+                TokenKind::Identifier => {}
+                TokenKind::Comma => {
+                    let token = parser.lexer.next();
+                    parser.diagnostics.push(
+                        UnexpectedTokenDiagnostic {
+                            file_id: parser.ast.file_id,
+                            received: token,
+                            expected_kind: TokenKind::Identifier,
+                        }
+                        .report(),
+                    );
+                    continue;
+                }
+                _ => {
+                    parser.diagnostics.push(
+                        UnexpectedTokenDiagnostic {
+                            file_id: parser.ast.file_id,
+                            received: token,
+                            expected_kind: TokenKind::Identifier,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+            }
+
             let mutable = match Keyword::try_from(token.span.text(parser.source)) {
                 Ok(Keyword::Mut) => {
                     let mut_token = parser.lexer.next();

@@ -12,6 +12,7 @@ use string_interner::symbol::SymbolU32;
 
 use crate::ast;
 use crate::files::FileId;
+use crate::hir::global::FuncTypeIndex;
 use crate::hir::local::StackFrame;
 use crate::span::TextSpan;
 
@@ -78,7 +79,7 @@ impl std::fmt::Display for PrimitiveType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
     Primitive(PrimitiveType),
-    Function(FuncIndex),
+    Function(FuncTypeIndex),
     Enum(EnumIndex),
     Bool,
     Unit,

@@ -20,20 +20,3 @@ export func fibonacci_iterative(mut n: i32) -> i32 {
     n -= 1;
   }
 }
-
-func add(a: i32, b: i32) -> i32 {
-  a + b
-}
-
-func add2(a: i32, b: i32) -> i32 {
-  add(a, b)
-}
-
-func main(adder: func(i32, i32) -> i32) {
-  _ = adder(5, 10);
-}
-
-func test() {
-  main(add);
-  main(add2);
-}

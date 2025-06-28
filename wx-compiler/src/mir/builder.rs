@@ -137,23 +137,16 @@ impl<'a> Builder<'a> {
                 kind: mir::ExprKind::Function { index: index.0 },
                 ty,
             },
-            hir::ExprKind::Call { callee, arguments } => {
-                let args = arguments
-                    .into_iter()
-                    .map(|arg| self.build_expression(&arg))
-                    .collect();
-
-                mir::Expression {
-                    kind: mir::ExprKind::Call {
-                        callee: match callee.ty {
-                            Some(hir::Type::Function(func_index)) => func_index.0,
-                            _ => panic!("expected a function type for callee"),
-                        },
-                        arguments: args,
-                    },
-                    ty,
-                }
-            }
+            hir::ExprKind::Call { callee, arguments } => mir::Expression {
+                kind: mir::ExprKind::Call {
+                    callee: Box::new(self.build_expression(callee)),
+                    arguments: arguments
+                        .into_iter()
+                        .map(|arg| self.build_expression(&arg))
+                        .collect(),
+                },
+                ty,
+            },
             hir::ExprKind::EnumVariant {
                 enum_index,
                 variant_index,
