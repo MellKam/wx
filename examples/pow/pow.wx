@@ -1,4 +1,4 @@
-func pow(base: i32, mut exp: i32): i32 {
+export func pow(base: i32, mut exp: i32): i32 {
   if exp < 0 {
     return 0; 
   };

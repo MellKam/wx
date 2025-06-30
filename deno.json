@@ -1,4 +1,4 @@
 {
-	"workspace": ["examples", "web", "vscode", "cli"],
+	"workspace": ["vscode", "web", "cli"],
 	"nodeModulesDir": "manual"
 }

@@ -27,8 +27,9 @@
 		"noImplicitOverride": true,
 		"allowUnusedLabels": false,
 		"verbatimModuleSyntax": true,
+		"allowImportingTsExtensions": true,
 		"types": ["vite/client"]
 	},
-	"include": ["./src/**/*.ts", "./src/**/*.vue"],
+	"include": ["./src/**/*.ts", "./src/**/*.tsx"],
 	"exclude": ["node_modules", "dist"]
 }

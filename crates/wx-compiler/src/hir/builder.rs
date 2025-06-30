@@ -1195,6 +1195,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             }
         };
 
+        // if func_index.0 == ctx.func_index.0 {}
+
         let arguments: Box<_> = ast_arguments
             .iter()
             .enumerate()

@@ -148,7 +148,7 @@ impl<'input> Parser<'input> {
 
             match parser.parse_item() {
                 Ok(item) => parser.ast.items.push(item),
-                Err(_) => break,
+                Err(_) => continue,
             };
         }
 
@@ -182,7 +182,7 @@ impl<'input> Parser<'input> {
 
         let token = parser.lexer.peek();
         let result = match token.kind {
-            TokenKind::Arrow => {
+            TokenKind::Colon => {
                 _ = parser.lexer.next();
                 let ty = parser.parse_type_expr()?;
 
@@ -194,7 +194,7 @@ impl<'input> Parser<'input> {
                     UnexpectedTokenDiagnostic {
                         file_id: parser.ast.file_id,
                         received: token,
-                        expected_kind: TokenKind::Arrow,
+                        expected_kind: TokenKind::Colon,
                     }
                     .report(),
                 );
@@ -286,13 +286,15 @@ impl<'input> Parser<'input> {
 
             params.push(FunctionParam { mutable, name, ty });
 
+            // TODO:
+
             let token = parser.lexer.peek();
             match token.kind {
                 TokenKind::Comma => {
-                    parser.lexer.next();
+                    _ = parser.lexer.next();
                 }
                 TokenKind::CloseParen => {
-                    parser.lexer.next();
+                    _ = parser.lexer.next();
                     break;
                 }
                 _ => {
@@ -1047,11 +1049,11 @@ impl<'input> Parser<'input> {
                         UnexpectedTokenDiagnostic {
                             file_id: parser.ast.file_id,
                             received: token,
-                            expected_kind: TokenKind::Comma,
+                            expected_kind: TokenKind::CloseParen,
                         }
                         .report(),
                     );
-                    continue;
+                    return Err(());
                 }
             }
         }
