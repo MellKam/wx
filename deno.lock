@@ -9,6 +9,7 @@
     "npm:@vitejs/plugin-vue-jsx@4.2.0": "4.2.0_vite@6.3.5__@types+node@24.0.1__picomatch@4.0.2_vue@3.5.17__typescript@5.8.3_@babel+core@7.27.7_@types+node@24.0.1_typescript@5.8.3",
     "npm:@vitejs/plugin-vue@5.2.4": "5.2.4_vite@6.3.5__@types+node@24.0.1__picomatch@4.0.2_vue@3.5.17__typescript@5.8.3_@types+node@24.0.1_typescript@5.8.3",
     "npm:@vueuse/core@13.4.0": "13.4.0_vue@3.5.17__typescript@5.8.3_typescript@5.8.3",
+    "npm:@vueuse/router@13.4.0": "13.4.0_vue@3.5.17__typescript@5.8.3_vue-router@4.5.1__vue@3.5.17___typescript@5.8.3__typescript@5.8.3_typescript@5.8.3",
     "npm:commander@14.0.0": "14.0.0",
     "npm:fflate@0.8.2": "0.8.2",
     "npm:monaco-editor@0.52.2": "0.52.2",
@@ -839,6 +840,14 @@
     "@vueuse/metadata@13.4.0": {
       "integrity": "sha512-CPDQ/IgOeWbqItg1c/pS+Ulum63MNbpJ4eecjFJqgD/JUCJ822zLfpw6M9HzSvL6wbzMieOtIAW/H8deQASKHg=="
     },
+    "@vueuse/router@13.4.0_vue@3.5.17__typescript@5.8.3_vue-router@4.5.1__vue@3.5.17___typescript@5.8.3__typescript@5.8.3_typescript@5.8.3": {
+      "integrity": "sha512-3NL9RFgTiWN4SVp6CUFK/9db10BnoLU3iX+TRgcG4HEuR7GC1g+yMqxe33L6kjUTv8Dc9WeaER714vGBc9Xyjg==",
+      "dependencies": [
+        "@vueuse/shared",
+        "vue",
+        "vue-router"
+      ]
+    },
     "@vueuse/shared@13.4.0_vue@3.5.17__typescript@5.8.3_typescript@5.8.3": {
       "integrity": "sha512-+AxuKbw8R1gYy5T21V5yhadeNM7rJqb4cPaRI9DdGnnNl3uqXh+unvQ3uCaA2DjYLbNr1+l7ht/B4qEsRegX6A==",
       "dependencies": [
@@ -1347,6 +1356,7 @@
             "npm:@vitejs/plugin-vue-jsx@4.2.0",
             "npm:@vitejs/plugin-vue@5.2.4",
             "npm:@vueuse/core@13.4.0",
+            "npm:@vueuse/router@13.4.0",
             "npm:fflate@0.8.2",
             "npm:monaco-editor@0.52.2",
             "npm:tailwindcss@4.1.11",
