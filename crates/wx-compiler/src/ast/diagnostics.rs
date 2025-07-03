@@ -23,8 +23,11 @@ pub struct UnexpectedEofDiagnostic {
 }
 
 impl UnexpectedEofDiagnostic {
+    const CODE: &'static str = "unexpected-eof";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("unexpected end of file")
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -36,12 +39,14 @@ pub struct MissingStatementDelimiterDiagnostic {
 }
 
 impl MissingStatementDelimiterDiagnostic {
+    const CODE: &'static str = "missing-statement-delimiter";
+
     pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("missing statement delimiter")
+        Diagnostic::warning()
+            .with_code(Self::CODE)
+            .with_message("expected semicolon")
             .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("consider adding a semicolon `;` at the end of the statement"),
+                Label::primary(self.file_id, self.span).with_message("consider adding `;` here"),
             )
     }
 }
@@ -53,8 +58,11 @@ pub struct MissingClosingParenDiagnostic {
 }
 
 impl MissingClosingParenDiagnostic {
+    const CODE: &'static str = "missing-closing-paren";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("missing closing parenthesis")
             .with_label(
                 Label::primary(self.file_id, self.opening_paren)
@@ -70,8 +78,11 @@ pub struct InvalidIntegerLiteralDiagnostic {
 }
 
 impl InvalidIntegerLiteralDiagnostic {
+    const CODE: &'static str = "invalid-integer-literal";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("invalid integer literal")
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -83,8 +94,11 @@ pub struct IncompleteBinaryExpressionDiagnostic {
 }
 
 impl IncompleteBinaryExpressionDiagnostic {
+    const CODE: &'static str = "incomplete-binary-expression";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("incomplete binary expression")
             .with_label(Label::primary(self.file_id, self.span))
             .with_label(
@@ -100,8 +114,11 @@ pub struct MissingUnaryOperandDiagnostic {
 }
 
 impl MissingUnaryOperandDiagnostic {
+    const CODE: &'static str = "missing-unary-operand";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("missing operand")
             .with_label(Label::primary(self.file_id, self.span))
             .with_label(
@@ -118,8 +135,11 @@ pub struct ChainedComparisonsDiagnostic {
 }
 
 impl ChainedComparisonsDiagnostic {
+    const CODE: &'static str = "chained-comparisons";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("comparison operators cannot be chained")
             .with_label(Label::primary(self.file_id, self.first_operator_span))
             .with_label(Label::primary(self.file_id, self.second_operator_span))
@@ -134,15 +154,17 @@ pub struct UnexpectedTokenDiagnostic {
 }
 
 impl UnexpectedTokenDiagnostic {
+    const CODE: &'static str = "unexpected-token";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message(format!(
-                "unexpected token, expected `{}` but found `{}`",
+                "expected `{}` but found `{}`",
                 self.expected_kind, self.received.kind
             ))
-            .with_label(Label::primary(self.file_id, self.received.span))
             .with_label(
-                Label::secondary(self.file_id, self.received.span)
+                Label::primary(self.file_id, self.received.span)
                     .with_message(format!("expected `{}`", self.expected_kind)),
             )
     }
@@ -154,8 +176,11 @@ pub struct ReservedIdentifierDiagnostic {
 }
 
 impl ReservedIdentifierDiagnostic {
+    const CODE: &'static str = "reserved-identifier";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("can't use keyword as identifier")
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -167,12 +192,48 @@ pub struct InvalidNamespaceDiagnostic {
 }
 
 impl InvalidNamespaceDiagnostic {
+    const CODE: &'static str = "invalid-namespace";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("invalid namespace")
             .with_label(
                 Label::primary(self.file_id, self.span)
                     .with_message("namespace must be a valid identifier"),
             )
+    }
+}
+
+pub struct InvalidItemDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl InvalidItemDiagnostic {
+    const CODE: &'static str = "invalid-item";
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("invalid item")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct MissingLocalInitializerDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl MissingLocalInitializerDiagnostic {
+    const CODE: &'static str = "missing-initializer";
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("expected initial value for local variable")
+            .with_note("example syntax: local x: i32 = 0;")
+            .with_label(Label::primary(self.file_id, self.span))
     }
 }

@@ -4,7 +4,6 @@ use string_interner::symbol::SymbolU32;
 pub mod diagnostics;
 mod lexer;
 mod parser;
-mod unescape;
 
 pub use parser::*;
 

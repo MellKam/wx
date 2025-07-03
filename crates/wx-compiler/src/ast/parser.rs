@@ -1,5 +1,3 @@
-use core::panic;
-
 use codespan_reporting::diagnostic::Diagnostic;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
@@ -12,7 +10,8 @@ use super::{
 };
 use crate::ast::diagnostics::{
     ChainedComparisonsDiagnostic, IncompleteBinaryExpressionDiagnostic,
-    InvalidIntegerLiteralDiagnostic, InvalidNamespaceDiagnostic, MissingClosingParenDiagnostic,
+    InvalidIntegerLiteralDiagnostic, InvalidItemDiagnostic, InvalidNamespaceDiagnostic,
+    MissingClosingParenDiagnostic, MissingLocalInitializerDiagnostic,
     MissingStatementDelimiterDiagnostic, MissingUnaryOperandDiagnostic,
     ReservedIdentifierDiagnostic, UnexpectedEofDiagnostic, UnexpectedTokenDiagnostic,
 };
@@ -126,6 +125,42 @@ pub struct Parser<'input> {
 }
 
 impl<'input> Parser<'input> {
+    fn next_expect(&mut self, expected_kind: TokenKind) -> Result<Token, ()> {
+        let token = self.lexer.next();
+        match TokenKind::discriminant_equals(token.kind, expected_kind) {
+            true => Ok(token),
+            false => {
+                self.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: self.ast.file_id,
+                        received: token,
+                        expected_kind,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
+    }
+
+    fn peek_expect(&mut self, expected_kind: TokenKind) -> Result<Token, ()> {
+        let token = self.lexer.peek();
+        match TokenKind::discriminant_equals(token.kind, expected_kind) {
+            true => Ok(token),
+            false => {
+                self.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: self.ast.file_id,
+                        received: token,
+                        expected_kind,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
+    }
+
     pub fn parse(
         file_id: FileId,
         source: &'input str,
@@ -140,33 +175,75 @@ impl<'input> Parser<'input> {
             diagnostics: Vec::new(),
             ast: Ast::new(file_id),
         };
+
         loop {
-            let token = parser.lexer.peek();
-            if token.kind == TokenKind::Eof {
+            let start_token = parser.lexer.peek();
+            if start_token.kind == TokenKind::Eof {
                 break;
             }
 
-            match parser.parse_item() {
-                Ok(item) => parser.ast.items.push(item),
-                Err(_) => continue,
+            let item_handler = match parser.get_item_handler(start_token.clone()) {
+                Ok(handler) => handler,
+                Err(_) => match parser.recover_from_invalid_item(start_token) {
+                    Some(handler) => handler,
+                    None => break,
+                },
             };
+
+            match item_handler(&mut parser) {
+                Ok(item) => {
+                    parser.ast.items.push(item);
+                }
+                Err(_) => continue,
+            }
         }
 
         (parser.ast, parser.diagnostics)
     }
 
-    fn parse_item(&mut self) -> Result<Item, ()> {
-        let token = self.lexer.peek();
-        let item_handler: fn(parser: &mut Parser) -> Result<Item, ()> =
-            match self.resolve_keyword(token.clone()) {
-                Ok(Keyword::Func) => Parser::parse_function_definition,
-                Ok(Keyword::Enum) => Parser::parse_enum_item,
-                Ok(Keyword::Export) => Parser::parse_exported_function_definition,
-                _ => return Err(()),
-            };
+    fn get_item_handler(
+        &mut self,
+        token: Token,
+    ) -> Result<fn(parser: &mut Parser) -> Result<Item, ()>, ()> {
+        match self.resolve_keyword(token.clone()) {
+            Some(Keyword::Func) => Ok(Parser::parse_function_definition),
+            Some(Keyword::Enum) => Ok(Parser::parse_enum_item),
+            Some(Keyword::Export) => Ok(Parser::parse_exported_function_definition),
+            _ => return Err(()),
+        }
+    }
 
-        let item_id = item_handler(self)?;
-        Ok(item_id)
+    fn recover_from_invalid_item(
+        &mut self,
+        start_token: Token,
+    ) -> Option<fn(parser: &mut Parser) -> Result<Item, ()>> {
+        let mut end_token = None;
+        let handler = loop {
+            let token = self.lexer.peek();
+            if token.kind == TokenKind::Eof {
+                break None;
+            }
+
+            match self.get_item_handler(token.clone()) {
+                Ok(handler) => break Some(handler),
+                Err(_) => {
+                    end_token = Some(self.lexer.next());
+                }
+            }
+        };
+
+        self.diagnostics.push(
+            InvalidItemDiagnostic {
+                file_id: self.ast.file_id,
+                span: match end_token {
+                    Some(end_token) => TextSpan::merge(start_token.span, end_token.span),
+                    None => start_token.span,
+                },
+            }
+            .report(),
+        );
+
+        handler
     }
 
     fn parse_function_definition(parser: &mut Parser) -> Result<Item, ()> {
@@ -502,7 +579,7 @@ impl<'input> Parser<'input> {
                 BindingPower::Member,
             )),
             TokenKind::Identifier => match self.resolve_keyword(token) {
-                Ok(Keyword::As) => Some((Parser::parse_cast_expression, BindingPower::Cast)),
+                Some(Keyword::As) => Some((Parser::parse_cast_expression, BindingPower::Cast)),
                 _ => None,
             },
             TokenKind::Colon => Some((Parser::parse_labelled_expression, BindingPower::Primary)),
@@ -577,9 +654,55 @@ impl<'input> Parser<'input> {
             _ => None,
         };
 
-        _ = parser.next_expect(TokenKind::Eq)?;
-        let value = parser.parse_expression(BindingPower::Default)?;
-        let span = TextSpan::merge(local_keyword.span, value.span);
+        let eq_token = parser.lexer.peek();
+        match eq_token.kind {
+            TokenKind::Eq => {
+                _ = parser.lexer.next();
+            }
+            _ => {
+                let token = parser.lexer.peek();
+                parser.diagnostics.push(
+                    MissingLocalInitializerDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+        }
+        let value = match parser.parse_expression(BindingPower::Default) {
+            Ok(value) => value,
+            Err(_) => {
+                let token = parser.lexer.peek();
+                parser.diagnostics.push(
+                    MissingLocalInitializerDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+        };
+        let semicolon = parser.lexer.peek();
+        let span = match semicolon.kind {
+            TokenKind::SemiColon => {
+                _ = parser.lexer.next();
+                TextSpan::merge(local_keyword.span, semicolon.span)
+            }
+            _ => {
+                parser.diagnostics.push(
+                    MissingStatementDelimiterDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: TextSpan::new(value.span.end().0, value.span.end().0),
+                    }
+                    .report(),
+                );
+
+                TextSpan::merge(local_keyword.span, value.span)
+            }
+        };
         Ok(Statement {
             kind: StmtKind::LocalDefinition {
                 mutable,
@@ -814,10 +937,10 @@ impl<'input> Parser<'input> {
         }
     }
 
-    fn resolve_keyword(&mut self, token: Token) -> Result<Keyword, ()> {
+    fn resolve_keyword(&mut self, token: Token) -> Option<Keyword> {
         match token.kind {
-            TokenKind::Identifier => Keyword::try_from(token.span.text(self.source)),
-            _ => Err(()),
+            TokenKind::Identifier => Keyword::try_from(token.span.text(self.source)).ok(),
+            _ => None,
         }
     }
 
@@ -934,7 +1057,7 @@ impl<'input> Parser<'input> {
     fn parse_block_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let open_brace = parser.next_expect(TokenKind::OpenBrace)?;
         let mut statements = Vec::new();
-        let mut result: Option<Expression> = None;
+        let mut result: Option<Box<Expression>> = None;
 
         loop {
             let token = parser.lexer.peek();
@@ -942,66 +1065,118 @@ impl<'input> Parser<'input> {
                 TokenKind::CloseBrace => break,
                 TokenKind::Eof => {
                     parser.diagnostics.push(
-                        UnexpectedEofDiagnostic {
+                        UnexpectedTokenDiagnostic {
                             file_id: parser.ast.file_id,
-                            span: token.span,
+                            received: token.clone(),
+                            expected_kind: TokenKind::CloseBrace,
                         }
                         .report(),
                     );
-                    return Err(());
+
+                    return Ok(Expression {
+                        kind: ExprKind::Block {
+                            statements: statements.into_boxed_slice(),
+                            result,
+                        },
+                        span: TextSpan::merge(open_brace.span, token.span),
+                    });
                 }
                 _ => {}
             };
 
             match parser.resolve_keyword(token.clone()) {
-                Ok(Keyword::Local) => match Parser::parse_local_definition(parser) {
-                    Ok(stmt) => statements.push(stmt),
-                    Err(_) => parser.skip_to_next_statement(),
-                },
-                _ => match parser.parse_expression(BindingPower::Default) {
-                    Ok(value) => match parser.lexer.peek().kind {
-                        TokenKind::SemiColon => {
-                            let semicolon = parser.lexer.next();
-                            let span = TextSpan::merge(value.span, semicolon.span);
-                            statements.push(Statement {
-                                kind: StmtKind::DelimitedExpression {
-                                    value: Box::new(value),
-                                },
-                                span,
-                            });
+                Some(Keyword::Local) => {
+                    match Parser::parse_local_definition(parser) {
+                        Ok(stmt) => statements.push(stmt),
+                        Err(_) => {
+                            parser.skip_to_next_statement();
+                            continue;
                         }
-                        TokenKind::CloseBrace => {
-                            result = Some(value);
-                            break;
+                    };
+                    continue;
+                }
+                Some(_) => {
+                    parser.diagnostics.push(
+                        UnexpectedTokenDiagnostic {
+                            file_id: parser.ast.file_id,
+                            received: token.clone(),
+                            expected_kind: TokenKind::CloseBrace,
                         }
-                        _ => {
-                            parser.diagnostics.push(
-                                MissingStatementDelimiterDiagnostic {
-                                    file_id: parser.ast.file_id,
-                                    span: TextSpan::new(value.span.end().0, value.span.end().0),
-                                }
-                                .report(),
-                            );
+                        .report(),
+                    );
 
-                            let span = value.span;
-                            statements.push(Statement {
-                                kind: StmtKind::DelimitedExpression {
-                                    value: Box::new(value),
-                                },
-                                span,
-                            });
-                        }
-                    },
-                    Err(_) => parser.skip_to_next_statement(),
-                },
+                    let span = TextSpan::merge(
+                        open_brace.span,
+                        statements.last().map(|s| s.span).unwrap_or(open_brace.span),
+                    );
+                    return Ok(Expression {
+                        kind: ExprKind::Block {
+                            statements: statements.into_boxed_slice(),
+                            result: None,
+                        },
+                        span,
+                    });
+                }
+                _ => {}
             };
+
+            let value = match parser.parse_expression(BindingPower::Default) {
+                Ok(value) => value,
+                Err(_) => {
+                    parser.skip_to_next_statement();
+                    continue;
+                }
+            };
+
+            let token = parser.lexer.peek();
+            match token.kind {
+                TokenKind::SemiColon => {
+                    let semicolon = parser.lexer.next();
+                    let span = TextSpan::merge(value.span, semicolon.span);
+                    statements.push(Statement {
+                        kind: StmtKind::DelimitedExpression {
+                            value: Box::new(value),
+                        },
+                        span,
+                    });
+                }
+                TokenKind::CloseBrace => {
+                    result = Some(Box::new(value));
+
+                    let close_brace = parser.lexer.next();
+                    return Ok(Expression {
+                        kind: ExprKind::Block {
+                            statements: statements.into_boxed_slice(),
+                            result,
+                        },
+                        span: TextSpan::merge(open_brace.span, close_brace.span),
+                    });
+                }
+                _ => {
+                    parser.diagnostics.push(
+                        MissingStatementDelimiterDiagnostic {
+                            file_id: parser.ast.file_id,
+                            span: TextSpan::new(value.span.end().0, value.span.end().0),
+                        }
+                        .report(),
+                    );
+
+                    let span = value.span;
+                    statements.push(Statement {
+                        kind: StmtKind::DelimitedExpression {
+                            value: Box::new(value),
+                        },
+                        span,
+                    });
+                }
+            }
         }
 
         let close_brace = parser.lexer.next();
         Ok(Expression {
             kind: ExprKind::Block {
                 statements: statements.into_boxed_slice(),
-                result: result.map(Box::new),
+                result,
             },
             span: TextSpan::merge(open_brace.span, close_brace.span),
         })
@@ -1108,50 +1283,14 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn next_expect(&mut self, expected_kind: TokenKind) -> Result<Token, ()> {
-        let token = self.lexer.next();
-        match TokenKind::discriminant_equals(token.kind, expected_kind) {
-            true => Ok(token),
-            false => {
-                self.diagnostics.push(
-                    UnexpectedTokenDiagnostic {
-                        file_id: self.ast.file_id,
-                        received: token,
-                        expected_kind,
-                    }
-                    .report(),
-                );
-                Err(())
-            }
-        }
-    }
-
-    fn peek_expect(&mut self, expected_kind: TokenKind) -> Result<Token, ()> {
-        let token = self.lexer.peek();
-        match TokenKind::discriminant_equals(token.kind, expected_kind) {
-            true => Ok(token.clone()),
-            false => {
-                self.diagnostics.push(
-                    UnexpectedTokenDiagnostic {
-                        file_id: self.ast.file_id,
-                        received: token.clone(),
-                        expected_kind,
-                    }
-                    .report(),
-                );
-                Err(())
-            }
-        }
-    }
-
     fn parse_if_else_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let if_keyword = parser.lexer.next();
         let condition = parser.parse_expression(BindingPower::Default)?;
 
         let then_block = Parser::parse_block_expression(parser)?;
-        let maybe_else_keyword = parser.lexer.peek();
-        match parser.resolve_keyword(maybe_else_keyword) {
-            Ok(Keyword::Else) => {
+        let maybe_else_token = parser.lexer.peek();
+        match parser.resolve_keyword(maybe_else_token) {
+            Some(Keyword::Else) => {
                 let _ = parser.lexer.next();
                 let else_block = Parser::parse_block_expression(parser)?;
                 let span = TextSpan::merge(if_keyword.span, else_block.span);
@@ -1333,3 +1472,125 @@ impl<'input> Parser<'input> {
 //     let expr_id = parser.ast.add_expression(ExprKind::String { symbol });
 //     Some(expr_id)
 // }
+
+// tests
+
+#[cfg(test)]
+mod tests {
+    use string_interner::StringInterner;
+
+    use super::*;
+    use crate::files::Files;
+
+    #[test]
+    fn should_recover_from_invalid_item() {
+        let mut interner = StringInterner::new();
+
+        let mut files = Files::new();
+        let file_id = files
+            .add("test.wx".to_string(), "foo func test() {}".to_string())
+            .unwrap();
+
+        let (ast, diagnostics) =
+            Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics.get(0).unwrap().code,
+            Some("invalid-item".to_string())
+        );
+        assert_eq!(ast.items.len(), 1);
+    }
+
+    #[test]
+    fn should_recover_from_unclosed_function_block() {
+        let mut interner = StringInterner::new();
+
+        let mut files = Files::new();
+        let file_id = files
+            .add("test.wx".to_string(), "func test() { ".to_string())
+            .unwrap();
+
+        let (ast, diagnostics) =
+            Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+
+        assert_eq!(ast.items.len(), 1);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, Some("unexpected-token".to_string()));
+    }
+
+    #[test]
+    fn should_recover_local_definition_from_missing_semicolon() {
+        let mut interner = StringInterner::new();
+        let mut files = Files::new();
+        let file_id = files
+            .add(
+                "test.wx".to_string(),
+                "func test() { local x = 5 }".to_string(),
+            )
+            .unwrap();
+        let (ast, diagnostics) =
+            Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+
+        println!("{:#?}", diagnostics);
+        println!("{:#?}", ast);
+
+        assert_eq!(ast.items.len(), 1);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some("missing-statement-delimiter".to_string())
+        );
+    }
+
+    #[test]
+    fn should_recover_delimited_expression_semicolon() {
+        let mut interner = StringInterner::new();
+        let mut files = Files::new();
+        let file_id = files
+            .add(
+                "test.wx".to_string(),
+                "func test() { hello() 5 }".to_string(),
+            )
+            .unwrap();
+        let (ast, diagnostics) =
+            Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].code,
+            Some("missing-statement-delimiter".to_string())
+        );
+        assert_eq!(ast.items.len(), 1);
+        match &ast.items[0].kind {
+            ItemKind::FunctionDefinition { block, .. } => match &block.kind {
+                ExprKind::Block { result, statements } => {
+                    assert_eq!(statements.len(), 1);
+                    assert_eq!(result.is_some(), true);
+                }
+                _ => {
+                    panic!("expected a block expression");
+                }
+            },
+            _ => panic!("expected a call expression"),
+        };
+    }
+
+    #[test]
+    fn should_report_local_definition_without_value() {
+        let mut interner = StringInterner::new();
+        let mut files = Files::new();
+        let file_id = files
+            .add(
+                "test.wx".to_string(),
+                "func test() { local x; }".to_string(),
+            )
+            .unwrap();
+        let (ast, diagnostics) =
+            Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+
+        assert_eq!(ast.items.len(), 1);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, Some("missing-initializer".to_string()));
+    }
+}
