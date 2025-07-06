@@ -96,20 +96,41 @@ impl BinaryExpressionMistmatchDiagnostic {
     }
 }
 
-pub struct InvalidEnumRepresentationDiagnostic {
+pub struct InvalidEnumTypeDiagnostic {
     pub file_id: FileId,
     pub ty: hir::Type,
     pub span: TextSpan,
 }
 
-impl InvalidEnumRepresentationDiagnostic {
+impl InvalidEnumTypeDiagnostic {
+    const CODE: &'static str = "invalid-enum-type";
+
     pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message(format!(
-                "can't represent enum with `{}`: expected i32 or i64",
+                "cannot represent enum with type `{}`",
                 global.display_type(self.ty)
             ))
             .with_label(Label::primary(self.file_id, self.span))
+            .with_note("enum can only be represented with `i32`, `i64`, `f32`, or `f64`")
+    }
+}
+
+pub struct InvalidGlobalTypeDiagnostic {
+    pub file_id: FileId,
+    pub ty: hir::Type,
+    pub span: TextSpan,
+}
+
+impl InvalidGlobalTypeDiagnostic {
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_message(format!(
+                "cannot define global with type `{}`",
+                global.display_type(self.ty)
+            ))
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("global can only be represented with `i32`, `i64`, `f32`, or `f64`")
     }
 }
 

@@ -32,6 +32,9 @@ pub struct Local<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct FuncIndex(pub u32);
 
+#[derive(Debug, Clone, Copy)]
+pub struct GlobalIndex(pub u32);
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionType {
     pub param_count: usize,
@@ -71,6 +74,13 @@ pub enum Expression {
     },
     LocalSet {
         local: LocalIndex,
+        value: ExprIndex,
+    },
+    GlobalGet {
+        global: GlobalIndex,
+    },
+    GlobalSet {
+        global: GlobalIndex,
         value: ExprIndex,
     },
     Return {
@@ -266,6 +276,68 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    F32Eq {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Eq {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Ne {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Ne {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Lt {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Lt {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Gt {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Gt {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Le {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Le {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Ge {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Ge {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Div {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Div {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Neg {
+        value: ExprIndex,
+    },
+    F64Neg {
+        value: ExprIndex,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -285,17 +357,17 @@ pub struct FunctionSection {
 }
 
 #[derive(Debug, Clone)]
-pub struct FunctionExport<'a> {
-    name: &'a str,
-    index: FuncIndex,
-}
-
-#[derive(Debug, Clone)]
 pub enum ExportItem<'a> {
-    Function(FunctionExport<'a>),
+    Function {
+        name: &'a str,
+        func_index: FuncIndex,
+    },
+    Global {
+        name: &'a str,
+        global_index: GlobalIndex,
+    },
     // Table,
     // Memory,
-    // Global,
 }
 
 #[derive(Debug, Clone)]
@@ -352,8 +424,22 @@ pub struct ElementSection {
 }
 
 #[derive(Debug, Clone)]
+pub struct GlobalSection<'a> {
+    globals: Box<[Global<'a>]>,
+}
+
+#[derive(Debug, Clone)]
+struct Global<'a> {
+    name: &'a str,
+    ty: ValueType,
+    mutability: bool,
+    value: Expression,
+}
+
+#[derive(Debug, Clone)]
 pub struct Module<'a> {
     types: TypeSection,
+    globals: GlobalSection<'a>,
     tables: TableSection,
     elements: ElementSection,
     functions: FunctionSection,

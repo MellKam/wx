@@ -2,6 +2,9 @@ use crate::hir::*;
 
 #[derive(Debug, Clone)]
 pub enum GlobalValue {
+    Global {
+        global_index: GlobalIndex,
+    },
     Function {
         func_index: FuncIndex,
     },
@@ -31,6 +34,7 @@ pub struct FuncTypeIndex(pub u32);
 pub struct GlobalContext<'interner> {
     pub interner: &'interner StringInterner<StringBackend>,
     pub exports: Vec<ExportItem>,
+    pub globals: Vec<Global>,
     pub functions: Vec<FuncTypeIndex>,
     pub function_types: Vec<FunctionType>,
     pub function_lookup: HashMap<FunctionType, FuncTypeIndex>,
@@ -39,10 +43,7 @@ pub struct GlobalContext<'interner> {
 }
 
 impl<'interner> GlobalContext<'interner> {
-    pub fn new(
-        interner: &'interner mut StringInterner<StringBackend>,
-        items: &Vec<ast::Item>,
-    ) -> Self {
+    pub fn new(interner: &'interner mut StringInterner<StringBackend>) -> Self {
         let mut lookup = HashMap::new();
         lookup.insert(
             (LookupCategory::Value, interner.get_or_intern("_")),
@@ -57,128 +58,15 @@ impl<'interner> GlobalContext<'interner> {
             GlobalValue::Bool { value: false },
         );
 
-        let mut global = GlobalContext {
+        GlobalContext {
             exports: Vec::new(),
             function_types: Vec::new(),
             enums: Vec::new(),
             interner,
+            globals: Vec::new(),
             functions: Vec::new(),
             function_lookup: HashMap::new(),
             symbol_lookup: lookup,
-        };
-
-        for item in items.iter() {
-            match &item.kind {
-                ast::ItemKind::ExportModifier { item, .. } => global.add_exported_item(item),
-                _ => global.add_item(item),
-            }
-        }
-
-        global
-    }
-
-    fn build_function_type(
-        &mut self,
-        signature: &ast::FunctionSignature,
-    ) -> Result<FunctionType, ()> {
-        let params = signature
-            .params
-            .iter()
-            .map(|param| self.resolve_type(&param.ty))
-            .collect::<Result<Box<_>, ()>>()?;
-
-        let result = match &signature.result {
-            Some(ty) => self.resolve_type(ty)?,
-            None => Type::Unit,
-        };
-
-        Ok(FunctionType { params, result })
-    }
-
-    fn build_enum(&mut self, item: &ast::Item) -> Enum {
-        let (name, ty, variants) = match &item.kind {
-            ast::ItemKind::EnumDefinition { name, ty, variants } => (name.clone(), ty, variants),
-            _ => unreachable!(),
-        };
-
-        let ty = match self.resolve_type(ty) {
-            Ok(Type::Primitive(ty)) => ty,
-            _ => panic!("invalid enum representation type"),
-        };
-
-        let variants: Box<[_]> = variants
-            .iter()
-            .map(|variant| {
-                let value = match variant.value.kind {
-                    ast::ExprKind::Int { value } => value.clone(),
-                    _ => panic!("invalid enum value"),
-                };
-
-                EnumVariant {
-                    name: variant.name.clone(),
-                    value,
-                }
-            })
-            .collect();
-
-        let lookup = variants
-            .iter()
-            .enumerate()
-            .map(|(index, variant)| (variant.name.symbol, EnumVariantIndex(index as u32)))
-            .collect();
-
-        Enum {
-            name,
-            ty,
-            variants,
-            lookup,
-        }
-    }
-
-    fn add_exported_item(&mut self, item: &ast::Item) {
-        match &item.kind {
-            ast::ItemKind::FunctionDefinition { .. } => {
-                let func_index = FuncIndex(self.functions.len() as u32);
-                self.exports.push(ExportItem::Function { func_index });
-                self.add_item(item);
-            }
-            _ => unreachable!("only functions can be exported"),
-        }
-    }
-
-    fn add_item(&mut self, item: &ast::Item) {
-        match &item.kind {
-            ast::ItemKind::FunctionDefinition { signature, .. } => {
-                let func_type = self.build_function_type(&signature).unwrap();
-                let type_index = match self.function_lookup.get(&func_type).copied() {
-                    Some(type_index) => type_index,
-                    None => {
-                        let type_index = FuncTypeIndex(self.function_types.len() as u32);
-                        self.function_types.push(func_type.clone());
-                        self.function_lookup.insert(func_type, type_index);
-
-                        type_index
-                    }
-                };
-
-                let func_index = FuncIndex(self.functions.len() as u32);
-                self.functions.push(type_index);
-
-                self.symbol_lookup.insert(
-                    (LookupCategory::Value, signature.name.symbol),
-                    GlobalValue::Function { func_index },
-                );
-            }
-            ast::ItemKind::EnumDefinition { name, .. } => {
-                let enum_index = EnumIndex(self.enums.len() as u32);
-                let enum_ = self.build_enum(&item);
-                self.enums.push(enum_);
-                self.symbol_lookup.insert(
-                    (LookupCategory::Type, name.symbol),
-                    GlobalValue::Enum { enum_index },
-                );
-            }
-            _ => unreachable!(),
         }
     }
 
@@ -203,21 +91,23 @@ impl<'interner> GlobalContext<'interner> {
                     .map(|ty| self.resolve_type(&ty).unwrap())
                     .collect::<Box<_>>();
 
-                let result = match result {
-                    Some(ty) => self.resolve_type(ty).unwrap(),
-                    None => Type::Unit,
-                };
+                let result = self.resolve_type(result).unwrap();
 
                 let func_type = FunctionType { params, result };
-                match self.function_lookup.get(&func_type).copied() {
-                    Some(type_index) => Ok(Type::Function(type_index)),
-                    None => {
-                        let type_index = FuncTypeIndex(self.function_types.len() as u32);
-                        self.function_lookup.insert(func_type.clone(), type_index);
-                        self.function_types.push(func_type);
-                        Ok(Type::Function(type_index))
-                    }
-                }
+                let type_index = self.get_or_insert_func_type(&func_type);
+                Ok(Type::Function(type_index))
+            }
+        }
+    }
+
+    pub fn get_or_insert_func_type(&mut self, func_type: &FunctionType) -> FuncTypeIndex {
+        match self.function_lookup.get(func_type).cloned() {
+            Some(type_index) => type_index,
+            None => {
+                let type_index = FuncTypeIndex(self.function_types.len() as u32);
+                self.function_types.push(func_type.clone());
+                self.function_lookup.insert(func_type.clone(), type_index);
+                type_index
             }
         }
     }

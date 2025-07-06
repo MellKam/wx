@@ -8,11 +8,13 @@ use crate::hir;
 #[derive(Debug)]
 pub struct MIR {
     pub functions: Vec<Function>,
+    pub globals: Vec<Global>,
     pub exports: Vec<hir::ExportItem>,
 }
 
 pub type FunctionIndex = u32;
 pub type LocalIndex = u32;
+pub type GlobalIndex = u32;
 
 #[derive(Debug, Clone)]
 pub struct FunctionType {
@@ -53,6 +55,9 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
     },
+    Global {
+        global_index: GlobalIndex,
+    },
     Bool {
         value: bool,
     },
@@ -65,9 +70,13 @@ pub enum ExprKind {
     Float {
         value: f64,
     },
-    Assign {
+    LocalSet {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
+        value: Box<Expression>,
+    },
+    GlobalSet {
+        global_index: GlobalIndex,
         value: Box<Expression>,
     },
     Add {
@@ -179,6 +188,9 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         block: Box<Expression>,
     },
+    Neg {
+        value: Box<Expression>,
+    },
 }
 
 #[derive(Debug)]
@@ -217,4 +229,12 @@ pub struct BlockScope {
     pub parent: Option<ScopeIndex>,
     pub locals: Vec<Local>,
     pub result: Type,
+}
+
+#[derive(Debug)]
+pub struct Global {
+    pub name: SymbolU32,
+    pub ty: Type,
+    pub mutability: hir::Mutability,
+    pub value: Expression,
 }

@@ -79,6 +79,31 @@ impl EncodeWithContext for wasm::Expression {
                     .unwrap();
                 sink.push_str(format!("(local.get ${}_{})", local.name, local_index.0).as_str());
             }
+            Expression::GlobalGet {
+                global: global_index,
+            } => {
+                let global = ctx
+                    .module
+                    .globals
+                    .globals
+                    .get(global_index.0 as usize)
+                    .unwrap();
+                sink.push_str(format!("(global.get ${})", global.name).as_str());
+            }
+            Expression::GlobalSet {
+                global: global_index,
+                value,
+            } => {
+                let global = ctx
+                    .module
+                    .globals
+                    .globals
+                    .get(global_index.0 as usize)
+                    .unwrap();
+                sink.push_str(format!("(global.set ${} ", global.name).as_str());
+                ctx.encode_expr(sink, *value);
+                sink.push_str(")");
+            }
             Expression::LocalSet {
                 local: local_index,
                 value,
@@ -479,6 +504,100 @@ impl EncodeWithContext for wasm::Expression {
                 ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
+            Expression::F32Eq { left, right } => {
+                sink.push_str("(f32.eq ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Ne { left, right } => {
+                sink.push_str("(f32.ne ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Eq { left, right } => {
+                sink.push_str("(f64.eq ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Ne { left, right } => {
+                sink.push_str("(f64.ne ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Lt { left, right } => {
+                sink.push_str("(f32.lt ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Gt { left, right } => {
+                sink.push_str("(f32.gt ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Lt { left, right } => {
+                sink.push_str("(f64.lt ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Gt { left, right } => {
+                sink.push_str("(f64.gt ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Le { left, right } => {
+                sink.push_str("(f32.le ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Ge { left, right } => {
+                sink.push_str("(f32.ge ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Le { left, right } => {
+                sink.push_str("(f64.le ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Ge { left, right } => {
+                sink.push_str("(f64.ge ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Div { left, right } => {
+                sink.push_str("(f32.div ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Div { left, right } => {
+                sink.push_str("(f64.div ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Neg { value } => {
+                sink.push_str("(f32.neg ");
+                ctx.encode_expr(sink, *value);
+                sink.push_str(")");
+            }
+            Expression::F64Neg { value } => {
+                sink.push_str("(f64.neg ");
+                ctx.encode_expr(sink, *value);
+                sink.push_str(")");
+            }
         }
     }
 }
@@ -488,11 +607,12 @@ impl EncodeWithContext for wasm::FunctionBody<'_> {
         sink.push_str(format!("(func ${}", self.name).as_str());
 
         let export_item = ctx.module.exports.items.iter().find(|item| match item {
-            wasm::ExportItem::Function(func_export) => func_export.index.0 == ctx.func_index.0,
+            wasm::ExportItem::Function { func_index, .. } => func_index.0 == ctx.func_index.0,
+            wasm::ExportItem::Global { .. } => false,
         });
         match export_item {
-            Some(wasm::ExportItem::Function(func_export)) => {
-                sink.push_str(format!(" (export \"{}\")", func_export.name).as_str());
+            Some(wasm::ExportItem::Function { name, .. }) => {
+                sink.push_str(format!(" (export \"{}\")", name).as_str());
             }
             _ => {}
         };

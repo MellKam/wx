@@ -272,7 +272,7 @@ pub enum TypeExprKind {
     /// `func(i32, i32) -> i32`
     Function {
         params: Box<[TypeExpression]>,
-        result: Option<Box<TypeExpression>>,
+        result: Box<TypeExpression>,
     },
 }
 
@@ -312,7 +312,7 @@ pub struct FunctionParam {
 pub struct FunctionSignature {
     pub name: Identifier,
     pub params: Box<[FunctionParam]>,
-    pub result: Option<Box<TypeExpression>>,
+    pub result: Box<TypeExpression>,
 }
 
 #[derive(Debug, Clone)]
@@ -336,9 +336,12 @@ pub enum ItemKind {
         export: TextSpan,
         item: Box<Item>,
     },
-    // FunctionDeclaration {
-    //     signature: FunctionSignature,
-    // },
+    GlobalDefinition {
+        name: Identifier,
+        ty: TypeExpression,
+        mutable: Option<TextSpan>,
+        value: Box<Expression>,
+    },
 }
 
 #[derive(Debug, Clone)]

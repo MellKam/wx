@@ -19,7 +19,7 @@ use crate::span::TextSpan;
 #[derive(Debug, Clone)]
 pub enum ExportItem {
     Function { func_index: FuncIndex },
-    // TODO: Global
+    Global { global_index: GlobalIndex },
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +27,7 @@ pub struct HIR {
     pub file_id: FileId,
     pub functions: Vec<Function>,
     pub enums: Vec<Enum>,
+    pub globals: Vec<Global>,
     pub exports: Vec<ExportItem>,
 }
 
@@ -36,6 +37,7 @@ impl HIR {
             file_id,
             functions: Vec::new(),
             enums: Vec::new(),
+            globals: Vec::new(),
             exports: Vec::new(),
         }
     }
@@ -146,12 +148,18 @@ pub struct EnumIndex(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnumVariantIndex(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlobalIndex(pub u32);
+
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     Placeholder,
     Int(i64),
     Float(f64),
     Bool(bool),
+    Global {
+        global_index: GlobalIndex,
+    },
     LocalDeclaration {
         name: ast::Identifier,
         scope_index: ScopeIndex,
@@ -246,5 +254,13 @@ pub struct Enum {
 #[derive(Debug, Clone)]
 pub struct EnumVariant {
     pub name: ast::Identifier,
-    pub value: i64,
+    pub value: Expression,
+}
+
+#[derive(Debug, Clone)]
+pub struct Global {
+    pub name: ast::Identifier,
+    pub ty: Type,
+    pub mutability: Mutability,
+    pub value: Expression,
 }

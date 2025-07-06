@@ -1,0 +1,4 @@
+export global mut x: f32 = 0;
+
+export func get(): f32 { x }
+export func set(value: f32): f32 { x = value; x }

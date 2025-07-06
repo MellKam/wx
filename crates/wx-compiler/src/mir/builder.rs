@@ -27,6 +27,16 @@ impl<'a> Builder<'a> {
                 .iter()
                 .map(|func| builder.build_function(func))
                 .collect(),
+            globals: hir
+                .globals
+                .iter()
+                .map(|global| mir::Global {
+                    name: global.name.symbol,
+                    ty: builder.to_mir_type(global.ty.clone()),
+                    mutability: global.mutability,
+                    value: builder.build_expression(&global.value),
+                })
+                .collect(),
             exports: hir.exports.clone(),
         }
     }
@@ -121,8 +131,14 @@ impl<'a> Builder<'a> {
             hir::ExprKind::Unary { operator, operand } => {
                 self.build_unary_expression(*operator, &operand, ty)
             }
-            &hir::ExprKind::Bool(value) => mir::Expression {
-                kind: mir::ExprKind::Bool { value },
+            hir::ExprKind::Bool(value) => mir::Expression {
+                kind: mir::ExprKind::Bool { value: *value },
+                ty,
+            },
+            hir::ExprKind::Global { global_index } => mir::Expression {
+                kind: mir::ExprKind::Global {
+                    global_index: global_index.0,
+                },
                 ty,
             },
             hir::ExprKind::Local {
@@ -157,8 +173,10 @@ impl<'a> Builder<'a> {
                 let variant = &enum_.variants[variant_index.0 as usize];
 
                 mir::Expression {
-                    kind: mir::ExprKind::Int {
-                        value: variant.value,
+                    kind: match variant.value.kind {
+                        hir::ExprKind::Int(value) => mir::ExprKind::Int { value },
+                        hir::ExprKind::Float(value) => mir::ExprKind::Float { value },
+                        _ => unreachable!(),
                     },
                     ty,
                 }
@@ -183,7 +201,7 @@ impl<'a> Builder<'a> {
                 }
                 _ => {
                     return mir::Expression {
-                        kind: mir::ExprKind::Assign {
+                        kind: mir::ExprKind::LocalSet {
                             local_index: local_index.0,
                             scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(self.build_expression(expr)),
@@ -322,12 +340,8 @@ impl<'a> Builder<'a> {
         ty: mir::Type,
     ) -> mir::Expression {
         let kind = match operator {
-            ast::UnaryOp::InvertSign => mir::ExprKind::Sub {
-                left: Box::new(mir::Expression {
-                    kind: mir::ExprKind::Int { value: 0 },
-                    ty: ty.clone(),
-                }),
-                right: Box::new(self.build_expression(operand)),
+            ast::UnaryOp::InvertSign => mir::ExprKind::Neg {
+                value: Box::new(self.build_expression(operand)),
             },
             ast::UnaryOp::Not => mir::ExprKind::Eqz {
                 value: Box::new(self.build_expression(operand)),
@@ -419,7 +433,7 @@ impl<'a> Builder<'a> {
                         local_index,
                         scope_index,
                     } => mir::Expression {
-                        kind: mir::ExprKind::Assign {
+                        kind: mir::ExprKind::LocalSet {
                             local_index: local_index.0,
                             scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(value),
@@ -432,7 +446,14 @@ impl<'a> Builder<'a> {
                         },
                         ty,
                     },
-                    _ => unreachable!("assignment only allowed on local mutable variables"),
+                    hir::ExprKind::Global { global_index } => mir::Expression {
+                        kind: mir::ExprKind::GlobalSet {
+                            global_index: global_index.0,
+                            value: Box::new(value),
+                        },
+                        ty,
+                    },
+                    _ => unreachable!(),
                 }
             }
             BinaryOp::AddAssign => match lhs.kind {
@@ -451,7 +472,7 @@ impl<'a> Builder<'a> {
                     };
 
                     mir::Expression {
-                        kind: mir::ExprKind::Assign {
+                        kind: mir::ExprKind::LocalSet {
                             local_index: local_index.0,
                             scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(sum),
@@ -477,7 +498,7 @@ impl<'a> Builder<'a> {
                     };
 
                     mir::Expression {
-                        kind: mir::ExprKind::Assign {
+                        kind: mir::ExprKind::LocalSet {
                             local_index: local_index.0,
                             scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(value),
@@ -503,7 +524,7 @@ impl<'a> Builder<'a> {
                     };
 
                     mir::Expression {
-                        kind: mir::ExprKind::Assign {
+                        kind: mir::ExprKind::LocalSet {
                             local_index: local_index.0,
                             scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(value),
@@ -529,7 +550,7 @@ impl<'a> Builder<'a> {
                     };
 
                     mir::Expression {
-                        kind: mir::ExprKind::Assign {
+                        kind: mir::ExprKind::LocalSet {
                             local_index: local_index.0,
                             scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(value),
@@ -555,7 +576,7 @@ impl<'a> Builder<'a> {
                     };
 
                     mir::Expression {
-                        kind: mir::ExprKind::Assign {
+                        kind: mir::ExprKind::LocalSet {
                             local_index: local_index.0,
                             scope_index: mir::ScopeIndex(scope_index.0),
                             value: Box::new(value),

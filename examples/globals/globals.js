@@ -1,9 +1,10 @@
 async function test(bytecode) {
 	const module = await WebAssembly.compile(bytecode);
 	const instance = await WebAssembly.instantiate(module);
-	const { add } = instance.exports;
+	const { get, set } = instance.exports;
 
-	return add(2.5, 3.5);
+	set(Math.PI);
+	return get();
 }
 
 return test;

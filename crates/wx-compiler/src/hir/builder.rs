@@ -9,7 +9,7 @@ use crate::hir::diagnostics::{
     BinaryExpressionMistmatchDiagnostic, BreakOutsideOfLoopDiagnostic,
     CannotMutateImmutableDiagnostic, ComparisonTypeAnnotationRequiredDiagnostic,
     FloatLiteralOutOfRangeDiagnostic, IntegerLiteralOutOfRangeDiagnostic,
-    NonCallableIdentifierDiagnostic, OperatorCannotBeAppliedDiagnostic,
+    InvalidEnumTypeDiagnostic, NonCallableIdentifierDiagnostic, OperatorCannotBeAppliedDiagnostic,
     TypeAnnotationRequiredDiagnostic, TypeMistmatchDiagnostic, UnableToCoerceDiagnostic,
     UndeclaredIdentifierDiagnostic, UndeclaredLabelDiagnostic, UnknownEnumVariantDiagnostic,
     UnreachableCodeDiagnostic, UnusedValueDiagnostic,
@@ -39,17 +39,17 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     ) -> (HIR, Vec<Diagnostic<FileId>>) {
         let mut builder = Builder {
             ast,
-            global: GlobalContext::new(interner, &ast.items),
+            global: GlobalContext::new(interner),
             diagnostics: Vec::new(),
             hir: HIR::new(ast.file_id),
         };
 
         for item in builder.ast.items.iter() {
-            match &item.kind {
-                ast::ItemKind::ExportModifier { item, .. } => builder.build_item(item, true),
-                ast::ItemKind::FunctionDefinition { .. } => builder.build_item(item, false),
-                _ => unimplemented!("item kind not implemented"),
-            }
+            _ = builder.define_item(item);
+        }
+
+        for item in builder.ast.items.iter() {
+            _ = builder.build_item(item);
         }
 
         let Builder {
@@ -59,28 +59,157 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             ..
         } = builder;
         hir.enums = global.enums;
+        hir.globals = global.globals;
+        hir.exports = global.exports;
 
         (hir, diagnostics)
     }
 
-    fn build_item(&mut self, item: &ast::Item, export: bool) {
+    fn build_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match &item.kind {
+            ast::ItemKind::ExportModifier { item, .. } => self.build_item(item),
             ast::ItemKind::FunctionDefinition { .. } => {
-                match self.build_function_definition(item) {
-                    Ok(func) => {
-                        let func_index = FuncIndex(self.hir.functions.len() as u32);
-                        if export {
-                            self.hir
-                                .exports
-                                .push(hir::ExportItem::Function { func_index });
-                        }
-                        self.hir.functions.push(func);
-                    }
-                    Err(_) => {}
-                }
+                let func = self.build_function_definition(item)?;
+                self.hir.functions.push(func);
+
+                Ok(())
             }
-            _ => unimplemented!("item kind not implemented"),
+            ast::ItemKind::EnumDefinition { .. } => Ok(()),
+            ast::ItemKind::GlobalDefinition { .. } => Ok(()),
         }
+    }
+
+    fn define_item(&mut self, item: &ast::Item) -> Result<GlobalValue, ()> {
+        use ast::ItemKind::*;
+        match &item.kind {
+            ExportModifier { item, .. } => {
+                let global_value = self.define_item(item)?;
+                let export_item = match global_value {
+                    GlobalValue::Function { func_index } => ExportItem::Function { func_index },
+                    GlobalValue::Global { global_index } => ExportItem::Global { global_index },
+                    _ => unreachable!(),
+                };
+                self.global.exports.push(export_item);
+                Ok(global_value)
+            }
+            FunctionDefinition { signature, .. } => {
+                match self
+                    .global
+                    .symbol_lookup
+                    .get(&(global::LookupCategory::Value, signature.name.symbol))
+                    .cloned()
+                {
+                    Some(_) => todo!("value with this name already declared"),
+                    None => {}
+                };
+
+                let func_type = self.build_function_type(signature)?;
+                let type_index = self.global.get_or_insert_func_type(&func_type);
+
+                let func_index = FuncIndex(self.global.functions.len() as u32);
+                self.global.symbol_lookup.insert(
+                    (global::LookupCategory::Value, signature.name.symbol),
+                    GlobalValue::Function { func_index },
+                );
+                self.global.functions.push(type_index);
+                Ok(GlobalValue::Function { func_index })
+            }
+            GlobalDefinition { name, .. } => {
+                match self
+                    .global
+                    .symbol_lookup
+                    .get(&(global::LookupCategory::Value, name.symbol))
+                    .cloned()
+                {
+                    Some(_) => todo!("value with this name already declared"),
+                    None => {}
+                };
+
+                let global_item = self.build_global_item(item)?;
+
+                let global_index = GlobalIndex(self.global.globals.len() as u32);
+                self.global.symbol_lookup.insert(
+                    (global::LookupCategory::Value, global_item.name.symbol),
+                    GlobalValue::Global { global_index },
+                );
+                self.global.globals.push(global_item);
+                Ok(GlobalValue::Global { global_index })
+            }
+            EnumDefinition { name, .. } => {
+                match self
+                    .global
+                    .symbol_lookup
+                    .get(&(global::LookupCategory::Type, name.symbol))
+                    .cloned()
+                {
+                    Some(_) => todo!("type with this name already declared"),
+                    None => {}
+                };
+                let enum_item = self.build_enum_item(item)?;
+
+                let enum_index = EnumIndex(self.global.enums.len() as u32);
+                self.global.symbol_lookup.insert(
+                    (global::LookupCategory::Type, enum_item.name.symbol),
+                    GlobalValue::Enum { enum_index },
+                );
+                self.global.enums.push(enum_item);
+                Ok(GlobalValue::Enum { enum_index })
+            }
+        }
+    }
+
+    fn build_function_type(
+        &mut self,
+        signature: &ast::FunctionSignature,
+    ) -> Result<FunctionType, ()> {
+        Ok(FunctionType {
+            params: signature
+                .params
+                .iter()
+                .map(|param| self.resolve_type(&param.ty))
+                .collect::<Result<Box<_>, ()>>()?,
+            result: self.resolve_type(&signature.result)?,
+        })
+    }
+
+    fn build_global_item(&mut self, item: &ast::Item) -> Result<Global, ()> {
+        let (name, ty, value_expr, mutable) = match &item.kind {
+            ast::ItemKind::GlobalDefinition {
+                name,
+                ty,
+                value,
+                mutable,
+            } => (name.clone(), ty, value, mutable.clone()),
+            _ => unreachable!(),
+        };
+
+        let ty = self.resolve_type(ty).unwrap();
+
+        let mut expr = match value_expr.kind {
+            ast::ExprKind::Int { value } => hir::Expression {
+                kind: hir::ExprKind::Int(value),
+                ty: None,
+                span: value_expr.span,
+            },
+            ast::ExprKind::Float { value } => hir::Expression {
+                kind: hir::ExprKind::Float(value),
+                ty: None,
+                span: value_expr.span,
+            },
+            _ => panic!("invalid global value type"),
+        };
+
+        self.coerce_untyped_expr(&mut expr, ty)?;
+
+        Ok(Global {
+            name,
+            mutability: match mutable {
+                Some(_) => Mutability::Mutable,
+                None => Mutability::Const,
+            },
+            ty,
+            value: expr,
+        })
     }
 
     fn build_function_definition(&mut self, item: &ast::Item) -> Result<hir::Function, ()> {
@@ -146,6 +275,70 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             name: signature.name,
             stack: ctx.frame,
             block: Box::new(block),
+        })
+    }
+
+    fn build_enum_item(&mut self, item: &ast::Item) -> Result<Enum, ()> {
+        let (name, ty, variants) = match &item.kind {
+            ast::ItemKind::EnumDefinition { name, ty, variants } => (name.clone(), ty, variants),
+            _ => unreachable!(),
+        };
+
+        let ty = match self.resolve_type(ty)? {
+            Type::Primitive(ty) => ty,
+            ty => {
+                self.diagnostics.push(
+                    InvalidEnumTypeDiagnostic {
+                        file_id: self.ast.file_id,
+                        ty,
+                        span: name.span,
+                    }
+                    .report(&self.global),
+                );
+
+                return Err(());
+            }
+        };
+
+        let variants = variants
+            .iter()
+            .map(|variant| {
+                let mut value = match variant.value.kind {
+                    ast::ExprKind::Int { value } => hir::Expression {
+                        kind: hir::ExprKind::Int(value),
+                        ty: None,
+                        span: variant.value.span,
+                    },
+                    ast::ExprKind::Float { value } => hir::Expression {
+                        kind: hir::ExprKind::Float(value),
+                        ty: None,
+                        span: variant.value.span,
+                    },
+                    _ => panic!("invalid enum value"),
+                };
+
+                self.coerce_untyped_expr(&mut value, Type::Primitive(ty))?;
+
+                Ok(EnumVariant {
+                    name: variant.name.clone(),
+                    value,
+                })
+            })
+            .collect::<Result<Box<_>, _>>()?;
+
+        // TODO: ensure that the enum variants are unique
+
+        let lookup = variants
+            .iter()
+            .enumerate()
+            .map(|(index, variant)| (variant.name.symbol, EnumVariantIndex(index as u32)))
+            .collect();
+
+        Ok(Enum {
+            name,
+            ty,
+            variants,
+            lookup,
         })
     }
 
@@ -457,6 +650,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                         variant_index,
                     },
                     ty: Some(Type::Enum(enum_index)),
+                    span: expr.span,
+                }),
+                GlobalValue::Global { global_index } => Ok(Expression {
+                    kind: ExprKind::Global { global_index },
+                    ty: Some(self.global.globals.get(global_index.0 as usize).unwrap().ty),
                     span: expr.span,
                 }),
                 _ => unreachable!(),
@@ -1267,22 +1465,17 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         match operator {
             ast::UnaryOp::InvertSign | ast::UnaryOp::BitNot => match operand.ty {
-                Some(Type::Primitive(ty)) => Ok(hir::Expression {
-                    kind: ExprKind::Unary {
-                        operator,
-                        operand: Box::new(operand),
-                    },
-                    ty: Some(Type::Primitive(ty)),
-                    span: expr.span,
-                }),
-                None => Ok(Expression {
-                    kind: ExprKind::Unary {
-                        operator,
-                        operand: Box::new(operand),
-                    },
-                    ty: None,
-                    span: expr.span,
-                }),
+                Some(Type::Primitive(_)) | None => {
+                    let ty = operand.ty.clone();
+                    Ok(hir::Expression {
+                        kind: ExprKind::Unary {
+                            operator,
+                            operand: Box::new(operand),
+                        },
+                        ty,
+                        span: expr.span,
+                    })
+                }
                 _ => panic!("can't apply unary operator to this type"),
             },
             ast::UnaryOp::Not => match operand.ty {
@@ -1347,11 +1540,121 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         let left = self.build_expression(ctx, ast_left, None)?;
-        let (scope_index, local_index) = match left.kind {
+        match left.kind {
             hir::ExprKind::Local {
                 scope_index,
                 local_index,
-            } => (scope_index, local_index),
+            } => {
+                let local = match ctx.frame.get_local(scope_index, local_index) {
+                    Some(local) => local.clone(),
+                    None => {
+                        self.diagnostics.push(
+                            UndeclaredIdentifierDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: left.span,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
+                };
+                match local.mutability {
+                    hir::Mutability::Const => {
+                        self.diagnostics.push(
+                            CannotMutateImmutableDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
+                    hir::Mutability::Mutable => {}
+                }
+
+                let mut right = self.build_expression(ctx, ast_right, Some(local.ty))?;
+                match right.ty {
+                    Some(ty) if !ty.coercible_to(local.ty) => {
+                        self.diagnostics.push(
+                            BinaryExpressionMistmatchDiagnostic {
+                                file_id: self.ast.file_id,
+                                left_span: ast_left.span,
+                                left_type: local.ty,
+                                operator: ast::BinaryOp::Assign,
+                                right_span: ast_right.span,
+                                right_type: ty,
+                            }
+                            .report(&self.global),
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.coerce_untyped_expr(&mut right, local.ty)?;
+                    }
+                }
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Binary {
+                        left: Box::new(left),
+                        operator: ast::BinaryOp::Assign,
+                        right: Box::new(right),
+                    },
+                    ty: Some(hir::Type::Unit),
+                    span: expr.span,
+                })
+            }
+            hir::ExprKind::Global { global_index } => {
+                let global = self
+                    .global
+                    .globals
+                    .get(global_index.0 as usize)
+                    .expect("global variable not found");
+
+                match global.mutability {
+                    hir::Mutability::Const => {
+                        self.diagnostics.push(
+                            CannotMutateImmutableDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
+                    hir::Mutability::Mutable => {}
+                }
+
+                let global_type = global.ty;
+
+                let mut right = self.build_expression(ctx, ast_right, Some(global_type))?;
+                match right.ty {
+                    Some(ty) if !ty.coercible_to(global_type) => {
+                        self.diagnostics.push(
+                            BinaryExpressionMistmatchDiagnostic {
+                                file_id: self.ast.file_id,
+                                left_span: ast_left.span,
+                                left_type: global_type,
+                                operator: ast::BinaryOp::Assign,
+                                right_span: ast_right.span,
+                                right_type: ty,
+                            }
+                            .report(&self.global),
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.coerce_untyped_expr(&mut right, global_type)?;
+                    }
+                }
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Binary {
+                        left: Box::new(left),
+                        operator: ast::BinaryOp::Assign,
+                        right: Box::new(right),
+                    },
+                    ty: Some(hir::Type::Unit),
+                    span: expr.span,
+                })
+            }
             hir::ExprKind::Placeholder => {
                 let right = self.build_expression(ctx, ast_right, None)?;
                 let right_type = match right.ty {
@@ -1374,35 +1677,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 });
             }
             _ => panic!("left side of assignment must be a variable"),
-        };
-        let local = match ctx.frame.get_local(scope_index, local_index) {
-            Some(local) => local.clone(),
-            None => panic!("can't assign to undeclared variable"),
-        };
-        match local.mutability {
-            hir::Mutability::Const => {
-                self.diagnostics.push(
-                    CannotMutateImmutableDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: expr.span,
-                    }
-                    .report(),
-                );
-            }
-            hir::Mutability::Mutable => {}
         }
-
-        let right = self.build_expression(ctx, ast_right, Some(local.ty))?;
-
-        Ok(hir::Expression {
-            kind: hir::ExprKind::Binary {
-                left: Box::new(left),
-                operator: ast::BinaryOp::Assign,
-                right: Box::new(right),
-            },
-            ty: Some(hir::Type::Unit),
-            span: expr.span,
-        })
     }
 
     fn build_arithmetic_assignment_expr(
@@ -1421,80 +1696,148 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         let left = self.build_expression(ctx, ast_left, None)?;
-
-        let (scope_index, local_index) = match left.kind {
+        match left.kind {
             hir::ExprKind::Local {
                 scope_index,
                 local_index,
-            } => (scope_index, local_index),
-            _ => panic!("left side of assignment must be a variable"),
-        };
+            } => {
+                let local = match ctx.frame.get_local(scope_index, local_index) {
+                    Some(local) => local.clone(),
+                    None => panic!("can't assign to undeclared variable"),
+                };
+                match local.ty {
+                    Type::Primitive(_) => {}
+                    to_type => {
+                        self.diagnostics.push(
+                            OperatorCannotBeAppliedDiagnostic {
+                                file_id: self.ast.file_id,
+                                operator,
+                                to_type,
+                                span: expr.span,
+                            }
+                            .report(&self.global),
+                        );
 
-        let local = match ctx.frame.get_local(scope_index, local_index) {
-            Some(local) => local.clone(),
-            None => panic!("can't assign to undeclared variable"),
-        };
-        match local.ty {
-            Type::Primitive(PrimitiveType::I32 | PrimitiveType::I64) => {}
-            to_type => {
-                self.diagnostics.push(
-                    OperatorCannotBeAppliedDiagnostic {
-                        file_id: self.ast.file_id,
-                        operator,
-                        to_type,
-                        span: expr.span,
+                        return Err(());
                     }
-                    .report(&self.global),
-                );
-
-                return Err(());
-            }
-        }
-
-        match local.mutability {
-            hir::Mutability::Const => {
-                self.diagnostics.push(
-                    CannotMutateImmutableDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: expr.span,
-                    }
-                    .report(),
-                );
-            }
-            hir::Mutability::Mutable => {}
-        }
-
-        let mut right = self.build_expression(ctx, ast_right, Some(local.ty))?;
-        match right.ty {
-            Some(ty) => {
-                if !ty.coercible_to(local.ty) {
-                    self.diagnostics.push(
-                        BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.ast.file_id,
-                            left_span: ast_left.span,
-                            left_type: local.ty,
-                            operator,
-                            right_span: ast_right.span,
-                            right_type: ty,
-                        }
-                        .report(&self.global),
-                    );
                 }
-            }
-            None => {
-                self.coerce_untyped_expr(&mut right, local.ty)?;
-            }
-        }
 
-        Ok(hir::Expression {
-            kind: hir::ExprKind::Binary {
-                left: Box::new(left),
-                operator,
-                right: Box::new(right),
-            },
-            ty: Some(hir::Type::Unit),
-            span: expr.span,
-        })
+                match local.mutability {
+                    hir::Mutability::Const => {
+                        self.diagnostics.push(
+                            CannotMutateImmutableDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
+                    hir::Mutability::Mutable => {}
+                }
+
+                let mut right = self.build_expression(ctx, ast_right, Some(local.ty))?;
+                match right.ty {
+                    Some(ty) if !ty.coercible_to(local.ty) => {
+                        self.diagnostics.push(
+                            BinaryExpressionMistmatchDiagnostic {
+                                file_id: self.ast.file_id,
+                                left_span: ast_left.span,
+                                left_type: local.ty,
+                                operator,
+                                right_span: ast_right.span,
+                                right_type: ty,
+                            }
+                            .report(&self.global),
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.coerce_untyped_expr(&mut right, local.ty)?;
+                    }
+                }
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Binary {
+                        left: Box::new(left),
+                        operator,
+                        right: Box::new(right),
+                    },
+                    ty: Some(hir::Type::Unit),
+                    span: expr.span,
+                })
+            }
+            ExprKind::Global { global_index } => {
+                let global = self
+                    .global
+                    .globals
+                    .get(global_index.0 as usize)
+                    .expect("global variable not found");
+
+                match global.ty {
+                    Type::Primitive(_) => {}
+                    to_type => {
+                        self.diagnostics.push(
+                            OperatorCannotBeAppliedDiagnostic {
+                                file_id: self.ast.file_id,
+                                operator,
+                                to_type,
+                                span: expr.span,
+                            }
+                            .report(&self.global),
+                        );
+
+                        return Err(());
+                    }
+                }
+
+                match global.mutability {
+                    hir::Mutability::Const => {
+                        self.diagnostics.push(
+                            CannotMutateImmutableDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
+                    hir::Mutability::Mutable => {}
+                }
+
+                let global_type = global.ty;
+
+                let mut right = self.build_expression(ctx, ast_right, Some(global_type))?;
+                match right.ty {
+                    Some(ty) if !ty.coercible_to(global_type) => {
+                        self.diagnostics.push(
+                            BinaryExpressionMistmatchDiagnostic {
+                                file_id: self.ast.file_id,
+                                left_span: ast_left.span,
+                                left_type: global_type,
+                                operator: ast::BinaryOp::Assign,
+                                right_span: ast_right.span,
+                                right_type: ty,
+                            }
+                            .report(&self.global),
+                        );
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.coerce_untyped_expr(&mut right, global_type)?;
+                    }
+                }
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Binary {
+                        left: Box::new(left),
+                        operator: ast::BinaryOp::Assign,
+                        right: Box::new(right),
+                    },
+                    ty: Some(hir::Type::Unit),
+                    span: expr.span,
+                })
+            }
+            _ => panic!("left side of assignment must be a variable"),
+        }
     }
 
     fn build_bitwise_binary_expr(
@@ -1915,35 +2258,99 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 expr.ty = Some(Type::Primitive(PrimitiveType::I32));
                 Ok(())
             }
-            Type::Primitive(PrimitiveType::I64) => {
-                expr.ty = Some(Type::Primitive(PrimitiveType::I64));
-                Ok(())
-            }
-            Type::Primitive(PrimitiveType::F32) => {
-                let value = match expr.kind {
-                    hir::ExprKind::Float(value) => value,
-                    _ => unreachable!(),
-                };
+            Type::Primitive(PrimitiveType::I64) => match expr.kind {
+                hir::ExprKind::Int(value) => {
+                    if value > i64::MAX || value < i64::MIN {
+                        self.diagnostics.push(
+                            IntegerLiteralOutOfRangeDiagnostic {
+                                file_id: self.ast.file_id,
+                                primitive: PrimitiveType::I64,
+                                value,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
 
-                if value > f32::MAX as f64 || value < f32::MIN as f64 {
-                    self.diagnostics.push(
-                        FloatLiteralOutOfRangeDiagnostic {
-                            file_id: self.ast.file_id,
-                            primitive: PrimitiveType::F32,
-                            value,
-                            span: expr.span,
-                        }
-                        .report(),
-                    );
+                    expr.ty = Some(Type::Primitive(PrimitiveType::I64));
+                    Ok(())
                 }
+                _ => unreachable!(),
+            },
+            Type::Primitive(PrimitiveType::F32) => match expr.kind {
+                hir::ExprKind::Float(value) => {
+                    if value > f32::MAX as f64 || value < f32::MIN as f64 {
+                        self.diagnostics.push(
+                            FloatLiteralOutOfRangeDiagnostic {
+                                file_id: self.ast.file_id,
+                                primitive: PrimitiveType::F32,
+                                value,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
 
-                expr.ty = Some(Type::Primitive(PrimitiveType::F32));
-                Ok(())
-            }
-            Type::Primitive(PrimitiveType::F64) => {
-                expr.ty = Some(Type::Primitive(PrimitiveType::F64));
-                Ok(())
-            }
+                    expr.ty = Some(Type::Primitive(PrimitiveType::F32));
+                    Ok(())
+                }
+                hir::ExprKind::Int(value) => {
+                    if (value as f32) > f32::MAX || (value as f32) < f32::MIN {
+                        self.diagnostics.push(
+                            IntegerLiteralOutOfRangeDiagnostic {
+                                file_id: self.ast.file_id,
+                                primitive: PrimitiveType::F32,
+                                value,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
+
+                    expr.kind = hir::ExprKind::Float(value as f64);
+                    expr.ty = Some(Type::Primitive(PrimitiveType::F32));
+
+                    Ok(())
+                }
+                _ => unreachable!(),
+            },
+            Type::Primitive(PrimitiveType::F64) => match expr.kind {
+                hir::ExprKind::Float(value) => {
+                    if value > f64::MAX || value < f64::MIN {
+                        self.diagnostics.push(
+                            FloatLiteralOutOfRangeDiagnostic {
+                                file_id: self.ast.file_id,
+                                primitive: PrimitiveType::F64,
+                                value,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
+
+                    expr.ty = Some(Type::Primitive(PrimitiveType::F64));
+                    Ok(())
+                }
+                hir::ExprKind::Int(value) => {
+                    if (value as f64) > f64::MAX || (value as f64) < f64::MIN {
+                        self.diagnostics.push(
+                            IntegerLiteralOutOfRangeDiagnostic {
+                                file_id: self.ast.file_id,
+                                primitive: PrimitiveType::F64,
+                                value,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                    }
+
+                    expr.kind = hir::ExprKind::Float(value as f64);
+                    expr.ty = Some(Type::Primitive(PrimitiveType::F64));
+
+                    Ok(())
+                }
+                _ => unreachable!(),
+            },
             target_type => {
                 self.diagnostics.push(
                     UnableToCoerceDiagnostic {

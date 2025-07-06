@@ -21,7 +21,7 @@
     "npm:vue-router@4.5.1": "4.5.1_vue@3.5.17__typescript@5.8.3_typescript@5.8.3",
     "npm:vue-tsc@2.2.10": "2.2.10_typescript@5.8.3",
     "npm:vue@3.5.17": "3.5.17_typescript@5.8.3",
-    "npm:wx-compiler-wasm@0.0.3": "0.0.3",
+    "npm:wx-compiler-wasm@0.0.6": "0.0.6",
     "npm:zod@3.25.67": "3.25.67"
   },
   "npm": {
@@ -1310,8 +1310,8 @@
         "typescript"
       ]
     },
-    "wx-compiler-wasm@0.0.3": {
-      "integrity": "sha512-wpPsYb1Bzi+yMPyr6aVwYOEpVlYoMSQggqOvSgJOCwANwJ4Z0AO+i6q6P++l8PThtPFHSgsIn9YUBPY3hl9W/A=="
+    "wx-compiler-wasm@0.0.6": {
+      "integrity": "sha512-DUx/txTe2JCpK0TiOGxp+i2LE0NrAgVZpedJr4QFt1rviYIF7X6/kdWZMwoOjGFPJxD50xhgu6oKe+t6RxdRxg=="
     },
     "yallist@3.1.1": {
       "integrity": "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g=="
@@ -1330,7 +1330,7 @@
           "dependencies": [
             "npm:@types/node@24.0.1",
             "npm:commander@14.0.0",
-            "npm:wx-compiler-wasm@0.0.3"
+            "npm:wx-compiler-wasm@0.0.6"
           ]
         }
       },
@@ -1362,6 +1362,7 @@
             "npm:vue-router@4.5.1",
             "npm:vue-tsc@2.2.10",
             "npm:vue@3.5.17",
+            "npm:wx-compiler-wasm@0.0.6",
             "npm:zod@3.25.67"
           ]
         }

@@ -130,13 +130,21 @@ impl Builder {
             .exports
             .iter()
             .map(|item| match item {
+                hir::ExportItem::Global { global_index } => {
+                    let global = mir.globals.get(global_index.0 as usize).unwrap();
+
+                    wasm::ExportItem::Global {
+                        name: interner.resolve(global.name).unwrap(),
+                        global_index: wasm::GlobalIndex(global_index.0),
+                    }
+                }
                 hir::ExportItem::Function { func_index } => {
                     let func = mir.functions.get(func_index.0 as usize).unwrap();
 
-                    wasm::ExportItem::Function(wasm::FunctionExport {
-                        index: wasm::FuncIndex(func_index.0),
+                    wasm::ExportItem::Function {
+                        func_index: wasm::FuncIndex(func_index.0),
                         name: interner.resolve(func.name).unwrap(),
-                    })
+                    }
                 }
             })
             .collect();
@@ -194,6 +202,18 @@ impl Builder {
         }
 
         wasm::Module {
+            globals: wasm::GlobalSection {
+                globals: mir
+                    .globals
+                    .iter()
+                    .map(|global| wasm::Global {
+                        name: interner.resolve(global.name).unwrap(),
+                        ty: wasm::ValueType::try_from(global.ty.clone()).unwrap(),
+                        mutability: global.mutability == hir::Mutability::Mutable,
+                        value: builder.build_global_expr(global),
+                    })
+                    .collect::<Box<_>>(),
+            },
             tables: wasm::TableSection {
                 tables: match builder.table.len() {
                     0 => Box::new([]),
@@ -234,6 +254,26 @@ impl Builder {
         }
     }
 
+    fn build_global_expr(&self, global: &mir::Global) -> wasm::Expression {
+        match global.value.kind {
+            mir::ExprKind::Int { value } => match global.ty {
+                mir::Type::I32 => wasm::Expression::I32Const {
+                    value: value as i32,
+                },
+                mir::Type::I64 => wasm::Expression::I64Const { value },
+                _ => unreachable!(),
+            },
+            mir::ExprKind::Float { value } => match global.ty {
+                mir::Type::F32 => wasm::Expression::F32Const {
+                    value: value as f32,
+                },
+                mir::Type::F64 => wasm::Expression::F64Const { value },
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        }
+    }
+
     fn push_expr(&mut self, expr: wasm::Expression) -> wasm::ExprIndex {
         let index = self.expressions.len() as u32;
         self.expressions.push(expr);
@@ -256,6 +296,7 @@ impl Builder {
             mir::ExprKind::Bool { value } => self.push_expr(wasm::Expression::I32Const {
                 value: if *value { 1 } else { 0 },
             }),
+
             mir::ExprKind::Call { callee, arguments } => {
                 let arguments = arguments
                     .iter()
@@ -381,7 +422,20 @@ impl Builder {
                 let local = ctx.get_flat_index(*scope_index, *local_index);
                 self.push_expr(wasm::Expression::LocalGet { local })
             }
-            mir::ExprKind::Assign {
+            mir::ExprKind::Global { global_index } => self.push_expr(wasm::Expression::GlobalGet {
+                global: wasm::GlobalIndex(*global_index),
+            }),
+            mir::ExprKind::GlobalSet {
+                global_index,
+                value,
+            } => {
+                let value = self.build_expression(ctx, &value);
+                self.push_expr(wasm::Expression::GlobalSet {
+                    global: wasm::GlobalIndex(*global_index),
+                    value,
+                })
+            }
+            mir::ExprKind::LocalSet {
                 local_index,
                 scope_index,
                 value,
@@ -614,11 +668,29 @@ impl Builder {
             mir::ExprKind::GreaterEq { left, right } => {
                 let left = self.build_expression(ctx, &left);
                 let right = self.build_expression(ctx, &right);
-                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                self.push_expr(match wasm::ValueType::try_from(expr.ty) {
                     Ok(wasm::ValueType::I32) => wasm::Expression::I32GeS { left, right },
                     Ok(wasm::ValueType::I64) => wasm::Expression::I64GeS { left, right },
                     ty => panic!("unsupported type for greater equal operation {:?}", ty),
                 })
+            }
+            mir::ExprKind::Neg { value } => {
+                let value = self.build_expression(ctx, &value);
+                let expr = match wasm::ValueType::try_from(expr.ty) {
+                    Ok(wasm::ValueType::I32) => wasm::Expression::I32Sub {
+                        left: self.push_expr(wasm::Expression::I32Const { value: 0 }),
+                        right: value,
+                    },
+                    Ok(wasm::ValueType::I64) => wasm::Expression::I64Sub {
+                        left: self.push_expr(wasm::Expression::I64Const { value: 0 }),
+                        right: value,
+                    },
+                    Ok(wasm::ValueType::F32) => wasm::Expression::F32Neg { value },
+                    Ok(wasm::ValueType::F64) => wasm::Expression::F64Neg { value },
+                    ty => panic!("unsupported type for negation operation {:?}", ty),
+                };
+
+                self.push_expr(expr)
             }
         }
     }
