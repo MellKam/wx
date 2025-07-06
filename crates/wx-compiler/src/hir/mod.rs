@@ -65,6 +65,8 @@ impl HIR {
 pub enum PrimitiveType {
     I32,
     I64,
+    F32,
+    F64,
 }
 
 impl std::fmt::Display for PrimitiveType {
@@ -72,6 +74,8 @@ impl std::fmt::Display for PrimitiveType {
         match self {
             PrimitiveType::I32 => write!(f, "i32"),
             PrimitiveType::I64 => write!(f, "i64"),
+            PrimitiveType::F32 => write!(f, "f32"),
+            PrimitiveType::F64 => write!(f, "f64"),
         }
     }
 }
@@ -111,6 +115,8 @@ impl TryFrom<&str> for Type {
         match value {
             "i32" => Ok(Type::Primitive(PrimitiveType::I32)),
             "i64" => Ok(Type::Primitive(PrimitiveType::I64)),
+            "f32" => Ok(Type::Primitive(PrimitiveType::F32)),
+            "f64" => Ok(Type::Primitive(PrimitiveType::F64)),
             "bool" => Ok(Type::Bool),
             "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),
@@ -144,6 +150,7 @@ pub struct EnumVariantIndex(pub u32);
 pub enum ExprKind {
     Placeholder,
     Int(i64),
+    Float(f64),
     Bool(bool),
     LocalDeclaration {
         name: ast::Identifier,

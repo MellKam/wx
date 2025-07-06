@@ -245,6 +245,18 @@ impl Encode for i64 {
     }
 }
 
+impl Encode for f32 {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        sink.extend_from_slice(&self.to_le_bytes());
+    }
+}
+
+impl Encode for f64 {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        sink.extend_from_slice(&self.to_le_bytes());
+    }
+}
+
 impl Encode for u32 {
     fn encode(&self, sink: &mut Vec<u8>) {
         let (value, pos) = leb128fmt::encode_u32(*self).unwrap();
@@ -257,6 +269,8 @@ impl Encode for wasm::ValueType {
         let opcode = match self {
             wasm::ValueType::I32 => 0x7F,
             wasm::ValueType::I64 => 0x7E,
+            wasm::ValueType::F32 => 0x7D,
+            wasm::ValueType::F64 => 0x7C,
         };
 
         sink.push(opcode);
@@ -398,8 +412,16 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push(Instruction::I32Const as u8);
                 value.encode(sink);
             }
+            Expression::F32Const { value } => {
+                sink.push(Instruction::F32Const as u8);
+                value.encode(sink);
+            }
             Expression::I64Const { value } => {
                 sink.push(Instruction::I64Const as u8);
+                value.encode(sink);
+            }
+            Expression::F64Const { value } => {
+                sink.push(Instruction::F64Const as u8);
                 value.encode(sink);
             }
             Expression::I32Eq { left, right } => {
@@ -577,6 +599,36 @@ impl EncodeWithContext for wasm::Expression {
                 ctx.encode_expr(sink, *left);
                 ctx.encode_expr(sink, *right);
                 sink.push(Instruction::I64Shl as u8);
+            }
+            Expression::F32Add { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::F32Add as u8);
+            }
+            Expression::F32Sub { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::F32Sub as u8);
+            }
+            Expression::F32Mul { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::F32Mul as u8);
+            }
+            Expression::F64Add { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::F64Add as u8);
+            }
+            Expression::F64Sub { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::F64Sub as u8);
+            }
+            Expression::F64Mul { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::F64Mul as u8);
             }
         }
     }

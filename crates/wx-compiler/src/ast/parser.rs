@@ -519,6 +519,7 @@ impl<'input> Parser<'input> {
                 _ => Some((Parser::parse_identifier_expression, BindingPower::Primary)),
             },
             TokenKind::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
+            TokenKind::Float => Some((Parser::parse_float_expression, BindingPower::Primary)),
             TokenKind::OpenBrace => Some((Parser::parse_block_expression, BindingPower::Primary)),
             TokenKind::OpenParen => {
                 Some((Parser::parse_grouping_expression, BindingPower::Default))
@@ -526,7 +527,6 @@ impl<'input> Parser<'input> {
             TokenKind::Minus | TokenKind::Bang | TokenKind::Caret => {
                 Some((Parser::parse_unary_expression, BindingPower::Unary))
             }
-            // TokenKind::Float { .. } => Some((parse_float_expression, BindingPower::Primary)),
             // TokenKind::String { .. } => Some((parse_string_expression, BindingPower::Primary)),
             // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
             _ => None,
@@ -899,21 +899,51 @@ impl<'input> Parser<'input> {
             _ => unreachable!(),
         };
 
-        Ok(Expression {
-            kind: match value {
-                Some(value) => ExprKind::Int { value },
-                None => {
-                    parser.diagnostics.push(
-                        InvalidIntegerLiteralDiagnostic {
-                            file_id: parser.ast.file_id,
-                            span: token.span,
-                        }
-                        .report(),
-                    );
+        let value = match value {
+            Some(value) => value,
+            None => {
+                parser.diagnostics.push(
+                    InvalidIntegerLiteralDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    }
+                    .report(),
+                );
 
-                    ExprKind::Int { value: 0 }
-                }
-            },
+                0
+            }
+        };
+
+        Ok(Expression {
+            kind: ExprKind::Int { value },
+            span: token.span,
+        })
+    }
+
+    fn parse_float_expression(parser: &mut Parser) -> Result<Expression, ()> {
+        let token = parser.lexer.next();
+        let value = match token.kind {
+            TokenKind::Float => token.span.text(parser.source).parse::<f64>().ok(),
+            _ => unreachable!(),
+        };
+
+        let value = match value {
+            Some(value) => value,
+            None => {
+                parser.diagnostics.push(
+                    InvalidIntegerLiteralDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    }
+                    .report(),
+                );
+
+                0.0
+            }
+        };
+
+        Ok(Expression {
+            kind: ExprKind::Float { value },
             span: token.span,
         })
     }
@@ -1095,28 +1125,28 @@ impl<'input> Parser<'input> {
                     };
                     continue;
                 }
-                Some(_) => {
-                    parser.diagnostics.push(
-                        UnexpectedTokenDiagnostic {
-                            file_id: parser.ast.file_id,
-                            received: token.clone(),
-                            expected_kind: TokenKind::CloseBrace,
-                        }
-                        .report(),
-                    );
+                // Some(_) => {
+                //     parser.diagnostics.push(
+                //         UnexpectedTokenDiagnostic {
+                //             file_id: parser.ast.file_id,
+                //             received: token.clone(),
+                //             expected_kind: TokenKind::CloseBrace,
+                //         }
+                //         .report(),
+                //     );
 
-                    let span = TextSpan::merge(
-                        open_brace.span,
-                        statements.last().map(|s| s.span).unwrap_or(open_brace.span),
-                    );
-                    return Ok(Expression {
-                        kind: ExprKind::Block {
-                            statements: statements.into_boxed_slice(),
-                            result: None,
-                        },
-                        span,
-                    });
-                }
+                //     let span = TextSpan::merge(
+                //         open_brace.span,
+                //         statements.last().map(|s| s.span).unwrap_or(open_brace.span),
+                //     );
+                //     return Ok(Expression {
+                //         kind: ExprKind::Block {
+                //             statements: statements.into_boxed_slice(),
+                //             result: None,
+                //         },
+                //         span,
+                //     });
+                // }
                 _ => {}
             };
 
@@ -1254,10 +1284,7 @@ impl<'input> Parser<'input> {
         let member = parser.parse_identifier()?;
         let namespace = match namespace_expr.kind {
             ExprKind::Identifier { symbol } => TypeExpression {
-                kind: TypeExprKind::Identifier(Identifier {
-                    symbol,
-                    span: namespace_expr.span,
-                }),
+                kind: TypeExprKind::Identifier { symbol },
                 span: namespace_expr.span,
             },
             _ => {
@@ -1390,10 +1417,7 @@ impl<'input> Parser<'input> {
         let symbol = parser.intern_identifier(token.span)?;
 
         Ok(TypeExpression {
-            kind: TypeExprKind::Identifier(Identifier {
-                symbol,
-                span: token.span,
-            }),
+            kind: TypeExprKind::Identifier { symbol },
             span: token.span,
         })
     }
@@ -1532,9 +1556,6 @@ mod tests {
         let (ast, diagnostics) =
             Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
 
-        println!("{:#?}", diagnostics);
-        println!("{:#?}", ast);
-
         assert_eq!(ast.items.len(), 1);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(
@@ -1592,5 +1613,34 @@ mod tests {
         assert_eq!(ast.items.len(), 1);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, Some("missing-initializer".to_string()));
+    }
+
+    #[test]
+    fn should_parse_float_expression() {
+        let mut interner = StringInterner::new();
+        let mut files = Files::new();
+        let file_id = files
+            .add(
+                "test.wx".to_string(),
+                "func test(): f32 { 3.14 }".to_string(),
+            )
+            .unwrap();
+        let (ast, diagnostics) =
+            Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+
+        assert_eq!(diagnostics.len(), 0);
+        assert_eq!(ast.items.len(), 1);
+        match &ast.items[0].kind {
+            ItemKind::FunctionDefinition { block, .. } => match &block.kind {
+                ExprKind::Block { result, .. } => match result.clone().unwrap().kind {
+                    ExprKind::Float { value } => {
+                        assert_eq!(value, 3.14);
+                    }
+                    _ => panic!("expected a float expression"),
+                },
+                _ => panic!("expected a block expression"),
+            },
+            _ => panic!("expected a function definition"),
+        };
     }
 }

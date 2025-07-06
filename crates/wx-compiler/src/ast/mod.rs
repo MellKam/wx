@@ -195,6 +195,8 @@ pub struct Identifier {
 pub enum ExprKind {
     /// `1`
     Int { value: i64 },
+    /// `1.0`
+    Float { value: f64 },
     /// `({expr})`
     Grouping { value: Box<Expression> },
     /// `x`
@@ -266,7 +268,7 @@ pub struct Expression {
 #[derive(Debug, Clone)]
 pub enum TypeExprKind {
     /// `i32`
-    Identifier(Identifier),
+    Identifier { symbol: SymbolU32 },
     /// `func(i32, i32) -> i32`
     Function {
         params: Box<[TypeExpression]>,

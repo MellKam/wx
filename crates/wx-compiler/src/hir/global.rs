@@ -184,13 +184,14 @@ impl<'interner> GlobalContext<'interner> {
 
     pub fn resolve_type(&mut self, type_expr: &ast::TypeExpression) -> Result<Type, ()> {
         match &type_expr.kind {
-            ast::TypeExprKind::Identifier(id) => {
-                let text = self.interner.resolve(id.symbol).unwrap();
+            ast::TypeExprKind::Identifier { symbol } => {
+                let symbol = *symbol;
+                let text = self.interner.resolve(symbol).unwrap();
                 match Type::try_from(text) {
                     Ok(ty) => return Ok(ty),
                     Err(_) => {}
                 }
-                match self.symbol_lookup.get(&(LookupCategory::Type, id.symbol)) {
+                match self.symbol_lookup.get(&(LookupCategory::Type, symbol)) {
                     Some(GlobalValue::Enum { enum_index }) => Ok(Type::Enum(*enum_index)),
                     Some(_) => Err(()),
                     None => Err(()),
@@ -248,10 +249,7 @@ impl<'interner> GlobalContext<'interner> {
             Type::Unit => "unit".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Never => "never".to_string(),
-            Type::Primitive(primitive) => match primitive {
-                PrimitiveType::I32 => "i32".to_string(),
-                PrimitiveType::I64 => "i64".to_string(),
-            },
+            Type::Primitive(primitive) => primitive.to_string(),
             Type::Enum(enum_index) => {
                 let enum_ = self.enums.get(enum_index.0 as usize).unwrap();
                 self.interner

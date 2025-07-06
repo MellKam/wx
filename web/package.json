@@ -16,7 +16,7 @@
 		"@vueuse/core": "13.4.0",
 		"@vueuse/router": "13.4.0",
 		"zod": "3.25.67",
-		"wx-compiler-wasm": "0.0.4"
+		"wx-compiler-wasm": "file:../crates/wx-compiler-wasm/pkg"
 	},
 	"devDependencies": {
 		"@vitejs/plugin-vue": "5.2.4",

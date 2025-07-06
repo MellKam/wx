@@ -8,10 +8,11 @@ use string_interner::symbol::SymbolU32;
 use crate::hir::diagnostics::{
     BinaryExpressionMistmatchDiagnostic, BreakOutsideOfLoopDiagnostic,
     CannotMutateImmutableDiagnostic, ComparisonTypeAnnotationRequiredDiagnostic,
-    IntegerLiteralOutOfRangeDiagnostic, NonCallableIdentifierDiagnostic,
-    OperatorCannotBeAppliedDiagnostic, TypeAnnotationRequiredDiagnostic, TypeMistmatchDiagnostic,
-    UnableToCoerceDiagnostic, UndeclaredIdentifierDiagnostic, UndeclaredLabelDiagnostic,
-    UnknownEnumVariantDiagnostic, UnreachableCodeDiagnostic, UnusedValueDiagnostic,
+    FloatLiteralOutOfRangeDiagnostic, IntegerLiteralOutOfRangeDiagnostic,
+    NonCallableIdentifierDiagnostic, OperatorCannotBeAppliedDiagnostic,
+    TypeAnnotationRequiredDiagnostic, TypeMistmatchDiagnostic, UnableToCoerceDiagnostic,
+    UndeclaredIdentifierDiagnostic, UndeclaredLabelDiagnostic, UnknownEnumVariantDiagnostic,
+    UnreachableCodeDiagnostic, UnusedValueDiagnostic,
 };
 use crate::hir::global::{GlobalContext, GlobalValue};
 use crate::hir::local::{BlockKind, BlockScope, LocalContext};
@@ -321,6 +322,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         match &expr.kind {
             ExprKind::Int { value } => Ok(hir::Expression {
                 kind: hir::ExprKind::Int(*value),
+                ty: None,
+                span: expr.span,
+            }),
+            ExprKind::Float { value } => Ok(hir::Expression {
+                kind: hir::ExprKind::Float(*value),
                 ty: None,
                 span: expr.span,
             }),
@@ -1913,6 +1919,31 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 expr.ty = Some(Type::Primitive(PrimitiveType::I64));
                 Ok(())
             }
+            Type::Primitive(PrimitiveType::F32) => {
+                let value = match expr.kind {
+                    hir::ExprKind::Float(value) => value,
+                    _ => unreachable!(),
+                };
+
+                if value > f32::MAX as f64 || value < f32::MIN as f64 {
+                    self.diagnostics.push(
+                        FloatLiteralOutOfRangeDiagnostic {
+                            file_id: self.ast.file_id,
+                            primitive: PrimitiveType::F32,
+                            value,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
+                }
+
+                expr.ty = Some(Type::Primitive(PrimitiveType::F32));
+                Ok(())
+            }
+            Type::Primitive(PrimitiveType::F64) => {
+                expr.ty = Some(Type::Primitive(PrimitiveType::F64));
+                Ok(())
+            }
             target_type => {
                 self.diagnostics.push(
                     UnableToCoerceDiagnostic {
@@ -1997,5 +2028,76 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             }
             _ => Err(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use string_interner::StringInterner;
+
+    use super::*;
+    use crate::files::Files;
+
+    #[test]
+    fn should_coerce_never_expression() {
+        let mut interner = StringInterner::new();
+        let mut files = Files::new();
+        let file_id = files
+            .add(
+                "test.wx".to_string(),
+                "func test(): unit { unreachable }".to_string(),
+            )
+            .unwrap();
+
+        let (ast, diagnostics) =
+            ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+
+        assert_eq!(diagnostics.len(), 0);
+        assert_eq!(ast.items.len(), 1);
+
+        let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
+
+        assert_eq!(diagnostics.len(), 0);
+        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(
+            hir.functions[0].stack.scopes[0].expected_type,
+            Some(hir::Type::Unit)
+        );
+        assert_eq!(
+            hir.functions[0].stack.scopes[0].inferred_type,
+            Some(hir::Type::Never)
+        );
+        assert_eq!(hir.functions[0].block.ty, Some(hir::Type::Never));
+    }
+
+    #[test]
+    fn should_infer_local_type() {
+        let mut interner = StringInterner::new();
+        let mut files = Files::new();
+        let file_id = files
+            .add(
+                "test.wx".to_string(),
+                "func test(a: i32): i32 { local x = a; x }".to_string(),
+            )
+            .unwrap();
+
+        let (ast, diagnostics) =
+            ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+
+        assert_eq!(diagnostics.len(), 0);
+        assert_eq!(ast.items.len(), 1);
+
+        let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
+
+        assert_eq!(diagnostics.len(), 0);
+        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(
+            hir.functions[0].stack.scopes[0].locals[0].ty,
+            hir::Type::Primitive(PrimitiveType::I32)
+        );
+        assert_eq!(
+            hir.functions[0].stack.scopes[0].inferred_type,
+            Some(hir::Type::Primitive(PrimitiveType::I32))
+        );
     }
 }

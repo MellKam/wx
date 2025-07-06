@@ -19,6 +19,8 @@ impl TryFrom<mir::Type> for wasm::ValueType {
             mir::Type::Bool => Ok(wasm::ValueType::I32),
             mir::Type::I32 => Ok(wasm::ValueType::I32),
             mir::Type::I64 => Ok(wasm::ValueType::I64),
+            mir::Type::F32 => Ok(wasm::ValueType::F32),
+            mir::Type::F64 => Ok(wasm::ValueType::F64),
             mir::Type::Function(_) => Ok(wasm::ValueType::I32),
             _ => Err(()),
         }
@@ -293,12 +295,25 @@ impl Builder {
                     }
                 })
             }
+            mir::ExprKind::Float { value } => {
+                self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
+                    Ok(wasm::ValueType::F32) => wasm::Expression::F32Const {
+                        value: *value as f32,
+                    },
+                    Ok(wasm::ValueType::F64) => wasm::Expression::F64Const { value: *value },
+                    _ => {
+                        panic!("unsupported type for float expression {:?}", expr.ty)
+                    }
+                })
+            }
             mir::ExprKind::Add { left, right } => {
                 let left = self.build_expression(ctx, &left);
                 let right = self.build_expression(ctx, &right);
                 self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
                     Ok(wasm::ValueType::I32) => wasm::Expression::I32Add { left, right },
                     Ok(wasm::ValueType::I64) => wasm::Expression::I64Add { left, right },
+                    Ok(wasm::ValueType::F32) => wasm::Expression::F32Add { left, right },
+                    Ok(wasm::ValueType::F64) => wasm::Expression::F64Add { left, right },
                     ty => panic!("unsupported type for add operation {:?}", ty),
                 })
             }
@@ -308,6 +323,8 @@ impl Builder {
                 self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
                     Ok(wasm::ValueType::I32) => wasm::Expression::I32Mul { left, right },
                     Ok(wasm::ValueType::I64) => wasm::Expression::I64Mul { left, right },
+                    Ok(wasm::ValueType::F32) => wasm::Expression::F32Mul { left, right },
+                    Ok(wasm::ValueType::F64) => wasm::Expression::F64Mul { left, right },
                     ty => panic!("unsupported type for mul operation {:?}", ty),
                 })
             }
@@ -386,6 +403,8 @@ impl Builder {
                 self.push_expr(match wasm::ValueType::try_from(expr.ty.clone()) {
                     Ok(wasm::ValueType::I32) => wasm::Expression::I32Sub { left, right },
                     Ok(wasm::ValueType::I64) => wasm::Expression::I64Sub { left, right },
+                    Ok(wasm::ValueType::F32) => wasm::Expression::F32Sub { left, right },
+                    Ok(wasm::ValueType::F64) => wasm::Expression::F64Sub { left, right },
                     ty => panic!("unsupported type for sub operation {:?}", ty),
                 })
             }

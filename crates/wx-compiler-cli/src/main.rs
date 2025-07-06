@@ -74,7 +74,6 @@ fn main() {
     }
 
     let mir = mir::Builder::build(&hir);
-    println!("{:#?}", mir.functions);
     let module = wasm::Builder::build(&mir, &mut interner);
     let bytecode = wasm::Encoder::encode(&module);
 

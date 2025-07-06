@@ -78,12 +78,28 @@ pub struct InvalidIntegerLiteralDiagnostic {
 }
 
 impl InvalidIntegerLiteralDiagnostic {
-    const CODE: &'static str = "invalid-integer-literal";
+    const CODE: &'static str = "invalid-integer";
 
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_code(Self::CODE)
             .with_message("invalid integer literal")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct InvalidFloatLiteralDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl InvalidFloatLiteralDiagnostic {
+    const CODE: &'static str = "invalid-float";
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("invalid float literal")
             .with_label(Label::primary(self.file_id, self.span))
     }
 }

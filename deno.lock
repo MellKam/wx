@@ -22,7 +22,6 @@
     "npm:vue-tsc@2.2.10": "2.2.10_typescript@5.8.3",
     "npm:vue@3.5.17": "3.5.17_typescript@5.8.3",
     "npm:wx-compiler-wasm@0.0.3": "0.0.3",
-    "npm:wx-compiler-wasm@0.0.4": "0.0.4",
     "npm:zod@3.25.67": "3.25.67"
   },
   "npm": {
@@ -1314,9 +1313,6 @@
     "wx-compiler-wasm@0.0.3": {
       "integrity": "sha512-wpPsYb1Bzi+yMPyr6aVwYOEpVlYoMSQggqOvSgJOCwANwJ4Z0AO+i6q6P++l8PThtPFHSgsIn9YUBPY3hl9W/A=="
     },
-    "wx-compiler-wasm@0.0.4": {
-      "integrity": "sha512-NZ7H6bpn5tByxOxjXONfoWmz3IlfoRd37EhiSjQ5yHE16bTvRmearRW0aXUzSwQGSkilyTQMOjK/X4JbQZ5REw=="
-    },
     "yallist@3.1.1": {
       "integrity": "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g=="
     },
@@ -1366,7 +1362,6 @@
             "npm:vue-router@4.5.1",
             "npm:vue-tsc@2.2.10",
             "npm:vue@3.5.17",
-            "npm:wx-compiler-wasm@0.0.4",
             "npm:zod@3.25.67"
           ]
         }

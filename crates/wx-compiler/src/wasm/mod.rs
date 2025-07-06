@@ -9,6 +9,8 @@ pub use encoder::*;
 pub enum ValueType {
     I32,
     I64,
+    F32,
+    F64,
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +59,12 @@ pub enum Expression {
     },
     I64Const {
         value: i64,
+    },
+    F32Const {
+        value: f32,
+    },
+    F64Const {
+        value: f64,
     },
     LocalGet {
         local: LocalIndex,
@@ -231,6 +239,30 @@ pub enum Expression {
         right: ExprIndex,
     },
     I64GeS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Add {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Sub {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F32Mul {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Add {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Sub {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    F64Mul {
         left: ExprIndex,
         right: ExprIndex,
     },

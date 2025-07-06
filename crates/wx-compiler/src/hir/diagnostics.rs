@@ -219,6 +219,24 @@ impl IntegerLiteralOutOfRangeDiagnostic {
     }
 }
 
+pub struct FloatLiteralOutOfRangeDiagnostic {
+    pub file_id: FileId,
+    pub primitive: hir::PrimitiveType,
+    pub value: f64,
+    pub span: TextSpan,
+}
+
+impl FloatLiteralOutOfRangeDiagnostic {
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_message(format!(
+                "literal `{}` out of range for `{}`",
+                self.value, self.primitive
+            ))
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
 pub struct ComparisonTypeAnnotationRequiredDiagnostic {
     pub file_id: FileId,
     pub left: TextSpan,

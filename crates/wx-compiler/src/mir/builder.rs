@@ -12,6 +12,8 @@ impl From<hir::PrimitiveType> for mir::Type {
         match ty {
             hir::PrimitiveType::I32 => mir::Type::I32,
             hir::PrimitiveType::I64 => mir::Type::I64,
+            hir::PrimitiveType::F32 => mir::Type::F32,
+            hir::PrimitiveType::F64 => mir::Type::F64,
         }
     }
 }
@@ -201,6 +203,10 @@ impl<'a> Builder<'a> {
             },
             hir::ExprKind::Int(value) => mir::Expression {
                 kind: mir::ExprKind::Int { value: *value },
+                ty,
+            },
+            hir::ExprKind::Float(value) => mir::Expression {
+                kind: mir::ExprKind::Float { value: *value },
                 ty,
             },
             hir::ExprKind::Placeholder => unreachable!(),

@@ -38,6 +38,8 @@ impl FunctionType {
 pub enum Type {
     I32,
     I64,
+    F32,
+    F64,
     Unit,
     Never,
     Bool,
@@ -59,6 +61,9 @@ pub enum ExprKind {
     },
     Int {
         value: i64,
+    },
+    Float {
+        value: f64,
     },
     Assign {
         scope_index: ScopeIndex,

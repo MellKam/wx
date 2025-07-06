@@ -22,11 +22,25 @@ impl Encode for u32 {
     }
 }
 
+impl Encode for f32 {
+    fn encode(&self, sink: &mut String) {
+        sink.push_str(&self.to_string());
+    }
+}
+
+impl Encode for f64 {
+    fn encode(&self, sink: &mut String) {
+        sink.push_str(&self.to_string());
+    }
+}
+
 impl Encode for wasm::ValueType {
     fn encode(&self, sink: &mut String) {
         match self {
             wasm::ValueType::I32 => sink.push_str("i32"),
             wasm::ValueType::I64 => sink.push_str("i64"),
+            wasm::ValueType::F32 => sink.push_str("f32"),
+            wasm::ValueType::F64 => sink.push_str("f64"),
         }
     }
 }
@@ -214,6 +228,16 @@ impl EncodeWithContext for wasm::Expression {
             }
             Expression::I64Const { value } => {
                 sink.push_str("(i64.const ");
+                value.encode(sink);
+                sink.push_str(")");
+            }
+            Expression::F32Const { value } => {
+                sink.push_str("(f32.const ");
+                value.encode(sink);
+                sink.push_str(")");
+            }
+            Expression::F64Const { value } => {
+                sink.push_str("(f64.const ");
                 value.encode(sink);
                 sink.push_str(")");
             }
@@ -415,6 +439,42 @@ impl EncodeWithContext for wasm::Expression {
             }
             Expression::I64Xor { left, right } => {
                 sink.push_str("(i64.xor ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Add { left, right } => {
+                sink.push_str("(f32.add ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Sub { left, right } => {
+                sink.push_str("(f32.sub ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F32Mul { left, right } => {
+                sink.push_str("(f32.mul ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Add { left, right } => {
+                sink.push_str("(f64.add ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Sub { left, right } => {
+                sink.push_str("(f64.sub ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::F64Mul { left, right } => {
+                sink.push_str("(f64.mul ");
                 ctx.encode_expr(sink, *left);
                 ctx.encode_expr(sink, *right);
                 sink.push_str(")");
