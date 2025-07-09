@@ -42,6 +42,8 @@ pub enum Type {
     I64,
     F32,
     F64,
+    U32,
+    U64,
     Unit,
     Never,
     Bool,

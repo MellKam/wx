@@ -70,7 +70,7 @@ impl EncodeWithContext for wasm::Expression {
             Expression::Nop => {
                 sink.push_str("(nop)");
             }
-            Expression::LocalGet { local: local_index } => {
+            Expression::LocalGet { local_index } => {
                 let local = ctx
                     .module
                     .get_function(ctx.func_index)
@@ -79,9 +79,7 @@ impl EncodeWithContext for wasm::Expression {
                     .unwrap();
                 sink.push_str(format!("(local.get ${}_{})", local.name, local_index.0).as_str());
             }
-            Expression::GlobalGet {
-                global: global_index,
-            } => {
+            Expression::GlobalGet { global_index } => {
                 let global = ctx
                     .module
                     .globals
@@ -104,10 +102,7 @@ impl EncodeWithContext for wasm::Expression {
                 ctx.encode_expr(sink, *value);
                 sink.push_str(")");
             }
-            Expression::LocalSet {
-                local: local_index,
-                value,
-            } => {
+            Expression::LocalSet { local_index, value } => {
                 let local = ctx
                     .module
                     .get_function(ctx.func_index)
@@ -596,6 +591,100 @@ impl EncodeWithContext for wasm::Expression {
             Expression::F64Neg { value } => {
                 sink.push_str("(f64.neg ");
                 ctx.encode_expr(sink, *value);
+                sink.push_str(")");
+            }
+            Expression::F32Trunc { value } => {
+                sink.push_str("(f32.trunc ");
+                ctx.encode_expr(sink, *value);
+                sink.push_str(")");
+            }
+            Expression::F64Trunc { value } => {
+                sink.push_str("(f64.trunc ");
+                ctx.encode_expr(sink, *value);
+                sink.push_str(")");
+            }
+            Expression::I32DivU { left, right } => {
+                sink.push_str("(i32.div_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32RemU { left, right } => {
+                sink.push_str("(i32.rem_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64DivU { left, right } => {
+                sink.push_str("(i64.div_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64RemU { left, right } => {
+                sink.push_str("(i64.rem_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32GtU { left, right } => {
+                sink.push_str("(i32.gt_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32LtU { left, right } => {
+                sink.push_str("(i32.lt_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32LeU { left, right } => {
+                sink.push_str("(i32.le_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32GeU { left, right } => {
+                sink.push_str("(i32.ge_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64GtU { left, right } => {
+                sink.push_str("(i64.gt_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64LtU { left, right } => {
+                sink.push_str("(i64.lt_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64LeU { left, right } => {
+                sink.push_str("(i64.le_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64GeU { left, right } => {
+                sink.push_str("(i64.ge_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I32ShrU { left, right } => {
+                sink.push_str("(i32.shr_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push_str(")");
+            }
+            Expression::I64ShrU { left, right } => {
+                sink.push_str("(i64.shr_u ");
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
                 sink.push_str(")");
             }
         }

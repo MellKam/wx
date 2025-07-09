@@ -5,14 +5,16 @@ use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
+use crate::ast::BinaryOp;
 use crate::hir::diagnostics::{
-    BinaryExpressionMistmatchDiagnostic, BreakOutsideOfLoopDiagnostic,
-    CannotMutateImmutableDiagnostic, ComparisonTypeAnnotationRequiredDiagnostic,
-    FloatLiteralOutOfRangeDiagnostic, IntegerLiteralOutOfRangeDiagnostic,
-    InvalidEnumTypeDiagnostic, NonCallableIdentifierDiagnostic, OperatorCannotBeAppliedDiagnostic,
-    TypeAnnotationRequiredDiagnostic, TypeMistmatchDiagnostic, UnableToCoerceDiagnostic,
-    UndeclaredIdentifierDiagnostic, UndeclaredLabelDiagnostic, UnknownEnumVariantDiagnostic,
-    UnreachableCodeDiagnostic, UnusedValueDiagnostic,
+    BinaryExpressionMistmatchDiagnostic, BinaryOperatorCannotBeAppliedDiagnostic,
+    BreakOutsideOfLoopDiagnostic, CannotMutateImmutableDiagnostic,
+    ComparisonTypeAnnotationRequiredDiagnostic, FloatLiteralOutOfRangeDiagnostic,
+    IntegerLiteralOutOfRangeDiagnostic, InvalidAssignmentTargetDiagnostic,
+    InvalidEnumTypeDiagnostic, NonCallableIdentifierDiagnostic, TypeAnnotationRequiredDiagnostic,
+    TypeMistmatchDiagnostic, UnableToCoerceDiagnostic, UndeclaredIdentifierDiagnostic,
+    UndeclaredLabelDiagnostic, UnknownEnumVariantDiagnostic, UnreachableCodeDiagnostic,
+    UnusedValueDiagnostic,
 };
 use crate::hir::global::{GlobalContext, GlobalValue};
 use crate::hir::local::{BlockKind, BlockScope, LocalContext};
@@ -222,7 +224,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             .params
             .iter()
             .map(|param| hir::Local {
-                name: param.name,
+                name: param.name.clone(),
                 ty: self.resolve_type(&param.ty).unwrap(),
                 mutability: match param.mutable {
                     Some(_) => Mutability::Mutable,
@@ -272,7 +274,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         Ok(hir::Function {
             ty: func_type,
-            name: signature.name,
+            name: signature.name.clone(),
             stack: ctx.frame,
             block: Box::new(block),
         })
@@ -389,17 +391,19 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .report(),
                 );
 
-                let placeholder = Expression {
-                    kind: ExprKind::Placeholder,
-                    ty: value.ty,
-                    span: TextSpan::new(value.span.start().0, value.span.start().0),
-                };
-
+                let start_span = TextSpan::new(value.span.start().0, value.span.start().0);
                 let span = value.span;
                 Ok(Expression {
                     kind: ExprKind::Binary {
-                        operator: ast::BinaryOp::Assign,
-                        left: Box::new(placeholder),
+                        left: Box::new(Expression {
+                            kind: ExprKind::Placeholder,
+                            ty: value.ty,
+                            span: start_span,
+                        }),
+                        operator: BinaryOp {
+                            kind: ast::BinOpKind::Assign,
+                            span: start_span,
+                        },
                         right: Box::new(value),
                     },
                     span,
@@ -481,7 +485,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         let local_index = ctx.push_local(hir::Local {
-            name,
+            name: name.clone(),
             ty,
             mutability: match maybe_mutable {
                 Some(_) => Mutability::Mutable,
@@ -838,7 +842,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         scope: &BlockScope,
         value: &hir::Expression,
-        ast_value: &ast::Expression,
     ) -> Result<Type, ()> {
         match value.ty {
             Some(result_type) => match scope.inferred_type {
@@ -850,7 +853,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 file_id: self.ast.file_id,
                                 expected: inferred,
                                 actual: result_type,
-                                span: ast_value.span,
+                                span: value.span,
                             }
                             .report(&self.global),
                         );
@@ -864,7 +867,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 file_id: self.ast.file_id,
                                 expected,
                                 actual: result_type,
-                                span: ast_value.span,
+                                span: value.span,
                             }
                             .report(&self.global),
                         );
@@ -879,7 +882,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     self.diagnostics.push(
                         TypeAnnotationRequiredDiagnostic {
                             file_id: self.ast.file_id,
-                            span: ast_value.span,
+                            span: value.span,
                         }
                         .report(),
                     );
@@ -1041,9 +1044,9 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     fn build_block_result_expression(
         &mut self,
         ctx: &mut LocalContext,
-        ast_result: Option<&ast::Expression>,
+        result: Option<&ast::Expression>,
     ) -> Result<Option<hir::Expression>, ()> {
-        match ast_result {
+        match result {
             Some(ast_result) => {
                 let mut result = self.build_expression(
                     ctx,
@@ -1052,11 +1055,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 )?;
 
                 let scope = &mut ctx.frame.scopes[ctx.scope_index.0 as usize];
-                let inferred_type = self.infer_block_type(scope, &result, ast_result)?;
+                let inferred_type = self.infer_block_type(scope, &result)?;
                 scope.inferred_type = Some(inferred_type);
                 match result.ty {
                     None => {
-                        self.coerce_untyped_expr(&mut result, inferred_type)?;
+                        _ = self.coerce_untyped_expr(&mut result, inferred_type);
                     }
                     _ => {}
                 }
@@ -1092,7 +1095,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 )
                 .and_then(|mut value| {
                     let scope = ctx.frame.scopes.get_mut(0).unwrap();
-                    let inferred_type = self.infer_block_type(scope, &value, ast_value)?;
+                    let inferred_type = self.infer_block_type(scope, &value)?;
                     scope.inferred_type = Some(inferred_type);
                     match value.ty {
                         None => {
@@ -1227,7 +1230,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 )
                 .and_then(|mut value| {
                     let scope = ctx.frame.scopes.get_mut(scope_index.0 as usize).unwrap();
-                    let inferred_type = self.infer_block_type(scope, &value, ast_value)?;
+                    let inferred_type = self.infer_block_type(scope, &value)?;
                     match value.ty {
                         None => {
                             self.coerce_untyped_expr(&mut value, inferred_type)?;
@@ -1305,7 +1308,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         let then_block = match ast_then_block.kind {
             ast::ExprKind::Block { .. } => ctx.enter_block(
                 BlockScope {
-                    label: label.map(|l| l.symbol),
+                    label: label.clone().map(|l| l.symbol),
                     kind: BlockKind::Block,
                     parent: Some(ctx.scope_index),
                     locals: Vec::new(),
@@ -1463,8 +1466,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
         let operand = self.build_expression(ctx, ast_operand, expected_type)?;
 
-        match operator {
-            ast::UnaryOp::InvertSign | ast::UnaryOp::BitNot => match operand.ty {
+        match operator.kind {
+            ast::UnOpKind::InvertSign | ast::UnOpKind::BitNot => match operand.ty {
                 Some(Type::Primitive(_)) | None => {
                     let ty = operand.ty.clone();
                     Ok(hir::Expression {
@@ -1478,7 +1481,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 }
                 _ => panic!("can't apply unary operator to this type"),
             },
-            ast::UnaryOp::Not => match operand.ty {
+            ast::UnOpKind::Not => match operand.ty {
                 Some(Type::Bool) => Ok(hir::Expression {
                     kind: ExprKind::Unary {
                         operator,
@@ -1498,34 +1501,34 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<Expression, ()> {
-        let operator = match expr.kind {
+        let operator = match &expr.kind {
             ast::ExprKind::Binary { operator, .. } => operator.clone(),
             _ => unreachable!(),
         };
 
-        use ast::BinaryOp;
-        match operator {
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+        use ast::BinOpKind;
+        match operator.kind {
+            BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div | BinOpKind::Rem => {
                 self.build_arithmetic_expr(ctx, expr, expected_type)
             }
-            BinaryOp::Assign => self.build_assignment_expr(ctx, expr),
-            BinaryOp::AddAssign
-            | BinaryOp::SubAssign
-            | BinaryOp::MulAssign
-            | BinaryOp::DivAssign
-            | BinaryOp::RemAssign => self.build_arithmetic_assignment_expr(ctx, expr),
-            BinaryOp::Eq
-            | BinaryOp::NotEq
-            | BinaryOp::Less
-            | BinaryOp::LessEq
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEq => self.build_comparison_binary_expr(ctx, expr),
-            BinaryOp::And | BinaryOp::Or => self.build_logical_binary_expr(ctx, expr),
-            BinaryOp::BitAnd
-            | BinaryOp::BitOr
-            | BinaryOp::BitXor
-            | BinaryOp::LeftShift
-            | BinaryOp::RightShift => self.build_bitwise_binary_expr(ctx, expr, expected_type),
+            BinOpKind::Assign => self.build_assignment_expr(ctx, expr),
+            BinOpKind::AddAssign
+            | BinOpKind::SubAssign
+            | BinOpKind::MulAssign
+            | BinOpKind::DivAssign
+            | BinOpKind::RemAssign => self.build_arithmetic_assignment_expr(ctx, expr),
+            BinOpKind::Eq
+            | BinOpKind::NotEq
+            | BinOpKind::Less
+            | BinOpKind::LessEq
+            | BinOpKind::Greater
+            | BinOpKind::GreaterEq => self.build_comparison_binary_expr(ctx, expr),
+            BinOpKind::And | BinOpKind::Or => self.build_logical_binary_expr(ctx, expr),
+            BinOpKind::BitAnd
+            | BinOpKind::BitOr
+            | BinOpKind::BitXor
+            | BinOpKind::LeftShift
+            | BinOpKind::RightShift => self.build_bitwise_binary_expr(ctx, expr, expected_type),
         }
     }
 
@@ -1534,12 +1537,16 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut LocalContext,
         expr: &ast::Expression,
     ) -> Result<Expression, ()> {
-        let (ast_left, ast_right) = match &expr.kind {
-            ast::ExprKind::Binary { left, right, .. } => (left, right),
-            _ => unreachable!("expected binary expression"),
+        let (left, right, operator) = match &expr.kind {
+            ast::ExprKind::Binary {
+                left,
+                right,
+                operator,
+            } => (left, right, operator.clone()),
+            _ => unreachable!(),
         };
 
-        let left = self.build_expression(ctx, ast_left, None)?;
+        let left = self.build_expression(ctx, left, None)?;
         match left.kind {
             hir::ExprKind::Local {
                 scope_index,
@@ -1571,17 +1578,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     hir::Mutability::Mutable => {}
                 }
 
-                let mut right = self.build_expression(ctx, ast_right, Some(local.ty))?;
+                let mut right = self.build_expression(ctx, right, Some(local.ty))?;
                 match right.ty {
                     Some(ty) if !ty.coercible_to(local.ty) => {
                         self.diagnostics.push(
                             BinaryExpressionMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
-                                left_span: ast_left.span,
-                                left_type: local.ty,
-                                operator: ast::BinaryOp::Assign,
-                                right_span: ast_right.span,
-                                right_type: ty,
+                                left: TypeWithSpan {
+                                    ty: local.ty,
+                                    span: left.span,
+                                },
+                                operator: operator.clone(),
+                                right: TypeWithSpan {
+                                    ty,
+                                    span: right.span,
+                                },
                             }
                             .report(&self.global),
                         );
@@ -1595,7 +1606,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 Ok(hir::Expression {
                     kind: hir::ExprKind::Binary {
                         left: Box::new(left),
-                        operator: ast::BinaryOp::Assign,
+                        operator,
                         right: Box::new(right),
                     },
                     ty: Some(hir::Type::Unit),
@@ -1603,11 +1614,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 })
             }
             hir::ExprKind::Global { global_index } => {
-                let global = self
-                    .global
-                    .globals
-                    .get(global_index.0 as usize)
-                    .expect("global variable not found");
+                let global = self.global.globals.get(global_index.0 as usize).unwrap();
 
                 match global.mutability {
                     hir::Mutability::Const => {
@@ -1624,17 +1631,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
                 let global_type = global.ty;
 
-                let mut right = self.build_expression(ctx, ast_right, Some(global_type))?;
+                let mut right = self.build_expression(ctx, right, Some(global_type))?;
                 match right.ty {
                     Some(ty) if !ty.coercible_to(global_type) => {
                         self.diagnostics.push(
                             BinaryExpressionMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
-                                left_span: ast_left.span,
-                                left_type: global_type,
-                                operator: ast::BinaryOp::Assign,
-                                right_span: ast_right.span,
-                                right_type: ty,
+                                left: TypeWithSpan {
+                                    ty: global_type,
+                                    span: left.span,
+                                },
+                                operator: operator.clone(),
+                                right: TypeWithSpan {
+                                    ty,
+                                    span: right.span,
+                                },
                             }
                             .report(&self.global),
                         );
@@ -1648,7 +1659,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 Ok(hir::Expression {
                     kind: hir::ExprKind::Binary {
                         left: Box::new(left),
-                        operator: ast::BinaryOp::Assign,
+                        operator,
                         right: Box::new(right),
                     },
                     ty: Some(hir::Type::Unit),
@@ -1656,27 +1667,50 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 })
             }
             hir::ExprKind::Placeholder => {
-                let right = self.build_expression(ctx, ast_right, None)?;
+                let right = self.build_expression(ctx, right, None)?;
                 let right_type = match right.ty {
                     Some(ty) => ty,
-                    None => panic!("can't drop untyped value"),
+                    None => {
+                        self.diagnostics.push(
+                            TypeAnnotationRequiredDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: right.span,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
                 };
 
                 return Ok(hir::Expression {
                     kind: hir::ExprKind::Binary {
-                        operator: ast::BinaryOp::Assign,
                         left: Box::new(hir::Expression {
                             kind: hir::ExprKind::Placeholder,
                             ty: Some(right_type),
-                            span: ast_left.span,
+                            span: left.span,
                         }),
+                        operator,
                         right: Box::new(right),
                     },
                     ty: Some(hir::Type::Unit),
                     span: expr.span,
                 });
             }
-            _ => panic!("left side of assignment must be a variable"),
+            _ => {
+                self.diagnostics.push(
+                    InvalidAssignmentTargetDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: left.span,
+                    }
+                    .report(),
+                );
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Unreachable,
+                    ty: Some(hir::Type::Unit),
+                    span: expr.span,
+                })
+            }
         }
     }
 
@@ -1685,17 +1719,16 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut LocalContext,
         expr: &ast::Expression,
     ) -> Result<Expression, ()> {
-        let (ast_left, ast_right, operator) = match &expr.kind {
+        let (left, right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
                 left,
                 right,
                 operator,
-                ..
             } => (left, right, operator.clone()),
             _ => unreachable!(),
         };
 
-        let left = self.build_expression(ctx, ast_left, None)?;
+        let left = self.build_expression(ctx, left, None)?;
         match left.kind {
             hir::ExprKind::Local {
                 scope_index,
@@ -1703,17 +1736,28 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             } => {
                 let local = match ctx.frame.get_local(scope_index, local_index) {
                     Some(local) => local.clone(),
-                    None => panic!("can't assign to undeclared variable"),
+                    None => {
+                        self.diagnostics.push(
+                            UndeclaredIdentifierDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: left.span,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
                 };
                 match local.ty {
                     Type::Primitive(_) => {}
-                    to_type => {
+                    _ => {
                         self.diagnostics.push(
-                            OperatorCannotBeAppliedDiagnostic {
+                            BinaryOperatorCannotBeAppliedDiagnostic {
                                 file_id: self.ast.file_id,
                                 operator,
-                                to_type,
-                                span: expr.span,
+                                operand: TypeWithSpan {
+                                    ty: local.ty,
+                                    span: left.span,
+                                },
                             }
                             .report(&self.global),
                         );
@@ -1735,17 +1779,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     hir::Mutability::Mutable => {}
                 }
 
-                let mut right = self.build_expression(ctx, ast_right, Some(local.ty))?;
+                let mut right = self.build_expression(ctx, right, Some(local.ty))?;
                 match right.ty {
                     Some(ty) if !ty.coercible_to(local.ty) => {
                         self.diagnostics.push(
                             BinaryExpressionMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
-                                left_span: ast_left.span,
-                                left_type: local.ty,
-                                operator,
-                                right_span: ast_right.span,
-                                right_type: ty,
+                                left: TypeWithSpan {
+                                    ty: local.ty,
+                                    span: left.span,
+                                },
+                                operator: operator.clone(),
+                                right: TypeWithSpan {
+                                    ty,
+                                    span: right.span,
+                                },
                             }
                             .report(&self.global),
                         );
@@ -1775,13 +1823,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
                 match global.ty {
                     Type::Primitive(_) => {}
-                    to_type => {
+                    _ => {
                         self.diagnostics.push(
-                            OperatorCannotBeAppliedDiagnostic {
+                            BinaryOperatorCannotBeAppliedDiagnostic {
                                 file_id: self.ast.file_id,
                                 operator,
-                                to_type,
-                                span: expr.span,
+                                operand: TypeWithSpan {
+                                    ty: global.ty,
+                                    span: left.span,
+                                },
                             }
                             .report(&self.global),
                         );
@@ -1805,17 +1855,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
                 let global_type = global.ty;
 
-                let mut right = self.build_expression(ctx, ast_right, Some(global_type))?;
+                let mut right = self.build_expression(ctx, right, Some(global_type))?;
                 match right.ty {
                     Some(ty) if !ty.coercible_to(global_type) => {
                         self.diagnostics.push(
                             BinaryExpressionMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
-                                left_span: ast_left.span,
-                                left_type: global_type,
-                                operator: ast::BinaryOp::Assign,
-                                right_span: ast_right.span,
-                                right_type: ty,
+                                left: TypeWithSpan {
+                                    ty: global_type,
+                                    span: left.span,
+                                },
+                                operator: operator.clone(),
+                                right: TypeWithSpan {
+                                    ty,
+                                    span: right.span,
+                                },
                             }
                             .report(&self.global),
                         );
@@ -1829,14 +1883,28 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 Ok(hir::Expression {
                     kind: hir::ExprKind::Binary {
                         left: Box::new(left),
-                        operator: ast::BinaryOp::Assign,
+                        operator,
                         right: Box::new(right),
                     },
                     ty: Some(hir::Type::Unit),
                     span: expr.span,
                 })
             }
-            _ => panic!("left side of assignment must be a variable"),
+            _ => {
+                self.diagnostics.push(
+                    InvalidAssignmentTargetDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: left.span,
+                    }
+                    .report(),
+                );
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Unreachable,
+                    ty: Some(hir::Type::Unit),
+                    span: expr.span,
+                })
+            }
         }
     }
 
@@ -1846,43 +1914,45 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
-        let (ast_left, ast_right, operator) = match &expr.kind {
+        let (left, right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
                 left,
                 right,
                 operator,
-                ..
             } => (left, right, operator.clone()),
             _ => unreachable!(),
         };
 
-        let mut left = self.build_expression(ctx, ast_left, expected_type)?;
-        let mut right = self.build_expression(ctx, ast_right, expected_type)?;
+        let mut left = self.build_expression(ctx, left, expected_type)?;
+        let mut right = self.build_expression(ctx, right, expected_type)?;
 
         match (left.ty, right.ty) {
-            (
-                Some(Type::Primitive(PrimitiveType::I32)),
-                Some(Type::Primitive(PrimitiveType::I32)),
-            )
-            | (
-                Some(Type::Primitive(PrimitiveType::I64)),
-                Some(Type::Primitive(PrimitiveType::I64)),
-            ) => {
-                let ty = left.ty;
-                Ok(Expression {
-                    kind: ExprKind::Binary {
-                        operator,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    ty,
-                    span: expr.span,
-                })
-            }
+            (Some(Type::Primitive(p1)), Some(Type::Primitive(p2))) if p1 == p2 => Ok(Expression {
+                kind: ExprKind::Binary {
+                    operator,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                ty: Some(Type::Primitive(p1)),
+                span: expr.span,
+            }),
             (Some(ty), None) => {
                 match ty {
                     Type::Primitive(_) => {}
-                    _ => panic!("bitwise operator can only be applied to primitive types"),
+                    _ => {
+                        self.diagnostics.push(
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.ast.file_id,
+                                operator,
+                                operand: TypeWithSpan {
+                                    ty,
+                                    span: left.span,
+                                },
+                            }
+                            .report(&self.global),
+                        );
+                        return Err(());
+                    }
                 }
                 self.coerce_untyped_expr(&mut right, ty)?;
 
@@ -1899,7 +1969,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             (None, Some(ty)) => {
                 match ty {
                     Type::Primitive(_) => {}
-                    _ => panic!("bitwise operator can only be applied to primitive types"),
+                    _ => {
+                        self.diagnostics.push(
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.ast.file_id,
+                                operator,
+                                operand: TypeWithSpan {
+                                    ty,
+                                    span: right.span,
+                                },
+                            }
+                            .report(&self.global),
+                        );
+                        return Err(());
+                    }
                 }
                 self.coerce_untyped_expr(&mut left, ty)?;
 
@@ -1928,11 +2011,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
                         file_id: self.ast.file_id,
-                        left_span: ast_left.span,
-                        left_type,
-                        operator,
-                        right_span: ast_right.span,
-                        right_type,
+                        left: TypeWithSpan {
+                            ty: left_type,
+                            span: left.span,
+                        },
+                        operator: operator.clone(),
+                        right: TypeWithSpan {
+                            ty: right_type,
+                            span: right.span,
+                        },
                     }
                     .report(&self.global),
                 );
@@ -1961,13 +2048,12 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 left,
                 right,
                 operator,
-                ..
             } => (left, right, operator.clone()),
             _ => unreachable!("expected binary expression"),
         };
 
         let mut left = self.build_expression(ctx, left, expected_type)?;
-        let mut right = self.build_expression(ctx, right, expected_type)?;
+        let mut right = self.build_expression(ctx, right, left.ty.or(expected_type))?;
 
         match (left.ty, right.ty) {
             (Some(Type::Primitive(ty1)), Some(Type::Primitive(ty2))) if ty1 == ty2 => {
@@ -1984,7 +2070,34 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             (None, Some(ty)) => {
                 match ty {
                     Type::Primitive(_) => {}
-                    _ => panic!("arithmetic operator can only be applied to primitive types"),
+                    ty => {
+                        self.diagnostics.push(
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.ast.file_id,
+                                operator: operator.clone(),
+                                operand: TypeWithSpan {
+                                    ty,
+                                    span: right.span,
+                                },
+                            }
+                            .report(&self.global),
+                        );
+
+                        match expected_type {
+                            Some(expected_type) => {
+                                return Ok(Expression {
+                                    kind: ExprKind::Binary {
+                                        operator,
+                                        left: Box::new(left),
+                                        right: Box::new(right),
+                                    },
+                                    ty: Some(expected_type),
+                                    span: expr.span,
+                                });
+                            }
+                            None => return Err(()),
+                        }
+                    }
                 }
                 self.coerce_untyped_expr(&mut left, ty)?;
 
@@ -2011,6 +2124,28 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     span: expr.span,
                 })
             }
+            (Some(Type::Never), _) => {
+                self.diagnostics.push(
+                    UnreachableCodeDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: right.span,
+                    }
+                    .report(),
+                );
+
+                return Ok(left);
+            }
+            (_, Some(Type::Never)) => {
+                self.diagnostics.push(
+                    UnreachableCodeDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: operator.span,
+                    }
+                    .report(),
+                );
+
+                return Ok(right);
+            }
             (None, None) => match expected_type {
                 Some(_) => Ok(Expression {
                     kind: ExprKind::Binary {
@@ -2036,11 +2171,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
                         file_id: self.ast.file_id,
-                        left_span: left.span,
-                        left_type,
-                        operator,
-                        right_span: right.span,
-                        right_type,
+                        left: TypeWithSpan {
+                            ty: left_type,
+                            span: left.span,
+                        },
+                        operator: operator.clone(),
+                        right: TypeWithSpan {
+                            ty: right_type,
+                            span: right.span,
+                        },
                     }
                     .report(&self.global),
                 );
@@ -2066,7 +2205,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut LocalContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
-        let (ast_left, ast_right, operator) = match &expr.kind {
+        let (left, right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
                 left,
                 right,
@@ -2076,8 +2215,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let mut left = self.build_expression(ctx, ast_left, None)?;
-        let mut right = self.build_expression(ctx, ast_right, None)?;
+        let mut left = self.build_expression(ctx, left, None)?;
+        let mut right = self.build_expression(ctx, right, left.ty)?;
 
         match (left.ty, right.ty) {
             (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
@@ -2145,8 +2284,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.diagnostics.push(
                     ComparisonTypeAnnotationRequiredDiagnostic {
                         file_id: self.ast.file_id,
-                        left: ast_left.span,
-                        right: ast_right.span,
+                        left: left.span,
+                        right: right.span,
                     }
                     .report(),
                 );
@@ -2165,11 +2304,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
                         file_id: self.ast.file_id,
-                        left_span: ast_left.span,
-                        left_type,
-                        right_span: ast_right.span,
-                        right_type,
-                        operator,
+                        left: TypeWithSpan {
+                            ty: left_type,
+                            span: left.span,
+                        },
+                        operator: operator.clone(),
+                        right: TypeWithSpan {
+                            ty: right_type,
+                            span: right.span,
+                        },
                     }
                     .report(&self.global),
                 );
@@ -2192,7 +2335,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut LocalContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
-        let (ast_left, ast_right, operator) = match &expr.kind {
+        let (left, right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
                 left,
                 right,
@@ -2202,8 +2345,54 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!("expected binary expression"),
         };
 
-        let left = self.build_expression(ctx, ast_left, Some(Type::Bool))?;
-        let right = self.build_expression(ctx, ast_right, Some(Type::Bool))?;
+        let left = self.build_expression(ctx, left, Some(Type::Bool))?;
+        match left.ty {
+            Some(Type::Bool) => {}
+            Some(actual) => {
+                self.diagnostics.push(
+                    TypeMistmatchDiagnostic {
+                        file_id: self.ast.file_id,
+                        expected: Type::Bool,
+                        actual,
+                        span: left.span,
+                    }
+                    .report(&self.global),
+                );
+            }
+            None => {
+                self.diagnostics.push(
+                    TypeAnnotationRequiredDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: left.span,
+                    }
+                    .report(),
+                );
+            }
+        }
+        let right = self.build_expression(ctx, right, Some(Type::Bool))?;
+        match right.ty {
+            Some(Type::Bool) => {}
+            Some(actual) => {
+                self.diagnostics.push(
+                    TypeMistmatchDiagnostic {
+                        file_id: self.ast.file_id,
+                        expected: Type::Bool,
+                        actual,
+                        span: right.span,
+                    }
+                    .report(&self.global),
+                );
+            }
+            None => {
+                self.diagnostics.push(
+                    TypeAnnotationRequiredDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: right.span,
+                    }
+                    .report(),
+                );
+            }
+        }
 
         Ok(hir::Expression {
             kind: hir::ExprKind::Binary {
@@ -2223,6 +2412,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     ) -> Result<(), ()> {
         match expr.kind {
             hir::ExprKind::Int(_) => self.coerce_untyped_int_expr(expr, target_type),
+            hir::ExprKind::Float(_) => self.coerce_untyped_float_expr(expr, target_type),
             hir::ExprKind::Unary { .. } => self.coerce_untyped_unary_expr(expr, target_type),
             hir::ExprKind::Binary { .. } => {
                 self.coerce_untyped_binary_expression(expr, target_type)
@@ -2258,99 +2448,87 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 expr.ty = Some(Type::Primitive(PrimitiveType::I32));
                 Ok(())
             }
-            Type::Primitive(PrimitiveType::I64) => match expr.kind {
-                hir::ExprKind::Int(value) => {
-                    if value > i64::MAX || value < i64::MIN {
-                        self.diagnostics.push(
-                            IntegerLiteralOutOfRangeDiagnostic {
-                                file_id: self.ast.file_id,
-                                primitive: PrimitiveType::I64,
-                                value,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
-                    }
-
-                    expr.ty = Some(Type::Primitive(PrimitiveType::I64));
-                    Ok(())
+            Type::Primitive(PrimitiveType::I64) => {
+                let value = match expr.kind {
+                    hir::ExprKind::Int(value) => value,
+                    _ => unreachable!(),
+                };
+                if value > i64::MAX || value < i64::MIN {
+                    self.diagnostics.push(
+                        IntegerLiteralOutOfRangeDiagnostic {
+                            file_id: self.ast.file_id,
+                            primitive: PrimitiveType::I64,
+                            value,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
                 }
-                _ => unreachable!(),
-            },
-            Type::Primitive(PrimitiveType::F32) => match expr.kind {
-                hir::ExprKind::Float(value) => {
-                    if value > f32::MAX as f64 || value < f32::MIN as f64 {
-                        self.diagnostics.push(
-                            FloatLiteralOutOfRangeDiagnostic {
-                                file_id: self.ast.file_id,
-                                primitive: PrimitiveType::F32,
-                                value,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+
+                expr.ty = Some(Type::Primitive(PrimitiveType::I64));
+                Ok(())
+            }
+            target_type => {
+                self.diagnostics.push(
+                    UnableToCoerceDiagnostic {
+                        file_id: self.ast.file_id,
+                        target_type,
+                        span: expr.span,
                     }
+                    .report(&self.global),
+                );
 
-                    expr.ty = Some(Type::Primitive(PrimitiveType::F32));
-                    Ok(())
+                Err(())
+            }
+        }
+    }
+
+    fn coerce_untyped_float_expr(
+        &mut self,
+        expr: &mut hir::Expression,
+        target_type: hir::Type,
+    ) -> Result<(), ()> {
+        match target_type {
+            Type::Primitive(PrimitiveType::F32) => {
+                let value = match expr.kind {
+                    hir::ExprKind::Float(value) => value,
+                    _ => unreachable!(),
+                };
+                if value > f32::MAX as f64 || value < f32::MIN as f64 {
+                    self.diagnostics.push(
+                        FloatLiteralOutOfRangeDiagnostic {
+                            file_id: self.ast.file_id,
+                            primitive: PrimitiveType::F32,
+                            value,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
                 }
-                hir::ExprKind::Int(value) => {
-                    if (value as f32) > f32::MAX || (value as f32) < f32::MIN {
-                        self.diagnostics.push(
-                            IntegerLiteralOutOfRangeDiagnostic {
-                                file_id: self.ast.file_id,
-                                primitive: PrimitiveType::F32,
-                                value,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
-                    }
 
-                    expr.kind = hir::ExprKind::Float(value as f64);
-                    expr.ty = Some(Type::Primitive(PrimitiveType::F32));
-
-                    Ok(())
+                expr.ty = Some(Type::Primitive(PrimitiveType::F32));
+                Ok(())
+            }
+            Type::Primitive(PrimitiveType::F64) => {
+                let value = match expr.kind {
+                    hir::ExprKind::Float(value) => value,
+                    _ => unreachable!(),
+                };
+                if value > f64::MAX || value < f64::MIN {
+                    self.diagnostics.push(
+                        FloatLiteralOutOfRangeDiagnostic {
+                            file_id: self.ast.file_id,
+                            primitive: PrimitiveType::F64,
+                            value,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
                 }
-                _ => unreachable!(),
-            },
-            Type::Primitive(PrimitiveType::F64) => match expr.kind {
-                hir::ExprKind::Float(value) => {
-                    if value > f64::MAX || value < f64::MIN {
-                        self.diagnostics.push(
-                            FloatLiteralOutOfRangeDiagnostic {
-                                file_id: self.ast.file_id,
-                                primitive: PrimitiveType::F64,
-                                value,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
-                    }
 
-                    expr.ty = Some(Type::Primitive(PrimitiveType::F64));
-                    Ok(())
-                }
-                hir::ExprKind::Int(value) => {
-                    if (value as f64) > f64::MAX || (value as f64) < f64::MIN {
-                        self.diagnostics.push(
-                            IntegerLiteralOutOfRangeDiagnostic {
-                                file_id: self.ast.file_id,
-                                primitive: PrimitiveType::F64,
-                                value,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
-                    }
-
-                    expr.kind = hir::ExprKind::Float(value as f64);
-                    expr.ty = Some(Type::Primitive(PrimitiveType::F64));
-
-                    Ok(())
-                }
-                _ => unreachable!(),
-            },
+                expr.ty = Some(Type::Primitive(PrimitiveType::F64));
+                Ok(())
+            }
             target_type => {
                 self.diagnostics.push(
                     UnableToCoerceDiagnostic {
@@ -2376,8 +2554,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        match operator {
-            ast::UnaryOp::BitNot | ast::UnaryOp::InvertSign => match target_type {
+        match operator.kind {
+            ast::UnOpKind::BitNot | ast::UnOpKind::InvertSign => match target_type {
                 Type::Primitive(PrimitiveType::I32 | PrimitiveType::I64) => {}
                 _ => unreachable!(),
             },
@@ -2407,7 +2585,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        match operator {
+        match operator.kind {
             operator if operator.is_arithmetic() || operator.is_bitwise() => match target_type {
                 Type::Primitive(PrimitiveType::I32 | PrimitiveType::I64) => {}
                 target_type => {
@@ -2440,31 +2618,65 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
 #[cfg(test)]
 mod tests {
+    use codespan_reporting::term::{
+        self,
+        termcolor::{ColorChoice, StandardStream},
+    };
     use string_interner::StringInterner;
 
     use super::*;
     use crate::files::Files;
 
-    #[test]
-    fn should_coerce_never_expression() {
+    #[allow(unused)]
+    fn print_diagnostics(diagnostics: &[Diagnostic<FileId>], files: &Files) {
+        let writer = StandardStream::stderr(ColorChoice::Always);
+        let config = codespan_reporting::term::Config::default();
+
+        for diagnostic in diagnostics.iter() {
+            term::emit(&mut writer.lock(), &config, files, diagnostic).unwrap();
+        }
+    }
+
+    struct TestCase {
+        interner: StringInterner<StringBackend>,
+        files: Files,
+        ast: ast::Ast,
+        ast_diagnostics: Vec<Diagnostic<FileId>>,
+        hir: hir::HIR,
+        hir_diagnostics: Vec<Diagnostic<FileId>>,
+    }
+
+    fn build_test_case(source: &str) -> TestCase {
         let mut interner = StringInterner::new();
         let mut files = Files::new();
         let file_id = files
-            .add(
-                "test.wx".to_string(),
-                "func test(): unit { unreachable }".to_string(),
-            )
+            .add("test.wx".to_string(), source.to_string())
             .unwrap();
 
-        let (ast, diagnostics) =
+        let (ast, ast_diagnostics) =
             ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
 
-        assert_eq!(diagnostics.len(), 0);
-        assert_eq!(ast.items.len(), 1);
+        let (hir, hir_diagnostics) = hir::Builder::build(&ast, &mut interner);
 
-        let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
+        TestCase {
+            interner,
+            files,
+            ast,
+            ast_diagnostics,
+            hir,
+            hir_diagnostics,
+        }
+    }
 
-        assert_eq!(diagnostics.len(), 0);
+    #[test]
+    fn should_coerce_never_expression() {
+        let TestCase {
+            hir,
+            hir_diagnostics,
+            ..
+        } = build_test_case("func test(): unit { unreachable }");
+
+        assert_eq!(hir_diagnostics.len(), 0);
         assert_eq!(hir.functions.len(), 1);
         assert_eq!(
             hir.functions[0].stack.scopes[0].expected_type,
@@ -2479,24 +2691,13 @@ mod tests {
 
     #[test]
     fn should_infer_local_type() {
-        let mut interner = StringInterner::new();
-        let mut files = Files::new();
-        let file_id = files
-            .add(
-                "test.wx".to_string(),
-                "func test(a: i32): i32 { local x = a; x }".to_string(),
-            )
-            .unwrap();
+        let TestCase {
+            hir,
+            hir_diagnostics,
+            ..
+        } = build_test_case("func test(a: i32): i32 { local x = a; x }");
 
-        let (ast, diagnostics) =
-            ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-
-        assert_eq!(diagnostics.len(), 0);
-        assert_eq!(ast.items.len(), 1);
-
-        let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
-
-        assert_eq!(diagnostics.len(), 0);
+        assert_eq!(hir_diagnostics.len(), 0);
         assert_eq!(hir.functions.len(), 1);
         assert_eq!(
             hir.functions[0].stack.scopes[0].locals[0].ty,
@@ -2505,6 +2706,102 @@ mod tests {
         assert_eq!(
             hir.functions[0].stack.scopes[0].inferred_type,
             Some(hir::Type::Primitive(PrimitiveType::I32))
+        );
+    }
+
+    #[test]
+    fn should_report_invalid_assignment_target() {
+        let TestCase {
+            hir,
+            hir_diagnostics,
+            ..
+        } = build_test_case("func test(): unit { 5 = 5 }");
+
+        assert_eq!(hir_diagnostics.len(), 1);
+        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(
+            hir_diagnostics[0].code.as_ref().unwrap(),
+            InvalidAssignmentTargetDiagnostic::CODE
+        );
+    }
+
+    #[test]
+    fn should_report_break_outside_of_loop() {
+        let TestCase {
+            hir,
+            hir_diagnostics,
+            ..
+        } = build_test_case("func test(): unit { break }");
+
+        assert_eq!(hir_diagnostics.len(), 1);
+        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(hir.functions[0].block.ty.unwrap(), hir::Type::Never);
+        assert_eq!(
+            hir_diagnostics[0].code.as_ref().unwrap(),
+            BreakOutsideOfLoopDiagnostic::CODE
+        );
+    }
+
+    #[test]
+    fn should_report_operator_cannot_be_applied() {
+        let TestCase {
+            hir,
+            hir_diagnostics,
+            ..
+        } = build_test_case("func test(): unit { 5 + true }");
+
+        assert_eq!(hir_diagnostics.len(), 1);
+        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(
+            hir_diagnostics[0].code.as_ref().unwrap(),
+            BinaryOperatorCannotBeAppliedDiagnostic::CODE
+        );
+    }
+
+    #[test]
+    fn should_report_unable_to_coerce() {
+        let TestCase {
+            hir_diagnostics,
+            hir,
+            ..
+        } = build_test_case("func test(): unit { 5 }");
+
+        assert_eq!(hir.functions.len(), 1);
+        assert_eq!(hir.functions[0].block.ty, Some(hir::Type::Unit));
+        assert_eq!(hir_diagnostics.len(), 1);
+        assert_eq!(
+            hir_diagnostics[0].code.as_ref().unwrap(),
+            UnableToCoerceDiagnostic::CODE
+        );
+    }
+
+    #[test]
+    fn should_report_unreachable_code() {
+        let TestCase {
+            hir_diagnostics,
+            hir,
+            ..
+        } = build_test_case(
+            "func test(): unit { 
+                loop {}; 
+                hello(); 
+                world();
+                unreachable
+            }",
+        );
+
+        assert_eq!(hir.functions.len(), 1);
+        match &hir.functions[0].block.kind {
+            ExprKind::Block { expressions, .. } => {
+                assert_eq!(expressions.len(), 1);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(hir.functions[0].block.ty, Some(hir::Type::Never));
+        assert_eq!(hir_diagnostics.len(), 1);
+        assert_eq!(
+            hir_diagnostics[0].code.as_ref().unwrap(),
+            UnreachableCodeDiagnostic::CODE
         );
     }
 }

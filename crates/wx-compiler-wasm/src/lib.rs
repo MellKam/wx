@@ -20,7 +20,7 @@ pub fn compile(filename: String, source: String) -> Result<Vec<u8>, JsValue> {
         return Err(serde_wasm_bindgen::to_value(&diagnostics).unwrap());
     }
     let mir = mir::Builder::build(&hir);
-    let module = wasm::Builder::build(&mir, &mut interner);
+    let module = wasm::Builder::build(&mir, &mut interner).unwrap();
     let bytecode = wasm::Encoder::encode(&module);
 
     Ok(bytecode)

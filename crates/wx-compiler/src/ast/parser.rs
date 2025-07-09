@@ -5,8 +5,8 @@ use string_interner::symbol::SymbolU32;
 
 use super::lexer::{Lexer, PeekableLexer, Token, TokenKind};
 use super::{
-    Ast, BinaryOp, EnumVariant, ExprKind, FunctionParam, Identifier, ItemKind, Statement, StmtKind,
-    UnaryOp,
+    Ast, BinOpKind, EnumVariant, ExprKind, FunctionParam, Identifier, ItemKind, Statement,
+    StmtKind, UnOpKind,
 };
 use crate::ast::diagnostics::{
     ChainedComparisonsDiagnostic, IncompleteBinaryExpressionDiagnostic,
@@ -15,7 +15,9 @@ use crate::ast::diagnostics::{
     MissingStatementDelimiterDiagnostic, MissingUnaryOperandDiagnostic,
     ReservedIdentifierDiagnostic, UnexpectedEofDiagnostic, UnexpectedTokenDiagnostic,
 };
-use crate::ast::{Expression, FunctionSignature, Item, TypeExprKind, TypeExpression};
+use crate::ast::{
+    BinaryOp, Expression, FunctionSignature, Item, TypeExprKind, TypeExpression, UnaryOp,
+};
 use crate::files::FileId;
 use crate::span::TextSpan;
 
@@ -39,39 +41,39 @@ enum BindingPower {
     Primary,
 }
 
-impl From<BinaryOp> for BindingPower {
-    fn from(operator: BinaryOp) -> Self {
+impl From<BinOpKind> for BindingPower {
+    fn from(operator: BinOpKind) -> Self {
         match operator {
-            BinaryOp::Assign => BindingPower::Assignment,
-            BinaryOp::AddAssign => BindingPower::Assignment,
-            BinaryOp::SubAssign => BindingPower::Assignment,
-            BinaryOp::MulAssign => BindingPower::Assignment,
-            BinaryOp::DivAssign => BindingPower::Assignment,
-            BinaryOp::RemAssign => BindingPower::Assignment,
+            BinOpKind::Assign => BindingPower::Assignment,
+            BinOpKind::AddAssign => BindingPower::Assignment,
+            BinOpKind::SubAssign => BindingPower::Assignment,
+            BinOpKind::MulAssign => BindingPower::Assignment,
+            BinOpKind::DivAssign => BindingPower::Assignment,
+            BinOpKind::RemAssign => BindingPower::Assignment,
 
-            BinaryOp::Or => BindingPower::LogicalOr,
-            BinaryOp::And => BindingPower::LogicalAnd,
+            BinOpKind::Or => BindingPower::LogicalOr,
+            BinOpKind::And => BindingPower::LogicalAnd,
 
-            BinaryOp::BitOr => BindingPower::BitwiseOr,
-            BinaryOp::BitXor => BindingPower::BitwiseXor,
-            BinaryOp::BitAnd => BindingPower::BitwiseAnd,
+            BinOpKind::BitOr => BindingPower::BitwiseOr,
+            BinOpKind::BitXor => BindingPower::BitwiseXor,
+            BinOpKind::BitAnd => BindingPower::BitwiseAnd,
 
-            BinaryOp::Eq => BindingPower::Comparison,
-            BinaryOp::NotEq => BindingPower::Comparison,
-            BinaryOp::Less => BindingPower::Comparison,
-            BinaryOp::LessEq => BindingPower::Comparison,
-            BinaryOp::Greater => BindingPower::Comparison,
-            BinaryOp::GreaterEq => BindingPower::Comparison,
+            BinOpKind::Eq => BindingPower::Comparison,
+            BinOpKind::NotEq => BindingPower::Comparison,
+            BinOpKind::Less => BindingPower::Comparison,
+            BinOpKind::LessEq => BindingPower::Comparison,
+            BinOpKind::Greater => BindingPower::Comparison,
+            BinOpKind::GreaterEq => BindingPower::Comparison,
 
-            BinaryOp::LeftShift => BindingPower::BitwiseShift,
-            BinaryOp::RightShift => BindingPower::BitwiseShift,
+            BinOpKind::LeftShift => BindingPower::BitwiseShift,
+            BinOpKind::RightShift => BindingPower::BitwiseShift,
 
-            BinaryOp::Add => BindingPower::Additive,
-            BinaryOp::Sub => BindingPower::Additive,
+            BinOpKind::Add => BindingPower::Additive,
+            BinOpKind::Sub => BindingPower::Additive,
 
-            BinaryOp::Mul => BindingPower::Multiplicative,
-            BinaryOp::Div => BindingPower::Multiplicative,
-            BinaryOp::Rem => BindingPower::Multiplicative,
+            BinOpKind::Mul => BindingPower::Multiplicative,
+            BinOpKind::Div => BindingPower::Multiplicative,
+            BinOpKind::Rem => BindingPower::Multiplicative,
         }
     }
 }
@@ -773,9 +775,9 @@ impl<'input> Parser<'input> {
 
     fn parse_unary_expression(parser: &mut Parser) -> Result<Expression, ()> {
         let operator_token = parser.lexer.next();
-        let operator = match UnaryOp::try_from(operator_token.kind) {
+        let operator = match UnOpKind::try_from(operator_token.kind) {
             Ok(operator) => operator,
-            Err(_) => panic!("invalid unary operator"),
+            Err(_) => unreachable!(),
         };
 
         let operand = match parser.parse_expression(BindingPower::Unary) {
@@ -795,7 +797,10 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(operator_token.span, operand.span);
         Ok(Expression {
             kind: ExprKind::Unary {
-                operator,
+                operator: UnaryOp {
+                    kind: operator,
+                    span: operator_token.span,
+                },
                 operand: Box::new(operand),
             },
             span,
@@ -808,7 +813,7 @@ impl<'input> Parser<'input> {
         bp: BindingPower,
     ) -> Result<Expression, ()> {
         let operator_token = parser.lexer.next();
-        let operator = match BinaryOp::try_from(operator_token.kind) {
+        let operator = match BinOpKind::try_from(operator_token.kind) {
             Ok(operator) => operator,
             Err(_) => unreachable!("invalid binary operator"),
         };
@@ -828,16 +833,14 @@ impl<'input> Parser<'input> {
         };
 
         if bp == BindingPower::Comparison {
-            match left.kind {
-                ExprKind::Binary {
-                    operator,
-                    operator_span,
-                    ..
-                } if BindingPower::from(operator) == BindingPower::Comparison => {
+            match &left.kind {
+                ExprKind::Binary { operator, .. }
+                    if BindingPower::from(operator.kind) == BindingPower::Comparison =>
+                {
                     parser.diagnostics.push(
                         ChainedComparisonsDiagnostic {
                             file_id: parser.ast.file_id,
-                            first_operator_span: operator_span,
+                            first_operator_span: operator.span,
                             second_operator_span: operator_token.span,
                         }
                         .report(),
@@ -845,17 +848,15 @@ impl<'input> Parser<'input> {
                 }
                 _ => {}
             }
-            match right.kind {
-                ExprKind::Binary {
-                    operator,
-                    operator_span,
-                    ..
-                } if BindingPower::from(operator) == BindingPower::Comparison => {
+            match &right.kind {
+                ExprKind::Binary { operator, .. }
+                    if BindingPower::from(operator.kind) == BindingPower::Comparison =>
+                {
                     parser.diagnostics.push(
                         ChainedComparisonsDiagnostic {
                             file_id: parser.ast.file_id,
                             first_operator_span: operator_token.span,
-                            second_operator_span: operator_span,
+                            second_operator_span: operator.span,
                         }
                         .report(),
                     );
@@ -869,8 +870,10 @@ impl<'input> Parser<'input> {
             kind: ExprKind::Binary {
                 left: Box::new(left),
                 right: Box::new(right),
-                operator,
-                operator_span: operator_token.span,
+                operator: BinaryOp {
+                    kind: operator,
+                    span: operator_token.span,
+                },
             },
             span,
         })

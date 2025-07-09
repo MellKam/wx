@@ -1,10 +1,10 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
 use super::EnumIndex;
-use crate::ast::BinaryOp;
+use crate::ast::{BinOpKind, BinaryOp};
 use crate::files::FileId;
-use crate::hir;
 use crate::hir::global::GlobalContext;
+use crate::hir::{self, TypeWithSpan};
 use crate::span::TextSpan;
 
 pub struct UnknownEnumVariantDiagnostic {
@@ -35,63 +35,72 @@ impl UnknownTypeDiagnostic {
 
 pub struct BinaryExpressionMistmatchDiagnostic {
     pub file_id: FileId,
-    pub left_span: TextSpan,
-    pub left_type: hir::Type,
+    pub left: TypeWithSpan,
     pub operator: BinaryOp,
-    pub right_span: TextSpan,
-    pub right_type: hir::Type,
+    pub right: TypeWithSpan,
 }
 
 impl BinaryExpressionMistmatchDiagnostic {
     pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
-        let left = global.display_type(self.left_type);
-        let right = global.display_type(self.right_type);
+        let left_type = global.display_type(self.left.ty);
+        let right_type = global.display_type(self.right.ty);
 
-        let message = match self.operator {
-            BinaryOp::Add => format!("cannot add `{}` to `{}`", left, right),
-            BinaryOp::Sub => format!("cannot subtract `{}` from `{}`", left, right),
-            BinaryOp::Assign => format!("cannot assign `{}` to `{}`", left, right),
-            BinaryOp::Mul => format!("cannot multiply `{}` by `{}`", left, right),
-            BinaryOp::Div => format!("cannot divide `{}` by `{}`", left, right),
-            BinaryOp::Rem => format!(
+        let message = match self.operator.kind {
+            BinOpKind::Add => format!("cannot add `{}` to `{}`", left_type, right_type),
+            BinOpKind::Sub => format!("cannot subtract `{}` from `{}`", left_type, right_type),
+            BinOpKind::Assign => format!("cannot assign `{}` to `{}`", left_type, right_type),
+            BinOpKind::Mul => format!("cannot multiply `{}` by `{}`", left_type, right_type),
+            BinOpKind::Div => format!("cannot divide `{}` by `{}`", left_type, right_type),
+            BinOpKind::Rem => format!(
                 "cannot calculate the remainder of `{}` by `{}`",
-                left, right
+                left_type, right_type
             ),
-            BinaryOp::Eq
-            | BinaryOp::NotEq
-            | BinaryOp::Less
-            | BinaryOp::LessEq
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEq => {
-                format!("cannot compare `{}` to `{}`", left, right)
+            BinOpKind::Eq
+            | BinOpKind::NotEq
+            | BinOpKind::Less
+            | BinOpKind::LessEq
+            | BinOpKind::Greater
+            | BinOpKind::GreaterEq => {
+                format!("cannot compare `{}` to `{}`", left_type, right_type)
             }
-            BinaryOp::MulAssign => {
-                format!("cannot multiply-assign `{}` to `{}`", right, left)
+            BinOpKind::MulAssign => {
+                format!("cannot multiply-assign `{}` to `{}`", right_type, left_type)
             }
-            BinaryOp::DivAssign => {
-                format!("cannot divide-assign `{}` by `{}`", right, left)
+            BinOpKind::DivAssign => {
+                format!("cannot divide-assign `{}` by `{}`", right_type, left_type)
             }
-            BinaryOp::RemAssign => {
-                format!("cannot remainder-assign `{}` by `{}`", right, left)
+            BinOpKind::RemAssign => {
+                format!(
+                    "cannot remainder-assign `{}` by `{}`",
+                    right_type, left_type
+                )
             }
-            BinaryOp::AddAssign => {
-                format!("cannot add-assign `{}` to `{}`", right, left)
+            BinOpKind::AddAssign => {
+                format!("cannot add-assign `{}` to `{}`", right_type, left_type)
             }
-            BinaryOp::SubAssign => {
-                format!("cannot subtract-assign `{}` from `{}`", right, left)
+            BinOpKind::SubAssign => {
+                format!(
+                    "cannot subtract-assign `{}` from `{}`",
+                    right_type, left_type
+                )
             }
             _ => {
-                format!("cannot perform operation on `{}` and `{}`", left, right)
+                format!(
+                    "cannot perform operation on `{}` and `{}`",
+                    left_type, right_type
+                )
             }
         };
 
         Diagnostic::error()
             .with_message(message)
             .with_label(
-                Label::secondary(self.file_id, self.left_span).with_message(format!("`{}`", left)),
+                Label::secondary(self.file_id, self.left.span)
+                    .with_message(format!("`{}`", left_type)),
             )
             .with_label(
-                Label::primary(self.file_id, self.right_span).with_message(format!("`{}`", right)),
+                Label::primary(self.file_id, self.right.span)
+                    .with_message(format!("`{}`", right_type)),
             )
     }
 }
@@ -280,8 +289,11 @@ pub struct UnreachableCodeDiagnostic {
 }
 
 impl UnreachableCodeDiagnostic {
+    pub const CODE: &'static str = "E2006";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::warning()
+            .with_code(Self::CODE)
             .with_message("unreachable code")
             .with_label(
                 Label::primary(self.file_id, self.span)
@@ -297,8 +309,11 @@ pub struct UnableToCoerceDiagnostic {
 }
 
 impl UnableToCoerceDiagnostic {
+    pub const CODE: &'static str = "E2005";
+
     pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message(format!(
                 "unable to coerce to type `{}`",
                 global.display_type(self.target_type)
@@ -307,22 +322,25 @@ impl UnableToCoerceDiagnostic {
     }
 }
 
-pub struct OperatorCannotBeAppliedDiagnostic {
+pub struct BinaryOperatorCannotBeAppliedDiagnostic {
     pub file_id: FileId,
     pub operator: BinaryOp,
-    pub to_type: hir::Type,
-    pub span: TextSpan,
+    pub operand: TypeWithSpan,
 }
 
-impl OperatorCannotBeAppliedDiagnostic {
+impl BinaryOperatorCannotBeAppliedDiagnostic {
+    pub const CODE: &'static str = "E2004";
+
     pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message(format!(
                 "operator `{}` cannot be applied to type `{}`",
-                self.operator,
-                global.display_type(self.to_type)
+                self.operator.kind,
+                global.display_type(self.operand.ty)
             ))
-            .with_label(Label::primary(self.file_id, self.span))
+            .with_label(Label::primary(self.file_id, self.operand.span))
+            .with_label(Label::secondary(self.file_id, self.operator.span))
     }
 }
 
@@ -332,8 +350,11 @@ pub struct CannotMutateImmutableDiagnostic {
 }
 
 impl CannotMutateImmutableDiagnostic {
+    pub const CODE: &'static str = "E2003";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("cannot mutate immutable variable")
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -345,8 +366,11 @@ pub struct UndeclaredLabelDiagnostic {
 }
 
 impl UndeclaredLabelDiagnostic {
+    pub const CODE: &'static str = "E2000";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("undeclared label")
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -358,10 +382,33 @@ pub struct BreakOutsideOfLoopDiagnostic {
 }
 
 impl BreakOutsideOfLoopDiagnostic {
+    pub const CODE: &'static str = "E2001";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("`break` outside of loop")
             .with_label(Label::primary(self.file_id, self.span))
-            .with_note("`break` can only be used inside loops or labeled blocks")
+            .with_note("`break` is only allowed inside loops or labeled blocks")
+    }
+}
+
+pub struct InvalidAssignmentTargetDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl InvalidAssignmentTargetDiagnostic {
+    pub const CODE: &'static str = "E2002";
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("invalid assignment target")
+            .with_label(
+                Label::primary(self.file_id, self.span)
+                    .with_message("cannot assign to this expression"),
+            )
+            .with_note("assignment only allowed to a variable or `_`")
     }
 }

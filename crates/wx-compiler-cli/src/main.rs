@@ -74,7 +74,7 @@ fn main() {
     }
 
     let mir = mir::Builder::build(&hir);
-    let module = wasm::Builder::build(&mir, &mut interner);
+    let module = wasm::Builder::build(&mir, &mut interner).unwrap();
     let bytecode = wasm::Encoder::encode(&module);
 
     let parts = filename.split('.').collect::<Vec<&str>>();

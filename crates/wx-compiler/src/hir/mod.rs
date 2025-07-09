@@ -69,6 +69,8 @@ pub enum PrimitiveType {
     I64,
     F32,
     F64,
+    U32,
+    U64,
 }
 
 impl std::fmt::Display for PrimitiveType {
@@ -78,6 +80,8 @@ impl std::fmt::Display for PrimitiveType {
             PrimitiveType::I64 => write!(f, "i64"),
             PrimitiveType::F32 => write!(f, "f32"),
             PrimitiveType::F64 => write!(f, "f64"),
+            PrimitiveType::U32 => write!(f, "u32"),
+            PrimitiveType::U64 => write!(f, "u64"),
         }
     }
 }
@@ -90,6 +94,11 @@ pub enum Type {
     Bool,
     Unit,
     Never,
+}
+
+pub struct TypeWithSpan {
+    pub ty: Type,
+    pub span: TextSpan,
 }
 
 impl Type {
@@ -119,6 +128,8 @@ impl TryFrom<&str> for Type {
             "i64" => Ok(Type::Primitive(PrimitiveType::I64)),
             "f32" => Ok(Type::Primitive(PrimitiveType::F32)),
             "f64" => Ok(Type::Primitive(PrimitiveType::F64)),
+            "u32" => Ok(Type::Primitive(PrimitiveType::U32)),
+            "u64" => Ok(Type::Primitive(PrimitiveType::U64)),
             "bool" => Ok(Type::Bool),
             "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),

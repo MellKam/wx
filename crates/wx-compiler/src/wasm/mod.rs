@@ -70,14 +70,14 @@ pub enum Expression {
         value: f64,
     },
     LocalGet {
-        local: LocalIndex,
+        local_index: LocalIndex,
     },
     LocalSet {
-        local: LocalIndex,
+        local_index: LocalIndex,
         value: ExprIndex,
     },
     GlobalGet {
-        global: GlobalIndex,
+        global_index: GlobalIndex,
     },
     GlobalSet {
         global: GlobalIndex,
@@ -134,7 +134,15 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I32DivU {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I32RemS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32RemU {
         left: ExprIndex,
         right: ExprIndex,
     },
@@ -169,7 +177,15 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I32ShrU {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I32LtS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32LtU {
         left: ExprIndex,
         right: ExprIndex,
     },
@@ -177,11 +193,23 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I32GtU {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I32LeS {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I32LeU {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I32GeS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I32GeU {
         left: ExprIndex,
         right: ExprIndex,
     },
@@ -201,7 +229,15 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I64DivU {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I64RemS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64RemU {
         left: ExprIndex,
         right: ExprIndex,
     },
@@ -236,7 +272,15 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I64ShrU {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I64LtS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64LtU {
         left: ExprIndex,
         right: ExprIndex,
     },
@@ -244,11 +288,23 @@ pub enum Expression {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I64GtU {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I64LeS {
         left: ExprIndex,
         right: ExprIndex,
     },
+    I64LeU {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
     I64GeS {
+        left: ExprIndex,
+        right: ExprIndex,
+    },
+    I64GeU {
         left: ExprIndex,
         right: ExprIndex,
     },
@@ -336,6 +392,12 @@ pub enum Expression {
         value: ExprIndex,
     },
     F64Neg {
+        value: ExprIndex,
+    },
+    F32Trunc {
+        value: ExprIndex,
+    },
+    F64Trunc {
         value: ExprIndex,
     },
 }

@@ -315,16 +315,21 @@ impl EncodeWithContext for wasm::Expression {
             Expression::Nop => {
                 // sink.push(Instruction::Nop as u8);
             }
-            Expression::LocalGet { local } => {
+            Expression::LocalGet { local_index: local } => {
                 sink.push(Instruction::LocalGet as u8);
                 local.0.encode(sink);
             }
-            Expression::LocalSet { local, value } => {
+            Expression::LocalSet {
+                local_index: local,
+                value,
+            } => {
                 ctx.encode_expr(sink, *value);
                 sink.push(Instruction::LocalSet as u8);
                 local.0.encode(sink);
             }
-            Expression::GlobalGet { global } => {
+            Expression::GlobalGet {
+                global_index: global,
+            } => {
                 sink.push(Instruction::GlobalGet as u8);
                 global.0.encode(sink);
             }
@@ -716,6 +721,84 @@ impl EncodeWithContext for wasm::Expression {
             Expression::F64Neg { value } => {
                 ctx.encode_expr(sink, *value);
                 sink.push(Instruction::F64Neg as u8);
+            }
+            Expression::I32DivU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I32DivU as u8);
+            }
+            Expression::I32GeU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I32GeU as u8);
+            }
+            Expression::I32ShrU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I32ShrU as u8);
+            }
+            Expression::I32LtU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I32LtU as u8);
+            }
+            Expression::I32GtU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I32GtU as u8);
+            }
+            Expression::I32LeU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I32LeU as u8);
+            }
+            Expression::I32RemU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I32RemU as u8);
+            }
+            Expression::I64DivU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I64DivU as u8);
+            }
+            Expression::I64GeU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I64GeU as u8);
+            }
+            Expression::I64ShrU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I64ShrU as u8);
+            }
+            Expression::I64LtU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I64LtU as u8);
+            }
+            Expression::I64GtU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I64GtU as u8);
+            }
+            Expression::I64LeU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I64LeU as u8);
+            }
+            Expression::I64RemU { left, right } => {
+                ctx.encode_expr(sink, *left);
+                ctx.encode_expr(sink, *right);
+                sink.push(Instruction::I64RemU as u8);
+            }
+            Expression::F32Trunc { value } => {
+                ctx.encode_expr(sink, *value);
+                sink.push(Instruction::F32Trunc as u8);
+            }
+            Expression::F64Trunc { value } => {
+                ctx.encode_expr(sink, *value);
+                sink.push(Instruction::F64Trunc as u8);
             }
         }
     }

@@ -11,27 +11,7 @@ use crate::files::FileId;
 use crate::span::TextSpan;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum UnaryOp {
-    InvertSign,
-    Not,
-    BitNot,
-}
-
-impl TryFrom<TokenKind> for UnaryOp {
-    type Error = ();
-
-    fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
-        match kind {
-            TokenKind::Minus => Ok(UnaryOp::InvertSign),
-            TokenKind::Bang => Ok(UnaryOp::Not),
-            TokenKind::Caret => Ok(UnaryOp::BitNot),
-            _ => Err(()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BinaryOp {
+pub enum BinOpKind {
     // Arithmetic
     Add,
     Sub,
@@ -63,131 +43,165 @@ pub enum BinaryOp {
     RightShift,
 }
 
-impl BinaryOp {
+impl BinOpKind {
     pub fn is_assignment(&self) -> bool {
         match self {
-            BinaryOp::Assign
-            | BinaryOp::AddAssign
-            | BinaryOp::SubAssign
-            | BinaryOp::MulAssign
-            | BinaryOp::DivAssign
-            | BinaryOp::RemAssign => true,
+            BinOpKind::Assign
+            | BinOpKind::AddAssign
+            | BinOpKind::SubAssign
+            | BinOpKind::MulAssign
+            | BinOpKind::DivAssign
+            | BinOpKind::RemAssign => true,
             _ => false,
         }
     }
 
     pub fn is_comparison(&self) -> bool {
         match self {
-            BinaryOp::Eq
-            | BinaryOp::NotEq
-            | BinaryOp::Less
-            | BinaryOp::LessEq
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEq => true,
+            BinOpKind::Eq
+            | BinOpKind::NotEq
+            | BinOpKind::Less
+            | BinOpKind::LessEq
+            | BinOpKind::Greater
+            | BinOpKind::GreaterEq => true,
             _ => false,
         }
     }
 
     pub fn is_logical(&self) -> bool {
         match self {
-            BinaryOp::And | BinaryOp::Or => true,
+            BinOpKind::And | BinOpKind::Or => true,
             _ => false,
         }
     }
 
     pub fn is_arithmetic(&self) -> bool {
         match self {
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => true,
+            BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div | BinOpKind::Rem => {
+                true
+            }
             _ => false,
         }
     }
 
     pub fn is_bitwise(&self) -> bool {
         match self {
-            BinaryOp::BitAnd
-            | BinaryOp::BitOr
-            | BinaryOp::BitXor
-            | BinaryOp::LeftShift
-            | BinaryOp::RightShift => true,
+            BinOpKind::BitAnd
+            | BinOpKind::BitOr
+            | BinOpKind::BitXor
+            | BinOpKind::LeftShift
+            | BinOpKind::RightShift => true,
             _ => false,
         }
     }
 }
 
-impl TryFrom<TokenKind> for BinaryOp {
+impl TryFrom<TokenKind> for BinOpKind {
     type Error = ();
 
     fn try_from(tag: TokenKind) -> Result<Self, Self::Error> {
         match tag {
             // Arithmetic
-            TokenKind::Plus => Ok(BinaryOp::Add),
-            TokenKind::Minus => Ok(BinaryOp::Sub),
-            TokenKind::Star => Ok(BinaryOp::Mul),
-            TokenKind::Slash => Ok(BinaryOp::Div),
-            TokenKind::Percent => Ok(BinaryOp::Rem),
+            TokenKind::Plus => Ok(BinOpKind::Add),
+            TokenKind::Minus => Ok(BinOpKind::Sub),
+            TokenKind::Star => Ok(BinOpKind::Mul),
+            TokenKind::Slash => Ok(BinOpKind::Div),
+            TokenKind::Percent => Ok(BinOpKind::Rem),
             // Relational
-            TokenKind::EqEq => Ok(BinaryOp::Eq),
-            TokenKind::BangEq => Ok(BinaryOp::NotEq),
-            TokenKind::Less => Ok(BinaryOp::Less),
-            TokenKind::LessEq => Ok(BinaryOp::LessEq),
-            TokenKind::Greater => Ok(BinaryOp::Greater),
-            TokenKind::GreaterEq => Ok(BinaryOp::GreaterEq),
+            TokenKind::EqEq => Ok(BinOpKind::Eq),
+            TokenKind::BangEq => Ok(BinOpKind::NotEq),
+            TokenKind::Less => Ok(BinOpKind::Less),
+            TokenKind::LessEq => Ok(BinOpKind::LessEq),
+            TokenKind::Greater => Ok(BinOpKind::Greater),
+            TokenKind::GreaterEq => Ok(BinOpKind::GreaterEq),
             // Logical
-            TokenKind::AmperAmper => Ok(BinaryOp::And),
-            TokenKind::VbarVbar => Ok(BinaryOp::Or),
+            TokenKind::AmperAmper => Ok(BinOpKind::And),
+            TokenKind::VbarVbar => Ok(BinOpKind::Or),
             // Assignment
-            TokenKind::Eq => Ok(BinaryOp::Assign),
-            TokenKind::PlusEq => Ok(BinaryOp::AddAssign),
-            TokenKind::MinusEq => Ok(BinaryOp::SubAssign),
-            TokenKind::StarEq => Ok(BinaryOp::MulAssign),
-            TokenKind::SlashEq => Ok(BinaryOp::DivAssign),
-            TokenKind::PercentEq => Ok(BinaryOp::RemAssign),
+            TokenKind::Eq => Ok(BinOpKind::Assign),
+            TokenKind::PlusEq => Ok(BinOpKind::AddAssign),
+            TokenKind::MinusEq => Ok(BinOpKind::SubAssign),
+            TokenKind::StarEq => Ok(BinOpKind::MulAssign),
+            TokenKind::SlashEq => Ok(BinOpKind::DivAssign),
+            TokenKind::PercentEq => Ok(BinOpKind::RemAssign),
             // Bitwise
-            TokenKind::Amper => Ok(BinaryOp::BitAnd),
-            TokenKind::Vbar => Ok(BinaryOp::BitOr),
-            TokenKind::Caret => Ok(BinaryOp::BitXor),
-            TokenKind::LeftShift => Ok(BinaryOp::LeftShift),
-            TokenKind::RightShift => Ok(BinaryOp::RightShift),
+            TokenKind::Amper => Ok(BinOpKind::BitAnd),
+            TokenKind::Vbar => Ok(BinOpKind::BitOr),
+            TokenKind::Caret => Ok(BinOpKind::BitXor),
+            TokenKind::LeftShift => Ok(BinOpKind::LeftShift),
+            TokenKind::RightShift => Ok(BinOpKind::RightShift),
             _ => Err(()),
         }
     }
 }
 
-impl std::fmt::Display for BinaryOp {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UnOpKind {
+    InvertSign,
+    Not,
+    BitNot,
+}
+
+impl TryFrom<TokenKind> for UnOpKind {
+    type Error = ();
+
+    fn try_from(kind: TokenKind) -> Result<Self, Self::Error> {
+        match kind {
+            TokenKind::Minus => Ok(UnOpKind::InvertSign),
+            TokenKind::Bang => Ok(UnOpKind::Not),
+            TokenKind::Caret => Ok(UnOpKind::BitNot),
+            _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for BinOpKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol = match self {
-            BinaryOp::Add => "+",
-            BinaryOp::Sub => "-",
-            BinaryOp::Mul => "*",
-            BinaryOp::Div => "/",
-            BinaryOp::Rem => "%",
-            BinaryOp::Eq => "==",
-            BinaryOp::NotEq => "!=",
-            BinaryOp::Less => "<",
-            BinaryOp::LessEq => "<=",
-            BinaryOp::Greater => ">",
-            BinaryOp::GreaterEq => ">=",
-            BinaryOp::And => "&&",
-            BinaryOp::Or => "||",
-            BinaryOp::Assign => "=",
-            BinaryOp::AddAssign => "+=",
-            BinaryOp::SubAssign => "-=",
-            BinaryOp::MulAssign => "*=",
-            BinaryOp::DivAssign => "/=",
-            BinaryOp::RemAssign => "%=",
-            BinaryOp::BitAnd => "&",
-            BinaryOp::BitOr => "|",
-            BinaryOp::BitXor => "^",
-            BinaryOp::LeftShift => "<<",
-            BinaryOp::RightShift => ">>",
+            BinOpKind::Add => "+",
+            BinOpKind::Sub => "-",
+            BinOpKind::Mul => "*",
+            BinOpKind::Div => "/",
+            BinOpKind::Rem => "%",
+            BinOpKind::Eq => "==",
+            BinOpKind::NotEq => "!=",
+            BinOpKind::Less => "<",
+            BinOpKind::LessEq => "<=",
+            BinOpKind::Greater => ">",
+            BinOpKind::GreaterEq => ">=",
+            BinOpKind::And => "&&",
+            BinOpKind::Or => "||",
+            BinOpKind::Assign => "=",
+            BinOpKind::AddAssign => "+=",
+            BinOpKind::SubAssign => "-=",
+            BinOpKind::MulAssign => "*=",
+            BinOpKind::DivAssign => "/=",
+            BinOpKind::RemAssign => "%=",
+            BinOpKind::BitAnd => "&",
+            BinOpKind::BitOr => "|",
+            BinOpKind::BitXor => "^",
+            BinOpKind::LeftShift => "<<",
+            BinOpKind::RightShift => ">>",
         };
         write!(f, "{}", symbol)
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Identifier {
     pub symbol: SymbolU32,
+    pub span: TextSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinaryOp {
+    pub kind: BinOpKind,
+    pub span: TextSpan,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnaryOp {
+    pub kind: UnOpKind,
     pub span: TextSpan,
 }
 
@@ -215,7 +229,6 @@ pub enum ExprKind {
     Binary {
         left: Box<Expression>,
         operator: BinaryOp,
-        operator_span: TextSpan,
         right: Box<Expression>,
     },
     /// `{expr}()`
