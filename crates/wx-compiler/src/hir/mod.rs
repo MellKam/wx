@@ -1,7 +1,9 @@
 pub mod builder;
 pub mod diagnostics;
 mod global;
-pub mod local;
+
+#[cfg(test)]
+mod tests;
 
 use std::collections::HashMap;
 
@@ -12,8 +14,6 @@ use string_interner::symbol::SymbolU32;
 
 use crate::ast;
 use crate::files::FileId;
-use crate::hir::global::FuncTypeIndex;
-use crate::hir::local::StackFrame;
 use crate::span::TextSpan;
 
 #[derive(Debug, Clone)]
@@ -73,6 +73,24 @@ pub enum PrimitiveType {
     U64,
 }
 
+impl PrimitiveType {
+    pub fn is_integer(&self) -> bool {
+        match self {
+            PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::U32 | PrimitiveType::U64 => {
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn is_float(&self) -> bool {
+        match self {
+            PrimitiveType::F32 | PrimitiveType::F64 => true,
+            _ => false,
+        }
+    }
+}
+
 impl std::fmt::Display for PrimitiveType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -87,6 +105,27 @@ impl std::fmt::Display for PrimitiveType {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FuncTypeIndex(pub u32);
+
+#[derive(Debug, Clone, Copy)]
+pub struct LocalIndex(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScopeIndex(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FuncIndex(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumIndex(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnumVariantIndex(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlobalIndex(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
     Primitive(PrimitiveType),
     Function(FuncTypeIndex),
@@ -94,6 +133,7 @@ pub enum Type {
     Bool,
     Unit,
     Never,
+    Unknown,
 }
 
 pub struct TypeWithSpan {
@@ -106,6 +146,7 @@ impl Type {
         match (self, other) {
             (a, b) if a == b => true,
             (Type::Never, _) => true,
+            (Type::Unknown, _) => true,
             _ => false,
         }
     }
@@ -114,6 +155,7 @@ impl Type {
         match (a, b) {
             (a, b) if a == b => Ok(a),
             (_, Type::Never) | (Type::Never, _) => Ok(b),
+            (Type::Unknown, _) | (_, Type::Unknown) => Ok(Type::Unknown),
             _ => Err(()),
         }
     }
@@ -143,24 +185,6 @@ pub struct FunctionType {
     pub params: Box<[Type]>,
     pub result: Type,
 }
-
-#[derive(Debug, Clone, Copy)]
-pub struct LocalIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ScopeIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FuncIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EnumIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct EnumVariantIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GlobalIndex(pub u32);
 
 #[derive(Debug, Clone)]
 pub enum ExprKind {
@@ -244,6 +268,46 @@ pub struct Local {
     pub name: ast::Identifier,
     pub ty: Type,
     pub mutability: Mutability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockKind {
+    Block,
+    /// Loop blocks have an implicit `continue` at the end.
+    /// Their type is inferred from `break` expressions, not the final
+    /// expression.
+    Loop,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockScope {
+    pub kind: BlockKind,
+    pub label: Option<SymbolU32>,
+    pub parent: Option<ScopeIndex>,
+    pub locals: Vec<Local>,
+    pub inferred_type: Option<Type>,
+    pub expected_type: Option<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StackFrame {
+    pub scopes: Vec<BlockScope>,
+}
+
+impl StackFrame {
+    pub fn push_local(&mut self, scope_index: ScopeIndex, local: Local) -> LocalIndex {
+        let scope = &mut self.scopes[scope_index.0 as usize];
+        let local_index = LocalIndex(scope.locals.len() as u32);
+        scope.locals.push(local);
+        local_index
+    }
+
+    pub fn get_local(&self, scope_index: ScopeIndex, local_index: LocalIndex) -> Option<&Local> {
+        self.scopes
+            .get(scope_index.0 as usize)?
+            .locals
+            .get(local_index.0 as usize)
+    }
 }
 
 #[derive(Debug, Clone)]

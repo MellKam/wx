@@ -62,10 +62,11 @@ impl<'a> Builder<'a> {
             hir::Type::Bool => mir::Type::Bool,
             hir::Type::Enum(enum_index) => {
                 let enum_ = &self.hir.enums[enum_index.0 as usize];
-                mir::Type::from(enum_.ty.clone())
+                mir::Type::from(enum_.ty)
             }
             hir::Type::Unit => mir::Type::Unit,
             hir::Type::Never => mir::Type::Never,
+            hir::Type::Unknown => panic!("unknown type cannot be converted to MIR"),
         }
     }
 
@@ -95,8 +96,8 @@ impl<'a> Builder<'a> {
                 .iter()
                 .map(|scope| mir::BlockScope {
                     kind: match scope.kind {
-                        hir::local::BlockKind::Block => mir::BlockKind::Block,
-                        hir::local::BlockKind::Loop => mir::BlockKind::Loop,
+                        hir::BlockKind::Block => mir::BlockKind::Block,
+                        hir::BlockKind::Loop => mir::BlockKind::Loop,
                     },
                     parent: match scope.parent {
                         Some(index) => Some(mir::ScopeIndex(index.0)),

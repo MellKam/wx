@@ -48,18 +48,16 @@ impl TextSpan {
         TextSpan::new(start, end)
     }
 
-    /// A helper function to tell whether two spans do not overlap.
-    pub fn disjoint(self, other: TextSpan) -> bool {
-        let (first, last) = if self.end.0 < other.end.0 {
-            (self, other)
-        } else {
-            (other, self)
-        };
-        first.end.0 <= last.start.0
-    }
-
     pub fn text<'a>(&self, source: &'a str) -> &'a str {
         &source[self.start.to_usize()..self.end.to_usize()]
+    }
+
+    pub fn start_position(&self) -> TextSpan {
+        TextSpan::new(self.start.0, self.start.0)
+    }
+
+    pub fn end_position(&self) -> TextSpan {
+        TextSpan::new(self.end.0, self.end.0)
     }
 
     #[inline]

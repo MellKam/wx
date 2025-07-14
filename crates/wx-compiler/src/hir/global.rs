@@ -27,9 +27,6 @@ pub enum LookupCategory {
     Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FuncTypeIndex(pub u32);
-
 #[derive(Debug)]
 pub struct GlobalContext<'interner> {
     pub interner: &'interner StringInterner<StringBackend>,
@@ -72,6 +69,7 @@ impl<'interner> GlobalContext<'interner> {
 
     pub fn resolve_type(&mut self, type_expr: &ast::TypeExpression) -> Result<Type, ()> {
         match &type_expr.kind {
+            ast::TypeExprKind::Error => Err(()),
             ast::TypeExprKind::Identifier { symbol } => {
                 let symbol = *symbol;
                 let text = self.interner.resolve(symbol).unwrap();
@@ -87,11 +85,12 @@ impl<'interner> GlobalContext<'interner> {
             }
             ast::TypeExprKind::Function { params, result } => {
                 let params = params
+                    .inner
                     .iter()
-                    .map(|ty| self.resolve_type(&ty).unwrap())
+                    .map(|ty| self.resolve_type(&ty.inner).unwrap())
                     .collect::<Box<_>>();
 
-                let result = self.resolve_type(result).unwrap();
+                let result = self.resolve_type(&result.ty).unwrap();
 
                 let func_type = FunctionType { params, result };
                 let type_index = self.get_or_insert_func_type(&func_type);
@@ -136,6 +135,7 @@ impl<'interner> GlobalContext<'interner> {
 
     pub fn display_type(&self, ty: Type) -> String {
         match ty {
+            Type::Unknown => "unknown".to_string(),
             Type::Unit => "unit".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Never => "never".to_string(),

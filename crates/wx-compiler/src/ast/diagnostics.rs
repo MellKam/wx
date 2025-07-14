@@ -4,162 +4,35 @@ use super::lexer::{Token, TokenKind};
 use crate::files::FileId;
 use crate::span::TextSpan;
 
-pub struct UnknownTokenDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
+pub enum DiagnosticCode {
+    UnknownToken,
+    UnexpectedToken,
+    MissingSeparator,
+    UnclosedGrouping,
+    InvalidLiteral,
+    IncompleteExpression,
+    ChainedComparison,
+    ReservedIdentifier,
+    InvalidItem,
+    MissingInitializer,
+    MissingTypeAnnotation,
 }
 
-impl UnknownTokenDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_message("unknown token")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct UnexpectedEofDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl UnexpectedEofDiagnostic {
-    const CODE: &'static str = "unexpected-eof";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("unexpected end of file")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct MissingStatementDelimiterDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl MissingStatementDelimiterDiagnostic {
-    const CODE: &'static str = "missing-statement-delimiter";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::warning()
-            .with_code(Self::CODE)
-            .with_message("expected semicolon")
-            .with_label(
-                Label::primary(self.file_id, self.span).with_message("consider adding `;` here"),
-            )
-    }
-}
-
-pub struct MissingClosingParenDiagnostic {
-    pub file_id: FileId,
-    pub opening_paren: TextSpan,
-    pub expr_span: TextSpan,
-}
-
-impl MissingClosingParenDiagnostic {
-    const CODE: &'static str = "missing-closing-paren";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("missing closing parenthesis")
-            .with_label(
-                Label::primary(self.file_id, self.opening_paren)
-                    .with_message("consider adding a closing parenthesis `)`"),
-            )
-            .with_label(Label::secondary(self.file_id, self.expr_span))
-    }
-}
-
-pub struct InvalidIntegerLiteralDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl InvalidIntegerLiteralDiagnostic {
-    const CODE: &'static str = "invalid-integer";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("invalid integer literal")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct InvalidFloatLiteralDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl InvalidFloatLiteralDiagnostic {
-    const CODE: &'static str = "invalid-float";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("invalid float literal")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct IncompleteBinaryExpressionDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl IncompleteBinaryExpressionDiagnostic {
-    const CODE: &'static str = "incomplete-binary-expression";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("incomplete binary expression")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_label(
-                Label::secondary(self.file_id, self.span)
-                    .with_message("consider adding a right-hand side operand"),
-            )
-    }
-}
-
-pub struct MissingUnaryOperandDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl MissingUnaryOperandDiagnostic {
-    const CODE: &'static str = "missing-unary-operand";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("missing operand")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_label(
-                Label::secondary(self.file_id, self.span)
-                    .with_message("consider adding an operand"),
-            )
-    }
-}
-
-pub struct ChainedComparisonsDiagnostic {
-    pub file_id: FileId,
-    pub first_operator_span: TextSpan,
-    pub second_operator_span: TextSpan,
-}
-
-impl ChainedComparisonsDiagnostic {
-    const CODE: &'static str = "chained-comparisons";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("comparison operators cannot be chained")
-            .with_label(Label::primary(self.file_id, self.first_operator_span))
-            .with_label(Label::primary(self.file_id, self.second_operator_span))
-            .with_note("consider using logical operator like `&&` or `||` to split the comparisons or use parentheses to group them")
+impl DiagnosticCode {
+    const fn code(self) -> &'static str {
+        match self {
+            DiagnosticCode::UnknownToken => "D0001",
+            DiagnosticCode::UnexpectedToken => "E0002",
+            DiagnosticCode::MissingSeparator => "E0003",
+            DiagnosticCode::UnclosedGrouping => "E0004",
+            DiagnosticCode::InvalidLiteral => "E0005",
+            DiagnosticCode::IncompleteExpression => "E0006",
+            DiagnosticCode::ChainedComparison => "E0007",
+            DiagnosticCode::ReservedIdentifier => "E0008",
+            DiagnosticCode::InvalidItem => "E0009",
+            DiagnosticCode::MissingInitializer => "E0010",
+            DiagnosticCode::MissingTypeAnnotation => "E0011",
+        }
     }
 }
 
@@ -170,7 +43,7 @@ pub struct UnexpectedTokenDiagnostic {
 }
 
 impl UnexpectedTokenDiagnostic {
-    const CODE: &'static str = "unexpected-token";
+    pub const CODE: &'static str = DiagnosticCode::UnexpectedToken.code();
 
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
@@ -186,13 +59,162 @@ impl UnexpectedTokenDiagnostic {
     }
 }
 
+pub struct UnknownTokenDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl UnknownTokenDiagnostic {
+    pub const CODE: &'static str = DiagnosticCode::UnknownToken.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("unknown token")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct MissingSeparatorDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+    pub delimiter: TokenKind,
+}
+
+impl MissingSeparatorDiagnostic {
+    pub const CODE: &'static str = DiagnosticCode::MissingSeparator.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::warning()
+            .with_code(Self::CODE)
+            .with_message("missing separator")
+            .with_label(
+                Label::primary(self.file_id, self.span)
+                    .with_message(format!("consider adding `{}` here", self.delimiter)),
+            )
+    }
+}
+
+pub struct UnclosedGroupingDiagnotic {
+    pub file_id: FileId,
+    pub open_span: TextSpan,
+    pub close_token: TokenKind,
+    pub expected_close_span: TextSpan,
+}
+
+impl UnclosedGroupingDiagnotic {
+    pub const CODE: &'static str = DiagnosticCode::UnclosedGrouping.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("unclosed grouping")
+            .with_label(
+                Label::primary(self.file_id, self.expected_close_span)
+                    .with_message(format!("consider adding `{}` here", self.close_token)),
+            )
+            .with_label(Label::secondary(self.file_id, self.open_span).with_message("opened here"))
+    }
+}
+
+pub struct InvalidIntegerLiteralDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl InvalidIntegerLiteralDiagnostic {
+    const CODE: &'static str = DiagnosticCode::InvalidLiteral.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("invalid integer literal")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct InvalidFloatLiteralDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl InvalidFloatLiteralDiagnostic {
+    const CODE: &'static str = DiagnosticCode::InvalidLiteral.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("invalid float literal")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct IncompleteBinaryExpressionDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl IncompleteBinaryExpressionDiagnostic {
+    const CODE: &'static str = DiagnosticCode::IncompleteExpression.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("incomplete binary expression")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_label(
+                Label::secondary(self.file_id, self.span)
+                    .with_message("consider adding a right-hand side operand"),
+            )
+    }
+}
+
+pub struct IncompleteUnaryExpressionDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl IncompleteUnaryExpressionDiagnostic {
+    const CODE: &'static str = DiagnosticCode::IncompleteExpression.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("incomplete unary expression")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_label(
+                Label::secondary(self.file_id, self.span)
+                    .with_message("consider adding an operand"),
+            )
+    }
+}
+
+pub struct ChainedComparisonsDiagnostic {
+    pub file_id: FileId,
+    pub first_operator_span: TextSpan,
+    pub second_operator_span: TextSpan,
+}
+
+impl ChainedComparisonsDiagnostic {
+    const CODE: &'static str = DiagnosticCode::ChainedComparison.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("comparison operators cannot be chained")
+            .with_label(Label::primary(self.file_id, self.first_operator_span))
+            .with_label(Label::primary(self.file_id, self.second_operator_span))
+            .with_note("consider using logical operator like `&&` or `||` to split the comparisons or use parentheses to group them")
+    }
+}
+
 pub struct ReservedIdentifierDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
 }
 
 impl ReservedIdentifierDiagnostic {
-    const CODE: &'static str = "reserved-identifier";
+    const CODE: &'static str = DiagnosticCode::ReservedIdentifier.code();
 
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
@@ -227,7 +249,7 @@ pub struct InvalidItemDiagnostic {
 }
 
 impl InvalidItemDiagnostic {
-    const CODE: &'static str = "invalid-item";
+    pub const CODE: &'static str = DiagnosticCode::InvalidItem.code();
 
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
@@ -243,13 +265,87 @@ pub struct MissingLocalInitializerDiagnostic {
 }
 
 impl MissingLocalInitializerDiagnostic {
-    const CODE: &'static str = "missing-initializer";
+    pub const CODE: &'static str = DiagnosticCode::MissingInitializer.code();
 
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_code(Self::CODE)
-            .with_message("expected initial value for local variable")
-            .with_note("example syntax: local x: i32 = 0;")
+            .with_message("missing initial value for local variable")
+            .with_note("example syntax: local x: i32 = 0")
             .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct MissingGlobalInitializerDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl MissingGlobalInitializerDiagnostic {
+    pub const CODE: &'static str = DiagnosticCode::MissingInitializer.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("missing initial value for global variable")
+            .with_note("example syntax: global x: i32 = 0")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct MissingReturnTypeDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl MissingReturnTypeDiagnostic {
+    pub const CODE: &'static str = DiagnosticCode::MissingTypeAnnotation.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("missing return type annotation")
+            .with_label(
+                Label::primary(self.file_id, self.span)
+                    .with_message("expected colon `:` followed by type"),
+            )
+    }
+}
+
+pub struct MissingParamTypeAnnotationDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl MissingParamTypeAnnotationDiagnostic {
+    const CODE: &'static str = DiagnosticCode::MissingTypeAnnotation.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("missing type annotation for function parameter")
+            .with_label(
+                Label::primary(self.file_id, self.span)
+                    .with_message("expected colon `:` followed by type"),
+            )
+    }
+}
+
+pub struct MissingEnumTypeAnnotationDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl MissingEnumTypeAnnotationDiagnostic {
+    const CODE: &'static str = DiagnosticCode::MissingTypeAnnotation.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("missing type annotation for enum")
+            .with_label(
+                Label::primary(self.file_id, self.span)
+                    .with_message("expected colon `:` followed by type"),
+            )
     }
 }

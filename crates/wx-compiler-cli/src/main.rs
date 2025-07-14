@@ -45,7 +45,7 @@ fn main() {
     let main_file = files.add(filename.clone(), file_content).unwrap();
 
     let mut interner = StringInterner::new();
-    let (ast, diagnostics) = ast::Parser::parse(
+    let (ast, diagnostics) = ast::parser::Parser::parse(
         main_file,
         &files.get(main_file).unwrap().source,
         &mut interner,

@@ -7,7 +7,7 @@ pub fn compile(filename: String, source: String) -> Result<Vec<u8>, JsValue> {
     let mut interner = StringInterner::new();
     let mut files = wx_compiler::files::Files::new();
     let main_file = files.add(filename.clone(), source).unwrap();
-    let (ast, diagnostics) = ast::Parser::parse(
+    let (ast, diagnostics) = ast::parser::Parser::parse(
         main_file,
         &files.get(main_file).unwrap().source,
         &mut interner,

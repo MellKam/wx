@@ -2,10 +2,11 @@ use lexer::TokenKind;
 use string_interner::symbol::SymbolU32;
 
 pub mod diagnostics;
-mod lexer;
-mod parser;
+pub mod lexer;
+pub mod parser;
 
-pub use parser::*;
+#[cfg(test)]
+mod tests;
 
 use crate::files::FileId;
 use crate::span::TextSpan;
@@ -187,6 +188,17 @@ impl std::fmt::Display for BinOpKind {
     }
 }
 
+impl std::fmt::Display for UnOpKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let symbol = match self {
+            UnOpKind::InvertSign => "-",
+            UnOpKind::Not => "!",
+            UnOpKind::BitNot => "^",
+        };
+        write!(f, "{}", symbol)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Identifier {
     pub symbol: SymbolU32,
@@ -205,14 +217,28 @@ pub struct UnaryOp {
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+pub struct Separated<T> {
+    pub inner: T,
+    pub span: TextSpan,
+    pub separator: Option<TextSpan>,
+}
+
+#[derive(Debug)]
+pub struct Grouped<T> {
+    pub open: TextSpan,
+    pub inner: T,
+    pub close: TextSpan,
+}
+
+#[derive(Debug)]
 pub enum ExprKind {
     /// `1`
     Int { value: i64 },
     /// `1.0`
     Float { value: f64 },
     /// `({expr})`
-    Grouping { value: Box<Expression> },
+    Grouping { value: Grouped<Box<Expression>> },
     /// `x`
     Identifier { symbol: SymbolU32 },
     /// `5 as i32`
@@ -234,7 +260,7 @@ pub enum ExprKind {
     /// `{expr}()`
     Call {
         callee: Box<Expression>,
-        arguments: Box<[Expression]>,
+        arguments: Grouped<Box<[Separated<Expression>]>>,
     },
     /// `{expr}::{expr}`
     Namespace {
@@ -244,10 +270,7 @@ pub enum ExprKind {
     /// `return {expr}`
     Return { value: Option<Box<Expression>> },
     /// `{ ... }`
-    Block {
-        statements: Box<[Statement]>,
-        result: Option<Box<Expression>>,
-    },
+    Block(Grouped<Box<[Separated<StmtKind>]>>),
     /// `{identifier}: { ... }`
     Label {
         label: Identifier,
@@ -272,69 +295,73 @@ pub enum ExprKind {
     Unreachable,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Expression {
     pub kind: ExprKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum TypeExprKind {
+    Error,
     /// `i32`
-    Identifier { symbol: SymbolU32 },
+    Identifier {
+        symbol: SymbolU32,
+    },
     /// `func(i32, i32) -> i32`
     Function {
-        params: Box<[TypeExpression]>,
-        result: Box<TypeExpression>,
+        params: Grouped<Box<[Separated<TypeExpression>]>>,
+        result: TypeAnnotation,
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TypeExpression {
     pub kind: TypeExprKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StmtKind {
     /// `{expr};`
-    DelimitedExpression { value: Box<Expression> },
+    Expression { expr: Box<Expression> },
     /// `local (mut)? {identifier}(: {type})? = {expr};`
     LocalDefinition {
-        mutable: Option<Identifier>,
+        mutable: Option<TextSpan>,
         name: Identifier,
-        ty: Option<Box<TypeExpression>>,
+        annotation: Option<TypeAnnotation>,
+        eq: TextSpan,
         value: Box<Expression>,
     },
 }
 
-#[derive(Debug, Clone)]
-pub struct Statement {
-    pub kind: StmtKind,
-    pub span: TextSpan,
+#[derive(Debug)]
+pub struct TypeAnnotation {
+    pub separator: TextSpan,
+    pub ty: Box<TypeExpression>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FunctionParam {
     pub mutable: Option<TextSpan>,
     pub name: Identifier,
-    pub ty: TypeExpression,
+    pub annotation: TypeAnnotation,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FunctionSignature {
     pub name: Identifier,
-    pub params: Box<[FunctionParam]>,
-    pub result: Box<TypeExpression>,
+    pub params: Grouped<Box<[Separated<FunctionParam>]>>,
+    pub result: TypeAnnotation,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EnumVariant {
     pub name: Identifier,
     pub value: Box<Expression>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ItemKind {
     FunctionDefinition {
         signature: FunctionSignature,
@@ -342,8 +369,8 @@ pub enum ItemKind {
     },
     EnumDefinition {
         name: Identifier,
-        ty: TypeExpression,
-        variants: Box<[EnumVariant]>,
+        annotation: TypeAnnotation,
+        variants: Grouped<Box<[Separated<EnumVariant>]>>,
     },
     ExportModifier {
         export: TextSpan,
@@ -357,7 +384,7 @@ pub enum ItemKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Item {
     pub kind: ItemKind,
     pub span: TextSpan,

@@ -426,4 +426,14 @@ impl<'a> PeekableLexer<'a> {
             }
         }
     }
+
+    pub fn next_if(&mut self, expected_kind: TokenKind) -> Option<Token> {
+        let token = self.peek();
+        if TokenKind::discriminant_equals(token.kind, expected_kind) {
+            self.peeked = None;
+            Some(token)
+        } else {
+            None
+        }
+    }
 }

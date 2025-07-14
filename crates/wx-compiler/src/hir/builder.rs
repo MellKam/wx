@@ -6,18 +6,8 @@ use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
 
 use crate::ast::BinaryOp;
-use crate::hir::diagnostics::{
-    BinaryExpressionMistmatchDiagnostic, BinaryOperatorCannotBeAppliedDiagnostic,
-    BreakOutsideOfLoopDiagnostic, CannotMutateImmutableDiagnostic,
-    ComparisonTypeAnnotationRequiredDiagnostic, FloatLiteralOutOfRangeDiagnostic,
-    IntegerLiteralOutOfRangeDiagnostic, InvalidAssignmentTargetDiagnostic,
-    InvalidEnumTypeDiagnostic, NonCallableIdentifierDiagnostic, TypeAnnotationRequiredDiagnostic,
-    TypeMistmatchDiagnostic, UnableToCoerceDiagnostic, UndeclaredIdentifierDiagnostic,
-    UndeclaredLabelDiagnostic, UnknownEnumVariantDiagnostic, UnreachableCodeDiagnostic,
-    UnusedValueDiagnostic,
-};
+use crate::hir::diagnostics::*;
 use crate::hir::global::{GlobalContext, GlobalValue};
-use crate::hir::local::{BlockKind, BlockScope, LocalContext};
 use crate::hir::*;
 use crate::span::TextSpan;
 use crate::{ast, hir};
@@ -32,6 +22,79 @@ pub struct Builder<'ast, 'interner> {
 enum BlockState<T> {
     Exhaustive(T),
     Incomplete(T),
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionContext {
+    pub lookup: HashMap<(ScopeIndex, SymbolU32), LocalIndex>,
+    pub func_index: FuncIndex,
+    pub scope_index: ScopeIndex,
+    pub frame: StackFrame,
+}
+
+impl FunctionContext {
+    pub fn push_local(&mut self, local: Local) -> LocalIndex {
+        let name_symbol = local.name.symbol;
+        let index = self.frame.push_local(self.scope_index, local);
+        self.lookup.insert((self.scope_index, name_symbol), index);
+        index
+    }
+
+    pub fn resolve_local(&self, symbol: SymbolU32) -> Option<(ScopeIndex, LocalIndex)> {
+        let mut scope_index = self.scope_index;
+
+        loop {
+            if let Some(&value) = self.lookup.get(&(scope_index, symbol)) {
+                return Some((scope_index, value));
+            }
+
+            scope_index = self.frame.scopes[scope_index.0 as usize].parent?;
+        }
+    }
+
+    pub fn enter_block<T>(&mut self, block: BlockScope, handler: impl FnOnce(&mut Self) -> T) -> T {
+        let parent_scope_index = self.scope_index;
+        self.scope_index = ScopeIndex(self.frame.scopes.len() as u32);
+        self.frame.scopes.push(block);
+
+        let result = handler(self);
+
+        self.scope_index = parent_scope_index;
+        result
+    }
+
+    pub fn resolve_label(&self, symbol: SymbolU32) -> Option<ScopeIndex> {
+        let mut scope_index = self.scope_index;
+
+        loop {
+            let scope = &self.frame.scopes[scope_index.0 as usize];
+            if scope.label == Some(symbol) {
+                return Some(scope_index);
+            }
+
+            scope_index = match scope.parent {
+                Some(parent) => parent,
+                None => return None,
+            };
+        }
+    }
+
+    pub fn get_closest_loop_block(&self) -> Option<ScopeIndex> {
+        let mut scope_index = self.scope_index;
+
+        loop {
+            let scope = &self.frame.scopes[scope_index.0 as usize];
+            match scope.kind {
+                BlockKind::Loop => return Some(scope_index),
+                _ => {}
+            }
+
+            scope_index = match scope.parent {
+                Some(parent) => parent,
+                None => return None,
+            }
+        }
+    }
 }
 
 impl<'ast, 'interner> Builder<'ast, 'interner> {
@@ -167,10 +230,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         Ok(FunctionType {
             params: signature
                 .params
+                .inner
                 .iter()
-                .map(|param| self.resolve_type(&param.ty))
+                .map(|param| self.resolve_type(&param.inner.annotation.ty))
                 .collect::<Result<Box<_>, ()>>()?,
-            result: self.resolve_type(&signature.result)?,
+            result: self.resolve_type(&signature.result.ty)?,
         })
     }
 
@@ -222,11 +286,12 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         let locals = signature
             .params
+            .inner
             .iter()
             .map(|param| hir::Local {
-                name: param.name.clone(),
-                ty: self.resolve_type(&param.ty).unwrap(),
-                mutability: match param.mutable {
+                name: param.inner.name.clone(),
+                ty: self.resolve_type(&param.inner.annotation.ty).unwrap(),
+                mutability: match param.inner.mutable {
                     Some(_) => Mutability::Mutable,
                     None => Mutability::Const,
                 },
@@ -262,7 +327,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             expected_type: Some(func_type.result),
         };
 
-        let mut ctx = LocalContext {
+        let mut ctx = FunctionContext {
             func_index,
             frame: StackFrame {
                 scopes: vec![root_scope],
@@ -281,12 +346,16 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     }
 
     fn build_enum_item(&mut self, item: &ast::Item) -> Result<Enum, ()> {
-        let (name, ty, variants) = match &item.kind {
-            ast::ItemKind::EnumDefinition { name, ty, variants } => (name.clone(), ty, variants),
+        let (name, annotation, variants) = match &item.kind {
+            ast::ItemKind::EnumDefinition {
+                name,
+                annotation,
+                variants,
+            } => (name.clone(), annotation, variants),
             _ => unreachable!(),
         };
 
-        let ty = match self.resolve_type(ty)? {
+        let ty = match self.resolve_type(&annotation.ty)? {
             Type::Primitive(ty) => ty,
             ty => {
                 self.diagnostics.push(
@@ -303,18 +372,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         let variants = variants
+            .inner
             .iter()
             .map(|variant| {
-                let mut value = match variant.value.kind {
+                let expr = &variant.inner.value;
+                let mut value = match expr.kind {
                     ast::ExprKind::Int { value } => hir::Expression {
                         kind: hir::ExprKind::Int(value),
                         ty: None,
-                        span: variant.value.span,
+                        span: expr.span,
                     },
                     ast::ExprKind::Float { value } => hir::Expression {
                         kind: hir::ExprKind::Float(value),
                         ty: None,
-                        span: variant.value.span,
+                        span: expr.span,
                     },
                     _ => panic!("invalid enum value"),
                 };
@@ -322,7 +393,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.coerce_untyped_expr(&mut value, Type::Primitive(ty))?;
 
                 Ok(EnumVariant {
-                    name: variant.name.clone(),
+                    name: variant.inner.name.clone(),
                     value,
                 })
             })
@@ -346,12 +417,12 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_statement(
         &mut self,
-        ctx: &mut LocalContext,
-        statement: &ast::Statement,
+        ctx: &mut FunctionContext,
+        statement: &ast::Separated<ast::StmtKind>,
     ) -> Result<hir::Expression, ()> {
-        match &statement.kind {
-            ast::StmtKind::DelimitedExpression { .. } => {
-                self.build_expression_statement(ctx, statement)
+        match &statement.inner {
+            ast::StmtKind::Expression { .. } => {
+                self.build_expression_statement(ctx, &statement.inner)
             }
             ast::StmtKind::LocalDefinition { .. } => {
                 self.build_local_definition_statement(ctx, statement)
@@ -361,15 +432,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_expression_statement(
         &mut self,
-        ctx: &mut LocalContext,
-        stmt: &ast::Statement,
+        ctx: &mut FunctionContext,
+        stmt: &ast::StmtKind,
     ) -> Result<Expression, ()> {
-        let ast_value = match &stmt.kind {
-            ast::StmtKind::DelimitedExpression { value } => value,
+        let value = match &stmt {
+            ast::StmtKind::Expression { expr: value } => value,
             _ => unreachable!(),
         };
 
-        let value = self.build_expression(ctx, ast_value, None)?;
+        let value = self.build_expression(ctx, value, None)?;
         match value.ty {
             Some(hir::Type::Unit) => Ok(value),
             Some(hir::Type::Never) => {
@@ -382,11 +453,22 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
                 Ok(value)
             }
+            None => {
+                self.diagnostics.push(
+                    TypeAnnotationRequiredDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: value.span,
+                    }
+                    .report(),
+                );
+
+                Err(())
+            }
             _ => {
                 self.diagnostics.push(
                     UnusedValueDiagnostic {
                         file_id: self.ast.file_id,
-                        span: ast_value.span,
+                        span: value.span,
                     }
                     .report(),
                 );
@@ -431,21 +513,22 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_local_definition_statement(
         &mut self,
-        ctx: &mut LocalContext,
-        stmt: &ast::Statement,
+        ctx: &mut FunctionContext,
+        stmt: &ast::Separated<ast::StmtKind>,
     ) -> Result<Expression, ()> {
-        let (maybe_mutable, name, ty, value) = match &stmt.kind {
+        let (maybe_mutable, name, annotation, value) = match &stmt.inner {
             ast::StmtKind::LocalDefinition {
                 mutable,
                 name,
-                ty,
+                annotation,
                 value,
-            } => (mutable.clone(), name.clone(), ty, value),
+                ..
+            } => (mutable.clone(), name.clone(), annotation, value),
             _ => unreachable!(),
         };
 
-        let expected_type = match ty {
-            Some(ty) => Some(self.resolve_type(ty).unwrap()),
+        let expected_type = match annotation {
+            Some(annotation) => Some(self.resolve_type(&annotation.ty).unwrap()),
             None => None,
         };
         let mut value = self.build_expression(ctx, value, expected_type)?;
@@ -453,8 +536,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         let ty = match (value.ty, expected_type) {
             (Some(ty), None) => ty,
             (Some(actual_type), Some(expected_type)) => {
-                if actual_type == expected_type {
-                    actual_type
+                if actual_type.coercible_to(expected_type) {
+                    expected_type
                 } else {
                     self.diagnostics.push(
                         TypeMistmatchDiagnostic {
@@ -511,7 +594,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<Expression, ()> {
@@ -531,7 +614,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.build_identifier_expression(ctx, expr, expected_type)
             }
             ExprKind::Binary { .. } => self.build_binary_expression(ctx, expr, expected_type),
-            ExprKind::Grouping { value } => self.build_expression(ctx, value, expected_type),
+            ExprKind::Grouping { value } => self.build_expression(ctx, &value.inner, expected_type),
             ExprKind::Unary { .. } => self.build_unary_expression(ctx, expr, expected_type),
             ExprKind::Call { .. } => self.build_call_expression(ctx, expr),
             ExprKind::Namespace { .. } => self.build_namespace_expression(expr),
@@ -565,7 +648,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_label_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
@@ -598,7 +681,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_identifier_expression(
         &mut self,
-        ctx: &LocalContext,
+        ctx: &FunctionContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
@@ -723,7 +806,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_continue_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
         let label = match &expr.kind {
@@ -759,7 +842,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_loop_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         label: Option<ast::Identifier>,
         expected_type: Option<Type>,
@@ -815,18 +898,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_cast_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
-        let (ast_value, ast_type) = match &expr.kind {
+        let (value, cast_type) = match &expr.kind {
             ast::ExprKind::Cast { value, ty } => (value, ty),
-            _ => unreachable!("expected cast expression"),
+            _ => unreachable!(),
         };
 
-        match self.resolve_type(ast_type) {
+        match self.resolve_type(cast_type) {
             Ok(cast_type) => {
-                let mut value = self.build_expression(ctx, ast_value, Some(cast_type))?;
+                let mut value = self.build_expression(ctx, value, Some(cast_type))?;
                 match value.ty {
                     Some(ty) => if ty != cast_type {},
                     None => self.coerce_untyped_expr(&mut value, cast_type)?,
@@ -834,7 +917,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
                 Ok(value)
             }
-            Err(_) => self.build_expression(ctx, ast_value, expected_type),
+            Err(_) => self.build_expression(ctx, value, expected_type),
         }
     }
 
@@ -845,21 +928,19 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     ) -> Result<Type, ()> {
         match value.ty {
             Some(result_type) => match scope.inferred_type {
-                Some(inferred) => match result_type.coercible_to(inferred) {
-                    true => Ok(inferred),
-                    false => {
-                        self.diagnostics.push(
-                            TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                expected: inferred,
-                                actual: result_type,
-                                span: value.span,
-                            }
-                            .report(&self.global),
-                        );
-                        Ok(inferred)
-                    }
-                },
+                Some(inferred) if !result_type.coercible_to(inferred) => {
+                    self.diagnostics.push(
+                        TypeMistmatchDiagnostic {
+                            file_id: self.ast.file_id,
+                            expected: inferred,
+                            actual: result_type,
+                            span: value.span,
+                        }
+                        .report(&self.global),
+                    );
+                    Ok(inferred)
+                }
+                Some(inferred) => Ok(inferred),
                 None => match scope.expected_type {
                     Some(expected) if !result_type.coercible_to(expected) => {
                         self.diagnostics.push(
@@ -894,53 +975,60 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_block_statements(
         &mut self,
-        ctx: &mut LocalContext,
-        statements: &[ast::Statement],
-    ) -> BlockState<Vec<hir::Expression>> {
+        ctx: &mut FunctionContext,
+        statements: &[ast::Separated<ast::StmtKind>],
+    ) -> BlockState<Box<[hir::Expression]>> {
         let mut expressions = Vec::with_capacity(statements.len());
         for stmt in statements.iter() {
-            let stmt_expr = match self.build_statement(ctx, stmt) {
+            let expr = match self.build_statement(ctx, &stmt) {
                 Ok(expr) => expr,
                 Err(_) => continue,
             };
 
-            match stmt_expr.ty {
-                Some(Type::Unit) => expressions.push(stmt_expr),
+            match expr.ty {
+                Some(Type::Unit) => expressions.push(expr),
                 Some(Type::Never) => {
-                    expressions.push(stmt_expr);
-                    // doesn't make sense to continue checking after that
-                    return BlockState::Exhaustive(expressions);
+                    expressions.push(expr);
+                    return BlockState::Exhaustive(expressions.into_boxed_slice());
                 }
                 _ => unreachable!(),
             }
         }
 
-        BlockState::Incomplete(expressions)
+        BlockState::Incomplete(expressions.into_boxed_slice())
     }
 
     fn build_block_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         block: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
-        let (statements, maybe_ast_result) = match &block.kind {
-            ast::ExprKind::Block { statements, result } => (statements, result),
-            _ => panic!("expected block expression"),
+        let statements = match &block.kind {
+            ast::ExprKind::Block(block) => block,
+            _ => unreachable!(),
+        };
+
+        let (statements, result) = match statements.inner.split_last() {
+            Some((last, rest)) if last.separator.is_none() => match &last.inner {
+                ast::StmtKind::Expression { expr } => (rest, Some(expr.as_ref())),
+                _ => (statements.inner.as_ref(), None),
+            },
+            _ => (statements.inner.as_ref(), None),
         };
 
         let expressions = match self.build_block_statements(ctx, statements) {
             BlockState::Exhaustive(expressions) => {
-                if maybe_ast_result.is_some() || expressions.len() < statements.len() {
+                if result.is_some() || expressions.len() < statements.len() {
                     self.diagnostics.push(
                         UnreachableCodeDiagnostic {
                             file_id: self.ast.file_id,
                             span: TextSpan::merge(
                                 match statements.get(expressions.len()) {
                                     Some(stmt) => stmt.span,
-                                    None => maybe_ast_result.as_deref().unwrap().span,
+                                    None => result.unwrap().span,
                                 },
-                                match maybe_ast_result {
-                                    Some(ast_result) => ast_result.span,
+                                match result {
+                                    Some(result) => result.span,
                                     None => statements.last().unwrap().span,
                                 },
                             ),
@@ -956,7 +1044,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 return Ok(hir::Expression {
                     kind: ExprKind::Block {
                         scope_index: ctx.scope_index,
-                        expressions: expressions.into_boxed_slice(),
+                        expressions,
                         result: None,
                     },
                     ty: Some(inferred_type),
@@ -966,37 +1054,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             BlockState::Incomplete(expressions) => expressions,
         };
 
-        let BlockScope {
-            kind: block_kind, ..
-        } = ctx.frame.scopes[ctx.scope_index.0 as usize];
-        match block_kind {
-            BlockKind::Loop => match maybe_ast_result {
-                Some(ast_result) => {
-                    let result = self.build_expression(ctx, ast_result, Some(Type::Unit))?;
-                    let result = match result.ty {
-                        Some(ty) if ty.coercible_to(Type::Unit) => Some(result),
-                        _ => todo!("loop result must be coercible to unit"),
-                    };
+        match ctx.frame.scopes[ctx.scope_index.0 as usize].kind {
+            BlockKind::Loop => {
+                let result = match result {
+                    Some(result) => Some(self.build_expression(ctx, &result, Some(Type::Unit))?),
+                    None => None,
+                };
 
-                    Ok(hir::Expression {
-                        kind: ExprKind::Block {
-                            scope_index: ctx.scope_index,
-                            expressions: expressions.into_boxed_slice(),
-                            result: result.map(Box::new),
-                        },
-                        ty: Some(
-                            ctx.frame.scopes[ctx.scope_index.0 as usize]
-                                .inferred_type
-                                .unwrap_or(Type::Never),
-                        ),
-                        span: block.span,
-                    })
-                }
-                None => Ok(hir::Expression {
+                Ok(hir::Expression {
                     kind: ExprKind::Block {
                         scope_index: ctx.scope_index,
-                        expressions: expressions.into_boxed_slice(),
-                        result: None,
+                        expressions,
+                        result: result.map(Box::new),
                     },
                     ty: Some(
                         ctx.frame.scopes[ctx.scope_index.0 as usize]
@@ -1004,11 +1073,10 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             .unwrap_or(Type::Never),
                     ),
                     span: block.span,
-                }),
-            },
+                })
+            }
             BlockKind::Block => {
-                let result =
-                    self.build_block_result_expression(ctx, maybe_ast_result.as_deref())?;
+                let result = self.build_block_result(ctx, result.as_deref())?;
 
                 let scope = &ctx.frame.scopes[ctx.scope_index.0 as usize];
                 let inferred_type = scope.inferred_type.expect("should have inferred type");
@@ -1031,7 +1099,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 Ok(hir::Expression {
                     kind: ExprKind::Block {
                         scope_index: ctx.scope_index,
-                        expressions: expressions.into_boxed_slice(),
+                        expressions,
                         result: result.map(Box::new),
                     },
                     ty: Some(inferred_type),
@@ -1041,16 +1109,16 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         }
     }
 
-    fn build_block_result_expression(
+    fn build_block_result(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         result: Option<&ast::Expression>,
     ) -> Result<Option<hir::Expression>, ()> {
         match result {
-            Some(ast_result) => {
+            Some(result) => {
                 let mut result = self.build_expression(
                     ctx,
-                    ast_result,
+                    result,
                     ctx.frame.scopes[ctx.scope_index.0 as usize].expected_type,
                 )?;
 
@@ -1078,7 +1146,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_return_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
         let maybe_ast_value = match &expr.kind {
@@ -1170,7 +1238,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_break_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
         let (label, maybe_ast_value) = match &expr.kind {
@@ -1289,7 +1357,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_if_else_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         label: Option<ast::Identifier>,
         expected_type: Option<Type>,
@@ -1379,7 +1447,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_call_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
         let (ast_callee, ast_arguments) = match &expr.kind {
@@ -1390,24 +1458,50 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         let callee = self.build_expression(ctx, ast_callee, None)?;
         let func_index = match callee.ty {
             Some(Type::Function(func_index)) => func_index,
-            _ => {
+            Some(ty) => {
                 self.diagnostics.push(
-                    NonCallableIdentifierDiagnostic {
+                    CannotCallExpressionDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: ast_callee.span,
+                        ty,
+                    }
+                    .report(&self.global),
+                );
+
+                return Ok(hir::Expression {
+                    kind: hir::ExprKind::Call {
+                        callee: Box::new(callee),
+                        arguments: Box::new([]),
+                    },
+                    ty: Some(Type::Unknown),
+                    span: expr.span,
+                });
+            }
+            None => {
+                self.diagnostics.push(
+                    TypeAnnotationRequiredDiagnostic {
                         file_id: self.ast.file_id,
                         span: ast_callee.span,
                     }
                     .report(),
                 );
-                return Err(());
+
+                return Ok(hir::Expression {
+                    kind: hir::ExprKind::Call {
+                        callee: Box::new(callee),
+                        arguments: Box::new([]),
+                    },
+                    ty: Some(Type::Unknown),
+                    span: expr.span,
+                });
             }
         };
 
-        // if func_index.0 == ctx.func_index.0 {}
-
         let arguments: Box<_> = ast_arguments
+            .inner
             .iter()
             .enumerate()
-            .map(|(index, ast_argument)| {
+            .map(|(index, argument)| {
                 let func_type = self
                     .global
                     .function_types
@@ -1415,7 +1509,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .unwrap();
                 let expected_type = func_type.params.get(index).copied().unwrap();
 
-                let mut argument = self.build_expression(ctx, ast_argument, Some(expected_type))?;
+                let mut argument =
+                    self.build_expression(ctx, &argument.inner, Some(expected_type))?;
                 match argument.ty {
                     Some(ty) if !ty.coercible_to(expected_type) => {
                         self.diagnostics.push(
@@ -1423,7 +1518,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 file_id: self.ast.file_id,
                                 expected: expected_type,
                                 actual: ty,
-                                span: ast_argument.span,
+                                span: argument.span,
                             }
                             .report(&self.global),
                         );
@@ -1456,7 +1551,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_unary_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<Expression, ()> {
@@ -1464,7 +1559,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             ast::ExprKind::Unary { operator, operand } => (operator.clone(), operand),
             _ => unreachable!(),
         };
-        let operand = self.build_expression(ctx, ast_operand, expected_type)?;
+        let mut operand = self.build_expression(ctx, ast_operand, expected_type)?;
 
         match operator.kind {
             ast::UnOpKind::InvertSign | ast::UnOpKind::BitNot => match operand.ty {
@@ -1481,6 +1576,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 }
                 _ => panic!("can't apply unary operator to this type"),
             },
+            // ast::UnOpKind::InvertSign | ast::UnOpKind::BitNot => match operand.ty {
+            //     Some(Type::Primitive(_)) | None => {
+            //         let ty = operand.ty.clone();
+            //         Ok(hir::Expression {
+            //             kind: ExprKind::Unary {
+            //                 operator,
+            //                 operand: Box::new(operand),
+            //             },
+            //             ty,
+            //             span: expr.span,
+            //         })
+            //     }
+            //     _ => panic!("can't apply unary operator to this type"),
+            // },
             ast::UnOpKind::Not => match operand.ty {
                 Some(Type::Bool) => Ok(hir::Expression {
                     kind: ExprKind::Unary {
@@ -1490,14 +1599,47 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     ty: Some(Type::Bool),
                     span: expr.span,
                 }),
-                _ => panic!("can't apply logical not to this type"),
+                Some(ty) => {
+                    self.diagnostics.push(
+                        UnaryOperatorCannotBeAppliedDiagnostic {
+                            file_id: self.ast.file_id,
+                            operator: operator.clone(),
+                            operand: TypeWithSpan {
+                                ty,
+                                span: operand.span,
+                            },
+                        }
+                        .report(&self.global),
+                    );
+
+                    Ok(hir::Expression {
+                        kind: ExprKind::Unary {
+                            operator,
+                            operand: Box::new(operand),
+                        },
+                        ty: Some(Type::Bool),
+                        span: expr.span,
+                    })
+                }
+                None => {
+                    _ = self.coerce_untyped_expr(&mut operand, Type::Bool);
+
+                    Ok(hir::Expression {
+                        kind: ExprKind::Unary {
+                            operator,
+                            operand: Box::new(operand),
+                        },
+                        ty: Some(Type::Bool),
+                        span: expr.span,
+                    })
+                }
             },
         }
     }
 
     fn build_binary_expression(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<Expression, ()> {
@@ -1534,7 +1676,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_assignment_expr(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<Expression, ()> {
         let (left, right, operator) = match &expr.kind {
@@ -1716,7 +1858,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_arithmetic_assignment_expr(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<Expression, ()> {
         let (left, right, operator) = match &expr.kind {
@@ -1910,7 +2052,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_bitwise_binary_expr(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<hir::Expression, ()> {
@@ -1924,26 +2066,30 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         let mut left = self.build_expression(ctx, left, expected_type)?;
-        let mut right = self.build_expression(ctx, right, expected_type)?;
+        let mut right = self.build_expression(ctx, right, left.ty.or(expected_type))?;
 
         match (left.ty, right.ty) {
-            (Some(Type::Primitive(p1)), Some(Type::Primitive(p2))) if p1 == p2 => Ok(Expression {
-                kind: ExprKind::Binary {
-                    operator,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                },
-                ty: Some(Type::Primitive(p1)),
-                span: expr.span,
-            }),
+            (Some(Type::Primitive(p1)), Some(Type::Primitive(p2)))
+                if p1.is_integer() && p2.is_integer() && p1 == p2 =>
+            {
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ty: Some(Type::Primitive(p1)),
+                    span: expr.span,
+                })
+            }
             (Some(ty), None) => {
                 match ty {
-                    Type::Primitive(_) => {}
+                    Type::Primitive(primitive) if primitive.is_integer() => {}
                     _ => {
                         self.diagnostics.push(
                             BinaryOperatorCannotBeAppliedDiagnostic {
                                 file_id: self.ast.file_id,
-                                operator,
+                                operator: operator.clone(),
                                 operand: TypeWithSpan {
                                     ty,
                                     span: left.span,
@@ -1951,7 +2097,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             }
                             .report(&self.global),
                         );
-                        return Err(());
                     }
                 }
                 self.coerce_untyped_expr(&mut right, ty)?;
@@ -1968,12 +2113,12 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             }
             (None, Some(ty)) => {
                 match ty {
-                    Type::Primitive(_) => {}
+                    Type::Primitive(primitive) if primitive.is_integer() => {}
                     _ => {
                         self.diagnostics.push(
                             BinaryOperatorCannotBeAppliedDiagnostic {
                                 file_id: self.ast.file_id,
-                                operator,
+                                operator: operator.clone(),
                                 operand: TypeWithSpan {
                                     ty,
                                     span: right.span,
@@ -1981,7 +2126,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             }
                             .report(&self.global),
                         );
-                        return Err(());
                     }
                 }
                 self.coerce_untyped_expr(&mut left, ty)?;
@@ -1996,17 +2140,49 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     span: expr.span,
                 })
             }
-            (None, None) => {
-                self.diagnostics.push(
-                    TypeAnnotationRequiredDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: expr.span,
-                    }
-                    .report(),
-                );
+            (None, None) => match expected_type {
+                Some(expected_type) => {
+                    self.coerce_untyped_expr(&mut left, expected_type)?;
+                    self.coerce_untyped_expr(&mut right, expected_type)?;
 
-                Err(())
-            }
+                    match expected_type {
+                        Type::Primitive(primitive) if primitive.is_integer() => {}
+                        _ => {
+                            self.diagnostics.push(
+                                BinaryOperatorCannotBeAppliedDiagnostic {
+                                    file_id: self.ast.file_id,
+                                    operator: operator.clone(),
+                                    operand: TypeWithSpan {
+                                        ty: expected_type,
+                                        span: left.span,
+                                    },
+                                }
+                                .report(&self.global),
+                            );
+                        }
+                    }
+
+                    Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        ty: Some(expected_type),
+                        span: expr.span,
+                    })
+                }
+                None => {
+                    self.diagnostics.push(
+                        TypeAnnotationRequiredDiagnostic {
+                            file_id: self.ast.file_id,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
+                    Err(())
+                }
+            },
             (Some(left_type), Some(right_type)) => {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
@@ -2039,7 +2215,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_arithmetic_expr(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
         expected_type: Option<Type>,
     ) -> Result<Expression, ()> {
@@ -2083,20 +2259,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             .report(&self.global),
                         );
 
-                        match expected_type {
-                            Some(expected_type) => {
-                                return Ok(Expression {
-                                    kind: ExprKind::Binary {
-                                        operator,
-                                        left: Box::new(left),
-                                        right: Box::new(right),
-                                    },
-                                    ty: Some(expected_type),
-                                    span: expr.span,
-                                });
-                            }
-                            None => return Err(()),
-                        }
+                        return Ok(Expression {
+                            kind: ExprKind::Binary {
+                                operator,
+                                left: Box::new(left),
+                                right: Box::new(right),
+                            },
+                            ty: match expected_type {
+                                Some(expected) => Some(expected),
+                                None => Some(Type::Unknown),
+                            },
+                            span: expr.span,
+                        });
                     }
                 }
                 self.coerce_untyped_expr(&mut left, ty)?;
@@ -2202,7 +2376,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_comparison_binary_expr(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
         let (left, right, operator) = match &expr.kind {
@@ -2332,7 +2506,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_logical_binary_expr(
         &mut self,
-        ctx: &mut LocalContext,
+        ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
         let (left, right, operator) = match &expr.kind {
@@ -2468,6 +2642,46 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 expr.ty = Some(Type::Primitive(PrimitiveType::I64));
                 Ok(())
             }
+            Type::Primitive(PrimitiveType::F32) => {
+                let value = match expr.kind {
+                    hir::ExprKind::Int(value) => value,
+                    _ => unreachable!(),
+                };
+                if (value as f32) > f32::MAX || (value as f32) < f32::MIN {
+                    self.diagnostics.push(
+                        IntegerLiteralOutOfRangeDiagnostic {
+                            file_id: self.ast.file_id,
+                            primitive: PrimitiveType::F32,
+                            value,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
+                }
+
+                expr.ty = Some(Type::Primitive(PrimitiveType::F32));
+                Ok(())
+            }
+            Type::Primitive(PrimitiveType::F64) => {
+                let value = match expr.kind {
+                    hir::ExprKind::Int(value) => value,
+                    _ => unreachable!(),
+                };
+                if (value as f64) > f64::MAX || (value as f64) < f64::MIN {
+                    self.diagnostics.push(
+                        IntegerLiteralOutOfRangeDiagnostic {
+                            file_id: self.ast.file_id,
+                            primitive: PrimitiveType::F64,
+                            value,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
+                }
+
+                expr.ty = Some(Type::Primitive(PrimitiveType::F64));
+                Ok(())
+            }
             target_type => {
                 self.diagnostics.push(
                     UnableToCoerceDiagnostic {
@@ -2586,8 +2800,38 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         };
 
         match operator.kind {
-            operator if operator.is_arithmetic() || operator.is_bitwise() => match target_type {
-                Type::Primitive(PrimitiveType::I32 | PrimitiveType::I64) => {}
+            operator if operator.is_arithmetic() => match target_type {
+                Type::Primitive(_) => {}
+                target_type => {
+                    self.diagnostics.push(
+                        UnableToCoerceDiagnostic {
+                            file_id: self.ast.file_id,
+                            target_type,
+                            span: expr.span,
+                        }
+                        .report(&self.global),
+                    );
+                    return Err(());
+                }
+            },
+            operator if operator.is_bitwise() => match target_type {
+                Type::Primitive(primitive) => match primitive {
+                    PrimitiveType::I32
+                    | PrimitiveType::I64
+                    | PrimitiveType::U32
+                    | PrimitiveType::U64 => {}
+                    PrimitiveType::F32 | PrimitiveType::F64 => {
+                        self.diagnostics.push(
+                            UnableToCoerceDiagnostic {
+                                file_id: self.ast.file_id,
+                                target_type,
+                                span: expr.span,
+                            }
+                            .report(&self.global),
+                        );
+                        return Err(());
+                    }
+                },
                 target_type => {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
@@ -2613,195 +2857,5 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             }
             _ => Err(()),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use codespan_reporting::term::{
-        self,
-        termcolor::{ColorChoice, StandardStream},
-    };
-    use string_interner::StringInterner;
-
-    use super::*;
-    use crate::files::Files;
-
-    #[allow(unused)]
-    fn print_diagnostics(diagnostics: &[Diagnostic<FileId>], files: &Files) {
-        let writer = StandardStream::stderr(ColorChoice::Always);
-        let config = codespan_reporting::term::Config::default();
-
-        for diagnostic in diagnostics.iter() {
-            term::emit(&mut writer.lock(), &config, files, diagnostic).unwrap();
-        }
-    }
-
-    struct TestCase {
-        interner: StringInterner<StringBackend>,
-        files: Files,
-        ast: ast::Ast,
-        ast_diagnostics: Vec<Diagnostic<FileId>>,
-        hir: hir::HIR,
-        hir_diagnostics: Vec<Diagnostic<FileId>>,
-    }
-
-    fn build_test_case(source: &str) -> TestCase {
-        let mut interner = StringInterner::new();
-        let mut files = Files::new();
-        let file_id = files
-            .add("test.wx".to_string(), source.to_string())
-            .unwrap();
-
-        let (ast, ast_diagnostics) =
-            ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-
-        let (hir, hir_diagnostics) = hir::Builder::build(&ast, &mut interner);
-
-        TestCase {
-            interner,
-            files,
-            ast,
-            ast_diagnostics,
-            hir,
-            hir_diagnostics,
-        }
-    }
-
-    #[test]
-    fn should_coerce_never_expression() {
-        let TestCase {
-            hir,
-            hir_diagnostics,
-            ..
-        } = build_test_case("func test(): unit { unreachable }");
-
-        assert_eq!(hir_diagnostics.len(), 0);
-        assert_eq!(hir.functions.len(), 1);
-        assert_eq!(
-            hir.functions[0].stack.scopes[0].expected_type,
-            Some(hir::Type::Unit)
-        );
-        assert_eq!(
-            hir.functions[0].stack.scopes[0].inferred_type,
-            Some(hir::Type::Never)
-        );
-        assert_eq!(hir.functions[0].block.ty, Some(hir::Type::Never));
-    }
-
-    #[test]
-    fn should_infer_local_type() {
-        let TestCase {
-            hir,
-            hir_diagnostics,
-            ..
-        } = build_test_case("func test(a: i32): i32 { local x = a; x }");
-
-        assert_eq!(hir_diagnostics.len(), 0);
-        assert_eq!(hir.functions.len(), 1);
-        assert_eq!(
-            hir.functions[0].stack.scopes[0].locals[0].ty,
-            hir::Type::Primitive(PrimitiveType::I32)
-        );
-        assert_eq!(
-            hir.functions[0].stack.scopes[0].inferred_type,
-            Some(hir::Type::Primitive(PrimitiveType::I32))
-        );
-    }
-
-    #[test]
-    fn should_report_invalid_assignment_target() {
-        let TestCase {
-            hir,
-            hir_diagnostics,
-            ..
-        } = build_test_case("func test(): unit { 5 = 5 }");
-
-        assert_eq!(hir_diagnostics.len(), 1);
-        assert_eq!(hir.functions.len(), 1);
-        assert_eq!(
-            hir_diagnostics[0].code.as_ref().unwrap(),
-            InvalidAssignmentTargetDiagnostic::CODE
-        );
-    }
-
-    #[test]
-    fn should_report_break_outside_of_loop() {
-        let TestCase {
-            hir,
-            hir_diagnostics,
-            ..
-        } = build_test_case("func test(): unit { break }");
-
-        assert_eq!(hir_diagnostics.len(), 1);
-        assert_eq!(hir.functions.len(), 1);
-        assert_eq!(hir.functions[0].block.ty.unwrap(), hir::Type::Never);
-        assert_eq!(
-            hir_diagnostics[0].code.as_ref().unwrap(),
-            BreakOutsideOfLoopDiagnostic::CODE
-        );
-    }
-
-    #[test]
-    fn should_report_operator_cannot_be_applied() {
-        let TestCase {
-            hir,
-            hir_diagnostics,
-            ..
-        } = build_test_case("func test(): unit { 5 + true }");
-
-        assert_eq!(hir_diagnostics.len(), 1);
-        assert_eq!(hir.functions.len(), 1);
-        assert_eq!(
-            hir_diagnostics[0].code.as_ref().unwrap(),
-            BinaryOperatorCannotBeAppliedDiagnostic::CODE
-        );
-    }
-
-    #[test]
-    fn should_report_unable_to_coerce() {
-        let TestCase {
-            hir_diagnostics,
-            hir,
-            ..
-        } = build_test_case("func test(): unit { 5 }");
-
-        assert_eq!(hir.functions.len(), 1);
-        assert_eq!(hir.functions[0].block.ty, Some(hir::Type::Unit));
-        assert_eq!(hir_diagnostics.len(), 1);
-        assert_eq!(
-            hir_diagnostics[0].code.as_ref().unwrap(),
-            UnableToCoerceDiagnostic::CODE
-        );
-    }
-
-    #[test]
-    fn should_report_unreachable_code() {
-        let TestCase {
-            hir_diagnostics,
-            hir,
-            ..
-        } = build_test_case(
-            "func test(): unit { 
-                loop {}; 
-                hello(); 
-                world();
-                unreachable
-            }",
-        );
-
-        assert_eq!(hir.functions.len(), 1);
-        match &hir.functions[0].block.kind {
-            ExprKind::Block { expressions, .. } => {
-                assert_eq!(expressions.len(), 1);
-            }
-            _ => unreachable!(),
-        }
-        assert_eq!(hir.functions[0].block.ty, Some(hir::Type::Never));
-        assert_eq!(hir_diagnostics.len(), 1);
-        assert_eq!(
-            hir_diagnostics[0].code.as_ref().unwrap(),
-            UnreachableCodeDiagnostic::CODE
-        );
     }
 }

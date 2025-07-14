@@ -1,11 +1,15 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 
 use super::EnumIndex;
-use crate::ast::{BinOpKind, BinaryOp};
+use crate::ast::{BinOpKind, BinaryOp, UnaryOp};
 use crate::files::FileId;
 use crate::hir::global::GlobalContext;
 use crate::hir::{self, TypeWithSpan};
 use crate::span::TextSpan;
+
+pub enum DiagnosticCode {
+    Unknown,
+}
 
 pub struct UnknownEnumVariantDiagnostic {
     pub file_id: FileId,
@@ -28,7 +32,7 @@ pub struct UnknownTypeDiagnostic {
 impl UnknownTypeDiagnostic {
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
-            .with_message("unknown type")
+            .with_message("cannot find type `gew` in this scope")
             .with_label(Label::primary(self.file_id, self.span))
     }
 }
@@ -170,16 +174,25 @@ impl UndeclaredIdentifierDiagnostic {
     }
 }
 
-pub struct NonCallableIdentifierDiagnostic {
+pub struct CannotCallExpressionDiagnostic {
     pub file_id: FileId,
+    pub ty: hir::Type,
     pub span: TextSpan,
 }
 
-impl NonCallableIdentifierDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
+impl CannotCallExpressionDiagnostic {
+    pub const CODE: &'static str = "E2009";
+
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
-            .with_message("non-callable identifier")
-            .with_label(Label::primary(self.file_id, self.span))
+            .with_code(Self::CODE)
+            .with_message("call expression requires function")
+            .with_label(
+                Label::primary(self.file_id, self.span).with_message(format!(
+                    "expected function, found `{}`",
+                    global.display_type(self.ty)
+                )),
+            )
     }
 }
 
@@ -189,8 +202,11 @@ pub struct TypeAnnotationRequiredDiagnostic {
 }
 
 impl TypeAnnotationRequiredDiagnostic {
+    pub const CODE: &'static str = "E2008";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("type annotation required")
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -202,8 +218,11 @@ pub struct UnusedValueDiagnostic {
 }
 
 impl UnusedValueDiagnostic {
+    pub const CODE: &'static str = "E2009";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("value must be used")
             .with_label(Label::primary(self.file_id, self.span).with_message("value never used"))
             .with_note("if you don't need the value, consider dropping it with assignment to `_`")
@@ -218,8 +237,11 @@ pub struct TypeMistmatchDiagnostic {
 }
 
 impl TypeMistmatchDiagnostic {
+    pub const CODE: &'static str = "E2008";
+
     pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("type mismatch")
             .with_label(
                 Label::primary(self.file_id, self.span).with_message(format!(
@@ -274,8 +296,11 @@ pub struct ComparisonTypeAnnotationRequiredDiagnostic {
 }
 
 impl ComparisonTypeAnnotationRequiredDiagnostic {
+    pub const CODE: &'static str = "E2007";
+
     pub fn report(self) -> Diagnostic<FileId> {
         Diagnostic::error()
+            .with_code(Self::CODE)
             .with_message("type annotation required")
             .with_label(Label::primary(self.file_id, self.left))
             .with_label(Label::primary(self.file_id, self.right))
@@ -329,6 +354,28 @@ pub struct BinaryOperatorCannotBeAppliedDiagnostic {
 }
 
 impl BinaryOperatorCannotBeAppliedDiagnostic {
+    pub const CODE: &'static str = "E2004";
+
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message(format!(
+                "operator `{}` cannot be applied to type `{}`",
+                self.operator.kind,
+                global.display_type(self.operand.ty)
+            ))
+            .with_label(Label::primary(self.file_id, self.operand.span))
+            .with_label(Label::secondary(self.file_id, self.operator.span))
+    }
+}
+
+pub struct UnaryOperatorCannotBeAppliedDiagnostic {
+    pub file_id: FileId,
+    pub operator: UnaryOp,
+    pub operand: TypeWithSpan,
+}
+
+impl UnaryOperatorCannotBeAppliedDiagnostic {
     pub const CODE: &'static str = "E2004";
 
     pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
