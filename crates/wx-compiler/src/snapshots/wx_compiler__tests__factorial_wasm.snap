@@ -1,0 +1,70 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: module
+---
+types:
+  signatures:
+    - param_count: 1
+      param_results:
+        - I32
+        - I32
+globals:
+  globals: []
+tables:
+  tables: []
+elements:
+  segments: []
+functions:
+  types:
+    - 0
+exports:
+  items:
+    - Function:
+        name: 1
+        func_index: 0
+code:
+  expressions:
+    - LocalGet:
+        local_index: 0
+    - I32Const:
+        value: 1
+    - I32LeS:
+        left: 0
+        right: 1
+    - I32Const:
+        value: 1
+    - Return:
+        value: 3
+    - Block:
+        expressions:
+          - 4
+        result: Empty
+    - IfElse:
+        condition: 2
+        result: Empty
+        then_branch: 5
+        else_branch: ~
+    - LocalGet:
+        local_index: 0
+    - LocalGet:
+        local_index: 0
+    - I32Const:
+        value: 1
+    - I32Sub:
+        left: 8
+        right: 9
+    - Call:
+        function: 0
+        arguments:
+          - 10
+    - I32Mul:
+        left: 7
+        right: 11
+  functions:
+    - name: 1
+      locals:
+        - name: 2
+          ty: I32
+      expressions:
+        - 6
+        - 12

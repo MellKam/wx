@@ -1,0 +1,228 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: ast
+---
+ast:
+  file_id: 0
+  items:
+    - kind:
+        ExportModifier:
+          export:
+            start: 0
+            end: 6
+          item:
+            kind:
+              FunctionDefinition:
+                signature:
+                  name:
+                    symbol: 1
+                    span:
+                      start: 12
+                      end: 21
+                  params:
+                    open:
+                      start: 21
+                      end: 22
+                    inner:
+                      - inner:
+                          mutable: ~
+                          name:
+                            symbol: 2
+                            span:
+                              start: 22
+                              end: 23
+                          annotation:
+                            separator:
+                              start: 23
+                              end: 24
+                            ty:
+                              kind:
+                                Identifier:
+                                  symbol: 3
+                              span:
+                                start: 25
+                                end: 28
+                        span:
+                          start: 22
+                          end: 28
+                        separator: ~
+                    close:
+                      start: 28
+                      end: 29
+                  result:
+                    separator:
+                      start: 29
+                      end: 30
+                    ty:
+                      kind:
+                        Identifier:
+                          symbol: 3
+                      span:
+                        start: 31
+                        end: 34
+                block:
+                  kind:
+                    Block:
+                      open:
+                        start: 35
+                        end: 36
+                      inner:
+                        - inner:
+                            Expression:
+                              expr:
+                                kind:
+                                  IfElse:
+                                    condition:
+                                      kind:
+                                        Binary:
+                                          left:
+                                            kind:
+                                              Identifier:
+                                                symbol: 2
+                                            span:
+                                              start: 44
+                                              end: 45
+                                          operator:
+                                            kind: LessEq
+                                            span:
+                                              start: 46
+                                              end: 48
+                                          right:
+                                            kind:
+                                              Int:
+                                                value: 1
+                                            span:
+                                              start: 49
+                                              end: 50
+                                      span:
+                                        start: 44
+                                        end: 50
+                                    then_block:
+                                      kind:
+                                        Block:
+                                          open:
+                                            start: 51
+                                            end: 52
+                                          inner:
+                                            - inner:
+                                                Expression:
+                                                  expr:
+                                                    kind:
+                                                      Return:
+                                                        value:
+                                                          kind:
+                                                            Int:
+                                                              value: 1
+                                                          span:
+                                                            start: 60
+                                                            end: 61
+                                                    span:
+                                                      start: 53
+                                                      end: 61
+                                              span:
+                                                start: 53
+                                                end: 61
+                                              separator: ~
+                                          close:
+                                            start: 62
+                                            end: 63
+                                      span:
+                                        start: 51
+                                        end: 63
+                                    else_block: ~
+                                span:
+                                  start: 41
+                                  end: 63
+                          span:
+                            start: 41
+                            end: 63
+                          separator:
+                            start: 63
+                            end: 64
+                        - inner:
+                            Expression:
+                              expr:
+                                kind:
+                                  Binary:
+                                    left:
+                                      kind:
+                                        Identifier:
+                                          symbol: 2
+                                      span:
+                                        start: 69
+                                        end: 70
+                                    operator:
+                                      kind: Mul
+                                      span:
+                                        start: 71
+                                        end: 72
+                                    right:
+                                      kind:
+                                        Call:
+                                          callee:
+                                            kind:
+                                              Identifier:
+                                                symbol: 1
+                                            span:
+                                              start: 73
+                                              end: 82
+                                          arguments:
+                                            open:
+                                              start: 82
+                                              end: 83
+                                            inner:
+                                              - inner:
+                                                  kind:
+                                                    Binary:
+                                                      left:
+                                                        kind:
+                                                          Identifier:
+                                                            symbol: 2
+                                                        span:
+                                                          start: 83
+                                                          end: 84
+                                                      operator:
+                                                        kind: Sub
+                                                        span:
+                                                          start: 85
+                                                          end: 86
+                                                      right:
+                                                        kind:
+                                                          Int:
+                                                            value: 1
+                                                        span:
+                                                          start: 87
+                                                          end: 88
+                                                  span:
+                                                    start: 83
+                                                    end: 88
+                                                span:
+                                                  start: 83
+                                                  end: 88
+                                                separator: ~
+                                            close:
+                                              start: 88
+                                              end: 89
+                                      span:
+                                        start: 73
+                                        end: 89
+                                span:
+                                  start: 69
+                                  end: 89
+                          span:
+                            start: 69
+                            end: 89
+                          separator: ~
+                      close:
+                        start: 90
+                        end: 91
+                  span:
+                    start: 35
+                    end: 91
+            span:
+              start: 7
+              end: 91
+      span:
+        start: 0
+        end: 91
+diagnostics: []

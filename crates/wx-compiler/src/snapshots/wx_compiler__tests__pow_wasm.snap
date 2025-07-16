@@ -1,0 +1,123 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: module
+---
+types:
+  signatures:
+    - param_count: 2
+      param_results:
+        - I32
+        - I32
+        - I32
+globals:
+  globals: []
+tables:
+  tables: []
+elements:
+  segments: []
+functions:
+  types:
+    - 0
+exports:
+  items:
+    - Function:
+        name: 1
+        func_index: 0
+code:
+  expressions:
+    - LocalGet:
+        local_index: 1
+    - I32Const:
+        value: 0
+    - I32LtS:
+        left: 0
+        right: 1
+    - I32Const:
+        value: 0
+    - Return:
+        value: 3
+    - Block:
+        expressions:
+          - 4
+        result: Empty
+    - IfElse:
+        condition: 2
+        result: Empty
+        then_branch: 5
+        else_branch: ~
+    - I32Const:
+        value: 1
+    - LocalSet:
+        local_index: 2
+        value: 7
+    - Break:
+        depth: 0
+        value: ~
+    - LocalGet:
+        local_index: 1
+    - I32Const:
+        value: 0
+    - I32Eq:
+        left: 10
+        right: 11
+    - LocalGet:
+        local_index: 2
+    - Break:
+        depth: 3
+        value: 13
+    - Block:
+        expressions:
+          - 14
+        result: Empty
+    - IfElse:
+        condition: 12
+        result: Empty
+        then_branch: 15
+        else_branch: ~
+    - LocalGet:
+        local_index: 2
+    - LocalGet:
+        local_index: 0
+    - I32Mul:
+        left: 17
+        right: 18
+    - LocalSet:
+        local_index: 2
+        value: 19
+    - LocalGet:
+        local_index: 1
+    - I32Const:
+        value: 1
+    - I32Sub:
+        left: 21
+        right: 22
+    - LocalSet:
+        local_index: 1
+        value: 23
+    - Loop:
+        expressions:
+          - 16
+          - 20
+          - 24
+          - 9
+        result: Empty
+    - Unreachable
+    - Block:
+        expressions:
+          - 25
+          - 26
+        result:
+          SingleValue: I32
+  functions:
+    - name: 1
+      locals:
+        - name: 2
+          ty: I32
+        - name: 4
+          ty: I32
+        - name: 5
+          ty: I32
+      expressions:
+        - 6
+        - 8
+        - 27

@@ -8,6 +8,7 @@ mod tests;
 use std::collections::HashMap;
 
 pub use builder::*;
+use serde::Serialize;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
@@ -16,13 +17,7 @@ use crate::ast;
 use crate::files::FileId;
 use crate::span::TextSpan;
 
-#[derive(Debug, Clone)]
-pub enum ExportItem {
-    Function { func_index: FuncIndex },
-    Global { global_index: GlobalIndex },
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct HIR {
     pub file_id: FileId,
     pub functions: Vec<Function>,
@@ -63,7 +58,13 @@ impl HIR {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize)]
+pub enum ExportItem {
+    Function { func_index: FuncIndex },
+    Global { global_index: GlobalIndex },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum PrimitiveType {
     I32,
     I64,
@@ -104,28 +105,28 @@ impl std::fmt::Display for PrimitiveType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct FuncTypeIndex(pub u32);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct LocalIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct ScopeIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct FuncIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct EnumIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct EnumVariantIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct GlobalIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum Type {
     Primitive(PrimitiveType),
     Function(FuncTypeIndex),
@@ -180,13 +181,13 @@ impl TryFrom<&str> for Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct FunctionType {
     pub params: Box<[Type]>,
     pub result: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum ExprKind {
     Placeholder,
     Int(i64),
@@ -250,27 +251,27 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Expression {
     pub kind: ExprKind,
     pub span: TextSpan,
     pub ty: Option<Type>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum Mutability {
     Mutable,
     Const,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Local {
     pub name: ast::Identifier,
     pub ty: Type,
     pub mutability: Mutability,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum BlockKind {
     Block,
     /// Loop blocks have an implicit `continue` at the end.
@@ -279,7 +280,7 @@ pub enum BlockKind {
     Loop,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BlockScope {
     pub kind: BlockKind,
     pub label: Option<SymbolU32>,
@@ -289,7 +290,7 @@ pub struct BlockScope {
     pub expected_type: Option<Type>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct StackFrame {
     pub scopes: Vec<BlockScope>,
 }
@@ -310,7 +311,7 @@ impl StackFrame {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Function {
     pub name: ast::Identifier,
     pub ty: FunctionType,
@@ -318,7 +319,7 @@ pub struct Function {
     pub block: Box<Expression>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Enum {
     pub name: ast::Identifier,
     pub ty: PrimitiveType,
@@ -326,13 +327,13 @@ pub struct Enum {
     pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EnumVariant {
     pub name: ast::Identifier,
     pub value: Expression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Global {
     pub name: ast::Identifier,
     pub ty: Type,

@@ -4,8 +4,10 @@ pub mod wat;
 
 pub use builder::*;
 pub use encoder::*;
+use serde::Serialize;
+use string_interner::symbol::SymbolU32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash, Eq, Serialize)]
 pub enum ValueType {
     I32,
     I64,
@@ -13,29 +15,29 @@ pub enum ValueType {
     F64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum BlockResult {
     Empty,
     SingleValue(ValueType),
     // TODO: MultiValue
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct LocalIndex(pub u32);
 
-#[derive(Debug, Clone)]
-pub struct Local<'a> {
-    name: &'a str,
+#[derive(Debug, Clone, Serialize)]
+pub struct Local {
+    name: SymbolU32,
     ty: ValueType,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct FuncIndex(pub u32);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct GlobalIndex(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct FunctionType {
     pub param_count: usize,
     pub param_results: Box<[ValueType]>,
@@ -51,10 +53,10 @@ impl FunctionType {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct ExprIndex(pub u32);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum Expression {
     Nop,
     I32Const {
@@ -402,123 +404,109 @@ pub enum Expression {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TypeSection {
     signatures: Box<[FunctionType]>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Serialize)]
 pub struct TypeIndex(pub u32);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct TableIndex(pub u32);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FunctionSection {
     types: Box<[TypeIndex]>,
 }
 
-#[derive(Debug, Clone)]
-pub enum ExportItem<'a> {
+#[derive(Debug, Clone, Serialize)]
+pub enum ExportItem {
     Function {
-        name: &'a str,
+        name: SymbolU32,
         func_index: FuncIndex,
     },
     Global {
-        name: &'a str,
+        name: SymbolU32,
         global_index: GlobalIndex,
     },
     // Table,
     // Memory,
 }
 
-#[derive(Debug, Clone)]
-pub struct ExportSection<'a> {
-    items: Box<[ExportItem<'a>]>,
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportSection {
+    items: Box<[ExportItem]>,
 }
 
-#[derive(Debug, Clone)]
-pub struct FunctionBody<'a> {
-    name: &'a str,
-    locals: Box<[Local<'a>]>,
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionBody {
+    name: SymbolU32,
+    locals: Box<[Local]>,
     expressions: Box<[ExprIndex]>,
 }
 
-#[derive(Debug, Clone)]
-pub struct CodeSection<'a> {
+#[derive(Debug, Clone, Serialize)]
+pub struct CodeSection {
     expressions: Box<[Expression]>,
-    functions: Box<[FunctionBody<'a>]>,
+    functions: Box<[FunctionBody]>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum RefType {
     FuncRef,
     ExternRef,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub enum ResizableLimits {
     Initial(u32),
     InitialAndMax { initial: u32, maximum: u32 },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TableType {
     ty: RefType,
     limits: ResizableLimits,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TableSection {
     tables: Box<[TableType]>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ElementSegment {
     table_index: TableIndex,
     offset: u32,
     indices: Box<[FuncIndex]>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ElementSection {
     segments: Box<[ElementSegment]>,
 }
 
-#[derive(Debug, Clone)]
-pub struct GlobalSection<'a> {
-    globals: Box<[Global<'a>]>,
+#[derive(Debug, Clone, Serialize)]
+pub struct GlobalSection {
+    globals: Box<[Global]>,
 }
 
-#[derive(Debug, Clone)]
-struct Global<'a> {
-    name: &'a str,
+#[derive(Debug, Clone, Serialize)]
+struct Global {
+    name: SymbolU32,
     ty: ValueType,
     mutability: bool,
     value: Expression,
 }
 
-#[derive(Debug, Clone)]
-pub struct Module<'a> {
+#[derive(Debug, Clone, Serialize)]
+pub struct Module {
     types: TypeSection,
-    globals: GlobalSection<'a>,
+    globals: GlobalSection,
     tables: TableSection,
     elements: ElementSection,
     functions: FunctionSection,
-    exports: ExportSection<'a>,
-    code: CodeSection<'a>,
-}
-
-impl Module<'_> {
-    pub fn get_expr(&self, index: ExprIndex) -> &Expression {
-        self.code.expressions.get(index.0 as usize).unwrap()
-    }
-
-    pub fn get_function(&self, index: FuncIndex) -> &FunctionBody {
-        self.code.functions.get(index.0 as usize).unwrap()
-    }
-
-    pub fn get_type(&self, index: TypeIndex) -> &FunctionType {
-        self.types.signatures.get(index.0 as usize).unwrap()
-    }
+    exports: ExportSection,
+    code: CodeSection,
 }

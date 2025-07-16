@@ -1,0 +1,76 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.result
+---
+ast:
+  file_id: 0
+  items:
+    - kind:
+        FunctionDefinition:
+          signature:
+            name:
+              symbol: 1
+              span:
+                start: 5
+                end: 9
+            params:
+              open:
+                start: 9
+                end: 10
+              inner: []
+              close:
+                start: 10
+                end: 11
+            result:
+              separator:
+                start: 11
+                end: 12
+              ty:
+                kind:
+                  Identifier:
+                    symbol: 2
+                span:
+                  start: 13
+                  end: 16
+          block:
+            kind:
+              Block:
+                open:
+                  start: 17
+                  end: 18
+                inner:
+                  - inner:
+                      Expression:
+                        expr:
+                          kind:
+                            Identifier:
+                              symbol: 3
+                          span:
+                            start: 42
+                            end: 43
+                    span:
+                      start: 42
+                      end: 43
+                    separator: ~
+                close:
+                  start: 44
+                  end: 45
+            span:
+              start: 17
+              end: 45
+      span:
+        start: 0
+        end: 45
+diagnostics:
+  - severity: Error
+    code: E0010
+    message: missing initial value for local variable
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 36
+          end: 37
+        message: ""
+    notes:
+      - "example syntax: local x: i32 = 0"

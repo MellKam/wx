@@ -1,6 +1,7 @@
 use core::panic;
 
 use codespan_reporting::diagnostic::Diagnostic;
+use serde::Serialize;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
@@ -17,6 +18,12 @@ pub struct Builder<'ast, 'interner> {
     global: GlobalContext<'interner>,
     diagnostics: Vec<Diagnostic<FileId>>,
     hir: HIR,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BuilderResult {
+    pub hir: HIR,
+    pub diagnostics: Vec<Diagnostic<FileId>>,
 }
 
 enum BlockState<T> {
@@ -101,7 +108,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     pub fn build(
         ast: &'ast ast::Ast,
         interner: &'interner mut StringInterner<StringBackend<SymbolU32>>,
-    ) -> (HIR, Vec<Diagnostic<FileId>>) {
+    ) -> BuilderResult {
         let mut builder = Builder {
             ast,
             global: GlobalContext::new(interner),
@@ -127,7 +134,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         hir.globals = global.globals;
         hir.exports = global.exports;
 
-        (hir, diagnostics)
+        BuilderResult { hir, diagnostics }
     }
 
     fn build_item(&mut self, item: &ast::Item) -> Result<(), ()> {

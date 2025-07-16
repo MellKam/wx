@@ -1,0 +1,100 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: mir
+---
+functions:
+  - name: 1
+    ty:
+      param_count: 1
+      params_results:
+        - I32
+        - I32
+    frame:
+      - kind: Block
+        parent: ~
+        locals:
+          - name: 2
+            ty: I32
+            mutability: Const
+        result: I32
+      - kind: Block
+        parent: 0
+        locals: []
+        result: Never
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                IfElse:
+                  condition:
+                    kind:
+                      LessEq:
+                        left:
+                          kind:
+                            Local:
+                              scope_index: 0
+                              local_index: 0
+                          ty: I32
+                        right:
+                          kind:
+                            Int:
+                              value: 1
+                          ty: I32
+                    ty: Bool
+                  then_block:
+                    kind:
+                      Block:
+                        scope_index: 1
+                        expressions:
+                          - kind:
+                              Return:
+                                value:
+                                  kind:
+                                    Int:
+                                      value: 1
+                                  ty: I32
+                            ty: Never
+                    ty: Never
+                  else_block: ~
+              ty: Unit
+            - kind:
+                Mul:
+                  left:
+                    kind:
+                      Local:
+                        scope_index: 0
+                        local_index: 0
+                    ty: I32
+                  right:
+                    kind:
+                      Call:
+                        callee:
+                          kind:
+                            Function:
+                              index: 0
+                          ty:
+                            Function: 0
+                        arguments:
+                          - kind:
+                              Sub:
+                                left:
+                                  kind:
+                                    Local:
+                                      scope_index: 0
+                                      local_index: 0
+                                  ty: I32
+                                right:
+                                  kind:
+                                    Int:
+                                      value: 1
+                                  ty: I32
+                            ty: I32
+                    ty: I32
+              ty: I32
+      ty: I32
+globals: []
+exports:
+  - Function:
+      func_index: 0

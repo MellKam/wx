@@ -1,0 +1,177 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: mir
+---
+functions:
+  - name: 1
+    ty:
+      param_count: 2
+      params_results:
+        - I32
+        - I32
+        - I32
+    frame:
+      - kind: Block
+        parent: ~
+        locals:
+          - name: 2
+            ty: I32
+            mutability: Const
+          - name: 4
+            ty: I32
+            mutability: Mutable
+          - name: 5
+            ty: I32
+            mutability: Mutable
+        result: I32
+      - kind: Block
+        parent: 0
+        locals: []
+        result: Never
+      - kind: Loop
+        parent: 0
+        locals: []
+        result: I32
+      - kind: Block
+        parent: 2
+        locals: []
+        result: Never
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                IfElse:
+                  condition:
+                    kind:
+                      Less:
+                        left:
+                          kind:
+                            Local:
+                              scope_index: 0
+                              local_index: 1
+                          ty: I32
+                        right:
+                          kind:
+                            Int:
+                              value: 0
+                          ty: I32
+                    ty: Bool
+                  then_block:
+                    kind:
+                      Block:
+                        scope_index: 1
+                        expressions:
+                          - kind:
+                              Return:
+                                value:
+                                  kind:
+                                    Int:
+                                      value: 0
+                                  ty: I32
+                            ty: Never
+                    ty: Never
+                  else_block: ~
+              ty: Unit
+            - kind:
+                LocalSet:
+                  scope_index: 0
+                  local_index: 2
+                  value:
+                    kind:
+                      Int:
+                        value: 1
+                    ty: I32
+              ty: Unit
+            - kind:
+                Loop:
+                  scope_index: 2
+                  block:
+                    kind:
+                      Block:
+                        scope_index: 2
+                        expressions:
+                          - kind:
+                              IfElse:
+                                condition:
+                                  kind:
+                                    Eq:
+                                      left:
+                                        kind:
+                                          Local:
+                                            scope_index: 0
+                                            local_index: 1
+                                        ty: I32
+                                      right:
+                                        kind:
+                                          Int:
+                                            value: 0
+                                        ty: I32
+                                  ty: Bool
+                                then_block:
+                                  kind:
+                                    Block:
+                                      scope_index: 3
+                                      expressions:
+                                        - kind:
+                                            Break:
+                                              scope_index: 2
+                                              value:
+                                                kind:
+                                                  Local:
+                                                    scope_index: 0
+                                                    local_index: 2
+                                                ty: I32
+                                          ty: Never
+                                  ty: Never
+                                else_block: ~
+                            ty: Unit
+                          - kind:
+                              LocalSet:
+                                scope_index: 0
+                                local_index: 2
+                                value:
+                                  kind:
+                                    Mul:
+                                      left:
+                                        kind:
+                                          Local:
+                                            scope_index: 0
+                                            local_index: 2
+                                        ty: I32
+                                      right:
+                                        kind:
+                                          Local:
+                                            scope_index: 0
+                                            local_index: 0
+                                        ty: I32
+                                  ty: I32
+                            ty: Unit
+                          - kind:
+                              LocalSet:
+                                scope_index: 0
+                                local_index: 1
+                                value:
+                                  kind:
+                                    Sub:
+                                      left:
+                                        kind:
+                                          Local:
+                                            scope_index: 0
+                                            local_index: 1
+                                        ty: I32
+                                      right:
+                                        kind:
+                                          Int:
+                                            value: 1
+                                        ty: I32
+                                  ty: I32
+                            ty: Unit
+                    ty: Never
+              ty: Never
+      ty: I32
+globals: []
+exports:
+  - Function:
+      func_index: 0

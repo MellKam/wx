@@ -153,12 +153,13 @@ fn compile_hir(
     let mut files = wx_compiler::files::Files::new();
     let file_name = uri.path().segments().last().unwrap().as_str().to_string();
     let main_file = files.add(file_name, content).unwrap();
-    let (ast, _) = wx_compiler::ast::parser::Parser::parse(
+    let ast = wx_compiler::ast::parser::Parser::parse(
         main_file,
         &files.get(main_file).unwrap().source,
         &mut interner,
-    );
-    let (hir, _) = wx_compiler::hir::Builder::build(&ast, &mut interner);
+    )
+    .ast;
+    let hir = wx_compiler::hir::Builder::build(&ast, &mut interner).hir;
     hir
 }
 

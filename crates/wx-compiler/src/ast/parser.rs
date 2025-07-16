@@ -116,7 +116,56 @@ pub struct Parser<'input> {
     ast: Ast,
 }
 
-impl<'input> Parser<'input> {
+#[derive(Debug, Serialize)]
+pub struct ParserResult {
+    pub ast: Ast,
+    pub diagnostics: Vec<Diagnostic<FileId>>,
+}
+
+impl<'source> Parser<'source> {
+    pub fn parse(
+        file_id: FileId,
+        source: &'source str,
+        interner: &'source mut StringInterner<StringBackend<SymbolU32>>,
+    ) -> ParserResult {
+        let lexer: PeekableLexer<'source> = PeekableLexer::new(Lexer::new(source));
+
+        let mut parser = Self {
+            source,
+            lexer,
+            interner,
+            diagnostics: Vec::new(),
+            ast: Ast::new(file_id),
+        };
+
+        loop {
+            let start_token = parser.lexer.peek();
+            if start_token.kind == TokenKind::Eof {
+                break;
+            }
+
+            let item_handler = match parser.get_item_handler(start_token.clone()) {
+                Ok(handler) => handler,
+                Err(_) => match parser.recover_from_invalid_item(start_token) {
+                    Some(handler) => handler,
+                    None => break,
+                },
+            };
+
+            match item_handler(&mut parser) {
+                Ok(item) => {
+                    parser.ast.items.push(item);
+                }
+                Err(_) => continue,
+            }
+        }
+
+        ParserResult {
+            ast: parser.ast,
+            diagnostics: parser.diagnostics,
+        }
+    }
+
     fn next_expect(&mut self, expected_kind: TokenKind) -> Result<Token, ()> {
         let token = self.lexer.next();
         match TokenKind::discriminant_equals(token.kind, expected_kind) {
@@ -151,46 +200,6 @@ impl<'input> Parser<'input> {
                 Err(())
             }
         }
-    }
-
-    pub fn parse(
-        file_id: FileId,
-        source: &'input str,
-        interner: &'input mut StringInterner<StringBackend<SymbolU32>>,
-    ) -> (Ast, Vec<Diagnostic<FileId>>) {
-        let lexer: PeekableLexer<'input> = PeekableLexer::new(Lexer::new(source));
-
-        let mut parser = Self {
-            source,
-            lexer,
-            interner,
-            diagnostics: Vec::new(),
-            ast: Ast::new(file_id),
-        };
-
-        loop {
-            let start_token = parser.lexer.peek();
-            if start_token.kind == TokenKind::Eof {
-                break;
-            }
-
-            let item_handler = match parser.get_item_handler(start_token.clone()) {
-                Ok(handler) => handler,
-                Err(_) => match parser.recover_from_invalid_item(start_token) {
-                    Some(handler) => handler,
-                    None => break,
-                },
-            };
-
-            match item_handler(&mut parser) {
-                Ok(item) => {
-                    parser.ast.items.push(item);
-                }
-                Err(_) => continue,
-            }
-        }
-
-        (parser.ast, parser.diagnostics)
     }
 
     fn get_item_handler(
@@ -356,8 +365,6 @@ impl<'input> Parser<'input> {
             .next_if(TokenKind::Colon)
             .ok_or(())
             .and_then(|colon| {
-                // println!("{:?}", colon.span.text(&parser.source));
-                // println!("{:?}", parser.lexer.peek().span.text(&parser.source));
                 let ty = parser.parse_type_expr()?;
                 Ok(TypeAnnotation {
                     separator: colon.span,

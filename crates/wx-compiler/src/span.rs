@@ -1,7 +1,9 @@
 use std::fmt;
 use std::ops::Range;
 
-#[derive(Clone, Copy, Default, PartialEq)]
+use serde::Serialize;
+
+#[derive(Clone, Copy, Default, PartialEq, Serialize)]
 pub struct ByteIndex(pub u32);
 
 impl ByteIndex {
@@ -23,7 +25,7 @@ impl fmt::Display for ByteIndex {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Serialize)]
 pub struct TextSpan {
     start: ByteIndex,
     end: ByteIndex,

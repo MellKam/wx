@@ -1,3 +1,4 @@
+use serde::Serialize;
 use string_interner::symbol::SymbolU32;
 
 pub mod builder;
@@ -5,7 +6,7 @@ pub use builder::*;
 
 use crate::hir;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct MIR {
     pub functions: Vec<Function>,
     pub globals: Vec<Global>,
@@ -16,7 +17,7 @@ pub type FunctionIndex = u32;
 pub type LocalIndex = u32;
 pub type GlobalIndex = u32;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FunctionType {
     pub param_count: usize,
     pub params_results: Box<[Type]>,
@@ -36,7 +37,7 @@ impl FunctionType {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub enum Type {
     I32,
     I64,
@@ -50,7 +51,7 @@ pub enum Type {
     Function(FunctionIndex),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum ExprKind {
     Noop,
     Local {
@@ -195,20 +196,20 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Expression {
     pub kind: ExprKind,
     pub ty: Type,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Local {
     pub name: SymbolU32,
     pub ty: Type,
     pub mutability: hir::Mutability,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Function {
     pub name: SymbolU32,
     pub ty: FunctionType,
@@ -216,16 +217,16 @@ pub struct Function {
     pub block: Expression,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct ScopeIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum BlockKind {
     Block,
     Loop,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct BlockScope {
     pub kind: BlockKind,
     pub parent: Option<ScopeIndex>,
@@ -233,7 +234,7 @@ pub struct BlockScope {
     pub result: Type,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Global {
     pub name: SymbolU32,
     pub ty: Type,

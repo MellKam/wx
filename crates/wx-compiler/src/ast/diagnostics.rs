@@ -1,4 +1,5 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
+use serde::Serialize;
 
 use super::lexer::{Token, TokenKind};
 use crate::files::FileId;
@@ -21,7 +22,7 @@ pub enum DiagnosticCode {
 impl DiagnosticCode {
     const fn code(self) -> &'static str {
         match self {
-            DiagnosticCode::UnknownToken => "D0001",
+            DiagnosticCode::UnknownToken => "E0001",
             DiagnosticCode::UnexpectedToken => "E0002",
             DiagnosticCode::MissingSeparator => "E0003",
             DiagnosticCode::UnclosedGrouping => "E0004",
@@ -36,6 +37,7 @@ impl DiagnosticCode {
     }
 }
 
+#[derive(Serialize)]
 pub struct UnexpectedTokenDiagnostic {
     pub file_id: FileId,
     pub received: Token,
@@ -59,6 +61,7 @@ impl UnexpectedTokenDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct UnknownTokenDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -75,6 +78,7 @@ impl UnknownTokenDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct MissingSeparatorDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -95,6 +99,7 @@ impl MissingSeparatorDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct UnclosedGroupingDiagnotic {
     pub file_id: FileId,
     pub open_span: TextSpan,
@@ -117,6 +122,7 @@ impl UnclosedGroupingDiagnotic {
     }
 }
 
+#[derive(Serialize)]
 pub struct InvalidIntegerLiteralDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -133,6 +139,7 @@ impl InvalidIntegerLiteralDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct InvalidFloatLiteralDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -149,6 +156,7 @@ impl InvalidFloatLiteralDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct IncompleteBinaryExpressionDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -169,6 +177,7 @@ impl IncompleteBinaryExpressionDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct IncompleteUnaryExpressionDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -189,6 +198,7 @@ impl IncompleteUnaryExpressionDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct ChainedComparisonsDiagnostic {
     pub file_id: FileId,
     pub first_operator_span: TextSpan,
@@ -208,6 +218,7 @@ impl ChainedComparisonsDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct ReservedIdentifierDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -224,6 +235,7 @@ impl ReservedIdentifierDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct InvalidNamespaceDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -243,6 +255,7 @@ impl InvalidNamespaceDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct InvalidItemDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -259,6 +272,7 @@ impl InvalidItemDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct MissingLocalInitializerDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -276,6 +290,7 @@ impl MissingLocalInitializerDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct MissingGlobalInitializerDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -293,6 +308,7 @@ impl MissingGlobalInitializerDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct MissingReturnTypeDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -312,6 +328,7 @@ impl MissingReturnTypeDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct MissingParamTypeAnnotationDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,
@@ -331,6 +348,7 @@ impl MissingParamTypeAnnotationDiagnostic {
     }
 }
 
+#[derive(Serialize)]
 pub struct MissingEnumTypeAnnotationDiagnostic {
     pub file_id: FileId,
     pub span: TextSpan,

@@ -1,4 +1,5 @@
 use leb128fmt;
+use string_interner::{StringInterner, backend::StringBackend};
 
 use crate::wasm;
 
@@ -290,26 +291,34 @@ impl Encode for wasm::BlockResult {
     }
 }
 
-#[derive(Clone)]
-struct EncodeContext<'a> {
-    module: &'a wasm::Module<'a>,
-    func_index: wasm::FuncIndex,
+trait ContextEncode {
+    fn encode(
+        &self,
+        sink: &mut Vec<u8>,
+        module: &wasm::Module,
+        interner: &StringInterner<StringBackend>,
+    );
 }
 
-impl EncodeContext<'_> {
-    fn encode_expr(&self, sink: &mut Vec<u8>, expr_index: wasm::ExprIndex) {
-        self.module
-            .get_expr(expr_index)
-            .encode_with_context(sink, self.clone());
+impl ContextEncode for wasm::ExprIndex {
+    fn encode(
+        &self,
+        sink: &mut Vec<u8>,
+        module: &wasm::Module,
+        interner: &StringInterner<StringBackend>,
+    ) {
+        let expr = module.code.expressions.get(self.0 as usize).unwrap();
+        expr.encode(sink, module, interner);
     }
 }
 
-trait EncodeWithContext {
-    fn encode_with_context(&self, sink: &mut Vec<u8>, ctx: EncodeContext);
-}
-
-impl EncodeWithContext for wasm::Expression {
-    fn encode_with_context(&self, sink: &mut Vec<u8>, ctx: EncodeContext) {
+impl ContextEncode for wasm::Expression {
+    fn encode(
+        &self,
+        sink: &mut Vec<u8>,
+        module: &wasm::Module,
+        interner: &StringInterner<StringBackend>,
+    ) {
         use wasm::Expression;
         match self {
             Expression::Nop => {
@@ -323,7 +332,7 @@ impl EncodeWithContext for wasm::Expression {
                 local_index: local,
                 value,
             } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::LocalSet as u8);
                 local.0.encode(sink);
             }
@@ -334,32 +343,32 @@ impl EncodeWithContext for wasm::Expression {
                 global.0.encode(sink);
             }
             Expression::GlobalSet { global, value } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::GlobalSet as u8);
                 global.0.encode(sink);
             }
             Expression::Return { value } => {
                 match value {
                     Some(value) => {
-                        ctx.encode_expr(sink, *value);
+                        value.encode(sink, module, interner);
                     }
                     None => {}
                 };
                 sink.push(Instruction::Return as u8);
             }
             Expression::I32Add { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32Add as u8);
             }
             Expression::I32Sub { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32Sub as u8);
             }
             Expression::I32Mul { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32Mul as u8);
             }
             Expression::Block {
@@ -368,8 +377,8 @@ impl EncodeWithContext for wasm::Expression {
             } => {
                 sink.push(Instruction::Block as u8);
                 result.encode(sink);
-                for expr_index in expressions.iter() {
-                    ctx.encode_expr(sink, *expr_index);
+                for expr in expressions.iter().copied() {
+                    expr.encode(sink, module, interner);
                 }
                 sink.push(Instruction::End as u8);
             }
@@ -379,8 +388,8 @@ impl EncodeWithContext for wasm::Expression {
             } => {
                 sink.push(Instruction::Loop as u8);
                 result.encode(sink);
-                for expr_index in expressions.iter() {
-                    ctx.encode_expr(sink, *expr_index);
+                for expr in expressions.iter().copied() {
+                    expr.encode(sink, module, interner);
                 }
                 sink.push(Instruction::End as u8);
             }
@@ -388,12 +397,9 @@ impl EncodeWithContext for wasm::Expression {
                 sink.push(Instruction::Unreachable as u8);
             }
             Expression::Break { depth, value } => {
-                match value {
-                    Some(value) => {
-                        ctx.encode_expr(sink, *value);
-                    }
-                    None => {}
-                };
+                if let Some(value) = value {
+                    value.encode(sink, module, interner);
+                }
                 sink.push(Instruction::Br as u8);
                 depth.encode(sink);
             }
@@ -401,8 +407,8 @@ impl EncodeWithContext for wasm::Expression {
                 function,
                 arguments,
             } => {
-                for arg in arguments.iter().copied() {
-                    ctx.encode_expr(sink, arg);
+                for argument in arguments.iter().copied() {
+                    argument.encode(sink, module, interner);
                 }
                 sink.push(Instruction::Call as u8);
                 function.0.encode(sink);
@@ -413,10 +419,10 @@ impl EncodeWithContext for wasm::Expression {
                 arguments,
                 table_index,
             } => {
-                for arg in arguments.iter().copied() {
-                    ctx.encode_expr(sink, arg);
+                for argument in arguments.iter().copied() {
+                    argument.encode(sink, module, interner);
                 }
-                ctx.encode_expr(sink, *expr);
+                expr.encode(sink, module, interner);
 
                 sink.push(Instruction::CallIndirect as u8);
                 type_index.0.encode(sink);
@@ -439,27 +445,27 @@ impl EncodeWithContext for wasm::Expression {
                 value.encode(sink);
             }
             Expression::I32Eq { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32Eq as u8);
             }
             Expression::I32Eqz { value } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::I32Eqz as u8);
             }
             Expression::I32Ne { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32Ne as u8);
             }
             Expression::I32And { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32And as u8);
             }
             Expression::I32Or { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32Or as u8);
             }
             Expression::IfElse {
@@ -468,336 +474,336 @@ impl EncodeWithContext for wasm::Expression {
                 then_branch,
                 else_branch,
             } => {
-                ctx.encode_expr(sink, *condition);
+                condition.encode(sink, module, interner);
                 sink.push(Instruction::If as u8);
                 result.encode(sink);
-                ctx.encode_expr(sink, *then_branch);
+                then_branch.encode(sink, module, interner);
                 match else_branch {
                     Some(else_branch) => {
                         sink.push(Instruction::Else as u8);
-                        ctx.encode_expr(sink, *else_branch);
+                        else_branch.encode(sink, module, interner);
                     }
                     None => {}
                 }
                 sink.push(Instruction::End as u8);
             }
             Expression::Drop { value } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::Drop as u8);
             }
             Expression::I64Add { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64Add as u8);
             }
             Expression::I64Sub { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64Sub as u8);
             }
             Expression::I64Mul { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64Mul as u8);
             }
             Expression::I64Eq { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64Eq as u8);
             }
             Expression::I64Eqz { value } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::I64Eqz as u8);
             }
             Expression::I64Ne { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64Ne as u8);
             }
             Expression::I64And { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64And as u8);
             }
             Expression::I64Or { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64Or as u8);
             }
             Expression::I32DivS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32DivS as u8);
             }
             Expression::I32GeS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32GeS as u8);
             }
             Expression::I32ShrS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32ShrS as u8);
             }
             Expression::I32LtS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32LtS as u8);
             }
             Expression::I32GtS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32GtS as u8);
             }
             Expression::I32LeS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32LeS as u8);
             }
             Expression::I32RemS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32RemS as u8);
             }
             Expression::I64DivS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64DivS as u8);
             }
             Expression::I64GeS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64GeS as u8);
             }
             Expression::I64ShrS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64ShrS as u8);
             }
             Expression::I64LtS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64LtS as u8);
             }
             Expression::I64GtS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64GtS as u8);
             }
             Expression::I64LeS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64LeS as u8);
             }
             Expression::I64RemS { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64RemS as u8);
             }
             Expression::I32Xor { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32Xor as u8);
             }
             Expression::I64Xor { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64Xor as u8);
             }
             Expression::I32Shl { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32Shl as u8);
             }
             Expression::I64Shl { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64Shl as u8);
             }
             Expression::F32Add { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Add as u8);
             }
             Expression::F32Sub { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Sub as u8);
             }
             Expression::F32Mul { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Mul as u8);
             }
             Expression::F64Add { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Add as u8);
             }
             Expression::F64Sub { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Sub as u8);
             }
             Expression::F64Mul { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Mul as u8);
             }
             Expression::F32Eq { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Eq as u8);
             }
             Expression::F32Ne { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Ne as u8);
             }
             Expression::F64Eq { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Eq as u8);
             }
             Expression::F64Ne { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Ne as u8);
             }
             Expression::F32Lt { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Lt as u8);
             }
             Expression::F32Gt { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Gt as u8);
             }
             Expression::F32Le { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Le as u8);
             }
             Expression::F32Ge { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Ge as u8);
             }
             Expression::F64Lt { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Lt as u8);
             }
             Expression::F64Gt { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Gt as u8);
             }
             Expression::F64Le { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Le as u8);
             }
             Expression::F64Ge { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Ge as u8);
             }
             Expression::F32Div { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F32Div as u8);
             }
             Expression::F64Div { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::F64Div as u8);
             }
             Expression::F32Neg { value } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::F32Neg as u8);
             }
             Expression::F64Neg { value } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::F64Neg as u8);
             }
             Expression::I32DivU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32DivU as u8);
             }
             Expression::I32GeU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32GeU as u8);
             }
             Expression::I32ShrU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32ShrU as u8);
             }
             Expression::I32LtU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32LtU as u8);
             }
             Expression::I32GtU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32GtU as u8);
             }
             Expression::I32LeU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32LeU as u8);
             }
             Expression::I32RemU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I32RemU as u8);
             }
             Expression::I64DivU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64DivU as u8);
             }
             Expression::I64GeU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64GeU as u8);
             }
             Expression::I64ShrU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64ShrU as u8);
             }
             Expression::I64LtU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64LtU as u8);
             }
             Expression::I64GtU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64GtU as u8);
             }
             Expression::I64LeU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64LeU as u8);
             }
             Expression::I64RemU { left, right } => {
-                ctx.encode_expr(sink, *left);
-                ctx.encode_expr(sink, *right);
+                left.encode(sink, module, interner);
+                right.encode(sink, module, interner);
                 sink.push(Instruction::I64RemU as u8);
             }
             Expression::F32Trunc { value } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::F32Trunc as u8);
             }
             Expression::F64Trunc { value } => {
-                ctx.encode_expr(sink, *value);
+                value.encode(sink, module, interner);
                 sink.push(Instruction::F64Trunc as u8);
             }
         }
@@ -862,10 +868,16 @@ enum ExportKind {
     Global = 0x03,
 }
 
-impl Encode for wasm::ExportItem<'_> {
-    fn encode(&self, sink: &mut Vec<u8>) {
-        match self {
+impl ContextEncode for wasm::ExportItem {
+    fn encode(
+        &self,
+        sink: &mut Vec<u8>,
+        _module: &wasm::Module,
+        interner: &StringInterner<StringBackend>,
+    ) {
+        match self.clone() {
             wasm::ExportItem::Function { name, func_index } => {
+                let name = interner.resolve(name).unwrap();
                 let name_len = name.len() as u32;
                 name_len.encode(sink);
                 sink.extend_from_slice(name.as_bytes());
@@ -873,6 +885,7 @@ impl Encode for wasm::ExportItem<'_> {
                 func_index.0.encode(sink);
             }
             wasm::ExportItem::Global { name, global_index } => {
+                let name = interner.resolve(name).unwrap();
                 let name_len = name.len() as u32;
                 name_len.encode(sink);
                 sink.extend_from_slice(name.as_bytes());
@@ -883,15 +896,20 @@ impl Encode for wasm::ExportItem<'_> {
     }
 }
 
-impl Encode for wasm::ExportSection<'_> {
-    fn encode(&self, sink: &mut Vec<u8>) {
+impl ContextEncode for wasm::ExportSection {
+    fn encode(
+        &self,
+        sink: &mut Vec<u8>,
+        module: &wasm::Module,
+        interner: &StringInterner<StringBackend>,
+    ) {
         sink.push(SectionId::Export as u8);
 
         let mut section_sink: Vec<u8> = Vec::new();
         let export_count = self.items.len() as u32;
         export_count.encode(&mut section_sink);
         for item in &self.items {
-            item.encode(&mut section_sink);
+            item.encode(&mut section_sink, module, interner);
         }
 
         let section_size = section_sink.len() as u32;
@@ -900,7 +918,7 @@ impl Encode for wasm::ExportSection<'_> {
     }
 }
 
-impl Encode for wasm::Global<'_> {
+impl Encode for wasm::Global {
     fn encode(&self, sink: &mut Vec<u8>) {
         self.ty.encode(sink);
         sink.push(if self.mutability { 0x01 } else { 0x00 });
@@ -929,7 +947,7 @@ impl Encode for wasm::Global<'_> {
     }
 }
 
-impl Encode for wasm::GlobalSection<'_> {
+impl Encode for wasm::GlobalSection {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(SectionId::Global as u8);
 
@@ -946,17 +964,18 @@ impl Encode for wasm::GlobalSection<'_> {
     }
 }
 
-impl<'a> EncodeWithContext for wasm::FunctionBody<'a> {
-    fn encode_with_context(&self, sink: &mut Vec<u8>, ctx: EncodeContext) {
+impl wasm::FunctionBody {
+    fn encode(
+        &self,
+        sink: &mut Vec<u8>,
+        module: &wasm::Module,
+        interner: &StringInterner<StringBackend>,
+        func_index: wasm::FuncIndex,
+    ) {
         let mut body_content: Vec<u8> = Vec::new();
 
-        let func_type = ctx.module.get_type(
-            *ctx.module
-                .functions
-                .types
-                .get(ctx.func_index.0 as usize)
-                .unwrap(),
-        );
+        let type_index = module.functions.types[func_index.0 as usize];
+        let func_type = module.types.signatures[type_index.0 as usize].clone();
 
         let mut grouped_locals = Vec::<(wasm::ValueType, u32)>::new();
         for local in self.locals.iter().skip(func_type.param_count) {
@@ -976,8 +995,8 @@ impl<'a> EncodeWithContext for wasm::FunctionBody<'a> {
             group_type.encode(&mut body_content);
         }
 
-        for expr_index in self.expressions.iter() {
-            ctx.encode_expr(&mut body_content, *expr_index);
+        for expr in self.expressions.iter() {
+            expr.encode(sink, module, interner);
         }
         body_content.push(Instruction::End as u8);
 
@@ -987,20 +1006,24 @@ impl<'a> EncodeWithContext for wasm::FunctionBody<'a> {
     }
 }
 
-impl<'a> wasm::CodeSection<'a> {
-    fn encode(&self, sink: &mut Vec<u8>, module: &wasm::Module) {
+impl ContextEncode for wasm::CodeSection {
+    fn encode(
+        &self,
+        sink: &mut Vec<u8>,
+        module: &wasm::Module,
+        interner: &StringInterner<StringBackend>,
+    ) {
         sink.push(SectionId::Code as u8);
 
         let mut section_sink: Vec<u8> = Vec::new();
         let function_count = self.functions.len() as u32;
         function_count.encode(&mut section_sink);
         for (index, func) in self.functions.iter().enumerate() {
-            func.encode_with_context(
+            func.encode(
                 &mut section_sink,
-                EncodeContext {
-                    module,
-                    func_index: wasm::FuncIndex(index as u32),
-                },
+                module,
+                interner,
+                wasm::FuncIndex(index as u32),
             );
         }
 
@@ -1095,7 +1118,7 @@ impl Encode for wasm::ElementSection {
 pub struct Encoder {}
 
 impl Encoder {
-    pub fn encode(module: &wasm::Module) -> Vec<u8> {
+    pub fn encode(module: &wasm::Module, interner: &StringInterner<StringBackend>) -> Vec<u8> {
         let mut sink = [
             0x00, 0x61, 0x73, 0x6D, // Magic
             0x01, 0x00, 0x00, 0x00, // Version
@@ -1109,12 +1132,12 @@ impl Encoder {
             _ => module.tables.encode(&mut sink),
         }
         module.globals.encode(&mut sink);
-        module.exports.encode(&mut sink);
+        module.exports.encode(&mut sink, module, interner);
         match module.elements.segments.len() {
             0 => {}
             _ => module.elements.encode(&mut sink),
         }
-        module.code.encode(&mut sink, module);
+        module.code.encode(&mut sink, module, interner);
 
         sink
     }

@@ -1,0 +1,148 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: module
+---
+types:
+  signatures:
+    - param_count: 2
+      param_results:
+        - I32
+        - I32
+        - I32
+    - param_count: 3
+      param_results:
+        - I32
+        - I32
+        - I32
+        - I32
+    - param_count: 0
+      param_results:
+        - I32
+globals:
+  globals: []
+tables:
+  tables:
+    - ty: FuncRef
+      limits:
+        Initial: 2
+elements:
+  segments:
+    - table_index: 0
+      offset: 0
+      indices:
+        - 0
+        - 1
+functions:
+  types:
+    - 0
+    - 0
+    - 1
+    - 2
+exports:
+  items:
+    - Function:
+        name: 8
+        func_index: 3
+code:
+  expressions:
+    - LocalGet:
+        local_index: 0
+    - LocalGet:
+        local_index: 1
+    - I32Add:
+        left: 0
+        right: 1
+    - LocalGet:
+        local_index: 0
+    - LocalGet:
+        local_index: 1
+    - I32Sub:
+        left: 3
+        right: 4
+    - LocalGet:
+        local_index: 1
+    - LocalGet:
+        local_index: 2
+    - LocalGet:
+        local_index: 0
+    - CallIndirect:
+        expr: 8
+        table_index: 0
+        type_index: 0
+        arguments:
+          - 6
+          - 7
+    - I32Const:
+        value: 0
+    - I32Const:
+        value: 5
+    - I32Const:
+        value: 10
+    - Call:
+        function: 2
+        arguments:
+          - 10
+          - 11
+          - 12
+    - LocalSet:
+        local_index: 0
+        value: 13
+    - I32Const:
+        value: 1
+    - I32Const:
+        value: 10
+    - I32Const:
+        value: 5
+    - Call:
+        function: 2
+        arguments:
+          - 15
+          - 16
+          - 17
+    - LocalSet:
+        local_index: 1
+        value: 18
+    - LocalGet:
+        local_index: 0
+    - LocalGet:
+        local_index: 1
+    - I32Add:
+        left: 20
+        right: 21
+  functions:
+    - name: 1
+      locals:
+        - name: 2
+          ty: I32
+        - name: 4
+          ty: I32
+      expressions:
+        - 2
+    - name: 5
+      locals:
+        - name: 2
+          ty: I32
+        - name: 4
+          ty: I32
+      expressions:
+        - 5
+    - name: 6
+      locals:
+        - name: 7
+          ty: I32
+        - name: 2
+          ty: I32
+        - name: 4
+          ty: I32
+      expressions:
+        - 9
+    - name: 8
+      locals:
+        - name: 2
+          ty: I32
+        - name: 4
+          ty: I32
+      expressions:
+        - 14
+        - 19
+        - 22

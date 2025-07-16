@@ -1,8 +1,5 @@
 use std::collections::HashMap;
 
-use string_interner::StringInterner;
-use string_interner::backend::StringBackend;
-
 use crate::wasm::{self, TableIndex};
 use crate::{hir, mir};
 
@@ -38,14 +35,14 @@ impl From<mir::Type> for wasm::BlockResult {
 }
 
 #[derive(Debug)]
-struct FunctionContext<'mir, 'wasm> {
-    locals: Box<[wasm::Local<'wasm>]>,
+struct FunctionContext<'mir> {
+    locals: Box<[wasm::Local]>,
     scope_offsets: Box<[usize]>,
     scopes: &'mir Vec<mir::BlockScope>,
     scope_index: mir::ScopeIndex,
 }
 
-impl FunctionContext<'_, '_> {
+impl FunctionContext<'_> {
     fn get_flat_index(
         &self,
         scope_index: mir::ScopeIndex,
@@ -117,10 +114,7 @@ impl From<mir::FunctionType> for wasm::FunctionType {
 }
 
 impl Builder {
-    pub fn build<'a>(
-        mir: &mir::MIR,
-        interner: &'a StringInterner<StringBackend>,
-    ) -> Result<wasm::Module<'a>, ()> {
+    pub fn build<'a>(mir: &mir::MIR) -> Result<wasm::Module, ()> {
         let mut builder = Builder {
             expressions: Vec::new(),
             table: Vec::new(),
@@ -136,7 +130,7 @@ impl Builder {
                     let global = mir.globals.get(global_index.0 as usize).unwrap();
 
                     wasm::ExportItem::Global {
-                        name: interner.resolve(global.name).unwrap(),
+                        name: global.name,
                         global_index: wasm::GlobalIndex(global_index.0),
                     }
                 }
@@ -145,7 +139,7 @@ impl Builder {
 
                     wasm::ExportItem::Function {
                         func_index: wasm::FuncIndex(func_index.0),
-                        name: interner.resolve(func.name).unwrap(),
+                        name: func.name,
                     }
                 }
             })
@@ -178,7 +172,7 @@ impl Builder {
                 .iter()
                 .flat_map(|scope| {
                     scope.locals.iter().map(|local| wasm::Local {
-                        name: interner.resolve(local.name).unwrap(),
+                        name: local.name,
                         ty: wasm::ValueType::try_from(local.ty.clone()).unwrap(),
                     })
                 })
@@ -197,7 +191,7 @@ impl Builder {
                 .collect::<Result<Box<_>, ()>>()?;
 
             functions.push(wasm::FunctionBody {
-                name: interner.resolve(func.name).unwrap(),
+                name: func.name,
                 locals: ctx.locals,
                 expressions,
             });
@@ -209,7 +203,7 @@ impl Builder {
                     .globals
                     .iter()
                     .map(|global| wasm::Global {
-                        name: interner.resolve(global.name).unwrap(),
+                        name: global.name,
                         ty: wasm::ValueType::try_from(global.ty.clone()).unwrap(),
                         mutability: global.mutability == hir::Mutability::Mutable,
                         value: builder.build_global_expr(global),
@@ -284,7 +278,7 @@ impl Builder {
 
     fn build_expression<'mir, 'wasm>(
         &mut self,
-        ctx: &mut FunctionContext<'mir, 'wasm>,
+        ctx: &mut FunctionContext<'mir>,
         expr: &mir::Expression,
     ) -> Result<wasm::ExprIndex, ()> {
         match &expr.kind {

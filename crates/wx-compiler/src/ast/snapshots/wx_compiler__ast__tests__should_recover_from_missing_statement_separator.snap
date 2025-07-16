@@ -1,0 +1,116 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.result
+---
+ast:
+  file_id: 0
+  items:
+    - kind:
+        FunctionDefinition:
+          signature:
+            name:
+              symbol: 1
+              span:
+                start: 5
+                end: 9
+            params:
+              open:
+                start: 9
+                end: 10
+              inner: []
+              close:
+                start: 10
+                end: 11
+            result:
+              separator:
+                start: 11
+                end: 12
+              ty:
+                kind:
+                  Identifier:
+                    symbol: 2
+                span:
+                  start: 13
+                  end: 16
+          block:
+            kind:
+              Block:
+                open:
+                  start: 17
+                  end: 18
+                inner:
+                  - inner:
+                      LocalDefinition:
+                        mutable: ~
+                        name:
+                          symbol: 3
+                          span:
+                            start: 29
+                            end: 30
+                        annotation: ~
+                        eq:
+                          start: 31
+                          end: 32
+                        value:
+                          kind:
+                            Int:
+                              value: 10
+                          span:
+                            start: 33
+                            end: 35
+                    span:
+                      start: 23
+                      end: 35
+                    separator: ~
+                  - inner:
+                      Expression:
+                        expr:
+                          kind:
+                            Binary:
+                              left:
+                                kind:
+                                  Identifier:
+                                    symbol: 3
+                                span:
+                                  start: 40
+                                  end: 41
+                              operator:
+                                kind: Add
+                                span:
+                                  start: 42
+                                  end: 43
+                              right:
+                                kind:
+                                  Int:
+                                    value: 5
+                                span:
+                                  start: 44
+                                  end: 45
+                          span:
+                            start: 40
+                            end: 45
+                    span:
+                      start: 40
+                      end: 45
+                    separator: ~
+                close:
+                  start: 46
+                  end: 47
+            span:
+              start: 17
+              end: 47
+      span:
+        start: 0
+        end: 47
+diagnostics:
+  - severity: Warning
+    code: E0003
+    message: missing separator
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 35
+          end: 35
+        message: "consider adding `;` here"
+    notes: []

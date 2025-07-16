@@ -1,0 +1,188 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: hir
+---
+hir:
+  file_id: 0
+  functions:
+    - name:
+        symbol: 1
+        span:
+          start: 12
+          end: 21
+      ty:
+        params:
+          - Primitive: I32
+        result:
+          Primitive: I32
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  symbol: 2
+                  span:
+                    start: 22
+                    end: 23
+                ty:
+                  Primitive: I32
+                mutability: Const
+            inferred_type:
+              Primitive: I32
+            expected_type:
+              Primitive: I32
+          - kind: Block
+            label: ~
+            parent: 0
+            locals: []
+            inferred_type: Never
+            expected_type: ~
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions:
+              - kind:
+                  IfElse:
+                    condition:
+                      kind:
+                        Binary:
+                          operator:
+                            kind: LessEq
+                            span:
+                              start: 46
+                              end: 48
+                          left:
+                            kind:
+                              Local:
+                                scope_index: 0
+                                local_index: 0
+                            span:
+                              start: 44
+                              end: 45
+                            ty:
+                              Primitive: I32
+                          right:
+                            kind:
+                              Int: 1
+                            span:
+                              start: 49
+                              end: 50
+                            ty:
+                              Primitive: I32
+                      span:
+                        start: 44
+                        end: 50
+                      ty: Bool
+                    then_block:
+                      kind:
+                        Block:
+                          scope_index: 1
+                          expressions: []
+                          result:
+                            kind:
+                              Return:
+                                value:
+                                  kind:
+                                    Int: 1
+                                  span:
+                                    start: 60
+                                    end: 61
+                                  ty:
+                                    Primitive: I32
+                            span:
+                              start: 53
+                              end: 61
+                            ty: Never
+                      span:
+                        start: 51
+                        end: 63
+                      ty: Never
+                    else_block: ~
+                span:
+                  start: 41
+                  end: 63
+                ty: Unit
+            result:
+              kind:
+                Binary:
+                  operator:
+                    kind: Mul
+                    span:
+                      start: 71
+                      end: 72
+                  left:
+                    kind:
+                      Local:
+                        scope_index: 0
+                        local_index: 0
+                    span:
+                      start: 69
+                      end: 70
+                    ty:
+                      Primitive: I32
+                  right:
+                    kind:
+                      Call:
+                        callee:
+                          kind:
+                            Function: 0
+                          span:
+                            start: 73
+                            end: 82
+                          ty:
+                            Function: 0
+                        arguments:
+                          - kind:
+                              Binary:
+                                operator:
+                                  kind: Sub
+                                  span:
+                                    start: 85
+                                    end: 86
+                                left:
+                                  kind:
+                                    Local:
+                                      scope_index: 0
+                                      local_index: 0
+                                  span:
+                                    start: 83
+                                    end: 84
+                                  ty:
+                                    Primitive: I32
+                                right:
+                                  kind:
+                                    Int: 1
+                                  span:
+                                    start: 87
+                                    end: 88
+                                  ty:
+                                    Primitive: I32
+                            span:
+                              start: 83
+                              end: 88
+                            ty:
+                              Primitive: I32
+                    span:
+                      start: 73
+                      end: 89
+                    ty:
+                      Primitive: I32
+              span:
+                start: 69
+                end: 89
+              ty:
+                Primitive: I32
+        span:
+          start: 35
+          end: 91
+        ty:
+          Primitive: I32
+  enums: []
+  globals: []
+  exports:
+    - Function:
+        func_index: 0
+diagnostics: []

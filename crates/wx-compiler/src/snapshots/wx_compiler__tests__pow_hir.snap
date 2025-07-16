@@ -1,0 +1,314 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: hir
+---
+hir:
+  file_id: 0
+  functions:
+    - name:
+        symbol: 1
+        span:
+          start: 12
+          end: 15
+      ty:
+        params:
+          - Primitive: I32
+          - Primitive: I32
+        result:
+          Primitive: I32
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  symbol: 2
+                  span:
+                    start: 16
+                    end: 20
+                ty:
+                  Primitive: I32
+                mutability: Const
+              - name:
+                  symbol: 4
+                  span:
+                    start: 31
+                    end: 34
+                ty:
+                  Primitive: I32
+                mutability: Mutable
+              - name:
+                  symbol: 5
+                  span:
+                    start: 110
+                    end: 116
+                ty:
+                  Primitive: I32
+                mutability: Mutable
+            inferred_type:
+              Primitive: I32
+            expected_type:
+              Primitive: I32
+          - kind: Block
+            label: ~
+            parent: 0
+            locals: []
+            inferred_type: Never
+            expected_type: ~
+          - kind: Loop
+            label: ~
+            parent: 0
+            locals: []
+            inferred_type:
+              Primitive: I32
+            expected_type:
+              Primitive: I32
+          - kind: Block
+            label: ~
+            parent: 2
+            locals: []
+            inferred_type: Never
+            expected_type: ~
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions:
+              - kind:
+                  IfElse:
+                    condition:
+                      kind:
+                        Binary:
+                          operator:
+                            kind: Less
+                            span:
+                              start: 59
+                              end: 60
+                          left:
+                            kind:
+                              Local:
+                                scope_index: 0
+                                local_index: 1
+                            span:
+                              start: 55
+                              end: 58
+                            ty:
+                              Primitive: I32
+                          right:
+                            kind:
+                              Int: 0
+                            span:
+                              start: 61
+                              end: 62
+                            ty:
+                              Primitive: I32
+                      span:
+                        start: 55
+                        end: 62
+                      ty: Bool
+                    then_block:
+                      kind:
+                        Block:
+                          scope_index: 1
+                          expressions:
+                            - kind:
+                                Return:
+                                  value:
+                                    kind:
+                                      Int: 0
+                                    span:
+                                      start: 80
+                                      end: 81
+                                    ty:
+                                      Primitive: I32
+                              span:
+                                start: 73
+                                end: 81
+                              ty: Never
+                          result: ~
+                      span:
+                        start: 63
+                        end: 89
+                      ty: Never
+                    else_block: ~
+                span:
+                  start: 52
+                  end: 89
+                ty: Unit
+              - kind:
+                  LocalDeclaration:
+                    name:
+                      symbol: 5
+                      span:
+                        start: 110
+                        end: 116
+                    scope_index: 0
+                    local_index: 2
+                    expr:
+                      kind:
+                        Int: 1
+                      span:
+                        start: 124
+                        end: 125
+                      ty:
+                        Primitive: I32
+                span:
+                  start: 100
+                  end: 125
+                ty: Unit
+            result:
+              kind:
+                Loop:
+                  scope_index: 2
+                  block:
+                    kind:
+                      Block:
+                        scope_index: 2
+                        expressions:
+                          - kind:
+                              IfElse:
+                                condition:
+                                  kind:
+                                    Binary:
+                                      operator:
+                                        kind: Eq
+                                        span:
+                                          start: 153
+                                          end: 155
+                                      left:
+                                        kind:
+                                          Local:
+                                            scope_index: 0
+                                            local_index: 1
+                                        span:
+                                          start: 149
+                                          end: 152
+                                        ty:
+                                          Primitive: I32
+                                      right:
+                                        kind:
+                                          Int: 0
+                                        span:
+                                          start: 156
+                                          end: 157
+                                        ty:
+                                          Primitive: I32
+                                  span:
+                                    start: 149
+                                    end: 157
+                                  ty: Bool
+                                then_block:
+                                  kind:
+                                    Block:
+                                      scope_index: 3
+                                      expressions:
+                                        - kind:
+                                            Break:
+                                              scope_index: 2
+                                              value:
+                                                kind:
+                                                  Local:
+                                                    scope_index: 0
+                                                    local_index: 2
+                                                span:
+                                                  start: 174
+                                                  end: 180
+                                                ty:
+                                                  Primitive: I32
+                                          span:
+                                            start: 168
+                                            end: 180
+                                          ty: Never
+                                      result: ~
+                                  span:
+                                    start: 158
+                                    end: 192
+                                  ty: Never
+                                else_block: ~
+                            span:
+                              start: 146
+                              end: 192
+                            ty: Unit
+                          - kind:
+                              Binary:
+                                operator:
+                                  kind: MulAssign
+                                  span:
+                                    start: 218
+                                    end: 220
+                                left:
+                                  kind:
+                                    Local:
+                                      scope_index: 0
+                                      local_index: 2
+                                  span:
+                                    start: 211
+                                    end: 217
+                                  ty:
+                                    Primitive: I32
+                                right:
+                                  kind:
+                                    Local:
+                                      scope_index: 0
+                                      local_index: 0
+                                  span:
+                                    start: 221
+                                    end: 225
+                                  ty:
+                                    Primitive: I32
+                            span:
+                              start: 211
+                              end: 225
+                            ty: Unit
+                          - kind:
+                              Binary:
+                                operator:
+                                  kind: SubAssign
+                                  span:
+                                    start: 239
+                                    end: 241
+                                left:
+                                  kind:
+                                    Local:
+                                      scope_index: 0
+                                      local_index: 1
+                                  span:
+                                    start: 235
+                                    end: 238
+                                  ty:
+                                    Primitive: I32
+                                right:
+                                  kind:
+                                    Int: 1
+                                  span:
+                                    start: 242
+                                    end: 243
+                                  ty:
+                                    Primitive: I32
+                            span:
+                              start: 235
+                              end: 243
+                            ty: Unit
+                        result: ~
+                    span:
+                      start: 136
+                      end: 250
+                    ty:
+                      Primitive: I32
+              span:
+                start: 131
+                end: 250
+              ty:
+                Primitive: I32
+        span:
+          start: 46
+          end: 252
+        ty:
+          Primitive: I32
+  enums: []
+  globals: []
+  exports:
+    - Function:
+        func_index: 0
+diagnostics: []

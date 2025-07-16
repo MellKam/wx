@@ -1,0 +1,62 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.result
+---
+ast:
+  file_id: 0
+  items:
+    - kind:
+        FunctionDefinition:
+          signature:
+            name:
+              symbol: 1
+              span:
+                start: 9
+                end: 13
+            params:
+              open:
+                start: 13
+                end: 14
+              inner: []
+              close:
+                start: 14
+                end: 15
+            result:
+              separator:
+                start: 15
+                end: 16
+              ty:
+                kind:
+                  Identifier:
+                    symbol: 2
+                span:
+                  start: 17
+                  end: 21
+          block:
+            kind:
+              Block:
+                open:
+                  start: 22
+                  end: 23
+                inner: []
+                close:
+                  start: 23
+                  end: 24
+            span:
+              start: 22
+              end: 24
+      span:
+        start: 4
+        end: 24
+diagnostics:
+  - severity: Error
+    code: E0009
+    message: invalid item
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 0
+          end: 3
+        message: ""
+    notes: []

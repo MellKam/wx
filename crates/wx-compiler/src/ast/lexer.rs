@@ -1,6 +1,8 @@
+use serde::Serialize;
+
 use crate::span::TextSpan;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum TokenKind {
     // Literals
     Int,
@@ -120,7 +122,7 @@ impl std::fmt::Display for TokenKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: TextSpan,

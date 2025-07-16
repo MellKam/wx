@@ -45,37 +45,37 @@ fn main() {
     let main_file = files.add(filename.clone(), file_content).unwrap();
 
     let mut interner = StringInterner::new();
-    let (ast, diagnostics) = ast::parser::Parser::parse(
+    let ast = ast::parser::Parser::parse(
         main_file,
         &files.get(main_file).unwrap().source,
         &mut interner,
     );
 
-    if !diagnostics.is_empty() {
+    if !ast.diagnostics.is_empty() {
         let writer = StandardStream::stderr(ColorChoice::Always);
         let config = codespan_reporting::term::Config::default();
 
-        for diagnostic in diagnostics.iter() {
+        for diagnostic in ast.diagnostics.iter() {
             term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
         }
         std::process::exit(1);
     }
 
-    let (hir, diagnostics) = hir::Builder::build(&ast, &mut interner);
+    let hir = hir::Builder::build(&ast.ast, &mut interner);
 
-    if !diagnostics.is_empty() {
+    if !hir.diagnostics.is_empty() {
         let writer = StandardStream::stderr(ColorChoice::Always);
         let config = codespan_reporting::term::Config::default();
 
-        for diagnostic in diagnostics.iter() {
+        for diagnostic in hir.diagnostics.iter() {
             term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
         }
         std::process::exit(1);
     }
 
-    let mir = mir::Builder::build(&hir);
-    let module = wasm::Builder::build(&mir, &mut interner).unwrap();
-    let bytecode = wasm::Encoder::encode(&module);
+    let mir = mir::Builder::build(&hir.hir);
+    let module = wasm::Builder::build(&mir).unwrap();
+    let bytecode = wasm::Encoder::encode(&module, &interner);
 
     let parts = filename.split('.').collect::<Vec<&str>>();
     let filename = parts[0..parts.len() - 1].join(".");
@@ -84,7 +84,7 @@ fn main() {
     println!("Wrote {} bytes to out.wasm", bytecode.len());
 
     if matches.get_flag("wat") {
-        let wat = module.to_wat();
+        let wat = module.to_wat(&interner);
         let mut file = fs::File::create(filename + ".wat").unwrap();
         file.write(wat.as_bytes()).unwrap();
         println!("Wrote {} bytes to out.wat", wat.len());

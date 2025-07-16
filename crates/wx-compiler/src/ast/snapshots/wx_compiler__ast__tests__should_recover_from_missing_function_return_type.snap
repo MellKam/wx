@@ -1,0 +1,60 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.result
+---
+ast:
+  file_id: 0
+  items:
+    - kind:
+        FunctionDefinition:
+          signature:
+            name:
+              symbol: 1
+              span:
+                start: 5
+                end: 9
+            params:
+              open:
+                start: 9
+                end: 10
+              inner: []
+              close:
+                start: 10
+                end: 11
+            result:
+              separator:
+                start: 11
+                end: 11
+              ty:
+                kind: Error
+                span:
+                  start: 11
+                  end: 11
+          block:
+            kind:
+              Block:
+                open:
+                  start: 12
+                  end: 13
+                inner: []
+                close:
+                  start: 13
+                  end: 14
+            span:
+              start: 12
+              end: 14
+      span:
+        start: 0
+        end: 14
+diagnostics:
+  - severity: Error
+    code: E0011
+    message: missing return type annotation
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 11
+          end: 11
+        message: "expected colon `:` followed by type"
+    notes: []
