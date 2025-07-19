@@ -189,6 +189,7 @@ pub struct FunctionType {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum ExprKind {
+    Error,
     Placeholder,
     Int(i64),
     Float(f64),
@@ -258,17 +259,31 @@ pub struct Expression {
     pub ty: Option<Type>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub enum Mutability {
-    Mutable,
-    Const,
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub enum AccessKind {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone)]
+struct AccessContext {
+    expected_type: Option<Type>,
+    access_kind: AccessKind,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VariableAccess {
+    pub span: TextSpan,
+    pub kind: AccessKind,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Local {
     pub name: ast::Identifier,
     pub ty: Type,
-    pub mutability: Mutability,
+    pub mutability: Option<TextSpan>,
+    pub accesses: Vec<VariableAccess>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -309,6 +324,17 @@ impl StackFrame {
             .locals
             .get(local_index.0 as usize)
     }
+
+    pub fn get_mut_local(
+        &mut self,
+        scope_index: ScopeIndex,
+        local_index: LocalIndex,
+    ) -> Option<&mut Local> {
+        self.scopes
+            .get_mut(scope_index.0 as usize)?
+            .locals
+            .get_mut(local_index.0 as usize)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -337,6 +363,7 @@ pub struct EnumVariant {
 pub struct Global {
     pub name: ast::Identifier,
     pub ty: Type,
-    pub mutability: Mutability,
+    pub mutability: Option<TextSpan>,
     pub value: Expression,
+    pub accesses: Vec<VariableAccess>,
 }

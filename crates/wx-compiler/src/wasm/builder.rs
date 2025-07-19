@@ -205,7 +205,7 @@ impl Builder {
                     .map(|global| wasm::Global {
                         name: global.name,
                         ty: wasm::ValueType::try_from(global.ty.clone()).unwrap(),
-                        mutability: global.mutability == hir::Mutability::Mutable,
+                        mutability: global.mutability == mir::Mutability::Mutable,
                         value: builder.build_global_expr(global),
                     })
                     .collect::<Box<_>>(),
@@ -270,30 +270,24 @@ impl Builder {
         }
     }
 
-    fn push_expr(&mut self, expr: wasm::Expression) -> wasm::ExprIndex {
-        let index = self.expressions.len() as u32;
-        self.expressions.push(expr);
-        wasm::ExprIndex(index)
-    }
-
     fn build_expression<'mir, 'wasm>(
         &mut self,
         ctx: &mut FunctionContext<'mir>,
         expr: &mir::Expression,
-    ) -> Result<wasm::ExprIndex, ()> {
+    ) -> Result<wasm::Expression, ()> {
         match &expr.kind {
-            mir::ExprKind::Noop => Ok(self.push_expr(wasm::Expression::Nop)),
+            mir::ExprKind::Noop => Ok(wasm::Expression::Nop),
             mir::ExprKind::Function { index } => {
                 let table_index = self.table.len() as i32;
                 self.table.push(wasm::FuncIndex(*index));
                 let expr = wasm::Expression::I32Const { value: table_index };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Bool { value } => {
                 let expr = wasm::Expression::I32Const {
                     value: if *value { 1 } else { 0 },
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Call { callee, arguments } => {
                 let arguments = arguments
@@ -314,14 +308,14 @@ impl Builder {
                         let function = self.build_expression(ctx, callee)?;
 
                         wasm::Expression::CallIndirect {
-                            expr: function,
+                            expr: Box::new(function),
                             table_index: TableIndex(0),
                             type_index,
                             arguments,
                         }
                     }
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Int { value } => {
                 let expr = match expr.ty {
@@ -331,7 +325,7 @@ impl Builder {
                     mir::Type::I64 | mir::Type::U64 => wasm::Expression::I64Const { value: *value },
                     _ => return Err(()),
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Float { value } => {
                 let expr = match expr.ty {
@@ -341,27 +335,39 @@ impl Builder {
                     mir::Type::F64 => wasm::Expression::F64Const { value: *value },
                     _ => return Err(()),
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Add { left, right } => {
                 let left = self.build_expression(ctx, &left)?;
                 let right = self.build_expression(ctx, &right)?;
                 let expr = match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => wasm::Expression::I32Add { left, right },
-                    mir::Type::I64 | mir::Type::U64 => wasm::Expression::I64Add { left, right },
-                    mir::Type::F32 => wasm::Expression::F32Add { left, right },
-                    mir::Type::F64 => wasm::Expression::F64Add { left, right },
+                    mir::Type::I32 | mir::Type::U32 => wasm::Expression::I32Add {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    mir::Type::I64 | mir::Type::U64 => wasm::Expression::I64Add {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    mir::Type::F32 => wasm::Expression::F32Add {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    mir::Type::F64 => wasm::Expression::F64Add {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
                     mir::Type::Bool
                     | mir::Type::Function(_)
                     | mir::Type::Unit
                     | mir::Type::Never => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Mul { left, right } => {
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match expr.ty {
                     mir::Type::I32 | mir::Type::U32 => wasm::Expression::I32Mul { left, right },
                     mir::Type::I64 | mir::Type::U64 => wasm::Expression::I64Mul { left, right },
@@ -373,11 +379,11 @@ impl Builder {
                     | mir::Type::Never => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Div { left, right } => {
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match expr.ty {
                     mir::Type::I32 => wasm::Expression::I32DivS { left, right },
                     mir::Type::I64 => wasm::Expression::I64DivS { left, right },
@@ -391,24 +397,30 @@ impl Builder {
                     | mir::Type::Function(_) => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Rem { left, right } => {
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match expr.ty {
                     mir::Type::I32 => wasm::Expression::I32RemS { left, right },
                     mir::Type::I64 => wasm::Expression::I64RemS { left, right },
                     mir::Type::F32 => {
-                        let div = self.push_expr(wasm::Expression::F32Div { left, right });
-                        let trunc = self.push_expr(wasm::Expression::F32Trunc { value: div });
-                        let mul = self.push_expr(wasm::Expression::F32Mul { left: trunc, right });
+                        let div = Box::new(wasm::Expression::F32Div {
+                            left: left.clone(),
+                            right: right.clone(),
+                        });
+                        let trunc = Box::new(wasm::Expression::F32Trunc { value: div });
+                        let mul = Box::new(wasm::Expression::F32Mul { left: trunc, right });
                         wasm::Expression::F32Sub { left, right: mul }
                     }
                     mir::Type::F64 => {
-                        let div = self.push_expr(wasm::Expression::F64Div { left, right });
-                        let trunc = self.push_expr(wasm::Expression::F64Trunc { value: div });
-                        let mul = self.push_expr(wasm::Expression::F64Mul { left: trunc, right });
+                        let div = Box::new(wasm::Expression::F64Div {
+                            left: left.clone(),
+                            right: right.clone(),
+                        });
+                        let trunc = Box::new(wasm::Expression::F64Trunc { value: div });
+                        let mul = Box::new(wasm::Expression::F64Mul { left: trunc, right });
                         wasm::Expression::F64Sub { left, right: mul }
                     }
                     mir::Type::U32 => wasm::Expression::I32RemU { left, right },
@@ -416,12 +428,12 @@ impl Builder {
                     _ => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::NotEq { left, right } => {
                 let left_ty = left.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
 
                 let expr = match left_ty {
                     mir::Type::Bool | mir::Type::I32 | mir::Type::U32 | mir::Type::Function(_) => {
@@ -433,12 +445,12 @@ impl Builder {
                     mir::Type::Unit | mir::Type::Never => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::And { left, right } => {
                 let left_ty = left.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match left_ty {
                     mir::Type::Bool | mir::Type::I32 | mir::Type::U32 => {
                         wasm::Expression::I32And { left, right }
@@ -447,12 +459,12 @@ impl Builder {
                     _ => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Or { left, right } => {
                 let left_ty = left.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match left_ty {
                     mir::Type::Bool | mir::Type::I32 | mir::Type::U32 => {
                         wasm::Expression::I32Or { left, right }
@@ -461,56 +473,41 @@ impl Builder {
                     _ => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Local {
                 local_index,
                 scope_index,
-            } => {
-                let expr = wasm::Expression::LocalGet {
-                    local_index: ctx.get_flat_index(*scope_index, *local_index),
-                };
-                Ok(self.push_expr(expr))
-            }
+            } => Ok(wasm::Expression::LocalGet {
+                local_index: ctx.get_flat_index(*scope_index, *local_index),
+            }),
             mir::ExprKind::LocalSet {
                 local_index,
                 scope_index,
                 value,
-            } => {
-                let expr = wasm::Expression::LocalSet {
-                    local_index: ctx.get_flat_index(*scope_index, *local_index),
-                    value: self.build_expression(ctx, &value)?,
-                };
-                Ok(self.push_expr(expr))
-            }
-            mir::ExprKind::Global { global_index } => {
-                let expr = wasm::Expression::GlobalGet {
-                    global_index: wasm::GlobalIndex(*global_index),
-                };
-                Ok(self.push_expr(expr))
-            }
+            } => Ok(wasm::Expression::LocalSet {
+                local_index: ctx.get_flat_index(*scope_index, *local_index),
+                value: Box::new(self.build_expression(ctx, &value)?),
+            }),
+            mir::ExprKind::Global { global_index } => Ok(wasm::Expression::GlobalGet {
+                global_index: wasm::GlobalIndex(*global_index),
+            }),
             mir::ExprKind::GlobalSet {
                 global_index,
                 value,
-            } => {
-                let expr = wasm::Expression::GlobalSet {
-                    global: wasm::GlobalIndex(*global_index),
-                    value: self.build_expression(ctx, &value)?,
-                };
-                Ok(self.push_expr(expr))
-            }
-            mir::ExprKind::Return { value } => {
-                let expr = wasm::Expression::Return {
-                    value: match value {
-                        Some(value) => Some(self.build_expression(ctx, value)?),
-                        None => None,
-                    },
-                };
-                Ok(self.push_expr(expr))
-            }
+            } => Ok(wasm::Expression::GlobalSet {
+                global: wasm::GlobalIndex(*global_index),
+                value: Box::new(self.build_expression(ctx, &value)?),
+            }),
+            mir::ExprKind::Return { value } => Ok(wasm::Expression::Return {
+                value: match value {
+                    Some(value) => Some(Box::new(self.build_expression(ctx, value)?)),
+                    None => None,
+                },
+            }),
             mir::ExprKind::Sub { left, right } => {
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match expr.ty {
                     mir::Type::I32 | mir::Type::U32 => wasm::Expression::I32Sub { left, right },
                     mir::Type::I64 | mir::Type::U64 => wasm::Expression::I64Sub { left, right },
@@ -522,21 +519,18 @@ impl Builder {
                     | mir::Type::Function(_) => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Drop { value } => match value.ty {
                 mir::Type::Never | mir::Type::Unit => Err(()),
-                _ => {
-                    let expr = wasm::Expression::Drop {
-                        value: self.build_expression(ctx, &value)?,
-                    };
-                    Ok(self.push_expr(expr))
-                }
+                _ => Ok(wasm::Expression::Drop {
+                    value: Box::new(self.build_expression(ctx, &value)?),
+                }),
             },
             mir::ExprKind::Eq { left, right } => {
                 let ty = left.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match ty {
                     mir::Type::I32 | mir::Type::U32 | mir::Type::Bool | mir::Type::Function(_) => {
                         wasm::Expression::I32Eq { left, right }
@@ -547,11 +541,11 @@ impl Builder {
                     mir::Type::Never | mir::Type::Unit => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Eqz { value } => {
                 let value_ty = value.ty;
-                let value = self.build_expression(ctx, &value)?;
+                let value = Box::new(self.build_expression(ctx, &value)?);
                 let expr = match value_ty {
                     mir::Type::I32 | mir::Type::U32 | mir::Type::Bool => {
                         wasm::Expression::I32Eqz { value }
@@ -559,16 +553,16 @@ impl Builder {
                     mir::Type::I64 | mir::Type::U64 => wasm::Expression::I64Eqz { value },
                     mir::Type::F32 => wasm::Expression::F32Eq {
                         left: value,
-                        right: self.push_expr(wasm::Expression::F32Const { value: 0.0 }),
+                        right: Box::new(wasm::Expression::F32Const { value: 0.0 }),
                     },
                     mir::Type::F64 => wasm::Expression::F64Eq {
                         left: value,
-                        right: self.push_expr(wasm::Expression::F64Const { value: 0.0 }),
+                        right: Box::new(wasm::Expression::F64Const { value: 0.0 }),
                     },
                     mir::Type::Function(_) | mir::Type::Never | mir::Type::Unit => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Block {
                 expressions,
@@ -587,18 +581,13 @@ impl Builder {
                         _ => wasm::BlockResult::Empty,
                     },
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Loop { scope_index, block } => {
                 let expressions = match &block.kind {
                     mir::ExprKind::Block { expressions, .. } => expressions,
                     _ => unreachable!(),
                 };
-
-                let continue_expr = self.push_expr(wasm::Expression::Break {
-                    depth: 0, // Loop itself
-                    value: None,
-                });
 
                 let loop_expr = wasm::Expression::Loop {
                     expressions: expressions
@@ -607,52 +596,52 @@ impl Builder {
                             ctx.scope_index = mir::ScopeIndex(scope_index.0);
                             self.build_expression(ctx, expr)
                         })
-                        .chain(std::iter::once(Ok(continue_expr)))
+                        .chain(std::iter::once(Ok(wasm::Expression::Break {
+                            depth: 0, // Loop itself
+                            value: None,
+                        })))
                         .collect::<Result<_, _>>()?,
                     result: wasm::BlockResult::Empty,
                 };
 
                 let scope = &ctx.scopes[scope_index.0 as usize];
                 let block_expr = wasm::Expression::Block {
-                    expressions: Box::new([
-                        self.push_expr(loop_expr),
-                        self.push_expr(wasm::Expression::Unreachable),
-                    ]),
+                    expressions: Box::new([loop_expr, wasm::Expression::Unreachable]),
                     result: match wasm::ValueType::try_from(scope.result) {
                         Ok(ty) => wasm::BlockResult::SingleValue(ty),
                         _ => wasm::BlockResult::Empty,
                     },
                 };
 
-                Ok(self.push_expr(block_expr))
+                Ok(block_expr)
             }
             mir::ExprKind::Continue { scope_index } => {
                 let expr = wasm::Expression::Break {
                     depth: ctx.get_continue_depth(*scope_index).unwrap(),
                     value: None,
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Break { value, scope_index } => {
                 let expr = wasm::Expression::Break {
                     depth: ctx.get_break_depth(*scope_index).unwrap(),
                     value: match value {
-                        Some(value) => Some(self.build_expression(ctx, value)?),
+                        Some(value) => Some(Box::new(self.build_expression(ctx, value)?)),
                         None => None,
                     },
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
-            mir::ExprKind::Unreachable => Ok(self.push_expr(wasm::Expression::Unreachable)),
+            mir::ExprKind::Unreachable => Ok(wasm::Expression::Unreachable),
             mir::ExprKind::IfElse {
                 condition,
                 then_block,
                 else_block,
             } => {
-                let condition = self.build_expression(ctx, &condition)?;
-                let then_branch = self.build_expression(ctx, &then_block)?;
+                let condition = Box::new(self.build_expression(ctx, &condition)?);
+                let then_branch = Box::new(self.build_expression(ctx, &then_block)?);
                 let else_branch = match else_block {
-                    Some(else_block) => Some(self.build_expression(ctx, else_block)?),
+                    Some(else_block) => Some(Box::new(self.build_expression(ctx, else_block)?)),
                     None => None,
                 };
                 let expr = wasm::Expression::IfElse {
@@ -662,13 +651,13 @@ impl Builder {
                     else_branch,
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::BitAnd { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) | (mir::Type::U32, mir::Type::U32) => {
                         wasm::Expression::I32And { left, right }
@@ -679,13 +668,13 @@ impl Builder {
                     _ => return Err(()),
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::BitOr { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) | (mir::Type::U32, mir::Type::U32) => {
                         wasm::Expression::I32Or { left, right }
@@ -695,13 +684,13 @@ impl Builder {
                     }
                     _ => return Err(()),
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::BitXor { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) | (mir::Type::U32, mir::Type::U32) => {
                         wasm::Expression::I32Xor { left, right }
@@ -711,28 +700,28 @@ impl Builder {
                     }
                     _ => return Err(()),
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::BitNot { value } => {
-                let left = self.build_expression(ctx, &value)?;
+                let left = Box::new(self.build_expression(ctx, &value)?);
                 let expr = match value.ty {
                     mir::Type::I32 | mir::Type::U32 => wasm::Expression::I32Xor {
                         left,
-                        right: self.push_expr(wasm::Expression::I32Const { value: -1 }),
+                        right: Box::new(wasm::Expression::I32Const { value: -1 }),
                     },
                     mir::Type::I64 | mir::Type::U64 => wasm::Expression::I64Xor {
                         left,
-                        right: self.push_expr(wasm::Expression::I64Const { value: -1 }),
+                        right: Box::new(wasm::Expression::I64Const { value: -1 }),
                     },
                     _ => return Err(()),
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::LeftShift { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) | (mir::Type::U32, mir::Type::U32) => {
                         wasm::Expression::I32Shl { left, right }
@@ -740,13 +729,13 @@ impl Builder {
                     (mir::Type::I64, mir::Type::I64) => wasm::Expression::I64Shl { left, right },
                     _ => return Err(()),
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::RightShift { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) => wasm::Expression::I32ShrS { left, right },
                     (mir::Type::I64, mir::Type::I64) => wasm::Expression::I64ShrS { left, right },
@@ -754,13 +743,13 @@ impl Builder {
                     (mir::Type::U64, mir::Type::U64) => wasm::Expression::I64ShrU { left, right },
                     _ => return Err(()),
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Less { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) => wasm::Expression::I32LtS { left, right },
                     (mir::Type::I64, mir::Type::I64) => wasm::Expression::I64LtS { left, right },
@@ -772,13 +761,13 @@ impl Builder {
                         return Err(());
                     }
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::LessEq { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) => wasm::Expression::I32LeS { left, right },
                     (mir::Type::I64, mir::Type::I64) => wasm::Expression::I64LeS { left, right },
@@ -790,13 +779,13 @@ impl Builder {
                         return Err(());
                     }
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Greater { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) => wasm::Expression::I32GtS { left, right },
                     (mir::Type::I64, mir::Type::I64) => wasm::Expression::I64GtS { left, right },
@@ -808,13 +797,13 @@ impl Builder {
                         return Err(());
                     }
                 };
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::GreaterEq { left, right } => {
                 let left_ty = left.ty;
                 let right_ty = right.ty;
-                let left = self.build_expression(ctx, &left)?;
-                let right = self.build_expression(ctx, &right)?;
+                let left = Box::new(self.build_expression(ctx, &left)?);
+                let right = Box::new(self.build_expression(ctx, &right)?);
                 let expr = match (left_ty, right_ty) {
                     (mir::Type::I32, mir::Type::I32) => wasm::Expression::I32GeS { left, right },
                     (mir::Type::I64, mir::Type::I64) => wasm::Expression::I64GeS { left, right },
@@ -827,17 +816,17 @@ impl Builder {
                     }
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
             mir::ExprKind::Neg { value } => {
-                let value = self.build_expression(ctx, &value)?;
+                let value = Box::new(self.build_expression(ctx, &value)?);
                 let expr = match expr.ty {
                     mir::Type::I32 => wasm::Expression::I32Sub {
-                        left: self.push_expr(wasm::Expression::I32Const { value: 0 }),
+                        left: Box::new(wasm::Expression::I32Const { value: 0 }),
                         right: value,
                     },
                     mir::Type::I64 => wasm::Expression::I64Sub {
-                        left: self.push_expr(wasm::Expression::I64Const { value: 0 }),
+                        left: Box::new(wasm::Expression::I64Const { value: 0 }),
                         right: value,
                     },
                     mir::Type::F32 => wasm::Expression::F32Neg { value },
@@ -852,7 +841,7 @@ impl Builder {
                     }
                 };
 
-                Ok(self.push_expr(expr))
+                Ok(expr)
             }
         }
     }

@@ -29,7 +29,12 @@ hir:
                     end: 10
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 32
+                      end: 33
+                    kind: Read
               - name:
                   symbol: 4
                   span:
@@ -37,7 +42,12 @@ hir:
                     end: 18
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 36
+                      end: 37
+                    kind: Read
             inferred_type:
               Primitive: I32
             expected_type:
@@ -109,7 +119,12 @@ hir:
                     end: 50
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 72
+                      end: 73
+                    kind: Read
               - name:
                   symbol: 4
                   span:
@@ -117,7 +132,12 @@ hir:
                     end: 58
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 76
+                      end: 77
+                    kind: Read
             inferred_type:
               Primitive: I32
             expected_type:
@@ -190,7 +210,12 @@ hir:
                     end: 102
                 ty:
                   Function: 0
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 166
+                      end: 171
+                    kind: Read
               - name:
                   symbol: 2
                   span:
@@ -198,7 +223,12 @@ hir:
                     end: 133
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 172
+                      end: 173
+                    kind: Read
               - name:
                   symbol: 4
                   span:
@@ -206,7 +236,12 @@ hir:
                     end: 146
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 175
+                      end: 176
+                    kind: Read
             inferred_type:
               Primitive: I32
             expected_type:
@@ -280,7 +315,12 @@ hir:
                     end: 218
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 300
+                      end: 301
+                    kind: Read
               - name:
                   symbol: 4
                   span:
@@ -288,7 +328,21 @@ hir:
                     end: 251
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 304
+                      end: 305
+                    kind: Read
+              - name:
+                  symbol: 9
+                  span:
+                    start: 283
+                    end: 284
+                ty:
+                  Primitive: I32
+                mutability: ~
+                accesses: []
             inferred_type:
               Primitive: I32
             expected_type:
@@ -400,22 +454,43 @@ hir:
                   start: 244
                   end: 271
                 ty: Unit
+              - kind:
+                  LocalDeclaration:
+                    name:
+                      symbol: 9
+                      span:
+                        start: 283
+                        end: 284
+                    scope_index: 0
+                    local_index: 2
+                    expr:
+                      kind:
+                        Int: 5
+                      span:
+                        start: 292
+                        end: 293
+                      ty:
+                        Primitive: I32
+                span:
+                  start: 277
+                  end: 293
+                ty: Unit
             result:
               kind:
                 Binary:
                   operator:
                     kind: Add
                     span:
-                      start: 280
-                      end: 281
+                      start: 302
+                      end: 303
                   left:
                     kind:
                       Local:
                         scope_index: 0
                         local_index: 0
                     span:
-                      start: 278
-                      end: 279
+                      start: 300
+                      end: 301
                     ty:
                       Primitive: I32
                   right:
@@ -424,18 +499,18 @@ hir:
                         scope_index: 0
                         local_index: 1
                     span:
-                      start: 282
-                      end: 283
+                      start: 304
+                      end: 305
                     ty:
                       Primitive: I32
               span:
-                start: 278
-                end: 283
+                start: 300
+                end: 305
               ty:
                 Primitive: I32
         span:
           start: 205
-          end: 285
+          end: 307
         ty:
           Primitive: I32
   enums: []
@@ -443,4 +518,15 @@ hir:
   exports:
     - Function:
         func_index: 3
-diagnostics: []
+diagnostics:
+  - severity: Warning
+    code: E2009
+    message: unused variable
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 283
+          end: 284
+        message: ""
+    notes: []

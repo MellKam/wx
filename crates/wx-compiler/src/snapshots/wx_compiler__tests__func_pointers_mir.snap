@@ -146,6 +146,9 @@ functions:
           - name: 4
             ty: I32
             mutability: Const
+          - name: 9
+            ty: I32
+            mutability: Const
         result: I32
     block:
       kind:
@@ -208,6 +211,16 @@ functions:
                               Int:
                                 value: 5
                             ty: I32
+                    ty: I32
+              ty: Unit
+            - kind:
+                LocalSet:
+                  scope_index: 0
+                  local_index: 2
+                  value:
+                    kind:
+                      Int:
+                        value: 5
                     ty: I32
               ty: Unit
             - kind:

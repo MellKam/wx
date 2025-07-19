@@ -28,7 +28,20 @@ hir:
                     end: 23
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 44
+                      end: 45
+                    kind: Read
+                  - span:
+                      start: 69
+                      end: 70
+                    kind: Read
+                  - span:
+                      start: 83
+                      end: 84
+                    kind: Read
             inferred_type:
               Primitive: I32
             expected_type:

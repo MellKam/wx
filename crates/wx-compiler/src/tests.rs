@@ -100,6 +100,7 @@ fn func_pointers() {
         export func main(): i32 {
             local a = apply(add, 5, 10);
             local b = apply(sub, 10, 5);
+            local c: i32 = 5;
 
             a + b
         }

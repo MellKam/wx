@@ -646,6 +646,41 @@ ast:
                             start: 271
                             end: 272
                         - inner:
+                            LocalDefinition:
+                              mutable: ~
+                              name:
+                                symbol: 9
+                                span:
+                                  start: 283
+                                  end: 284
+                              annotation:
+                                separator:
+                                  start: 284
+                                  end: 285
+                                ty:
+                                  kind:
+                                    Identifier:
+                                      symbol: 3
+                                  span:
+                                    start: 286
+                                    end: 289
+                              eq:
+                                start: 290
+                                end: 291
+                              value:
+                                kind:
+                                  Int:
+                                    value: 5
+                                span:
+                                  start: 292
+                                  end: 293
+                          span:
+                            start: 277
+                            end: 293
+                          separator:
+                            start: 293
+                            end: 294
+                        - inner:
                             Expression:
                               expr:
                                 kind:
@@ -655,37 +690,37 @@ ast:
                                         Identifier:
                                           symbol: 2
                                       span:
-                                        start: 278
-                                        end: 279
+                                        start: 300
+                                        end: 301
                                     operator:
                                       kind: Add
                                       span:
-                                        start: 280
-                                        end: 281
+                                        start: 302
+                                        end: 303
                                     right:
                                       kind:
                                         Identifier:
                                           symbol: 4
                                       span:
-                                        start: 282
-                                        end: 283
+                                        start: 304
+                                        end: 305
                                 span:
-                                  start: 278
-                                  end: 283
+                                  start: 300
+                                  end: 305
                           span:
-                            start: 278
-                            end: 283
+                            start: 300
+                            end: 305
                           separator: ~
                       close:
-                        start: 284
-                        end: 285
+                        start: 306
+                        end: 307
                   span:
                     start: 205
-                    end: 285
+                    end: 307
             span:
               start: 188
-              end: 285
+              end: 307
       span:
         start: 181
-        end: 285
+        end: 307
 diagnostics: []

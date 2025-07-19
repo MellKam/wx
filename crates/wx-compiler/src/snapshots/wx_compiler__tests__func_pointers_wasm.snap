@@ -44,71 +44,7 @@ exports:
         name: 8
         func_index: 3
 code:
-  expressions:
-    - LocalGet:
-        local_index: 0
-    - LocalGet:
-        local_index: 1
-    - I32Add:
-        left: 0
-        right: 1
-    - LocalGet:
-        local_index: 0
-    - LocalGet:
-        local_index: 1
-    - I32Sub:
-        left: 3
-        right: 4
-    - LocalGet:
-        local_index: 1
-    - LocalGet:
-        local_index: 2
-    - LocalGet:
-        local_index: 0
-    - CallIndirect:
-        expr: 8
-        table_index: 0
-        type_index: 0
-        arguments:
-          - 6
-          - 7
-    - I32Const:
-        value: 0
-    - I32Const:
-        value: 5
-    - I32Const:
-        value: 10
-    - Call:
-        function: 2
-        arguments:
-          - 10
-          - 11
-          - 12
-    - LocalSet:
-        local_index: 0
-        value: 13
-    - I32Const:
-        value: 1
-    - I32Const:
-        value: 10
-    - I32Const:
-        value: 5
-    - Call:
-        function: 2
-        arguments:
-          - 15
-          - 16
-          - 17
-    - LocalSet:
-        local_index: 1
-        value: 18
-    - LocalGet:
-        local_index: 0
-    - LocalGet:
-        local_index: 1
-    - I32Add:
-        left: 20
-        right: 21
+  expressions: []
   functions:
     - name: 1
       locals:
@@ -117,7 +53,13 @@ code:
         - name: 4
           ty: I32
       expressions:
-        - 2
+        - I32Add:
+            left:
+              LocalGet:
+                local_index: 0
+            right:
+              LocalGet:
+                local_index: 1
     - name: 5
       locals:
         - name: 2
@@ -125,7 +67,13 @@ code:
         - name: 4
           ty: I32
       expressions:
-        - 5
+        - I32Sub:
+            left:
+              LocalGet:
+                local_index: 0
+            right:
+              LocalGet:
+                local_index: 1
     - name: 6
       locals:
         - name: 7
@@ -135,14 +83,59 @@ code:
         - name: 4
           ty: I32
       expressions:
-        - 9
+        - CallIndirect:
+            expr:
+              LocalGet:
+                local_index: 0
+            table_index: 0
+            type_index: 0
+            arguments:
+              - LocalGet:
+                  local_index: 1
+              - LocalGet:
+                  local_index: 2
     - name: 8
       locals:
         - name: 2
           ty: I32
         - name: 4
           ty: I32
+        - name: 9
+          ty: I32
       expressions:
-        - 14
-        - 19
-        - 22
+        - LocalSet:
+            local_index: 0
+            value:
+              Call:
+                function: 2
+                arguments:
+                  - I32Const:
+                      value: 0
+                  - I32Const:
+                      value: 5
+                  - I32Const:
+                      value: 10
+        - LocalSet:
+            local_index: 1
+            value:
+              Call:
+                function: 2
+                arguments:
+                  - I32Const:
+                      value: 1
+                  - I32Const:
+                      value: 10
+                  - I32Const:
+                      value: 5
+        - LocalSet:
+            local_index: 2
+            value:
+              I32Const:
+                value: 5
+        - I32Add:
+            left:
+              LocalGet:
+                local_index: 0
+            right:
+              LocalGet:
+                local_index: 1

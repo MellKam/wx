@@ -58,13 +58,6 @@ trait ContextEncode {
     fn encode(&self, ctx: &mut EncodeContext);
 }
 
-impl ContextEncode for wasm::ExprIndex {
-    fn encode(&self, ctx: &mut EncodeContext) {
-        let expr = ctx.module.code.expressions.get(self.0 as usize).unwrap();
-        expr.encode(ctx);
-    }
-}
-
 impl ContextEncode for wasm::Expression {
     fn encode(&self, ctx: &mut EncodeContext) {
         use wasm::Expression;
@@ -196,7 +189,7 @@ impl ContextEncode for wasm::Expression {
                     }
                 }
 
-                for expr in expressions.iter().copied() {
+                for expr in expressions.iter() {
                     expr.encode(ctx);
                 }
                 ctx.sink.push_str(")");
@@ -215,7 +208,7 @@ impl ContextEncode for wasm::Expression {
                     }
                 }
 
-                for expr in expressions.iter().copied() {
+                for expr in expressions.iter() {
                     expr.encode(ctx);
                 }
                 ctx.sink.push_str(")");
@@ -226,7 +219,7 @@ impl ContextEncode for wasm::Expression {
             Expression::Break { value, depth } => {
                 ctx.sink.push_str("(br ");
                 depth.encode(ctx.sink);
-                match *value {
+                match value {
                     Some(value) => {
                         ctx.sink.push_str(" ");
                         value.encode(ctx);
@@ -251,7 +244,7 @@ impl ContextEncode for wasm::Expression {
                 ctx.sink.push_str("(call $");
                 ctx.sink.push_str(name);
                 ctx.sink.push_str(" ");
-                for argument in arguments.iter().copied() {
+                for argument in arguments.iter() {
                     argument.encode(ctx);
                 }
                 ctx.sink.push_str(")");
@@ -266,7 +259,7 @@ impl ContextEncode for wasm::Expression {
                 ctx.sink.push_str("(call_indirect (type ");
                 type_index.0.encode(ctx.sink);
                 ctx.sink.push_str(") ");
-                for argument in arguments.iter().copied() {
+                for argument in arguments.iter() {
                     argument.encode(ctx);
                 }
                 ctx.sink.push_str(")");
@@ -751,7 +744,7 @@ impl ContextEncode for wasm::FunctionBody {
             ctx.sink.push_str(")");
         }
 
-        for expr in self.expressions.iter().copied() {
+        for expr in self.expressions.iter() {
             expr.encode(ctx);
         }
         ctx.sink.push_str(")");

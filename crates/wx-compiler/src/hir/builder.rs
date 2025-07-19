@@ -246,7 +246,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     }
 
     fn build_global_item(&mut self, item: &ast::Item) -> Result<Global, ()> {
-        let (name, ty, value_expr, mutable) = match &item.kind {
+        let (name, ty, value_expr, mutability) = match &item.kind {
             ast::ItemKind::GlobalDefinition {
                 name,
                 ty,
@@ -276,12 +276,10 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         Ok(Global {
             name,
-            mutability: match mutable {
-                Some(_) => Mutability::Mutable,
-                None => Mutability::Const,
-            },
+            mutability,
             ty,
             value: expr,
+            accesses: Vec::new(),
         })
     }
 
@@ -298,10 +296,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             .map(|param| hir::Local {
                 name: param.inner.name.clone(),
                 ty: self.resolve_type(&param.inner.annotation.ty).unwrap(),
-                mutability: match param.inner.mutable {
-                    Some(_) => Mutability::Mutable,
-                    None => Mutability::Const,
-                },
+                mutability: param.inner.mutable,
+                accesses: Vec::new(),
             })
             .collect::<Vec<_>>();
 
@@ -447,7 +443,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let value = self.build_expression(ctx, value, None)?;
+        let value = self.build_expression(
+            ctx,
+            value,
+            AccessContext {
+                access_kind: AccessKind::Read,
+                expected_type: None,
+            },
+        )?;
         match value.ty {
             Some(hir::Type::Unit) => Ok(value),
             Some(hir::Type::Never) => {
@@ -523,7 +526,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut FunctionContext,
         stmt: &ast::Separated<ast::StmtKind>,
     ) -> Result<Expression, ()> {
-        let (maybe_mutable, name, annotation, value) = match &stmt.inner {
+        let (mutability, name, annotation, value) = match &stmt.inner {
             ast::StmtKind::LocalDefinition {
                 mutable,
                 name,
@@ -538,7 +541,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             Some(annotation) => Some(self.resolve_type(&annotation.ty).unwrap()),
             None => None,
         };
-        let mut value = self.build_expression(ctx, value, expected_type)?;
+        let mut value = self.build_expression(
+            ctx,
+            value,
+            AccessContext {
+                expected_type,
+                access_kind: AccessKind::Read,
+            },
+        )?;
 
         let ty = match (value.ty, expected_type) {
             (Some(ty), None) => ty,
@@ -577,10 +587,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         let local_index = ctx.push_local(hir::Local {
             name: name.clone(),
             ty,
-            mutability: match maybe_mutable {
-                Some(_) => Mutability::Mutable,
-                None => Mutability::Const,
-            },
+            mutability,
+            accesses: Vec::new(),
         });
 
         let span = TextSpan::new(stmt.span.start().0, value.span.end().0);
@@ -601,9 +609,9 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_expression(
         &mut self,
-        ctx: &mut FunctionContext,
+        func_ctx: &mut FunctionContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<Expression, ()> {
         use ast::ExprKind;
         match &expr.kind {
@@ -618,38 +626,40 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 span: expr.span,
             }),
             ExprKind::Identifier { .. } => {
-                self.build_identifier_expression(ctx, expr, expected_type)
+                self.build_identifier_expression(func_ctx, expr, access_ctx)
             }
-            ExprKind::Binary { .. } => self.build_binary_expression(ctx, expr, expected_type),
-            ExprKind::Grouping { value } => self.build_expression(ctx, &value.inner, expected_type),
-            ExprKind::Unary { .. } => self.build_unary_expression(ctx, expr, expected_type),
-            ExprKind::Call { .. } => self.build_call_expression(ctx, expr),
+            ExprKind::Binary { .. } => self.build_binary_expression(func_ctx, expr, access_ctx),
+            ExprKind::Grouping { value } => {
+                self.build_expression(func_ctx, &value.inner, access_ctx)
+            }
+            ExprKind::Unary { .. } => self.build_unary_expression(func_ctx, expr, access_ctx),
+            ExprKind::Call { .. } => self.build_call_expression(func_ctx, expr),
             ExprKind::Namespace { .. } => self.build_namespace_expression(expr),
-            ExprKind::Return { .. } => self.build_return_expression(ctx, expr),
-            ExprKind::Block { .. } => ctx.enter_block(
+            ExprKind::Return { .. } => self.build_return_expression(func_ctx, expr),
+            ExprKind::Block { .. } => func_ctx.enter_block(
                 BlockScope {
                     label: None,
                     kind: BlockKind::Block,
-                    parent: Some(ctx.scope_index),
+                    parent: Some(func_ctx.scope_index),
                     locals: Vec::new(),
                     inferred_type: None,
-                    expected_type,
+                    expected_type: access_ctx.expected_type,
                 },
                 |ctx| self.build_block_expression(ctx, expr),
             ),
             ExprKind::IfElse { .. } => {
-                self.build_if_else_expression(ctx, expr, None, expected_type)
+                self.build_if_else_expression(func_ctx, expr, None, access_ctx)
             }
-            ExprKind::Loop { .. } => self.build_loop_expression(ctx, expr, None, expected_type),
-            ExprKind::Cast { .. } => self.build_cast_expression(ctx, expr, expected_type),
-            ExprKind::Break { .. } => self.build_break_expression(ctx, expr),
-            ExprKind::Continue { .. } => self.build_continue_expression(ctx, expr),
+            ExprKind::Loop { .. } => self.build_loop_expression(func_ctx, expr, None, access_ctx),
+            ExprKind::Cast { .. } => self.build_cast_expression(func_ctx, expr, access_ctx),
+            ExprKind::Break { .. } => self.build_break_expression(func_ctx, expr),
+            ExprKind::Continue { .. } => self.build_continue_expression(func_ctx, expr),
             ExprKind::Unreachable => Ok(hir::Expression {
                 kind: hir::ExprKind::Unreachable,
                 ty: Some(Type::Never),
                 span: expr.span,
             }),
-            ExprKind::Label { .. } => self.build_label_expression(ctx, expr, expected_type),
+            ExprKind::Label { .. } => self.build_label_expression(func_ctx, expr, access_ctx),
         }
     }
 
@@ -657,11 +667,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<hir::Expression, ()> {
         let (label, block) = match &expr.kind {
             ast::ExprKind::Label { label, block } => (label.clone(), block),
-            _ => unreachable!("expected label expression"),
+            _ => unreachable!(),
         };
 
         match block.kind {
@@ -672,33 +682,53 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     parent: Some(ctx.scope_index),
                     locals: Vec::new(),
                     inferred_type: None,
-                    expected_type,
+                    expected_type: access_ctx.expected_type,
                 },
                 |ctx| self.build_block_expression(ctx, block),
             ),
-            ast::ExprKind::IfElse { .. } => {
-                self.build_if_else_expression(ctx, block, Some(label), expected_type)
-            }
-            ast::ExprKind::Loop { .. } => {
-                self.build_loop_expression(ctx, block, Some(label), expected_type)
-            }
+            ast::ExprKind::IfElse { .. } => self.build_if_else_expression(
+                ctx,
+                block,
+                Some(label),
+                AccessContext {
+                    expected_type: access_ctx.expected_type,
+                    access_kind: AccessKind::Read,
+                },
+            ),
+            ast::ExprKind::Loop { .. } => self.build_loop_expression(
+                ctx,
+                block,
+                Some(label),
+                AccessContext {
+                    expected_type: access_ctx.expected_type,
+                    access_kind: AccessKind::Read,
+                },
+            ),
             _ => unreachable!(),
         }
     }
 
     fn build_identifier_expression(
         &mut self,
-        ctx: &FunctionContext,
+        func_ctx: &mut FunctionContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<hir::Expression, ()> {
         let symbol = match expr.kind {
             ast::ExprKind::Identifier { symbol } => symbol,
             _ => unreachable!(),
         };
-        match ctx.resolve_local(symbol) {
+        match func_ctx.resolve_local(symbol) {
             Some((scope_index, local_index)) => {
-                let local = ctx.frame.get_local(scope_index, local_index).unwrap();
+                let local = func_ctx
+                    .frame
+                    .get_mut_local(scope_index, local_index)
+                    .unwrap();
+
+                local.accesses.push(hir::VariableAccess {
+                    kind: access_ctx.access_kind,
+                    span: expr.span,
+                });
 
                 return Ok(hir::Expression {
                     kind: hir::ExprKind::Local {
@@ -721,7 +751,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 }),
                 GlobalValue::Placeholder => Ok(Expression {
                     kind: ExprKind::Placeholder,
-                    ty: expected_type,
+                    ty: access_ctx.expected_type,
                     span: expr.span,
                 }),
                 GlobalValue::Function { func_index } => Ok(Expression {
@@ -746,11 +776,24 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     ty: Some(Type::Enum(enum_index)),
                     span: expr.span,
                 }),
-                GlobalValue::Global { global_index } => Ok(Expression {
-                    kind: ExprKind::Global { global_index },
-                    ty: Some(self.global.globals.get(global_index.0 as usize).unwrap().ty),
-                    span: expr.span,
-                }),
+                GlobalValue::Global { global_index } => {
+                    let global = self
+                        .global
+                        .globals
+                        .get_mut(global_index.0 as usize)
+                        .unwrap();
+
+                    global.accesses.push(hir::VariableAccess {
+                        kind: access_ctx.access_kind,
+                        span: expr.span,
+                    });
+
+                    Ok(Expression {
+                        kind: ExprKind::Global { global_index },
+                        ty: Some(global.ty),
+                        span: expr.span,
+                    })
+                }
                 _ => unreachable!(),
             },
             None => {
@@ -761,7 +804,12 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     }
                     .report(),
                 );
-                Err(())
+
+                Ok(hir::Expression {
+                    kind: hir::ExprKind::Error,
+                    ty: access_ctx.expected_type.or(Some(hir::Type::Unknown)),
+                    span: expr.span,
+                })
             }
         }
     }
@@ -849,24 +897,24 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_loop_expression(
         &mut self,
-        ctx: &mut FunctionContext,
+        func_ctx: &mut FunctionContext,
         expr: &ast::Expression,
         label: Option<ast::Identifier>,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<hir::Expression, ()> {
         let block = match &expr.kind {
             ast::ExprKind::Loop { block } => block,
             _ => unreachable!(),
         };
 
-        ctx.enter_block(
+        func_ctx.enter_block(
             BlockScope {
                 label: label.map(|l| l.symbol),
                 kind: BlockKind::Loop,
-                parent: Some(ctx.scope_index),
+                parent: Some(func_ctx.scope_index),
                 locals: Vec::new(),
                 inferred_type: None,
-                expected_type,
+                expected_type: access_ctx.expected_type,
             },
             |ctx| {
                 let block = self.build_block_expression(ctx, block)?;
@@ -907,7 +955,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<hir::Expression, ()> {
         let (value, cast_type) = match &expr.kind {
             ast::ExprKind::Cast { value, ty } => (value, ty),
@@ -916,7 +964,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         match self.resolve_type(cast_type) {
             Ok(cast_type) => {
-                let mut value = self.build_expression(ctx, value, Some(cast_type))?;
+                let mut value = self.build_expression(
+                    ctx,
+                    value,
+                    AccessContext {
+                        expected_type: Some(cast_type),
+                        access_kind: access_ctx.access_kind,
+                    },
+                )?;
                 match value.ty {
                     Some(ty) => if ty != cast_type {},
                     None => self.coerce_untyped_expr(&mut value, cast_type)?,
@@ -924,7 +979,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
                 Ok(value)
             }
-            Err(_) => self.build_expression(ctx, value, expected_type),
+            Err(_) => self.build_expression(ctx, value, access_ctx),
         }
     }
 
@@ -1005,6 +1060,38 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         BlockState::Incomplete(expressions.into_boxed_slice())
     }
 
+    fn report_unused_locals(&mut self, block: &BlockScope) {
+        println!("reporting unused locals for block: {:?}", block.label);
+        for local in block.locals.iter() {
+            if local.accesses.is_empty() {
+                self.diagnostics.push(
+                    UnusedVariableDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: local.name.span,
+                    }
+                    .report(),
+                );
+            }
+
+            match local.mutability {
+                Some(mut_span)
+                    if !local.accesses.iter().any(|access| {
+                        access.kind == AccessKind::Write || access.kind == AccessKind::ReadWrite
+                    }) =>
+                {
+                    self.diagnostics.push(
+                        UnnecessaryMutabilityDiagnostic {
+                            file_id: self.ast.file_id,
+                            span: TextSpan::merge(mut_span, local.name.span),
+                        }
+                        .report(),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn build_block_expression(
         &mut self,
         ctx: &mut FunctionContext,
@@ -1025,6 +1112,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         let expressions = match self.build_block_statements(ctx, statements) {
             BlockState::Exhaustive(expressions) => {
+                self.report_unused_locals(&ctx.frame.scopes[ctx.scope_index.0 as usize]);
                 if result.is_some() || expressions.len() < statements.len() {
                     self.diagnostics.push(
                         UnreachableCodeDiagnostic {
@@ -1064,9 +1152,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         match ctx.frame.scopes[ctx.scope_index.0 as usize].kind {
             BlockKind::Loop => {
                 let result = match result {
-                    Some(result) => Some(self.build_expression(ctx, &result, Some(Type::Unit))?),
+                    Some(result) => Some(self.build_expression(
+                        ctx,
+                        &result,
+                        AccessContext {
+                            expected_type: Some(Type::Unit),
+                            access_kind: AccessKind::Read,
+                        },
+                    )?),
                     None => None,
                 };
+
+                self.report_unused_locals(&ctx.frame.scopes[ctx.scope_index.0 as usize]);
 
                 Ok(hir::Expression {
                     kind: ExprKind::Block {
@@ -1084,6 +1181,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             }
             BlockKind::Block => {
                 let result = self.build_block_result(ctx, result.as_deref())?;
+
+                self.report_unused_locals(&ctx.frame.scopes[ctx.scope_index.0 as usize]);
 
                 let scope = &ctx.frame.scopes[ctx.scope_index.0 as usize];
                 let inferred_type = scope.inferred_type.expect("should have inferred type");
@@ -1126,7 +1225,10 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 let mut result = self.build_expression(
                     ctx,
                     result,
-                    ctx.frame.scopes[ctx.scope_index.0 as usize].expected_type,
+                    AccessContext {
+                        expected_type: ctx.frame.scopes[ctx.scope_index.0 as usize].expected_type,
+                        access_kind: AccessKind::Read,
+                    },
                 )?;
 
                 let scope = &mut ctx.frame.scopes[ctx.scope_index.0 as usize];
@@ -1156,17 +1258,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
-        let maybe_ast_value = match &expr.kind {
+        let value = match &expr.kind {
             ast::ExprKind::Return { value } => value,
             _ => unreachable!(),
         };
 
-        match maybe_ast_value {
-            Some(ast_value) => Ok(self
+        match value {
+            Some(value) => Ok(self
                 .build_expression(
                     ctx,
-                    ast_value,
-                    ctx.frame.scopes.get(0).unwrap().expected_type,
+                    value,
+                    AccessContext {
+                        expected_type: ctx.frame.scopes.get(0).unwrap().expected_type,
+                        access_kind: AccessKind::Read,
+                    },
                 )
                 .and_then(|mut value| {
                     let scope = ctx.frame.scopes.get_mut(0).unwrap();
@@ -1186,7 +1291,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                     file_id: self.ast.file_id,
                                     expected: expected_type,
                                     actual: inferred_type,
-                                    span: ast_value.span,
+                                    span: value.span,
                                 }
                                 .report(&self.global),
                             );
@@ -1248,9 +1353,9 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
-        let (label, maybe_ast_value) = match &expr.kind {
+        let (label, value) = match &expr.kind {
             ast::ExprKind::Break { label, value } => (label.clone(), value),
-            _ => unreachable!("expected break expression"),
+            _ => unreachable!(),
         };
 
         let scope_index = match label {
@@ -1284,7 +1389,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     );
 
                     return Ok(Expression {
-                        kind: ExprKind::Unreachable,
+                        kind: ExprKind::Error,
                         ty: Some(Type::Never),
                         span: expr.span,
                     });
@@ -1292,16 +1397,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             },
         };
 
-        match maybe_ast_value {
-            Some(ast_value) => Ok(self
+        match value {
+            Some(value) => Ok(self
                 .build_expression(
                     ctx,
-                    ast_value,
-                    ctx.frame
-                        .scopes
-                        .get(scope_index.0 as usize)
-                        .unwrap()
-                        .expected_type,
+                    value,
+                    AccessContext {
+                        expected_type: ctx
+                            .frame
+                            .scopes
+                            .get(scope_index.0 as usize)
+                            .unwrap()
+                            .expected_type,
+                        access_kind: AccessKind::Read,
+                    },
                 )
                 .and_then(|mut value| {
                     let scope = ctx.frame.scopes.get_mut(scope_index.0 as usize).unwrap();
@@ -1367,20 +1476,27 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
         label: Option<ast::Identifier>,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<hir::Expression, ()> {
-        let (ast_condition, ast_then_block, maybe_ast_else_block) = match &expr.kind {
+        let (condition, then_block, maybe_else_block) = match &expr.kind {
             ast::ExprKind::IfElse {
                 condition,
                 then_block,
                 else_block,
             } => (condition, then_block, else_block),
-            _ => unreachable!("expected if expression"),
+            _ => unreachable!(),
         };
 
-        let condition = self.build_expression(ctx, ast_condition, Some(Type::Bool))?;
+        let condition = self.build_expression(
+            ctx,
+            condition,
+            AccessContext {
+                expected_type: Some(Type::Bool),
+                access_kind: AccessKind::Read,
+            },
+        )?;
 
-        let then_block = match ast_then_block.kind {
+        let then_block = match then_block.kind {
             ast::ExprKind::Block { .. } => ctx.enter_block(
                 BlockScope {
                     label: label.clone().map(|l| l.symbol),
@@ -1388,16 +1504,16 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     parent: Some(ctx.scope_index),
                     locals: Vec::new(),
                     inferred_type: None,
-                    expected_type: match maybe_ast_else_block {
-                        Some(_) => expected_type,
+                    expected_type: match maybe_else_block {
+                        Some(_) => access_ctx.expected_type,
                         None => None,
                     },
                 },
-                |ctx| self.build_block_expression(ctx, ast_then_block),
+                |ctx| self.build_block_expression(ctx, then_block),
             )?,
             _ => unreachable!(),
         };
-        let (else_block, ty) = match maybe_ast_else_block {
+        let (else_block, ty) = match maybe_else_block {
             Some(ast_else_block) => {
                 let else_block = match ast_else_block.kind {
                     ast::ExprKind::Block { .. } => ctx.enter_block(
@@ -1407,11 +1523,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             parent: Some(ctx.scope_index),
                             locals: Vec::new(),
                             inferred_type: None,
-                            expected_type,
+                            expected_type: access_ctx.expected_type,
                         },
                         |ctx| self.build_block_expression(ctx, ast_else_block),
                     )?,
-                    _ => unreachable!("expected block expression"),
+                    _ => unreachable!(),
                 };
 
                 match (then_block.ty, else_block.ty) {
@@ -1462,7 +1578,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!("expected call expression"),
         };
 
-        let callee = self.build_expression(ctx, ast_callee, None)?;
+        let callee = self.build_expression(
+            ctx,
+            ast_callee,
+            AccessContext {
+                expected_type: None,
+                access_kind: AccessKind::Read,
+            },
+        )?;
         let func_index = match callee.ty {
             Some(Type::Function(func_index)) => func_index,
             Some(ty) => {
@@ -1516,8 +1639,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .unwrap();
                 let expected_type = func_type.params.get(index).copied().unwrap();
 
-                let mut argument =
-                    self.build_expression(ctx, &argument.inner, Some(expected_type))?;
+                let mut argument = self.build_expression(
+                    ctx,
+                    &argument.inner,
+                    AccessContext {
+                        expected_type: Some(expected_type),
+                        access_kind: AccessKind::Read,
+                    },
+                )?;
                 match argument.ty {
                     Some(ty) if !ty.coercible_to(expected_type) => {
                         self.diagnostics.push(
@@ -1560,13 +1689,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<Expression, ()> {
         let (operator, ast_operand) = match &expr.kind {
             ast::ExprKind::Unary { operator, operand } => (operator.clone(), operand),
             _ => unreachable!(),
         };
-        let mut operand = self.build_expression(ctx, ast_operand, expected_type)?;
+        let mut operand = self.build_expression(
+            ctx,
+            ast_operand,
+            AccessContext {
+                expected_type: access_ctx.expected_type,
+                access_kind: AccessKind::Read,
+            },
+        )?;
 
         match operator.kind {
             ast::UnOpKind::InvertSign | ast::UnOpKind::BitNot => match operand.ty {
@@ -1646,9 +1782,9 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
     fn build_binary_expression(
         &mut self,
-        ctx: &mut FunctionContext,
+        func_ctx: &mut FunctionContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<Expression, ()> {
         let operator = match &expr.kind {
             ast::ExprKind::Binary { operator, .. } => operator.clone(),
@@ -1658,26 +1794,26 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         use ast::BinOpKind;
         match operator.kind {
             BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div | BinOpKind::Rem => {
-                self.build_arithmetic_expr(ctx, expr, expected_type)
+                self.build_arithmetic_expr(func_ctx, expr, access_ctx)
             }
-            BinOpKind::Assign => self.build_assignment_expr(ctx, expr),
+            BinOpKind::Assign => self.build_assignment_expr(func_ctx, expr),
             BinOpKind::AddAssign
             | BinOpKind::SubAssign
             | BinOpKind::MulAssign
             | BinOpKind::DivAssign
-            | BinOpKind::RemAssign => self.build_arithmetic_assignment_expr(ctx, expr),
+            | BinOpKind::RemAssign => self.build_arithmetic_assignment_expr(func_ctx, expr),
             BinOpKind::Eq
             | BinOpKind::NotEq
             | BinOpKind::Less
             | BinOpKind::LessEq
             | BinOpKind::Greater
-            | BinOpKind::GreaterEq => self.build_comparison_binary_expr(ctx, expr),
-            BinOpKind::And | BinOpKind::Or => self.build_logical_binary_expr(ctx, expr),
+            | BinOpKind::GreaterEq => self.build_comparison_binary_expr(func_ctx, expr),
+            BinOpKind::And | BinOpKind::Or => self.build_logical_binary_expr(func_ctx, expr),
             BinOpKind::BitAnd
             | BinOpKind::BitOr
             | BinOpKind::BitXor
             | BinOpKind::LeftShift
-            | BinOpKind::RightShift => self.build_bitwise_binary_expr(ctx, expr, expected_type),
+            | BinOpKind::RightShift => self.build_bitwise_binary_expr(func_ctx, expr, access_ctx),
         }
     }
 
@@ -1695,14 +1831,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let left = self.build_expression(ctx, left, None)?;
+        let left = self.build_expression(
+            ctx,
+            left,
+            AccessContext {
+                expected_type: None,
+                access_kind: AccessKind::Write,
+            },
+        )?;
         match left.kind {
             hir::ExprKind::Local {
                 scope_index,
                 local_index,
             } => {
-                let local = match ctx.frame.get_local(scope_index, local_index) {
-                    Some(local) => local.clone(),
+                let local = match ctx.frame.get_mut_local(scope_index, local_index) {
+                    Some(local) => local,
                     None => {
                         self.diagnostics.push(
                             UndeclaredIdentifierDiagnostic {
@@ -1715,7 +1858,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     }
                 };
                 match local.mutability {
-                    hir::Mutability::Const => {
+                    None => {
                         self.diagnostics.push(
                             CannotMutateImmutableDiagnostic {
                                 file_id: self.ast.file_id,
@@ -1724,17 +1867,26 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             .report(),
                         );
                     }
-                    hir::Mutability::Mutable => {}
+                    _ => {}
                 }
 
-                let mut right = self.build_expression(ctx, right, Some(local.ty))?;
+                let local_type = local.ty;
+
+                let mut right = self.build_expression(
+                    ctx,
+                    right,
+                    AccessContext {
+                        expected_type: Some(local_type),
+                        access_kind: AccessKind::Read,
+                    },
+                )?;
                 match right.ty {
-                    Some(ty) if !ty.coercible_to(local.ty) => {
+                    Some(ty) if !ty.coercible_to(local_type) => {
                         self.diagnostics.push(
                             BinaryExpressionMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
                                 left: TypeWithSpan {
-                                    ty: local.ty,
+                                    ty: local_type,
                                     span: left.span,
                                 },
                                 operator: operator.clone(),
@@ -1748,7 +1900,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     }
                     Some(_) => {}
                     None => {
-                        self.coerce_untyped_expr(&mut right, local.ty)?;
+                        self.coerce_untyped_expr(&mut right, local_type)?;
                     }
                 }
 
@@ -1763,10 +1915,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 })
             }
             hir::ExprKind::Global { global_index } => {
-                let global = self.global.globals.get(global_index.0 as usize).unwrap();
+                let global = self
+                    .global
+                    .globals
+                    .get_mut(global_index.0 as usize)
+                    .unwrap();
 
                 match global.mutability {
-                    hir::Mutability::Const => {
+                    None => {
                         self.diagnostics.push(
                             CannotMutateImmutableDiagnostic {
                                 file_id: self.ast.file_id,
@@ -1775,12 +1931,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             .report(),
                         );
                     }
-                    hir::Mutability::Mutable => {}
+                    _ => {}
                 }
 
                 let global_type = global.ty;
-
-                let mut right = self.build_expression(ctx, right, Some(global_type))?;
+                let mut right = self.build_expression(
+                    ctx,
+                    right,
+                    AccessContext {
+                        expected_type: Some(global_type),
+                        access_kind: AccessKind::Read,
+                    },
+                )?;
                 match right.ty {
                     Some(ty) if !ty.coercible_to(global_type) => {
                         self.diagnostics.push(
@@ -1816,7 +1978,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 })
             }
             hir::ExprKind::Placeholder => {
-                let right = self.build_expression(ctx, right, None)?;
+                let right = self.build_expression(
+                    ctx,
+                    right,
+                    AccessContext {
+                        expected_type: None,
+                        access_kind: AccessKind::Read,
+                    },
+                )?;
                 let right_type = match right.ty {
                     Some(ty) => ty,
                     None => {
@@ -1877,14 +2046,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let left = self.build_expression(ctx, left, None)?;
+        let left = self.build_expression(
+            ctx,
+            left,
+            AccessContext {
+                expected_type: None,
+                access_kind: AccessKind::ReadWrite,
+            },
+        )?;
         match left.kind {
             hir::ExprKind::Local {
                 scope_index,
                 local_index,
             } => {
-                let local = match ctx.frame.get_local(scope_index, local_index) {
-                    Some(local) => local.clone(),
+                let local = match ctx.frame.get_mut_local(scope_index, local_index) {
+                    Some(local) => local,
                     None => {
                         self.diagnostics.push(
                             UndeclaredIdentifierDiagnostic {
@@ -1916,7 +2092,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 }
 
                 match local.mutability {
-                    hir::Mutability::Const => {
+                    None => {
                         self.diagnostics.push(
                             CannotMutateImmutableDiagnostic {
                                 file_id: self.ast.file_id,
@@ -1925,17 +2101,25 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             .report(),
                         );
                     }
-                    hir::Mutability::Mutable => {}
+                    _ => {}
                 }
 
-                let mut right = self.build_expression(ctx, right, Some(local.ty))?;
+                let local_type = local.ty;
+                let mut right = self.build_expression(
+                    ctx,
+                    right,
+                    AccessContext {
+                        expected_type: Some(local_type),
+                        access_kind: AccessKind::Read,
+                    },
+                )?;
                 match right.ty {
-                    Some(ty) if !ty.coercible_to(local.ty) => {
+                    Some(ty) if !ty.coercible_to(local_type) => {
                         self.diagnostics.push(
                             BinaryExpressionMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
                                 left: TypeWithSpan {
-                                    ty: local.ty,
+                                    ty: local_type,
                                     span: left.span,
                                 },
                                 operator: operator.clone(),
@@ -1949,7 +2133,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     }
                     Some(_) => {}
                     None => {
-                        self.coerce_untyped_expr(&mut right, local.ty)?;
+                        self.coerce_untyped_expr(&mut right, local_type)?;
                     }
                 }
 
@@ -1967,8 +2151,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 let global = self
                     .global
                     .globals
-                    .get(global_index.0 as usize)
-                    .expect("global variable not found");
+                    .get_mut(global_index.0 as usize)
+                    .unwrap();
 
                 match global.ty {
                     Type::Primitive(_) => {}
@@ -1990,7 +2174,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 }
 
                 match global.mutability {
-                    hir::Mutability::Const => {
+                    None => {
                         self.diagnostics.push(
                             CannotMutateImmutableDiagnostic {
                                 file_id: self.ast.file_id,
@@ -1999,12 +2183,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             .report(),
                         );
                     }
-                    hir::Mutability::Mutable => {}
+                    Some(_) => {}
                 }
 
                 let global_type = global.ty;
-
-                let mut right = self.build_expression(ctx, right, Some(global_type))?;
+                let mut right = self.build_expression(
+                    ctx,
+                    right,
+                    AccessContext {
+                        expected_type: Some(global_type),
+                        access_kind: AccessKind::Read,
+                    },
+                )?;
                 match right.ty {
                     Some(ty) if !ty.coercible_to(global_type) => {
                         self.diagnostics.push(
@@ -2049,7 +2239,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 );
 
                 Ok(hir::Expression {
-                    kind: hir::ExprKind::Unreachable,
+                    kind: hir::ExprKind::Error,
                     ty: Some(hir::Type::Unit),
                     span: expr.span,
                 })
@@ -2061,7 +2251,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<hir::Expression, ()> {
         let (left, right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
@@ -2072,8 +2262,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let mut left = self.build_expression(ctx, left, expected_type)?;
-        let mut right = self.build_expression(ctx, right, left.ty.or(expected_type))?;
+        let mut left = self.build_expression(ctx, left, access_ctx.clone())?;
+        let mut right = self.build_expression(
+            ctx,
+            right,
+            AccessContext {
+                expected_type: left.ty.or(access_ctx.expected_type),
+                access_kind: access_ctx.access_kind,
+            },
+        )?;
 
         match (left.ty, right.ty) {
             (Some(Type::Primitive(p1)), Some(Type::Primitive(p2)))
@@ -2147,7 +2344,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     span: expr.span,
                 })
             }
-            (None, None) => match expected_type {
+            (None, None) => match access_ctx.expected_type {
                 Some(expected_type) => {
                     self.coerce_untyped_expr(&mut left, expected_type)?;
                     self.coerce_untyped_expr(&mut right, expected_type)?;
@@ -2213,7 +2410,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: expected_type,
+                    ty: access_ctx.expected_type.or(Some(Type::Unknown)),
                     span: expr.span,
                 })
             }
@@ -2224,7 +2421,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         &mut self,
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
-        expected_type: Option<Type>,
+        access_ctx: AccessContext,
     ) -> Result<Expression, ()> {
         let (left, right, operator) = match &expr.kind {
             ast::ExprKind::Binary {
@@ -2232,11 +2429,25 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 right,
                 operator,
             } => (left, right, operator.clone()),
-            _ => unreachable!("expected binary expression"),
+            _ => unreachable!(),
         };
 
-        let mut left = self.build_expression(ctx, left, expected_type)?;
-        let mut right = self.build_expression(ctx, right, left.ty.or(expected_type))?;
+        let mut left = self.build_expression(
+            ctx,
+            left,
+            AccessContext {
+                expected_type: access_ctx.expected_type,
+                access_kind: AccessKind::Read,
+            },
+        )?;
+        let mut right = self.build_expression(
+            ctx,
+            right,
+            AccessContext {
+                expected_type: left.ty.or(access_ctx.expected_type),
+                access_kind: AccessKind::Read,
+            },
+        )?;
 
         match (left.ty, right.ty) {
             (Some(Type::Primitive(ty1)), Some(Type::Primitive(ty2))) if ty1 == ty2 => {
@@ -2272,7 +2483,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                 left: Box::new(left),
                                 right: Box::new(right),
                             },
-                            ty: match expected_type {
+                            ty: match access_ctx.expected_type {
                                 Some(expected) => Some(expected),
                                 None => Some(Type::Unknown),
                             },
@@ -2327,7 +2538,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
                 return Ok(right);
             }
-            (None, None) => match expected_type {
+            (None, None) => match access_ctx.expected_type {
                 Some(_) => Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
@@ -2365,7 +2576,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .report(&self.global),
                 );
 
-                match expected_type {
+                match access_ctx.expected_type {
                     Some(expected) => Ok(Expression {
                         kind: ExprKind::Binary {
                             operator,
@@ -2396,8 +2607,22 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let mut left = self.build_expression(ctx, left, None)?;
-        let mut right = self.build_expression(ctx, right, left.ty)?;
+        let mut left = self.build_expression(
+            ctx,
+            left,
+            AccessContext {
+                expected_type: None,
+                access_kind: AccessKind::Read,
+            },
+        )?;
+        let mut right = self.build_expression(
+            ctx,
+            right,
+            AccessContext {
+                expected_type: left.ty,
+                access_kind: AccessKind::Read,
+            },
+        )?;
 
         match (left.ty, right.ty) {
             (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
@@ -2523,10 +2748,17 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 operator,
                 ..
             } => (left, right, operator.clone()),
-            _ => unreachable!("expected binary expression"),
+            _ => unreachable!(),
         };
 
-        let left = self.build_expression(ctx, left, Some(Type::Bool))?;
+        let left = self.build_expression(
+            ctx,
+            left,
+            AccessContext {
+                expected_type: Some(Type::Bool),
+                access_kind: AccessKind::Read,
+            },
+        )?;
         match left.ty {
             Some(Type::Bool) => {}
             Some(actual) => {
@@ -2550,7 +2782,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 );
             }
         }
-        let right = self.build_expression(ctx, right, Some(Type::Bool))?;
+        let right = self.build_expression(
+            ctx,
+            right,
+            AccessContext {
+                expected_type: Some(Type::Bool),
+                access_kind: AccessKind::Read,
+            },
+        )?;
         match right.ty {
             Some(Type::Bool) => {}
             Some(actual) => {

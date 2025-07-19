@@ -35,7 +35,10 @@ impl<'a> Builder<'a> {
                 .map(|global| mir::Global {
                     name: global.name.symbol,
                     ty: builder.to_mir_type(global.ty.clone()),
-                    mutability: global.mutability,
+                    mutability: match global.mutability {
+                        Some(_) => mir::Mutability::Mutable,
+                        None => mir::Mutability::Const,
+                    },
                     value: builder.build_expression(&global.value),
                 })
                 .collect(),
@@ -109,7 +112,10 @@ impl<'a> Builder<'a> {
                         .map(|local| mir::Local {
                             name: local.name.symbol,
                             ty: self.to_mir_type(local.ty),
-                            mutability: local.mutability,
+                            mutability: match local.mutability {
+                                Some(_) => mir::Mutability::Mutable,
+                                None => mir::Mutability::Const,
+                            },
                         })
                         .collect(),
                     result: self.to_mir_type(scope.inferred_type.expect("must be typed")),
@@ -311,6 +317,7 @@ impl<'a> Builder<'a> {
                     ty: mir::Type::Never,
                 }
             }
+            hir::ExprKind::Error => panic!("invalid HIR"),
         }
     }
 

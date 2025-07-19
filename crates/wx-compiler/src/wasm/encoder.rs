@@ -3,6 +3,7 @@ use string_interner::{StringInterner, backend::StringBackend};
 
 use crate::wasm;
 
+#[allow(unused)]
 #[repr(u8)]
 enum SectionId {
     Custom = 0,
@@ -19,6 +20,7 @@ enum SectionId {
     Data = 11,
 }
 
+#[allow(unused)]
 #[repr(u8)]
 enum Instruction {
     Unreachable = 0x00,
@@ -300,18 +302,6 @@ trait ContextEncode {
     );
 }
 
-impl ContextEncode for wasm::ExprIndex {
-    fn encode(
-        &self,
-        sink: &mut Vec<u8>,
-        module: &wasm::Module,
-        interner: &StringInterner<StringBackend>,
-    ) {
-        let expr = module.code.expressions.get(self.0 as usize).unwrap();
-        expr.encode(sink, module, interner);
-    }
-}
-
 impl ContextEncode for wasm::Expression {
     fn encode(
         &self,
@@ -377,7 +367,7 @@ impl ContextEncode for wasm::Expression {
             } => {
                 sink.push(Instruction::Block as u8);
                 result.encode(sink);
-                for expr in expressions.iter().copied() {
+                for expr in expressions.iter() {
                     expr.encode(sink, module, interner);
                 }
                 sink.push(Instruction::End as u8);
@@ -388,7 +378,7 @@ impl ContextEncode for wasm::Expression {
             } => {
                 sink.push(Instruction::Loop as u8);
                 result.encode(sink);
-                for expr in expressions.iter().copied() {
+                for expr in expressions.iter() {
                     expr.encode(sink, module, interner);
                 }
                 sink.push(Instruction::End as u8);
@@ -407,7 +397,7 @@ impl ContextEncode for wasm::Expression {
                 function,
                 arguments,
             } => {
-                for argument in arguments.iter().copied() {
+                for argument in arguments.iter() {
                     argument.encode(sink, module, interner);
                 }
                 sink.push(Instruction::Call as u8);
@@ -419,7 +409,7 @@ impl ContextEncode for wasm::Expression {
                 arguments,
                 table_index,
             } => {
-                for argument in arguments.iter().copied() {
+                for argument in arguments.iter() {
                     argument.encode(sink, module, interner);
                 }
                 expr.encode(sink, module, interner);

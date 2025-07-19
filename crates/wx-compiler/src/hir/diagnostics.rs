@@ -459,3 +459,35 @@ impl InvalidAssignmentTargetDiagnostic {
             .with_note("assignment only allowed to a variable or `_`")
     }
 }
+
+pub struct UnusedVariableDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl UnusedVariableDiagnostic {
+    pub const CODE: &'static str = "E2009";
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::warning()
+            .with_code(Self::CODE)
+            .with_message("unused variable")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct UnnecessaryMutabilityDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl UnnecessaryMutabilityDiagnostic {
+    pub const CODE: &'static str = "E2010";
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::warning()
+            .with_code(Self::CODE)
+            .with_message("unnecessary mutability")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}

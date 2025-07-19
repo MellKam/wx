@@ -202,11 +202,17 @@ pub struct Expression {
     pub ty: Type,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub enum Mutability {
+    Mutable,
+    Const,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Local {
     pub name: SymbolU32,
     pub ty: Type,
-    pub mutability: hir::Mutability,
+    pub mutability: Mutability,
 }
 
 #[derive(Debug, Serialize)]
@@ -238,6 +244,6 @@ pub struct BlockScope {
 pub struct Global {
     pub name: SymbolU32,
     pub ty: Type,
-    pub mutability: hir::Mutability,
+    pub mutability: Mutability,
     pub value: Expression,
 }

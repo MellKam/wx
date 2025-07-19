@@ -29,7 +29,12 @@ hir:
                     end: 20
                 ty:
                   Primitive: I32
-                mutability: Const
+                mutability: ~
+                accesses:
+                  - span:
+                      start: 221
+                      end: 225
+                    kind: Read
               - name:
                   symbol: 4
                   span:
@@ -37,7 +42,22 @@ hir:
                     end: 34
                 ty:
                   Primitive: I32
-                mutability: Mutable
+                mutability:
+                  start: 27
+                  end: 30
+                accesses:
+                  - span:
+                      start: 55
+                      end: 58
+                    kind: Read
+                  - span:
+                      start: 149
+                      end: 152
+                    kind: Read
+                  - span:
+                      start: 235
+                      end: 238
+                    kind: ReadWrite
               - name:
                   symbol: 5
                   span:
@@ -45,7 +65,18 @@ hir:
                     end: 116
                 ty:
                   Primitive: I32
-                mutability: Mutable
+                mutability:
+                  start: 106
+                  end: 109
+                accesses:
+                  - span:
+                      start: 174
+                      end: 180
+                    kind: Read
+                  - span:
+                      start: 211
+                      end: 217
+                    kind: ReadWrite
             inferred_type:
               Primitive: I32
             expected_type:

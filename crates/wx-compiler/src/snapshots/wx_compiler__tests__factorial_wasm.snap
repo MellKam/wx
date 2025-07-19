@@ -23,48 +23,44 @@ exports:
         name: 1
         func_index: 0
 code:
-  expressions:
-    - LocalGet:
-        local_index: 0
-    - I32Const:
-        value: 1
-    - I32LeS:
-        left: 0
-        right: 1
-    - I32Const:
-        value: 1
-    - Return:
-        value: 3
-    - Block:
-        expressions:
-          - 4
-        result: Empty
-    - IfElse:
-        condition: 2
-        result: Empty
-        then_branch: 5
-        else_branch: ~
-    - LocalGet:
-        local_index: 0
-    - LocalGet:
-        local_index: 0
-    - I32Const:
-        value: 1
-    - I32Sub:
-        left: 8
-        right: 9
-    - Call:
-        function: 0
-        arguments:
-          - 10
-    - I32Mul:
-        left: 7
-        right: 11
+  expressions: []
   functions:
     - name: 1
       locals:
         - name: 2
           ty: I32
       expressions:
-        - 6
-        - 12
+        - IfElse:
+            condition:
+              I32LeS:
+                left:
+                  LocalGet:
+                    local_index: 0
+                right:
+                  I32Const:
+                    value: 1
+            result: Empty
+            then_branch:
+              Block:
+                expressions:
+                  - Return:
+                      value:
+                        I32Const:
+                          value: 1
+                result: Empty
+            else_branch: ~
+        - I32Mul:
+            left:
+              LocalGet:
+                local_index: 0
+            right:
+              Call:
+                function: 0
+                arguments:
+                  - I32Sub:
+                      left:
+                        LocalGet:
+                          local_index: 0
+                      right:
+                        I32Const:
+                          value: 1

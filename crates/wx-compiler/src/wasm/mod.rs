@@ -53,9 +53,6 @@ impl FunctionType {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
-pub struct ExprIndex(pub u32);
-
 #[derive(Debug, Clone, Serialize)]
 pub enum Expression {
     Nop,
@@ -76,331 +73,331 @@ pub enum Expression {
     },
     LocalSet {
         local_index: LocalIndex,
-        value: ExprIndex,
+        value: Box<Expression>,
     },
     GlobalGet {
         global_index: GlobalIndex,
     },
     GlobalSet {
         global: GlobalIndex,
-        value: ExprIndex,
+        value: Box<Expression>,
     },
     Return {
-        value: Option<ExprIndex>,
+        value: Option<Box<Expression>>,
     },
     Block {
-        expressions: Box<[ExprIndex]>,
+        expressions: Box<[Expression]>,
         result: BlockResult,
     },
     Break {
         depth: u32,
-        value: Option<ExprIndex>,
+        value: Option<Box<Expression>>,
     },
     Unreachable,
     Loop {
-        expressions: Box<[ExprIndex]>,
+        expressions: Box<[Expression]>,
         result: BlockResult,
     },
     IfElse {
-        condition: ExprIndex,
+        condition: Box<Expression>,
         result: BlockResult,
-        then_branch: ExprIndex,
-        else_branch: Option<ExprIndex>,
+        then_branch: Box<Expression>,
+        else_branch: Option<Box<Expression>>,
     },
     Drop {
-        value: ExprIndex,
+        value: Box<Expression>,
     },
     Call {
         function: FuncIndex,
-        arguments: Box<[ExprIndex]>,
+        arguments: Box<[Expression]>,
     },
     CallIndirect {
-        expr: ExprIndex,
+        expr: Box<Expression>,
         table_index: TableIndex,
         type_index: TypeIndex,
-        arguments: Box<[ExprIndex]>,
+        arguments: Box<[Expression]>,
     },
     I32Add {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32Sub {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32Mul {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32DivS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32DivU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32RemS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32RemU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32Eq {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32Ne {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32And {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32Or {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32Xor {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32Eqz {
-        value: ExprIndex,
+        value: Box<Expression>,
     },
     I32Shl {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32ShrS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32ShrU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32LtS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32LtU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32GtS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32GtU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32LeS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32LeU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32GeS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I32GeU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64Add {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64Sub {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64Mul {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64DivS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64DivU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64RemS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64RemU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64Eq {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64Eqz {
-        value: ExprIndex,
+        value: Box<Expression>,
     },
     I64Ne {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64And {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64Or {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64Xor {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64Shl {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64ShrS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64ShrU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64LtS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64LtU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64GtS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64GtU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64LeS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64LeU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64GeS {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     I64GeU {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Add {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Sub {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Mul {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Add {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Sub {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Mul {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Eq {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Eq {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Ne {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Ne {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Lt {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Lt {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Gt {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Gt {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Le {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Le {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Ge {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Ge {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Div {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F64Div {
-        left: ExprIndex,
-        right: ExprIndex,
+        left: Box<Expression>,
+        right: Box<Expression>,
     },
     F32Neg {
-        value: ExprIndex,
+        value: Box<Expression>,
     },
     F64Neg {
-        value: ExprIndex,
+        value: Box<Expression>,
     },
     F32Trunc {
-        value: ExprIndex,
+        value: Box<Expression>,
     },
     F64Trunc {
-        value: ExprIndex,
+        value: Box<Expression>,
     },
 }
 
@@ -443,7 +440,7 @@ pub struct ExportSection {
 pub struct FunctionBody {
     name: SymbolU32,
     locals: Box<[Local]>,
-    expressions: Box<[ExprIndex]>,
+    expressions: Box<[Expression]>,
 }
 
 #[derive(Debug, Clone, Serialize)]
