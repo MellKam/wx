@@ -45,7 +45,7 @@ impl TestCase {
         assert_binary_snapshot!((name.to_string() + ".wasm").as_ref(), bytecode.clone());
 
         assert_snapshot!(
-            (name.to_string() + ".wat").as_ref(),
+            (name.to_string() + "_wat").as_ref(),
             module.to_wat(&interner),
         );
     }
