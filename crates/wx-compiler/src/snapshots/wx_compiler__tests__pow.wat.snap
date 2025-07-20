@@ -1,0 +1,5 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: module.to_wat(&interner)
+---
+(module(func $pow (export "pow")(param $base_0 i32)(param $exp_1 i32)(result i32)(local $result_2 i32)(if (i32.lt_s (local.get $exp_1)(i32.const 0))(then(block (return (i32.const 0)))))(local.set $result_2 (i32.const 1))(block (result i32)(loop (if (i32.eq (local.get $exp_1)(i32.const 0))(then(block (br 3 (local.get $result_2)))))(local.set $result_2 (i32.mul (local.get $result_2)(local.get $base_0)))(local.set $exp_1 (i32.sub (local.get $exp_1)(i32.const 1)))(br 0))(unreachable))))

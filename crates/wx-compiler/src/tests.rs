@@ -1,5 +1,5 @@
 use indoc::indoc;
-use insta::{assert_binary_snapshot, assert_yaml_snapshot};
+use insta::{assert_binary_snapshot, assert_snapshot, assert_yaml_snapshot};
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 
@@ -43,6 +43,11 @@ impl TestCase {
 
         let bytecode = wasm::Encoder::encode(&module, &interner);
         assert_binary_snapshot!((name.to_string() + ".wasm").as_ref(), bytecode.clone());
+
+        assert_snapshot!(
+            (name.to_string() + ".wat").as_ref(),
+            module.to_wat(&interner),
+        );
     }
 }
 
