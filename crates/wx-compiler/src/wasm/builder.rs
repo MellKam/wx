@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::wasm::{self, TableIndex};
 use crate::{hir, mir};
@@ -35,67 +37,82 @@ impl From<mir::Type> for wasm::BlockResult {
 }
 
 #[derive(Debug)]
-struct FunctionContext<'mir> {
-    locals: Box<[wasm::Local]>,
-    scope_offsets: Box<[usize]>,
-    scopes: &'mir Vec<mir::BlockScope>,
-    scope_index: mir::ScopeIndex,
+struct FunctionContext {
+    pub locals: Vec<wasm::Local>,
+    pub local_indices: HashMap<u32, wasm::LocalIndex>,
+    pub scope: Rc<RefCell<mir::BlockScope>>,
 }
 
-impl FunctionContext<'_> {
-    fn get_flat_index(
-        &self,
-        scope_index: mir::ScopeIndex,
-        local_index: mir::LocalIndex,
-    ) -> wasm::LocalIndex {
-        let scope_offset = self.scope_offsets[scope_index.0 as usize];
-        wasm::LocalIndex(scope_offset as u32 + local_index)
+impl FunctionContext {
+    fn new(root_scope: Rc<RefCell<mir::BlockScope>>) -> Self {
+        let mut ctx = Self {
+            locals: Vec::new(),
+            local_indices: HashMap::new(),
+            scope: root_scope.clone(),
+        };
+
+        ctx.populate_locals(root_scope);
+
+        ctx
     }
 
-    pub fn get_break_depth(&self, target_scope: mir::ScopeIndex) -> Option<u32> {
-        let mut index = self.scope_index;
+    fn populate_locals(&mut self, scope: Rc<RefCell<mir::BlockScope>>) {
+        let mut current_local = scope.borrow().locals.clone();
+        loop {
+            let local = match current_local {
+                Some(local) => local,
+                None => break,
+            };
+
+            let local_index = wasm::LocalIndex(self.locals.len() as u32);
+            self.locals.push(wasm::Local {
+                name: local.borrow().symbol,
+                ty: wasm::ValueType::try_from(local.borrow().ty).unwrap(),
+            });
+            self.local_indices.insert(local.borrow().index, local_index);
+
+            current_local = local.borrow().next.clone();
+        }
+
+        for child_scope in scope.borrow().children.iter() {
+            self.populate_locals(child_scope.upgrade().unwrap());
+        }
+    }
+
+    pub fn get_break_depth(&self, target_scope: Rc<RefCell<mir::BlockScope>>) -> Option<u32> {
+        let mut scope = self.scope.clone();
         let mut depth = 0;
 
         loop {
-            let scope = &self.scopes[index.0 as usize];
-            depth += match scope.kind {
+            depth += match scope.borrow().kind {
                 mir::BlockKind::Loop => depth + 2,
                 mir::BlockKind::Block => depth + 1,
             };
 
-            if index.0 == target_scope.0 {
+            if scope.borrow().index == target_scope.borrow().index {
                 return Some(depth - 1);
             }
 
-            match scope.parent {
-                Some(scope_index) => {
-                    index = scope_index;
-                }
-                None => return None,
-            }
+            let parent = scope.borrow().parent.clone()?;
+            scope = parent.upgrade().unwrap();
         }
     }
 
-    pub fn get_continue_depth(&self, target_scope: mir::ScopeIndex) -> Option<u32> {
-        let mut index = self.scope_index;
+    pub fn get_continue_depth(&self, target_scope: Rc<RefCell<mir::BlockScope>>) -> Option<u32> {
+        let mut scope = self.scope.clone();
         let mut depth = 0;
 
         loop {
-            if index.0 == target_scope.0 {
+            if scope.borrow().index == target_scope.borrow().index {
                 return Some(depth);
             }
 
-            let scope = self.scopes.get(index.0 as usize).unwrap();
-            match scope.parent {
-                Some(scope_index) => {
-                    index = scope_index;
-                    depth += match scope.kind {
-                        mir::BlockKind::Loop => 2, // 1 for the loop, 1 for the block
-                        mir::BlockKind::Block => 1,
-                    };
-                }
-                None => return None,
-            }
+            let parent = scope.borrow().parent.clone()?;
+            scope = parent.upgrade().unwrap();
+            depth += match scope.borrow().kind {
+                mir::BlockKind::Loop => 2, // 1 for the loop, 1 for the block
+                mir::BlockKind::Block => 1,
+            };
         }
     }
 }
@@ -139,7 +156,7 @@ impl Builder {
 
                     wasm::ExportItem::Function {
                         func_index: wasm::FuncIndex(func_index.0),
-                        name: func.name,
+                        name: func.symbol,
                     }
                 }
             })
@@ -152,47 +169,20 @@ impl Builder {
             let type_index = types.entry(ty.clone()).or_insert(next_type_index).clone();
             function_signatures.push(type_index);
 
-            let expressions = match &func.block.kind {
-                mir::ExprKind::Block { expressions, .. } => expressions,
+            let (expressions, scope) = match &func.block.kind {
+                mir::ExprKind::Block { expressions, scope } => (expressions, scope),
                 _ => unreachable!(),
             };
 
-            let scope_offsets: Box<_> = func
-                .frame
-                .iter()
-                .scan(0, |offset, scope| {
-                    let current = *offset;
-                    *offset += scope.locals.len();
-                    Some(current)
-                })
-                .collect();
-
-            let flat_locals: Box<_> = func
-                .frame
-                .iter()
-                .flat_map(|scope| {
-                    scope.locals.iter().map(|local| wasm::Local {
-                        name: local.name,
-                        ty: wasm::ValueType::try_from(local.ty.clone()).unwrap(),
-                    })
-                })
-                .collect();
-
-            let mut ctx = FunctionContext {
-                locals: flat_locals,
-                scope_offsets,
-                scope_index: mir::ScopeIndex(0),
-                scopes: &func.frame,
-            };
-
+            let mut ctx = FunctionContext::new(scope.clone());
             let expressions = expressions
                 .iter()
                 .map(|expr| builder.build_expression(&mut ctx, expr))
                 .collect::<Result<Box<_>, ()>>()?;
 
             functions.push(wasm::FunctionBody {
-                name: func.name,
-                locals: ctx.locals,
+                name: func.symbol,
+                locals: ctx.locals.into_boxed_slice(),
                 expressions,
             });
         }
@@ -244,7 +234,6 @@ impl Builder {
             },
             exports: wasm::ExportSection { items: exports },
             code: wasm::CodeSection {
-                expressions: builder.expressions.into_boxed_slice(),
                 functions: functions.into_boxed_slice(),
             },
         })
@@ -270,9 +259,9 @@ impl Builder {
         }
     }
 
-    fn build_expression<'mir, 'wasm>(
+    fn build_expression(
         &mut self,
-        ctx: &mut FunctionContext<'mir>,
+        ctx: &mut FunctionContext,
         expr: &mir::Expression,
     ) -> Result<wasm::Expression, ()> {
         match &expr.kind {
@@ -475,20 +464,27 @@ impl Builder {
 
                 Ok(expr)
             }
-            mir::ExprKind::Local {
-                local_index,
-                scope_index,
-            } => Ok(wasm::Expression::LocalGet {
-                local_index: ctx.get_flat_index(*scope_index, *local_index),
-            }),
-            mir::ExprKind::LocalSet {
-                local_index,
-                scope_index,
-                value,
-            } => Ok(wasm::Expression::LocalSet {
-                local_index: ctx.get_flat_index(*scope_index, *local_index),
-                value: Box::new(self.build_expression(ctx, &value)?),
-            }),
+            mir::ExprKind::Local { local, .. } => {
+                let local_index = ctx
+                    .local_indices
+                    .get(&local.upgrade().unwrap().borrow().index)
+                    .copied()
+                    .unwrap();
+
+                Ok(wasm::Expression::LocalGet { local_index })
+            }
+            mir::ExprKind::LocalSet { local, value, .. } => {
+                let local_index = ctx
+                    .local_indices
+                    .get(&local.upgrade().unwrap().borrow().index)
+                    .copied()
+                    .unwrap();
+
+                Ok(wasm::Expression::LocalSet {
+                    local_index,
+                    value: Box::new(self.build_expression(ctx, &value)?),
+                })
+            }
             mir::ExprKind::Global { global_index } => Ok(wasm::Expression::GlobalGet {
                 global_index: wasm::GlobalIndex(*global_index),
             }),
@@ -564,15 +560,12 @@ impl Builder {
 
                 Ok(expr)
             }
-            mir::ExprKind::Block {
-                expressions,
-                scope_index,
-            } => {
+            mir::ExprKind::Block { expressions, scope } => {
                 let expr = wasm::Expression::Block {
                     expressions: expressions
                         .iter()
                         .map(|expr| {
-                            ctx.scope_index = mir::ScopeIndex(scope_index.0);
+                            ctx.scope = scope.clone();
                             self.build_expression(ctx, expr)
                         })
                         .collect::<Result<_, _>>()?,
@@ -583,9 +576,9 @@ impl Builder {
                 };
                 Ok(expr)
             }
-            mir::ExprKind::Loop { scope_index, block } => {
-                let expressions = match &block.kind {
-                    mir::ExprKind::Block { expressions, .. } => expressions,
+            mir::ExprKind::Loop { block } => {
+                let (expressions, scope) = match &block.kind {
+                    mir::ExprKind::Block { expressions, scope } => (expressions, scope),
                     _ => unreachable!(),
                 };
 
@@ -593,7 +586,7 @@ impl Builder {
                     expressions: expressions
                         .iter()
                         .map(|expr| {
-                            ctx.scope_index = mir::ScopeIndex(scope_index.0);
+                            ctx.scope = scope.clone();
                             self.build_expression(ctx, expr)
                         })
                         .chain(std::iter::once(Ok(wasm::Expression::Break {
@@ -604,10 +597,9 @@ impl Builder {
                     result: wasm::BlockResult::Empty,
                 };
 
-                let scope = &ctx.scopes[scope_index.0 as usize];
                 let block_expr = wasm::Expression::Block {
                     expressions: Box::new([loop_expr, wasm::Expression::Unreachable]),
-                    result: match wasm::ValueType::try_from(scope.result) {
+                    result: match wasm::ValueType::try_from(scope.borrow().result) {
                         Ok(ty) => wasm::BlockResult::SingleValue(ty),
                         _ => wasm::BlockResult::Empty,
                     },
@@ -615,16 +607,16 @@ impl Builder {
 
                 Ok(block_expr)
             }
-            mir::ExprKind::Continue { scope_index } => {
+            mir::ExprKind::Continue { scope } => {
                 let expr = wasm::Expression::Break {
-                    depth: ctx.get_continue_depth(*scope_index).unwrap(),
+                    depth: ctx.get_continue_depth(scope.upgrade().unwrap()).unwrap(),
                     value: None,
                 };
                 Ok(expr)
             }
-            mir::ExprKind::Break { value, scope_index } => {
+            mir::ExprKind::Break { value, scope } => {
                 let expr = wasm::Expression::Break {
-                    depth: ctx.get_break_depth(*scope_index).unwrap(),
+                    depth: ctx.get_break_depth(scope.upgrade().unwrap()).unwrap(),
                     value: match value {
                         Some(value) => Some(Box::new(self.build_expression(ctx, value)?)),
                         None => None,

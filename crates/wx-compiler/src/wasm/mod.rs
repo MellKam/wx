@@ -445,7 +445,6 @@ pub struct FunctionBody {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CodeSection {
-    expressions: Box<[Expression]>,
     functions: Box<[FunctionBody]>,
 }
 

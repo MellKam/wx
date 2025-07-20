@@ -1,4 +1,7 @@
-use serde::Serialize;
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+
+use serde::{Serialize, Serializer};
 use string_interner::symbol::SymbolU32;
 
 pub mod builder;
@@ -14,7 +17,6 @@ pub struct MIR {
 }
 
 pub type FunctionIndex = u32;
-pub type LocalIndex = u32;
 pub type GlobalIndex = u32;
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,8 +57,9 @@ pub enum Type {
 pub enum ExprKind {
     Noop,
     Local {
-        scope_index: ScopeIndex,
-        local_index: LocalIndex,
+        local: Weak<RefCell<Local>>,
+        #[serde(serialize_with = "serialize_scope_index")]
+        scope: Weak<RefCell<BlockScope>>,
     },
     Global {
         global_index: GlobalIndex,
@@ -74,8 +77,9 @@ pub enum ExprKind {
         value: f64,
     },
     LocalSet {
-        scope_index: ScopeIndex,
-        local_index: LocalIndex,
+        local: Weak<RefCell<Local>>,
+        #[serde(serialize_with = "serialize_scope_index")]
+        scope: Weak<RefCell<BlockScope>>,
         value: Box<Expression>,
     },
     GlobalSet {
@@ -132,15 +136,15 @@ pub enum ExprKind {
         right: Box<Expression>,
     },
     Block {
-        scope_index: ScopeIndex,
+        scope: Rc<RefCell<BlockScope>>,
         expressions: Box<[Expression]>,
     },
     Break {
-        scope_index: ScopeIndex,
+        scope: Weak<RefCell<BlockScope>>,
         value: Option<Box<Expression>>,
     },
     Continue {
-        scope_index: ScopeIndex,
+        scope: Weak<RefCell<BlockScope>>,
     },
     Unreachable,
     IfElse {
@@ -188,7 +192,6 @@ pub enum ExprKind {
         right: Box<Expression>,
     },
     Loop {
-        scope_index: ScopeIndex,
         block: Box<Expression>,
     },
     Neg {
@@ -210,21 +213,22 @@ pub enum Mutability {
 
 #[derive(Debug, Serialize)]
 pub struct Local {
-    pub name: SymbolU32,
+    pub index: u32,
+    pub symbol: SymbolU32,
     pub ty: Type,
     pub mutability: Mutability,
+    #[serde(skip)]
+    pub next: Option<Rc<RefCell<Local>>>,
+    #[serde(skip)]
+    pub prev: Option<Weak<RefCell<Local>>>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Function {
-    pub name: SymbolU32,
+    pub symbol: SymbolU32,
     pub ty: FunctionType,
-    pub frame: Vec<BlockScope>,
     pub block: Expression,
 }
-
-#[derive(Debug, Clone, Copy, Serialize)]
-pub struct ScopeIndex(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum BlockKind {
@@ -234,10 +238,55 @@ pub enum BlockKind {
 
 #[derive(Debug, Serialize)]
 pub struct BlockScope {
+    pub index: u32,
     pub kind: BlockKind,
-    pub parent: Option<ScopeIndex>,
-    pub locals: Vec<Local>,
+    #[serde(serialize_with = "serialize_block_scope_parent")]
+    pub parent: Option<Weak<RefCell<BlockScope>>>,
+    #[serde(serialize_with = "serialize_block_scope_children")]
+    pub children: Vec<Weak<RefCell<BlockScope>>>,
+    #[serde(skip)]
+    pub locals: Option<Rc<RefCell<Local>>>,
     pub result: Type,
+}
+
+fn serialize_block_scope_parent<S>(
+    parent: &Option<Weak<RefCell<BlockScope>>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    parent
+        .as_ref()
+        .map(|parent| parent.upgrade().map(|p| p.borrow().index))
+        .serialize(serializer)
+}
+
+fn serialize_block_scope_children<S>(
+    children: &Vec<Weak<RefCell<BlockScope>>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let indicies: Vec<_> = children
+        .iter()
+        .map(|child| child.upgrade().map(|child| child.borrow().index))
+        .collect();
+    indicies.serialize(serializer)
+}
+
+fn serialize_scope_index<S>(
+    scope: &Weak<RefCell<BlockScope>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    match scope.upgrade() {
+        Some(scope_ref) => scope_ref.borrow().index.serialize(serializer),
+        None => serializer.serialize_none(),
+    }
 }
 
 #[derive(Debug, Serialize)]

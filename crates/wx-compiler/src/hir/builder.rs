@@ -1061,7 +1061,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
     }
 
     fn report_unused_locals(&mut self, block: &BlockScope) {
-        println!("reporting unused locals for block: {:?}", block.label);
         for local in block.locals.iter() {
             if local.accesses.is_empty() {
                 self.diagnostics.push(

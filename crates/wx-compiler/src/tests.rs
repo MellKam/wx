@@ -1,7 +1,9 @@
-use super::*;
 use indoc::indoc;
 use insta::{assert_binary_snapshot, assert_yaml_snapshot};
-use string_interner::{StringInterner, backend::StringBackend};
+use string_interner::StringInterner;
+use string_interner::backend::StringBackend;
+
+use super::*;
 
 #[allow(unused)]
 struct TestCase {
@@ -70,7 +72,7 @@ fn pow() {
             local mut result: i32 = 1;
             loop {
                 if exp == 0 {
-                break result; 
+                    break result; 
                 };
                 
                 result *= base;

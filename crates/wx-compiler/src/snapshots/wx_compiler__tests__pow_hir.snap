@@ -32,8 +32,8 @@ hir:
                 mutability: ~
                 accesses:
                   - span:
-                      start: 221
-                      end: 225
+                      start: 225
+                      end: 229
                     kind: Read
               - name:
                   symbol: 4
@@ -55,8 +55,8 @@ hir:
                       end: 152
                     kind: Read
                   - span:
-                      start: 235
-                      end: 238
+                      start: 239
+                      end: 242
                     kind: ReadWrite
               - name:
                   symbol: 5
@@ -70,12 +70,12 @@ hir:
                   end: 109
                 accesses:
                   - span:
-                      start: 174
-                      end: 180
+                      start: 178
+                      end: 184
                     kind: Read
                   - span:
-                      start: 211
-                      end: 217
+                      start: 215
+                      end: 221
                     kind: ReadWrite
             inferred_type:
               Primitive: I32
@@ -243,39 +243,39 @@ hir:
                                                     scope_index: 0
                                                     local_index: 2
                                                 span:
-                                                  start: 174
-                                                  end: 180
+                                                  start: 178
+                                                  end: 184
                                                 ty:
                                                   Primitive: I32
                                           span:
-                                            start: 168
-                                            end: 180
+                                            start: 172
+                                            end: 184
                                           ty: Never
                                       result: ~
                                   span:
                                     start: 158
-                                    end: 192
+                                    end: 196
                                   ty: Never
                                 else_block: ~
                             span:
                               start: 146
-                              end: 192
+                              end: 196
                             ty: Unit
                           - kind:
                               Binary:
                                 operator:
                                   kind: MulAssign
                                   span:
-                                    start: 218
-                                    end: 220
+                                    start: 222
+                                    end: 224
                                 left:
                                   kind:
                                     Local:
                                       scope_index: 0
                                       local_index: 2
                                   span:
-                                    start: 211
-                                    end: 217
+                                    start: 215
+                                    end: 221
                                   ty:
                                     Primitive: I32
                                 right:
@@ -284,57 +284,57 @@ hir:
                                       scope_index: 0
                                       local_index: 0
                                   span:
-                                    start: 221
-                                    end: 225
+                                    start: 225
+                                    end: 229
                                   ty:
                                     Primitive: I32
                             span:
-                              start: 211
-                              end: 225
+                              start: 215
+                              end: 229
                             ty: Unit
                           - kind:
                               Binary:
                                 operator:
                                   kind: SubAssign
                                   span:
-                                    start: 239
-                                    end: 241
+                                    start: 243
+                                    end: 245
                                 left:
                                   kind:
                                     Local:
                                       scope_index: 0
                                       local_index: 1
                                   span:
-                                    start: 235
-                                    end: 238
+                                    start: 239
+                                    end: 242
                                   ty:
                                     Primitive: I32
                                 right:
                                   kind:
                                     Int: 1
                                   span:
-                                    start: 242
-                                    end: 243
+                                    start: 246
+                                    end: 247
                                   ty:
                                     Primitive: I32
                             span:
-                              start: 235
-                              end: 243
+                              start: 239
+                              end: 247
                             ty: Unit
                         result: ~
                     span:
                       start: 136
-                      end: 250
+                      end: 254
                     ty:
                       Primitive: I32
               span:
                 start: 131
-                end: 250
+                end: 254
               ty:
                 Primitive: I32
         span:
           start: 46
-          end: 252
+          end: 256
         ty:
           Primitive: I32
   enums: []

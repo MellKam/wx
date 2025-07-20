@@ -3,85 +3,89 @@ source: crates/wx-compiler/src/tests.rs
 expression: mir
 ---
 functions:
-  - name: 1
+  - symbol: 1
     ty:
       param_count: 2
       params_results:
         - I32
         - I32
         - I32
-    frame:
-      - kind: Block
-        parent: ~
-        locals:
-          - name: 2
-            ty: I32
-            mutability: Const
-          - name: 4
-            ty: I32
-            mutability: Const
-        result: I32
     block:
       kind:
         Block:
-          scope_index: 0
+          scope:
+            index: 0
+            kind: Block
+            parent: ~
+            children: []
+            result: I32
           expressions:
             - kind:
                 Add:
                   left:
                     kind:
                       Local:
-                        scope_index: 0
-                        local_index: 0
+                        local:
+                          index: 0
+                          symbol: 2
+                          ty: I32
+                          mutability: Const
+                        scope: 0
                     ty: I32
                   right:
                     kind:
                       Local:
-                        scope_index: 0
-                        local_index: 1
+                        local:
+                          index: 1
+                          symbol: 4
+                          ty: I32
+                          mutability: Const
+                        scope: 0
                     ty: I32
               ty: I32
       ty: I32
-  - name: 5
+  - symbol: 5
     ty:
       param_count: 2
       params_results:
         - I32
         - I32
         - I32
-    frame:
-      - kind: Block
-        parent: ~
-        locals:
-          - name: 2
-            ty: I32
-            mutability: Const
-          - name: 4
-            ty: I32
-            mutability: Const
-        result: I32
     block:
       kind:
         Block:
-          scope_index: 0
+          scope:
+            index: 0
+            kind: Block
+            parent: ~
+            children: []
+            result: I32
           expressions:
             - kind:
                 Sub:
                   left:
                     kind:
                       Local:
-                        scope_index: 0
-                        local_index: 0
+                        local:
+                          index: 0
+                          symbol: 2
+                          ty: I32
+                          mutability: Const
+                        scope: 0
                     ty: I32
                   right:
                     kind:
                       Local:
-                        scope_index: 0
-                        local_index: 1
+                        local:
+                          index: 1
+                          symbol: 4
+                          ty: I32
+                          mutability: Const
+                        scope: 0
                     ty: I32
               ty: I32
       ty: I32
-  - name: 6
+  - symbol: 6
     ty:
       param_count: 3
       params_results:
@@ -89,76 +93,74 @@ functions:
         - I32
         - I32
         - I32
-    frame:
-      - kind: Block
-        parent: ~
-        locals:
-          - name: 7
-            ty:
-              Function: 0
-            mutability: Const
-          - name: 2
-            ty: I32
-            mutability: Const
-          - name: 4
-            ty: I32
-            mutability: Const
-        result: I32
     block:
       kind:
         Block:
-          scope_index: 0
+          scope:
+            index: 0
+            kind: Block
+            parent: ~
+            children: []
+            result: I32
           expressions:
             - kind:
                 Call:
                   callee:
                     kind:
                       Local:
-                        scope_index: 0
-                        local_index: 0
+                        local:
+                          index: 0
+                          symbol: 7
+                          ty:
+                            Function: 0
+                          mutability: Const
+                        scope: 0
                     ty:
                       Function: 0
                   arguments:
                     - kind:
                         Local:
-                          scope_index: 0
-                          local_index: 1
+                          local:
+                            index: 1
+                            symbol: 2
+                            ty: I32
+                            mutability: Const
+                          scope: 0
                       ty: I32
                     - kind:
                         Local:
-                          scope_index: 0
-                          local_index: 2
+                          local:
+                            index: 2
+                            symbol: 4
+                            ty: I32
+                            mutability: Const
+                          scope: 0
                       ty: I32
               ty: I32
       ty: I32
-  - name: 8
+  - symbol: 8
     ty:
       param_count: 0
       params_results:
         - I32
-    frame:
-      - kind: Block
-        parent: ~
-        locals:
-          - name: 2
-            ty: I32
-            mutability: Const
-          - name: 4
-            ty: I32
-            mutability: Const
-          - name: 9
-            ty: I32
-            mutability: Const
-        result: I32
     block:
       kind:
         Block:
-          scope_index: 0
+          scope:
+            index: 0
+            kind: Block
+            parent: ~
+            children: []
+            result: I32
           expressions:
             - kind:
                 LocalSet:
-                  scope_index: 0
-                  local_index: 0
+                  local:
+                    index: 0
+                    symbol: 2
+                    ty: I32
+                    mutability: Const
+                  scope: 0
                   value:
                     kind:
                       Call:
@@ -186,8 +188,12 @@ functions:
               ty: Unit
             - kind:
                 LocalSet:
-                  scope_index: 0
-                  local_index: 1
+                  local:
+                    index: 1
+                    symbol: 4
+                    ty: I32
+                    mutability: Const
+                  scope: 0
                   value:
                     kind:
                       Call:
@@ -215,8 +221,12 @@ functions:
               ty: Unit
             - kind:
                 LocalSet:
-                  scope_index: 0
-                  local_index: 2
+                  local:
+                    index: 2
+                    symbol: 9
+                    ty: I32
+                    mutability: Const
+                  scope: 0
                   value:
                     kind:
                       Int:
@@ -228,14 +238,22 @@ functions:
                   left:
                     kind:
                       Local:
-                        scope_index: 0
-                        local_index: 0
+                        local:
+                          index: 0
+                          symbol: 2
+                          ty: I32
+                          mutability: Const
+                        scope: 0
                     ty: I32
                   right:
                     kind:
                       Local:
-                        scope_index: 0
-                        local_index: 1
+                        local:
+                          index: 1
+                          symbol: 4
+                          ty: I32
+                          mutability: Const
+                        scope: 0
                     ty: I32
               ty: I32
       ty: I32

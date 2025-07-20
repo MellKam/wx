@@ -264,33 +264,33 @@ ast:
                                                                                 Identifier:
                                                                                   symbol: 5
                                                                               span:
-                                                                                start: 174
-                                                                                end: 180
+                                                                                start: 178
+                                                                                end: 184
                                                                         span:
-                                                                          start: 168
-                                                                          end: 180
+                                                                          start: 172
+                                                                          end: 184
                                                                   span:
-                                                                    start: 168
-                                                                    end: 180
+                                                                    start: 172
+                                                                    end: 184
                                                                   separator:
-                                                                    start: 180
-                                                                    end: 181
+                                                                    start: 184
+                                                                    end: 185
                                                               close:
-                                                                start: 191
-                                                                end: 192
+                                                                start: 195
+                                                                end: 196
                                                           span:
                                                             start: 158
-                                                            end: 192
+                                                            end: 196
                                                         else_block: ~
                                                     span:
                                                       start: 146
-                                                      end: 192
+                                                      end: 196
                                               span:
                                                 start: 146
-                                                end: 192
+                                                end: 196
                                               separator:
-                                                start: 192
-                                                end: 193
+                                                start: 196
+                                                end: 197
                                             - inner:
                                                 Expression:
                                                   expr:
@@ -301,29 +301,29 @@ ast:
                                                             Identifier:
                                                               symbol: 5
                                                           span:
-                                                            start: 211
-                                                            end: 217
+                                                            start: 215
+                                                            end: 221
                                                         operator:
                                                           kind: MulAssign
                                                           span:
-                                                            start: 218
-                                                            end: 220
+                                                            start: 222
+                                                            end: 224
                                                         right:
                                                           kind:
                                                             Identifier:
                                                               symbol: 2
                                                           span:
-                                                            start: 221
-                                                            end: 225
+                                                            start: 225
+                                                            end: 229
                                                     span:
-                                                      start: 211
-                                                      end: 225
+                                                      start: 215
+                                                      end: 229
                                               span:
-                                                start: 211
-                                                end: 225
+                                                start: 215
+                                                end: 229
                                               separator:
-                                                start: 225
-                                                end: 226
+                                                start: 229
+                                                end: 230
                                             - inner:
                                                 Expression:
                                                   expr:
@@ -334,52 +334,52 @@ ast:
                                                             Identifier:
                                                               symbol: 4
                                                           span:
-                                                            start: 235
-                                                            end: 238
+                                                            start: 239
+                                                            end: 242
                                                         operator:
                                                           kind: SubAssign
                                                           span:
-                                                            start: 239
-                                                            end: 241
+                                                            start: 243
+                                                            end: 245
                                                         right:
                                                           kind:
                                                             Int:
                                                               value: 1
                                                           span:
-                                                            start: 242
-                                                            end: 243
+                                                            start: 246
+                                                            end: 247
                                                     span:
-                                                      start: 235
-                                                      end: 243
+                                                      start: 239
+                                                      end: 247
                                               span:
-                                                start: 235
-                                                end: 243
+                                                start: 239
+                                                end: 247
                                               separator:
-                                                start: 243
-                                                end: 244
+                                                start: 247
+                                                end: 248
                                           close:
-                                            start: 249
-                                            end: 250
+                                            start: 253
+                                            end: 254
                                       span:
                                         start: 136
-                                        end: 250
+                                        end: 254
                                 span:
                                   start: 131
-                                  end: 250
+                                  end: 254
                           span:
                             start: 131
-                            end: 250
+                            end: 254
                           separator: ~
                       close:
-                        start: 251
-                        end: 252
+                        start: 255
+                        end: 256
                   span:
                     start: 46
-                    end: 252
+                    end: 256
             span:
               start: 7
-              end: 252
+              end: 256
       span:
         start: 0
-        end: 252
+        end: 256
 diagnostics: []
