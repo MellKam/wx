@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+
 use serde::Serialize;
 use string_interner::symbol::SymbolU32;
 
@@ -14,7 +17,6 @@ pub struct MIR {
 }
 
 pub type FunctionIndex = u32;
-pub type LocalIndex = u32;
 pub type GlobalIndex = u32;
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,8 +57,8 @@ pub enum Type {
 pub enum ExprKind {
     Noop,
     Local {
-        scope_index: ScopeIndex,
-        local_index: LocalIndex,
+        scope: Weak<RefCell<BlockScope>>,
+        local: Weak<RefCell<Local>>,
     },
     Global {
         global_index: GlobalIndex,
@@ -74,8 +76,8 @@ pub enum ExprKind {
         value: f64,
     },
     LocalSet {
-        scope_index: ScopeIndex,
-        local_index: LocalIndex,
+        scope: Weak<RefCell<BlockScope>>,
+        local: Weak<RefCell<Local>>,
         value: Box<Expression>,
     },
     GlobalSet {
@@ -132,15 +134,15 @@ pub enum ExprKind {
         right: Box<Expression>,
     },
     Block {
-        scope_index: ScopeIndex,
+        scope: Rc<RefCell<BlockScope>>,
         expressions: Box<[Expression]>,
     },
     Break {
-        scope_index: ScopeIndex,
+        scope: Weak<RefCell<BlockScope>>,
         value: Option<Box<Expression>>,
     },
     Continue {
-        scope_index: ScopeIndex,
+        scope: Weak<RefCell<BlockScope>>,
     },
     Unreachable,
     IfElse {
@@ -188,7 +190,7 @@ pub enum ExprKind {
         right: Box<Expression>,
     },
     Loop {
-        scope_index: ScopeIndex,
+        scope: Rc<RefCell<BlockScope>>,
         block: Box<Expression>,
     },
     Neg {
@@ -213,18 +215,16 @@ pub struct Local {
     pub name: SymbolU32,
     pub ty: Type,
     pub mutability: Mutability,
+    pub next: Option<Rc<RefCell<Local>>>,
+    pub prev: Option<Weak<RefCell<Local>>>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct Function {
     pub name: SymbolU32,
     pub ty: FunctionType,
-    pub frame: Vec<BlockScope>,
     pub block: Expression,
 }
-
-#[derive(Debug, Clone, Copy, Serialize)]
-pub struct ScopeIndex(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub enum BlockKind {
@@ -235,8 +235,9 @@ pub enum BlockKind {
 #[derive(Debug, Serialize)]
 pub struct BlockScope {
     pub kind: BlockKind,
-    pub parent: Option<ScopeIndex>,
-    pub locals: Vec<Local>,
+    pub parent: Option<Weak<RefCell<BlockScope>>>,
+    pub children: Vec<Weak<RefCell<BlockScope>>>,
+    pub locals: Option<Rc<RefCell<Local>>>,
     pub result: Type,
 }
 
