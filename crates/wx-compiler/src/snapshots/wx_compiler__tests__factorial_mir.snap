@@ -3,28 +3,22 @@ source: crates/wx-compiler/src/tests.rs
 expression: mir
 ---
 functions:
-  - name: 1
+  - symbol: 1
     ty:
       param_count: 1
       params_results:
         - I32
         - I32
-    frame:
-      - kind: Block
-        parent: ~
-        locals:
-          - name: 2
-            ty: I32
-            mutability: Const
-        result: I32
-      - kind: Block
-        parent: 0
-        locals: []
-        result: Never
     block:
       kind:
         Block:
-          scope_index: 0
+          scope:
+            index: 0
+            kind: Block
+            parent: ~
+            children:
+              - 1
+            result: I32
           expressions:
             - kind:
                 IfElse:
@@ -34,8 +28,12 @@ functions:
                         left:
                           kind:
                             Local:
-                              scope_index: 0
-                              local_index: 0
+                              local:
+                                index: 0
+                                symbol: 2
+                                ty: I32
+                                mutability: Const
+                              scope: 0
                           ty: I32
                         right:
                           kind:
@@ -46,7 +44,12 @@ functions:
                   then_block:
                     kind:
                       Block:
-                        scope_index: 1
+                        scope:
+                          index: 1
+                          kind: Block
+                          parent: 0
+                          children: []
+                          result: Never
                         expressions:
                           - kind:
                               Return:
@@ -64,8 +67,12 @@ functions:
                   left:
                     kind:
                       Local:
-                        scope_index: 0
-                        local_index: 0
+                        local:
+                          index: 0
+                          symbol: 2
+                          ty: I32
+                          mutability: Const
+                        scope: 0
                     ty: I32
                   right:
                     kind:
@@ -82,8 +89,12 @@ functions:
                                 left:
                                   kind:
                                     Local:
-                                      scope_index: 0
-                                      local_index: 0
+                                      local:
+                                        index: 0
+                                        symbol: 2
+                                        ty: I32
+                                        mutability: Const
+                                      scope: 0
                                   ty: I32
                                 right:
                                   kind:

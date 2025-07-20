@@ -24,7 +24,6 @@ exports:
         name: 1
         func_index: 0
 code:
-  expressions: []
   functions:
     - name: 1
       locals:

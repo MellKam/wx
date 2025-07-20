@@ -21,8 +21,9 @@ impl From<hir::PrimitiveType> for mir::Type {
     }
 }
 
-struct Context {
-    scopes: Vec<Rc<RefCell<mir::BlockScope>>>,
+#[derive(Debug)]
+struct ScopeWithLocals {
+    scope: Rc<RefCell<mir::BlockScope>>,
     locals: Vec<Rc<RefCell<mir::Local>>>,
 }
 
@@ -81,11 +82,11 @@ impl<'a> Builder<'a> {
     }
 
     fn build_function(&self, func: &hir::Function) -> mir::Function {
-        let block =
-            self.build_block_expression(func, &self.create_linked_scopes(&func.stack), &func.block);
+        let scopes = self.create_linked_scopes(&func.stack);
+        let block = self.build_block_expression(&scopes, &func.block);
 
         mir::Function {
-            name: func.name.symbol,
+            symbol: func.name.symbol,
             ty: self.to_mir_function_type(func.ty.clone()),
             block,
         }
@@ -93,9 +94,7 @@ impl<'a> Builder<'a> {
 
     fn build_expression(
         &self,
-        func: &hir::Function,
-        scopes: &Vec<Rc<RefCell<mir::BlockScope>>>,
-        locals: &Vec<Rc<RefCell<mir::Local>>>,
+        scopes: &Vec<ScopeWithLocals>,
         expr: &hir::Expression,
     ) -> mir::Expression {
         let ty = self.to_mir_type(expr.ty.unwrap());
@@ -112,20 +111,21 @@ impl<'a> Builder<'a> {
                 kind: mir::ExprKind::Bool { value: *value },
                 ty,
             },
-            hir::ExprKind::Binary { .. } => {
-                self.build_binary_expression(func, scopes, locals, expr)
-            }
-            hir::ExprKind::Unary { .. } => self.build_unary_expression(func, scopes, locals, expr),
+            hir::ExprKind::Binary { .. } => self.build_binary_expression(scopes, expr),
+            hir::ExprKind::Unary { .. } => self.build_unary_expression(scopes, expr),
             hir::ExprKind::Local {
                 local_index,
                 scope_index,
-            } => mir::Expression {
-                kind: mir::ExprKind::Local {
-                    local: Rc::downgrade(&locals[local_index.0 as usize]),
-                    scope: Rc::downgrade(&scopes[scope_index.0 as usize]),
-                },
-                ty,
-            },
+            } => {
+                let scope = &scopes[scope_index.0 as usize];
+                mir::Expression {
+                    kind: mir::ExprKind::Local {
+                        local: Rc::downgrade(&scope.locals[local_index.0 as usize]),
+                        scope: Rc::downgrade(&scope.scope),
+                    },
+                    ty,
+                }
+            }
             hir::ExprKind::Global { global_index } => mir::Expression {
                 kind: mir::ExprKind::Global {
                     global_index: global_index.0,
@@ -138,10 +138,10 @@ impl<'a> Builder<'a> {
             },
             hir::ExprKind::Call { callee, arguments } => mir::Expression {
                 kind: mir::ExprKind::Call {
-                    callee: Box::new(self.build_expression(func, scopes, locals, callee)),
+                    callee: Box::new(self.build_expression(scopes, callee)),
                     arguments: arguments
                         .into_iter()
-                        .map(|arg| self.build_expression(func, scopes, locals, &arg))
+                        .map(|arg| self.build_expression(scopes, &arg))
                         .collect(),
                 },
                 ty,
@@ -151,20 +151,22 @@ impl<'a> Builder<'a> {
                 scope_index,
                 expr,
                 ..
-            } => mir::Expression {
-                kind: mir::ExprKind::LocalSet {
-                    local: Rc::downgrade(&locals[local_index.0 as usize]),
-                    scope: Rc::downgrade(&scopes[scope_index.0 as usize]),
-                    value: Box::new(self.build_expression(func, scopes, locals, expr)),
-                },
-                ty,
-            },
+            } => {
+                let scope = &scopes[scope_index.0 as usize];
+
+                mir::Expression {
+                    kind: mir::ExprKind::LocalSet {
+                        local: Rc::downgrade(&scope.locals[local_index.0 as usize]),
+                        scope: Rc::downgrade(&scope.scope),
+                        value: Box::new(self.build_expression(scopes, expr)),
+                    },
+                    ty,
+                }
+            }
             hir::ExprKind::Return { value } => mir::Expression {
                 kind: mir::ExprKind::Return {
                     value: match value {
-                        Some(value) => {
-                            Some(Box::new(self.build_expression(func, scopes, locals, value)))
-                        }
+                        Some(value) => Some(Box::new(self.build_expression(scopes, value))),
                         None => None,
                     },
                 },
@@ -187,17 +189,17 @@ impl<'a> Builder<'a> {
                 }
             }
             hir::ExprKind::Placeholder => unreachable!(),
-            hir::ExprKind::Block { .. } => self.build_block_expression(func, scopes, expr),
+            hir::ExprKind::Block { .. } => self.build_block_expression(scopes, expr),
             hir::ExprKind::IfElse {
                 condition,
                 else_block,
                 then_block,
             } => {
-                let condition = self.build_expression(func, scopes, locals, condition);
-                let then_block = self.build_expression(func, scopes, locals, then_block);
+                let condition = self.build_expression(scopes, condition);
+                let then_block = self.build_expression(scopes, then_block);
                 let else_block = else_block
                     .as_ref()
-                    .map(|expr| self.build_expression(func, scopes, locals, expr));
+                    .map(|expr| self.build_expression(scopes, expr));
 
                 mir::Expression {
                     kind: mir::ExprKind::IfElse {
@@ -210,11 +212,9 @@ impl<'a> Builder<'a> {
             }
             hir::ExprKind::Break { scope_index, value } => mir::Expression {
                 kind: mir::ExprKind::Break {
-                    scope: Rc::downgrade(&scopes[scope_index.0 as usize]),
+                    scope: Rc::downgrade(&scopes[scope_index.0 as usize].scope),
                     value: match value {
-                        Some(value) => {
-                            Some(Box::new(self.build_expression(func, scopes, locals, value)))
-                        }
+                        Some(value) => Some(Box::new(self.build_expression(scopes, value))),
                         None => None,
                     },
                 },
@@ -222,7 +222,7 @@ impl<'a> Builder<'a> {
             },
             hir::ExprKind::Continue { scope_index } => mir::Expression {
                 kind: mir::ExprKind::Continue {
-                    scope: Rc::downgrade(&scopes[scope_index.0 as usize]),
+                    scope: Rc::downgrade(&scopes[scope_index.0 as usize].scope),
                 },
                 ty: mir::Type::Never,
             },
@@ -230,27 +230,31 @@ impl<'a> Builder<'a> {
                 kind: mir::ExprKind::Unreachable,
                 ty: mir::Type::Never,
             },
-            hir::ExprKind::Loop { block, scope_index } => {
-                let block = self.build_block_expression(func, scopes, block);
+            hir::ExprKind::Loop { block, .. } => {
+                let block = self.build_block_expression(scopes, block);
 
                 mir::Expression {
                     kind: mir::ExprKind::Loop {
-                        scope: scopes[scope_index.0 as usize].clone(),
                         block: Box::new(block),
                     },
-                    ty: mir::Type::Never,
+                    ty,
                 }
             }
             hir::ExprKind::Error => panic!("invalid HIR"),
         }
     }
 
-    fn create_linked_locals(&self, hir_locals: &[hir::Local]) -> Vec<Rc<RefCell<mir::Local>>> {
+    fn create_linked_locals(
+        &self,
+        start_index: u32,
+        hir_locals: &[hir::Local],
+    ) -> Vec<Rc<RefCell<mir::Local>>> {
         let mut mir_locals = Vec::with_capacity(hir_locals.len());
         let mut prev: Option<Rc<RefCell<mir::Local>>> = None;
-        for hir_local in hir_locals {
+        for (index, hir_local) in hir_locals.iter().enumerate() {
             let mir_local = Rc::new(RefCell::new(mir::Local {
-                name: hir_local.name.symbol,
+                index: start_index + index as u32,
+                symbol: hir_local.name.symbol,
                 ty: self.to_mir_type(hir_local.ty),
                 mutability: match hir_local.mutability {
                     Some(_) => mir::Mutability::Mutable,
@@ -265,19 +269,25 @@ impl<'a> Builder<'a> {
             prev = Some(mir_local.clone());
             mir_locals.push(mir_local);
         }
+
         mir_locals
     }
 
-    fn create_linked_scopes(&self, frame: &hir::StackFrame) -> Vec<Rc<RefCell<mir::BlockScope>>> {
-        let mut scopes: Vec<Rc<RefCell<mir::BlockScope>>> = Vec::with_capacity(frame.scopes.len());
-        for scope in &frame.scopes {
+    fn create_linked_scopes(&self, frame: &hir::StackFrame) -> Vec<ScopeWithLocals> {
+        let mut scopes: Vec<ScopeWithLocals> = Vec::with_capacity(frame.scopes.len());
+        let mut start_index = 0;
+
+        for (index, scope) in frame.scopes.iter().enumerate() {
             let mir_scope = Rc::new(RefCell::new(mir::BlockScope {
+                index: index as u32,
                 kind: match scope.kind {
                     hir::BlockKind::Block => mir::BlockKind::Block,
                     hir::BlockKind::Loop => mir::BlockKind::Loop,
                 },
                 parent: match scope.parent {
-                    Some(index) => scopes.get(index.0 as usize).map(Rc::downgrade),
+                    Some(index) => scopes
+                        .get(index.0 as usize)
+                        .map(|scope| Rc::downgrade(&scope.scope)),
                     None => None,
                 },
                 children: Vec::new(),
@@ -286,18 +296,25 @@ impl<'a> Builder<'a> {
             }));
 
             if let Some(index) = scope.parent {
-                let parent = scopes.get(index.0 as usize).unwrap();
+                let parent = &scopes.get(index.0 as usize).unwrap().scope;
                 parent.borrow_mut().children.push(Rc::downgrade(&mir_scope));
             }
-            scopes.push(mir_scope);
+
+            let locals = self.create_linked_locals(start_index, &scope.locals);
+            start_index += locals.len() as u32;
+            mir_scope.borrow_mut().locals = locals.first().map(Rc::clone);
+
+            scopes.push(ScopeWithLocals {
+                scope: mir_scope,
+                locals,
+            });
         }
         scopes
     }
 
     fn build_block_expression(
         &self,
-        func: &hir::Function,
-        scopes: &Vec<Rc<RefCell<mir::BlockScope>>>,
+        scopes: &Vec<ScopeWithLocals>,
         expr: &hir::Expression,
     ) -> mir::Expression {
         match &expr.kind {
@@ -306,25 +323,19 @@ impl<'a> Builder<'a> {
                 expressions,
                 result,
             } => {
-                let locals =
-                    self.create_linked_locals(&func.stack.scopes[scope_index.0 as usize].locals);
-
                 let expressions: Box<_> = expressions
                     .iter()
-                    .map(|expr| self.build_expression(func, scopes, &locals, expr))
+                    .map(|expr| self.build_expression(scopes, expr))
                     .chain(
                         result
                             .as_ref()
-                            .map(|result| self.build_expression(func, scopes, &locals, result)),
+                            .map(|result| self.build_expression(scopes, result)),
                     )
                     .collect();
 
-                let scope = scopes[scope_index.0 as usize].clone();
-                scope.borrow_mut().locals = locals.into_iter().next();
-
                 mir::Expression {
                     kind: mir::ExprKind::Block {
-                        scope: scopes[scope_index.0 as usize].clone(),
+                        scope: scopes[scope_index.0 as usize].scope.clone(),
                         expressions,
                     },
                     ty: self.to_mir_type(expr.ty.unwrap()),
@@ -336,9 +347,7 @@ impl<'a> Builder<'a> {
 
     fn build_unary_expression(
         &self,
-        func: &hir::Function,
-        scopes: &Vec<Rc<RefCell<mir::BlockScope>>>,
-        locals: &Vec<Rc<RefCell<mir::Local>>>,
+        scopes: &Vec<ScopeWithLocals>,
         expr: &hir::Expression,
     ) -> mir::Expression {
         let (operator, operand) = match &expr.kind {
@@ -346,7 +355,7 @@ impl<'a> Builder<'a> {
             _ => unreachable!(),
         };
         let ty = self.to_mir_type(expr.ty.unwrap());
-        let value = Box::new(self.build_expression(func, scopes, locals, operand));
+        let value = Box::new(self.build_expression(scopes, operand));
 
         mir::Expression {
             kind: match operator.kind {
@@ -360,9 +369,7 @@ impl<'a> Builder<'a> {
 
     fn build_binary_expression(
         &self,
-        func: &hir::Function,
-        scopes: &Vec<Rc<RefCell<mir::BlockScope>>>,
-        locals: &Vec<Rc<RefCell<mir::Local>>>,
+        scopes: &Vec<ScopeWithLocals>,
         expr: &hir::Expression,
     ) -> mir::Expression {
         let (operator, left, right) = match &expr.kind {
@@ -378,19 +385,22 @@ impl<'a> Builder<'a> {
         use crate::ast::BinOpKind;
         match operator.kind {
             BinOpKind::Assign => {
-                let value = self.build_expression(func, scopes, locals, &right);
+                let value = self.build_expression(scopes, &right);
                 match left.kind {
                     hir::ExprKind::Local {
                         local_index,
                         scope_index,
-                    } => mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local: Rc::downgrade(&locals[local_index.0 as usize]),
-                            scope: Rc::downgrade(&scopes[scope_index.0 as usize]),
-                            value: Box::new(value),
-                        },
-                        ty,
-                    },
+                    } => {
+                        let scope = &scopes[scope_index.0 as usize];
+                        mir::Expression {
+                            kind: mir::ExprKind::LocalSet {
+                                local: Rc::downgrade(&scope.locals[local_index.0 as usize]),
+                                scope: Rc::downgrade(&scope.scope),
+                                value: Box::new(value),
+                            },
+                            ty,
+                        }
+                    }
                     hir::ExprKind::Placeholder => mir::Expression {
                         kind: mir::ExprKind::Drop {
                             value: Box::new(value),
@@ -413,8 +423,8 @@ impl<'a> Builder<'a> {
             | BinOpKind::MulAssign
             | BinOpKind::RemAssign => {
                 let hir_left = &left;
-                let left = Box::new(self.build_expression(func, scopes, locals, &left));
-                let right = Box::new(self.build_expression(func, scopes, locals, &right));
+                let left = Box::new(self.build_expression(scopes, &left));
+                let right = Box::new(self.build_expression(scopes, &right));
                 let value_type = left.ty;
                 let value = match operator.kind {
                     BinOpKind::AddAssign => mir::Expression {
@@ -444,14 +454,17 @@ impl<'a> Builder<'a> {
                     hir::ExprKind::Local {
                         local_index,
                         scope_index,
-                    } => mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local: Rc::downgrade(&locals[local_index.0 as usize]),
-                            scope: Rc::downgrade(&scopes[scope_index.0 as usize]),
-                            value: Box::new(value),
-                        },
-                        ty,
-                    },
+                    } => {
+                        let scope = &scopes[scope_index.0 as usize];
+                        mir::Expression {
+                            kind: mir::ExprKind::LocalSet {
+                                local: Rc::downgrade(&scope.locals[local_index.0 as usize]),
+                                scope: Rc::downgrade(&scope.scope),
+                                value: Box::new(value),
+                            },
+                            ty,
+                        }
+                    }
                     hir::ExprKind::Global { global_index } => mir::Expression {
                         kind: mir::ExprKind::GlobalSet {
                             global_index: global_index.0,
@@ -480,8 +493,8 @@ impl<'a> Builder<'a> {
             | BinOpKind::GreaterEq
             | BinOpKind::Less
             | BinOpKind::LessEq => {
-                let left = Box::new(self.build_expression(func, scopes, locals, &left));
-                let right = Box::new(self.build_expression(func, scopes, locals, &right));
+                let left = Box::new(self.build_expression(scopes, &left));
+                let right = Box::new(self.build_expression(scopes, &right));
 
                 let kind = match operator.kind {
                     BinOpKind::BitAnd => mir::ExprKind::BitAnd { left, right },

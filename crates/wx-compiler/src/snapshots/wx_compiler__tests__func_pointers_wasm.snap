@@ -44,7 +44,6 @@ exports:
         name: 8
         func_index: 3
 code:
-  expressions: []
   functions:
     - name: 1
       locals:

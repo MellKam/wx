@@ -39,7 +39,7 @@ impl From<mir::Type> for wasm::BlockResult {
 #[derive(Debug)]
 struct FunctionContext {
     pub locals: Vec<wasm::Local>,
-    pub local_indices: HashMap<*const RefCell<mir::Local>, wasm::LocalIndex>,
+    pub local_indices: HashMap<u32, wasm::LocalIndex>,
     pub scope: Rc<RefCell<mir::BlockScope>>,
 }
 
@@ -57,13 +57,21 @@ impl FunctionContext {
     }
 
     fn populate_locals(&mut self, scope: Rc<RefCell<mir::BlockScope>>) {
-        for local in scope.borrow().locals.iter() {
+        let mut current_local = scope.borrow().locals.clone();
+        loop {
+            let local = match current_local {
+                Some(local) => local,
+                None => break,
+            };
+
             let local_index = wasm::LocalIndex(self.locals.len() as u32);
             self.locals.push(wasm::Local {
-                name: local.borrow().name,
+                name: local.borrow().symbol,
                 ty: wasm::ValueType::try_from(local.borrow().ty).unwrap(),
             });
-            self.local_indices.insert(Rc::as_ptr(local), local_index);
+            self.local_indices.insert(local.borrow().index, local_index);
+
+            current_local = local.borrow().next.clone();
         }
 
         for child_scope in scope.borrow().children.iter() {
@@ -81,7 +89,7 @@ impl FunctionContext {
                 mir::BlockKind::Block => depth + 1,
             };
 
-            if scope.as_ptr() == target_scope.as_ptr() {
+            if scope.borrow().index == target_scope.borrow().index {
                 return Some(depth - 1);
             }
 
@@ -95,7 +103,7 @@ impl FunctionContext {
         let mut depth = 0;
 
         loop {
-            if scope.as_ptr() == target_scope.as_ptr() {
+            if scope.borrow().index == target_scope.borrow().index {
                 return Some(depth);
             }
 
@@ -148,7 +156,7 @@ impl Builder {
 
                     wasm::ExportItem::Function {
                         func_index: wasm::FuncIndex(func_index.0),
-                        name: func.name,
+                        name: func.symbol,
                     }
                 }
             })
@@ -173,7 +181,7 @@ impl Builder {
                 .collect::<Result<Box<_>, ()>>()?;
 
             functions.push(wasm::FunctionBody {
-                name: func.name,
+                name: func.symbol,
                 locals: ctx.locals.into_boxed_slice(),
                 expressions,
             });
@@ -226,7 +234,6 @@ impl Builder {
             },
             exports: wasm::ExportSection { items: exports },
             code: wasm::CodeSection {
-                expressions: builder.expressions.into_boxed_slice(),
                 functions: functions.into_boxed_slice(),
             },
         })
@@ -460,7 +467,7 @@ impl Builder {
             mir::ExprKind::Local { local, .. } => {
                 let local_index = ctx
                     .local_indices
-                    .get(&Rc::as_ptr(&local.upgrade().unwrap()))
+                    .get(&local.upgrade().unwrap().borrow().index)
                     .copied()
                     .unwrap();
 
@@ -469,7 +476,7 @@ impl Builder {
             mir::ExprKind::LocalSet { local, value, .. } => {
                 let local_index = ctx
                     .local_indices
-                    .get(&Rc::as_ptr(&local.upgrade().unwrap()))
+                    .get(&local.upgrade().unwrap().borrow().index)
                     .copied()
                     .unwrap();
 
@@ -569,9 +576,9 @@ impl Builder {
                 };
                 Ok(expr)
             }
-            mir::ExprKind::Loop { scope, block } => {
-                let expressions = match &block.kind {
-                    mir::ExprKind::Block { expressions, .. } => expressions,
+            mir::ExprKind::Loop { block } => {
+                let (expressions, scope) = match &block.kind {
+                    mir::ExprKind::Block { expressions, scope } => (expressions, scope),
                     _ => unreachable!(),
                 };
 
