@@ -1,6 +1,6 @@
 use crate::hir::*;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum GlobalValue {
     Global {
         global_index: GlobalIndex,
@@ -27,7 +27,6 @@ pub enum LookupCategory {
     Value,
 }
 
-#[derive(Debug)]
 pub struct GlobalContext<'interner> {
     pub interner: &'interner StringInterner<StringBackend>,
     pub exports: Vec<ExportItem>,

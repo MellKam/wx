@@ -116,8 +116,6 @@ pub struct InvalidEnumTypeDiagnostic {
 }
 
 impl InvalidEnumTypeDiagnostic {
-    const CODE: &'static str = "invalid-enum-type";
-
     pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message(format!(
@@ -327,6 +325,25 @@ impl UnreachableCodeDiagnostic {
     }
 }
 
+pub struct UnreachableExpressionDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl UnreachableExpressionDiagnostic {
+    pub const CODE: &'static str = "E2006";
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::warning()
+            .with_code(Self::CODE)
+            .with_message("unreachable expression")
+            .with_label(
+                Label::primary(self.file_id, self.span)
+                    .with_message("this expression will never be evaluated"),
+            )
+    }
+}
+
 pub struct UnableToCoerceDiagnostic {
     pub file_id: FileId,
     pub target_type: hir::Type,
@@ -489,5 +506,56 @@ impl UnnecessaryMutabilityDiagnostic {
             .with_code(Self::CODE)
             .with_message("unnecessary mutability")
             .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct MissingElseClauseDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl MissingElseClauseDiagnostic {
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_message("`if` may be missing an `else` clause")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("`if` expressions without `else` evaluate to `()`")
+            .with_note("consider adding an `else` block that evaluates to the expected type")
+    }
+}
+
+pub struct ArgumentCountMismatchDiagnostic {
+    pub file_id: FileId,
+    pub expected_count: u32,
+    pub actual_count: u32,
+    pub span: TextSpan,
+}
+
+impl ArgumentCountMismatchDiagnostic {
+    pub fn report(self) -> Diagnostic<FileId> {
+        let diagnostic: Diagnostic<FileId> =
+            Diagnostic::error().with_message(match self.expected_count {
+                1 => format!("expected 1 argument, found {}", self.actual_count),
+                _ => format!(
+                    "expected {} arguments, found {}",
+                    self.expected_count, self.actual_count
+                ),
+            });
+
+        if self.actual_count > self.expected_count {
+            diagnostic.with_label(Label::primary(self.file_id, self.span).with_message(
+                match self.actual_count - self.expected_count {
+                    1 => "remove the extra argument",
+                    _ => "remove the extra arguments",
+                },
+            ))
+        } else {
+            diagnostic.with_label(Label::primary(self.file_id, self.span).with_message(
+                match self.expected_count - self.actual_count {
+                    1 => "add the missing argument",
+                    _ => "add the missing arguments",
+                },
+            ))
+        }
     }
 }

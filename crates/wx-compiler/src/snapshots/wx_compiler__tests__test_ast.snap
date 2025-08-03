@@ -1,0 +1,117 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: ast
+---
+ast:
+  file_id: 0
+  items:
+    - kind:
+        ExportModifier:
+          export:
+            start: 0
+            end: 6
+          item:
+            kind:
+              FunctionDefinition:
+                signature:
+                  name:
+                    symbol: 1
+                    span:
+                      start: 12
+                      end: 16
+                  params:
+                    open:
+                      start: 16
+                      end: 17
+                    inner:
+                      - inner:
+                          mutable: ~
+                          name:
+                            symbol: 2
+                            span:
+                              start: 17
+                              end: 18
+                          annotation:
+                            separator:
+                              start: 18
+                              end: 19
+                            ty:
+                              kind:
+                                Identifier:
+                                  symbol: 3
+                              span:
+                                start: 20
+                                end: 24
+                        span:
+                          start: 17
+                          end: 24
+                        separator: ~
+                    close:
+                      start: 24
+                      end: 25
+                  result:
+                    separator:
+                      start: 25
+                      end: 26
+                    ty:
+                      kind:
+                        Identifier:
+                          symbol: 3
+                      span:
+                        start: 27
+                        end: 31
+                block:
+                  kind:
+                    Block:
+                      open:
+                        start: 32
+                        end: 33
+                      inner:
+                        - inner:
+                            LocalDefinition:
+                              mutable: ~
+                              name:
+                                symbol: 4
+                                span:
+                                  start: 44
+                                  end: 45
+                              annotation:
+                                separator:
+                                  start: 45
+                                  end: 46
+                                ty:
+                                  kind:
+                                    Identifier:
+                                      symbol: 5
+                                  span:
+                                    start: 47
+                                    end: 50
+                              eq:
+                                start: 51
+                                end: 52
+                              value:
+                                kind:
+                                  Int:
+                                    value: 0
+                                span:
+                                  start: 53
+                                  end: 54
+                          span:
+                            start: 38
+                            end: 54
+                          separator:
+                            start: 54
+                            end: 55
+                      close:
+                        start: 56
+                        end: 57
+                  span:
+                    start: 32
+                    end: 57
+            span:
+              start: 7
+              end: 57
+      span:
+        start: 0
+        end: 57
+diagnostics: []

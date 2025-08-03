@@ -1,7 +1,6 @@
 use core::panic;
 
 use codespan_reporting::diagnostic::Diagnostic;
-use serde::Serialize;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
@@ -13,6 +12,9 @@ use crate::hir::*;
 use crate::span::TextSpan;
 use crate::{ast, hir};
 
+#[cfg(test)]
+use serde::Serialize;
+
 pub struct Builder<'ast, 'interner> {
     ast: &'ast ast::Ast,
     global: GlobalContext<'interner>,
@@ -20,7 +22,7 @@ pub struct Builder<'ast, 'interner> {
     hir: HIR,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct BuilderResult {
     pub hir: HIR,
     pub diagnostics: Vec<Diagnostic<FileId>>,
@@ -31,7 +33,7 @@ enum BlockState<T> {
     Incomplete(T),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct FunctionContext {
     pub lookup: HashMap<(ScopeIndex, SymbolU32), LocalIndex>,
     pub func_index: FuncIndex,
@@ -593,8 +595,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         let span = TextSpan::new(stmt.span.start().0, value.span.end().0);
         Ok(hir::Expression {
-            kind: hir::ExprKind::LocalDeclaration {
-                name,
+            kind: hir::ExprKind::LocalDefinition {
                 scope_index: ctx.scope_index,
                 local_index,
                 expr: Box::new(value),
@@ -1477,7 +1478,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         label: Option<ast::Identifier>,
         access_ctx: AccessContext,
     ) -> Result<hir::Expression, ()> {
-        let (condition, then_block, maybe_else_block) = match &expr.kind {
+        let (condition, then_block, else_block) = match &expr.kind {
             ast::ExprKind::IfElse {
                 condition,
                 then_block,
@@ -1503,7 +1504,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     parent: Some(ctx.scope_index),
                     locals: Vec::new(),
                     inferred_type: None,
-                    expected_type: match maybe_else_block {
+                    expected_type: match else_block {
                         Some(_) => access_ctx.expected_type,
                         None => None,
                     },
@@ -1512,9 +1513,10 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             )?,
             _ => unreachable!(),
         };
-        let (else_block, ty) = match maybe_else_block {
-            Some(ast_else_block) => {
-                let else_block = match ast_else_block.kind {
+
+        let (else_block, ty) = match else_block {
+            Some(else_block) => {
+                let else_block = match else_block.kind {
                     ast::ExprKind::Block { .. } => ctx.enter_block(
                         BlockScope {
                             label: label.map(|l| l.symbol),
@@ -1524,7 +1526,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                             inferred_type: None,
                             expected_type: access_ctx.expected_type,
                         },
-                        |ctx| self.build_block_expression(ctx, ast_else_block),
+                        |ctx| self.build_block_expression(ctx, else_block),
                     )?,
                     _ => unreachable!(),
                 };
@@ -1538,7 +1540,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                                     file_id: self.ast.file_id,
                                     expected: ty1,
                                     actual: ty2,
-                                    span: ast_else_block.span,
+                                    span: else_block.span,
                                 }
                                 .report(&self.global),
                             );
@@ -1550,9 +1552,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             }
             None => match then_block.ty {
                 Some(hir::Type::Unit | hir::Type::Never) => (None, Some(hir::Type::Unit)),
-                ty => panic!(
-                    "if you want to return a value from if-else, you must provide an else block {ty:?}"
-                ),
+                Some(block_type) => {
+                    self.diagnostics.push(
+                        MissingElseClauseDiagnostic {
+                            file_id: self.ast.file_id,
+                            span: then_block.span,
+                        }
+                        .report(),
+                    );
+
+                    (None, Some(block_type))
+                }
+                None => todo!(),
             },
         };
 
@@ -1572,14 +1583,14 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         ctx: &mut FunctionContext,
         expr: &ast::Expression,
     ) -> Result<hir::Expression, ()> {
-        let (ast_callee, ast_arguments) = match &expr.kind {
+        let (callee, arguments) = match &expr.kind {
             ast::ExprKind::Call { callee, arguments } => (callee, arguments),
-            _ => unreachable!("expected call expression"),
+            _ => unreachable!(),
         };
 
         let callee = self.build_expression(
             ctx,
-            ast_callee,
+            callee,
             AccessContext {
                 expected_type: None,
                 access_kind: AccessKind::Read,
@@ -1591,7 +1602,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.diagnostics.push(
                     CannotCallExpressionDiagnostic {
                         file_id: self.ast.file_id,
-                        span: ast_callee.span,
+                        span: callee.span,
                         ty,
                     }
                     .report(&self.global),
@@ -1610,7 +1621,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 self.diagnostics.push(
                     TypeAnnotationRequiredDiagnostic {
                         file_id: self.ast.file_id,
-                        span: ast_callee.span,
+                        span: callee.span,
                     }
                     .report(),
                 );
@@ -1626,47 +1637,98 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             }
         };
 
-        let arguments: Box<_> = ast_arguments
+        let func_type = self
+            .global
+            .function_types
+            .get(func_index.0 as usize)
+            .unwrap()
+            .clone();
+        if arguments.inner.len() != func_type.params.len() {
+            let span = if arguments.inner.len() > func_type.params.len() {
+                let extra_args = &arguments.inner[func_type.params.len()..];
+                TextSpan::merge(
+                    extra_args.first().unwrap().span,
+                    extra_args.last().unwrap().span,
+                )
+            } else {
+                callee.span
+            };
+
+            self.diagnostics.push(
+                ArgumentCountMismatchDiagnostic {
+                    file_id: self.ast.file_id,
+                    span,
+                    actual_count: arguments.inner.len() as u32,
+                    expected_count: func_type.params.len() as u32,
+                }
+                .report(),
+            );
+        }
+
+        let arguments = arguments
             .inner
             .iter()
             .enumerate()
             .map(|(index, argument)| {
-                let func_type = self
-                    .global
-                    .function_types
-                    .get(func_index.0 as usize)
-                    .unwrap();
-                let expected_type = func_type.params.get(index).copied().unwrap();
-
+                let expected_type = func_type.params.get(index).cloned();
                 let mut argument = self.build_expression(
                     ctx,
                     &argument.inner,
                     AccessContext {
-                        expected_type: Some(expected_type),
+                        expected_type,
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                match argument.ty {
-                    Some(ty) if !ty.coercible_to(expected_type) => {
-                        self.diagnostics.push(
-                            TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                expected: expected_type,
-                                actual: ty,
-                                span: argument.span,
-                            }
-                            .report(&self.global),
-                        );
-                    }
-                    Some(_) => {}
-                    None => {
-                        self.coerce_untyped_expr(&mut argument, expected_type)?;
-                    }
+                match expected_type {
+                    Some(expected_type) => match argument.ty {
+                        Some(ty) if !ty.coercible_to(expected_type) => {
+                            self.diagnostics.push(
+                                TypeMistmatchDiagnostic {
+                                    file_id: self.ast.file_id,
+                                    expected: expected_type,
+                                    actual: ty,
+                                    span: argument.span,
+                                }
+                                .report(&self.global),
+                            );
+                        }
+                        Some(_) => {}
+                        None => {
+                            self.coerce_untyped_expr(&mut argument, expected_type)?;
+                        }
+                    },
+                    None => {}
                 }
 
                 Ok(argument)
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Box<[_]>, _>>()?;
+
+        if let Some(first_never_argument_index) =
+            arguments.iter().enumerate().find_map(|(index, arg)| {
+                if arg.ty == Some(Type::Never) {
+                    Some(index)
+                } else {
+                    None
+                }
+            })
+        {
+            let rest_args = arguments
+                .get(first_never_argument_index + 1..)
+                .unwrap_or(&[]);
+            if !rest_args.is_empty() {
+                self.diagnostics.push(
+                    UnreachableCodeDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: TextSpan::merge(
+                            rest_args.first().unwrap().span,
+                            rest_args.last().unwrap().span,
+                        ),
+                    }
+                    .report(),
+                );
+            }
+        }
 
         Ok(hir::Expression {
             kind: hir::ExprKind::Call {
@@ -2760,12 +2822,12 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         )?;
         match left.ty {
             Some(Type::Bool) => {}
-            Some(actual) => {
+            Some(left_type) => {
                 self.diagnostics.push(
                     TypeMistmatchDiagnostic {
                         file_id: self.ast.file_id,
                         expected: Type::Bool,
-                        actual,
+                        actual: left_type,
                         span: left.span,
                     }
                     .report(&self.global),
@@ -2781,6 +2843,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 );
             }
         }
+
         let right = self.build_expression(
             ctx,
             right,
@@ -2791,12 +2854,12 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         )?;
         match right.ty {
             Some(Type::Bool) => {}
-            Some(actual) => {
+            Some(right_type) => {
                 self.diagnostics.push(
                     TypeMistmatchDiagnostic {
                         file_id: self.ast.file_id,
                         expected: Type::Bool,
-                        actual,
+                        actual: right_type,
                         span: right.span,
                     }
                     .report(&self.global),

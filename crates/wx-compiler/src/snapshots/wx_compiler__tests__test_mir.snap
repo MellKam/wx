@@ -1,0 +1,40 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: mir
+---
+functions:
+  - symbol: 1
+    ty:
+      param_count: 1
+      params_results:
+        - Unit
+        - Unit
+    block:
+      kind:
+        Block:
+          scope:
+            index: 0
+            kind: Block
+            parent: ~
+            children: []
+            result: Unit
+          expressions:
+            - kind:
+                LocalSet:
+                  local:
+                    index: 1
+                    symbol: 4
+                    ty: I32
+                    mutability: Const
+                  scope: 0
+                  value:
+                    kind:
+                      Int:
+                        value: 0
+                    ty: I32
+              ty: Unit
+      ty: Unit
+globals: []
+exports:
+  - Function:
+      func_index: 0

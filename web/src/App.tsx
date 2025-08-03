@@ -1,6 +1,7 @@
 import { defineComponent, ref, watch } from "vue";
 import VueMonacoEditor, { useMonaco } from "@guolao/vue-monaco-editor";
-import { compile, createMarkerData, type Diagnostic } from "./compilation";
+import { createMarkerData, type Diagnostic } from "./compilation";
+import { compile } from "wx-compiler-wasm";
 import {
 	decodePlayground,
 	encodePlayground,
@@ -19,9 +20,9 @@ export const App = defineComponent({
 	setup: () => {
 		const { monacoRef: monaco } = useMonaco();
 		const diagnostics = ref<Diagnostic[]>();
-		const result = ref<unknown>();
+		const workerResult = ref<unknown>();
 		worker.onmessage = (event) => {
-			result.value = event.data.result;
+			workerResult.value = event.data.result;
 		};
 
 		const { copy, copied } = useClipboard();
@@ -30,14 +31,17 @@ export const App = defineComponent({
 			const res = compile(
 				currentPlayground.value.name + ".wx",
 				currentPlayground.value.wx
-			);
+			) as {
+				diagnostics: Diagnostic[];
+				bytecode?: number[];
+			};
 
-			diagnostics.value = res.success ? undefined : res.diagnostics;
-			result.value = undefined;
+			diagnostics.value = res.diagnostics;
+			workerResult.value = undefined;
 
-			if (res.success) {
+			if (res.bytecode) {
 				worker.postMessage({
-					bytecode: res.bytecode,
+					bytecode: new Uint8Array(res.bytecode),
 					script: currentPlayground.value.js,
 				});
 			}
@@ -74,10 +78,13 @@ export const App = defineComponent({
 				const res = compile(
 					currentPlayground.value.name + ".wx",
 					currentPlayground.value.wx
-				);
+				) as {
+					diagnostics: Diagnostic[];
+					bytecode?: number[];
+				};
 
-				diagnostics.value = res.success ? undefined : res.diagnostics;
-				result.value = undefined;
+				diagnostics.value = res.diagnostics;
+				workerResult.value = undefined;
 			},
 			{ immediate: true, deep: true }
 		);
@@ -106,11 +113,11 @@ export const App = defineComponent({
 							))}
 						</ul>
 						<div class="p-2 gap-1.5 flex">
-							{result.value !== undefined ? (
+							{workerResult.value !== undefined ? (
 								<div class="flex items-center justify-between h-8 rounded-md bg-white/10 px-2.5 gap-1">
 									<span class="text-white/50 text-sm">Result:</span>{" "}
 									<span class="font-medium text-white font-mono">
-										{result.value}
+										{workerResult.value}
 									</span>
 								</div>
 							) : null}

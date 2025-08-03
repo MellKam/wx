@@ -114,3 +114,15 @@ fn func_pointers() {
     "},
     );
 }
+
+#[test]
+fn test() {
+    TestCase::assert_snapshot(
+        "test",
+        indoc! {"
+        export func test(a: unit): unit {
+            local y: i32 = 0;
+        }
+    "},
+    );
+}

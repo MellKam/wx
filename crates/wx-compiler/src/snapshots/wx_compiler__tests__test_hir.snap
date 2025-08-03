@@ -1,0 +1,100 @@
+---
+source: crates/wx-compiler/src/tests.rs
+expression: hir
+---
+hir:
+  file_id: 0
+  functions:
+    - name:
+        symbol: 1
+        span:
+          start: 12
+          end: 16
+      ty:
+        params:
+          - Unit
+        result: Unit
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  symbol: 2
+                  span:
+                    start: 17
+                    end: 18
+                ty: Unit
+                mutability: ~
+                accesses: []
+              - name:
+                  symbol: 4
+                  span:
+                    start: 44
+                    end: 45
+                ty:
+                  Primitive: I32
+                mutability: ~
+                accesses: []
+            inferred_type: Unit
+            expected_type: Unit
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions:
+              - kind:
+                  LocalDeclaration:
+                    name:
+                      symbol: 4
+                      span:
+                        start: 44
+                        end: 45
+                    scope_index: 0
+                    local_index: 1
+                    expr:
+                      kind:
+                        Int: 0
+                      span:
+                        start: 53
+                        end: 54
+                      ty:
+                        Primitive: I32
+                span:
+                  start: 38
+                  end: 54
+                ty: Unit
+            result: ~
+        span:
+          start: 32
+          end: 57
+        ty: Unit
+  enums: []
+  globals: []
+  exports:
+    - Function:
+        func_index: 0
+diagnostics:
+  - severity: Warning
+    code: E2009
+    message: unused variable
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 17
+          end: 18
+        message: ""
+    notes: []
+  - severity: Warning
+    code: E2009
+    message: unused variable
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 44
+          end: 45
+        message: ""
+    notes: []

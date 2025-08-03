@@ -2,6 +2,6 @@
 	"workspace": ["vscode", "web", "cli"],
 	"nodeModulesDir": "manual",
 	"tasks": {
-		"build:wasm": "cd crates/wx-compiler-wasm && cargo install wasm-pack && wasm-pack build --target web"
+		"build:wasm": "cd crates/wx-compiler-wasm && cargo install wasm-pack && wasm-pack build --release --target bundler"
 	}
 }

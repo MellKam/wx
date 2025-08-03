@@ -1,50 +1,17 @@
 import type { editor, MarkerSeverity, MarkerTag } from "monaco-editor";
-import { compile as compileWX } from "wx-compiler-wasm";
 
 export interface Diagnostic {
-	code: undefined;
+	severity: "Error" | "Warning";
+	code?: string;
 	message: string;
 	notes: any[];
 	labels: {
 		file_id: number;
 		message: string;
 		range: { start: number; end: number };
-		style: "Primary";
+		style: "Primary" | "Secondary";
 	}[];
-	severity: "Error";
 }
-
-export const compile = (
-	filename: string,
-	source: string
-):
-	| {
-			success: false;
-			diagnostics: Diagnostic[];
-	  }
-	| {
-			success: true;
-			bytecode: Uint8Array;
-	  } => {
-	try {
-		const bytecode = compileWX(filename, source);
-		if (!bytecode) {
-			throw new Error("compilation failed: internal error");
-		}
-		return {
-			success: true,
-			bytecode,
-		};
-	} catch (error) {
-		if (Array.isArray(error)) {
-			return {
-				success: false,
-				diagnostics: error,
-			};
-		}
-		throw error;
-	}
-};
 
 const getLineOffsets = (code: string): number[] => {
 	if (code === "") return [0];

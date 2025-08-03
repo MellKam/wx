@@ -1,5 +1,4 @@
 use lexer::TokenKind;
-use serde::Serialize;
 use string_interner::symbol::SymbolU32;
 
 pub mod diagnostics;
@@ -8,11 +7,14 @@ pub mod parser;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+use serde::Serialize;
 
 use crate::files::FileId;
 use crate::span::TextSpan;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum BinOpKind {
     // Arithmetic
     Add,
@@ -137,7 +139,8 @@ impl TryFrom<TokenKind> for BinOpKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum UnOpKind {
     InvertSign,
     Not,
@@ -200,39 +203,42 @@ impl std::fmt::Display for UnOpKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Identifier {
     pub symbol: SymbolU32,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct BinaryOp {
     pub kind: BinOpKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct UnaryOp {
     pub kind: UnOpKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Separated<T> {
     pub inner: T,
     pub span: TextSpan,
     pub separator: Option<TextSpan>,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Grouped<T> {
     pub open: TextSpan,
     pub inner: T,
     pub close: TextSpan,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum ExprKind {
     /// `1`
     Int { value: i64 },
@@ -296,13 +302,13 @@ pub enum ExprKind {
     Unreachable,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Expression {
     pub kind: ExprKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum TypeExprKind {
     Error,
     /// `i32`
@@ -316,13 +322,13 @@ pub enum TypeExprKind {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct TypeExpression {
     pub kind: TypeExprKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum StmtKind {
     /// `{expr};`
     Expression { expr: Box<Expression> },
@@ -336,33 +342,33 @@ pub enum StmtKind {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct TypeAnnotation {
     pub separator: TextSpan,
     pub ty: Box<TypeExpression>,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct FunctionParam {
     pub mutable: Option<TextSpan>,
     pub name: Identifier,
     pub annotation: TypeAnnotation,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct FunctionSignature {
     pub name: Identifier,
     pub params: Grouped<Box<[Separated<FunctionParam>]>>,
     pub result: TypeAnnotation,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct EnumVariant {
     pub name: Identifier,
     pub value: Box<Expression>,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum ItemKind {
     FunctionDefinition {
         signature: FunctionSignature,
@@ -385,13 +391,13 @@ pub enum ItemKind {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Item {
     pub kind: ItemKind,
     pub span: TextSpan,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Ast {
     pub file_id: FileId,
     pub items: Vec<Item>,

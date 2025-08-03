@@ -1,15 +1,17 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use serde::{Serialize, Serializer};
 use string_interner::symbol::SymbolU32;
+
+#[cfg(test)]
+use serde::{Serialize, Serializer};
 
 pub mod builder;
 pub use builder::*;
 
 use crate::hir;
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct MIR {
     pub functions: Vec<Function>,
     pub globals: Vec<Global>,
@@ -19,7 +21,8 @@ pub struct MIR {
 pub type FunctionIndex = u32;
 pub type GlobalIndex = u32;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct FunctionType {
     pub param_count: usize,
     pub params_results: Box<[Type]>,
@@ -30,16 +33,18 @@ impl FunctionType {
         self.params_results.get(..self.param_count).unwrap_or(&[])
     }
 
-    pub fn result(&self) -> &Type {
+    pub fn result(&self) -> Type {
         self.params_results
             .get(self.param_count..)
             .unwrap_or(&[])
             .first()
-            .unwrap_or(&Type::Unit)
+            .copied()
+            .unwrap_or(Type::Unit)
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum Type {
     I32,
     I64,
@@ -53,12 +58,12 @@ pub enum Type {
     Function(FunctionIndex),
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum ExprKind {
     Noop,
     Local {
         local: Weak<RefCell<Local>>,
-        #[serde(serialize_with = "serialize_scope_index")]
+        #[cfg_attr(test, serde(serialize_with = "serialize_scope_index"))]
         scope: Weak<RefCell<BlockScope>>,
     },
     Global {
@@ -78,7 +83,7 @@ pub enum ExprKind {
     },
     LocalSet {
         local: Weak<RefCell<Local>>,
-        #[serde(serialize_with = "serialize_scope_index")]
+        #[cfg_attr(test, serde(serialize_with = "serialize_scope_index"))]
         scope: Weak<RefCell<BlockScope>>,
         value: Box<Expression>,
     },
@@ -199,56 +204,59 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Expression {
     pub kind: ExprKind,
     pub ty: Type,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum Mutability {
     Mutable,
     Const,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Local {
     pub index: u32,
     pub symbol: SymbolU32,
     pub ty: Type,
     pub mutability: Mutability,
-    #[serde(skip)]
+    #[cfg_attr(test, serde(skip))]
     pub next: Option<Rc<RefCell<Local>>>,
-    #[serde(skip)]
+    #[cfg_attr(test, serde(skip))]
     pub prev: Option<Weak<RefCell<Local>>>,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Function {
     pub symbol: SymbolU32,
     pub ty: FunctionType,
     pub block: Expression,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum BlockKind {
     Block,
     Loop,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct BlockScope {
     pub index: u32,
     pub kind: BlockKind,
-    #[serde(serialize_with = "serialize_block_scope_parent")]
+    #[cfg_attr(test, serde(serialize_with = "serialize_block_scope_parent"))]
     pub parent: Option<Weak<RefCell<BlockScope>>>,
-    #[serde(serialize_with = "serialize_block_scope_children")]
+    #[cfg_attr(test, serde(serialize_with = "serialize_block_scope_children"))]
     pub children: Vec<Weak<RefCell<BlockScope>>>,
-    #[serde(skip)]
+    #[cfg_attr(test, serde(skip))]
     pub locals: Option<Rc<RefCell<Local>>>,
     pub result: Type,
 }
 
+#[cfg(test)]
 fn serialize_block_scope_parent<S>(
     parent: &Option<Weak<RefCell<BlockScope>>>,
     serializer: S,
@@ -262,6 +270,7 @@ where
         .serialize(serializer)
 }
 
+#[cfg(test)]
 fn serialize_block_scope_children<S>(
     children: &Vec<Weak<RefCell<BlockScope>>>,
     serializer: S,
@@ -276,6 +285,7 @@ where
     indicies.serialize(serializer)
 }
 
+#[cfg(test)]
 fn serialize_scope_index<S>(
     scope: &Weak<RefCell<BlockScope>>,
     serializer: S,
@@ -289,7 +299,7 @@ where
     }
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Global {
     pub name: SymbolU32,
     pub ty: Type,

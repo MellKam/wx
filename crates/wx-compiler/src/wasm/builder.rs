@@ -6,7 +6,6 @@ use crate::wasm::{self, TableIndex};
 use crate::{hir, mir};
 
 pub struct Builder {
-    expressions: Vec<wasm::Expression>,
     table: Vec<wasm::FuncIndex>,
 }
 
@@ -36,7 +35,6 @@ impl From<mir::Type> for wasm::BlockResult {
     }
 }
 
-#[derive(Debug)]
 struct FunctionContext {
     pub locals: Vec<wasm::Local>,
     pub local_indices: HashMap<u32, wasm::LocalIndex>,
@@ -124,7 +122,8 @@ impl From<mir::FunctionType> for wasm::FunctionType {
             param_results: ty
                 .params_results
                 .iter()
-                .map(|ty| wasm::ValueType::try_from(ty.clone()).unwrap())
+                .copied()
+                .filter_map(|ty| wasm::ValueType::try_from(ty).ok())
                 .collect(),
         }
     }
@@ -132,10 +131,7 @@ impl From<mir::FunctionType> for wasm::FunctionType {
 
 impl Builder {
     pub fn build<'a>(mir: &mir::MIR) -> Result<wasm::Module, ()> {
-        let mut builder = Builder {
-            expressions: Vec::new(),
-            table: Vec::new(),
-        };
+        let mut builder = Builder { table: Vec::new() };
 
         let mut types = HashMap::<wasm::FunctionType, wasm::TypeIndex>::new();
         let mut function_signatures = Vec::<wasm::TypeIndex>::with_capacity(mir.functions.len());

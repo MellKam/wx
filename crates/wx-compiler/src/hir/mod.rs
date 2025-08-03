@@ -17,7 +17,8 @@ use crate::ast;
 use crate::files::FileId;
 use crate::span::TextSpan;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct HIR {
     pub file_id: FileId,
     pub functions: Vec<Function>,
@@ -58,7 +59,8 @@ impl HIR {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum ExportItem {
     Function { func_index: FuncIndex },
     Global { global_index: GlobalIndex },
@@ -105,28 +107,36 @@ impl std::fmt::Display for PrimitiveType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct FuncTypeIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct LocalIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct ScopeIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct FuncIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct EnumIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct EnumVariantIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct GlobalIndex(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum Type {
     Primitive(PrimitiveType),
     Function(FuncTypeIndex),
@@ -181,13 +191,15 @@ impl TryFrom<&str> for Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct FunctionType {
     pub params: Box<[Type]>,
     pub result: Type,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum ExprKind {
     Error,
     Placeholder,
@@ -197,8 +209,7 @@ pub enum ExprKind {
     Global {
         global_index: GlobalIndex,
     },
-    LocalDeclaration {
-        name: ast::Identifier,
+    LocalDefinition {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
         expr: Box<Expression>,
@@ -252,33 +263,38 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Expression {
     pub kind: ExprKind,
     pub span: TextSpan,
     pub ty: Option<Type>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Clone, PartialEq)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum AccessKind {
     Read,
     Write,
     ReadWrite,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 struct AccessContext {
     expected_type: Option<Type>,
     access_kind: AccessKind,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct VariableAccess {
     pub span: TextSpan,
     pub kind: AccessKind,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Local {
     pub name: ast::Identifier,
     pub ty: Type,
@@ -286,7 +302,8 @@ pub struct Local {
     pub accesses: Vec<VariableAccess>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum BlockKind {
     Block,
     /// Loop blocks have an implicit `continue` at the end.
@@ -295,7 +312,8 @@ pub enum BlockKind {
     Loop,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct BlockScope {
     pub kind: BlockKind,
     pub label: Option<SymbolU32>,
@@ -305,7 +323,8 @@ pub struct BlockScope {
     pub expected_type: Option<Type>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
+#[derive(Clone)]
 pub struct StackFrame {
     pub scopes: Vec<BlockScope>,
 }
@@ -337,7 +356,8 @@ impl StackFrame {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Function {
     pub name: ast::Identifier,
     pub ty: FunctionType,
@@ -345,7 +365,8 @@ pub struct Function {
     pub block: Box<Expression>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Enum {
     pub name: ast::Identifier,
     pub ty: PrimitiveType,
@@ -353,13 +374,15 @@ pub struct Enum {
     pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct EnumVariant {
     pub name: ast::Identifier,
     pub value: Expression,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Global {
     pub name: ast::Identifier,
     pub ty: Type,

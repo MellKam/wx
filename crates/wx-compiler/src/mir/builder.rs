@@ -21,7 +21,6 @@ impl From<hir::PrimitiveType> for mir::Type {
     }
 }
 
-#[derive(Debug)]
 struct ScopeWithLocals {
     scope: Rc<RefCell<mir::BlockScope>>,
     locals: Vec<Rc<RefCell<mir::Local>>>,
@@ -146,11 +145,10 @@ impl<'a> Builder<'a> {
                 },
                 ty,
             },
-            hir::ExprKind::LocalDeclaration {
+            hir::ExprKind::LocalDefinition {
                 local_index,
                 scope_index,
                 expr,
-                ..
             } => {
                 let scope = &scopes[scope_index.0 as usize];
 
@@ -251,6 +249,7 @@ impl<'a> Builder<'a> {
     ) -> Vec<Rc<RefCell<mir::Local>>> {
         let mut mir_locals = Vec::with_capacity(hir_locals.len());
         let mut prev: Option<Rc<RefCell<mir::Local>>> = None;
+
         for (index, hir_local) in hir_locals.iter().enumerate() {
             let mir_local = Rc::new(RefCell::new(mir::Local {
                 index: start_index + index as u32,
@@ -263,6 +262,7 @@ impl<'a> Builder<'a> {
                 prev: prev.as_ref().map(Rc::downgrade),
                 next: None,
             }));
+
             if let Some(prev) = &prev {
                 prev.borrow_mut().next = Some(mir_local.clone());
             }
@@ -475,6 +475,38 @@ impl<'a> Builder<'a> {
                     _ => unreachable!(),
                 }
             }
+            BinOpKind::And => {
+                let left = Box::new(self.build_expression(scopes, &left));
+                let right = Box::new(self.build_expression(scopes, &right));
+
+                mir::Expression {
+                    kind: mir::ExprKind::IfElse {
+                        condition: left,
+                        then_block: right,
+                        else_block: Some(Box::new(mir::Expression {
+                            kind: mir::ExprKind::Bool { value: false },
+                            ty,
+                        })),
+                    },
+                    ty,
+                }
+            }
+            BinOpKind::Or => {
+                let left = Box::new(self.build_expression(scopes, &left));
+                let right = Box::new(self.build_expression(scopes, &right));
+
+                mir::Expression {
+                    kind: mir::ExprKind::IfElse {
+                        condition: left,
+                        then_block: Box::new(mir::Expression {
+                            kind: mir::ExprKind::Bool { value: true },
+                            ty,
+                        }),
+                        else_block: Some(right),
+                    },
+                    ty,
+                }
+            }
             BinOpKind::BitAnd
             | BinOpKind::BitOr
             | BinOpKind::BitXor
@@ -482,8 +514,6 @@ impl<'a> Builder<'a> {
             | BinOpKind::RightShift
             | BinOpKind::Eq
             | BinOpKind::NotEq
-            | BinOpKind::And
-            | BinOpKind::Or
             | BinOpKind::Add
             | BinOpKind::Sub
             | BinOpKind::Mul
@@ -505,8 +535,6 @@ impl<'a> Builder<'a> {
                     BinOpKind::Eq => mir::ExprKind::Eq { left, right },
                     BinOpKind::NotEq => mir::ExprKind::NotEq { left, right },
                     BinOpKind::And => mir::ExprKind::And { left, right },
-                    BinOpKind::Or => mir::ExprKind::Or { left, right },
-                    BinOpKind::Add => mir::ExprKind::Add { left, right },
                     BinOpKind::Sub => mir::ExprKind::Sub { left, right },
                     BinOpKind::Mul => mir::ExprKind::Mul { left, right },
                     BinOpKind::Div => mir::ExprKind::Div { left, right },

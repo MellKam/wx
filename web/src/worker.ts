@@ -6,7 +6,13 @@ const PayloadSchema = z.object({
 });
 
 self.onmessage = async (event) => {
-	const { bytecode, script } = PayloadSchema.parse(event.data);
+	console.log(event.data);
+	const data = PayloadSchema.safeParse(event.data);
+	if (!data.success) {
+		console.error(z.treeifyError(data.error));
+		return;
+	}
+	const { bytecode, script } = data.data;
 
 	const userFunc = new Function("bytecode", script);
 	const result = await userFunc()(bytecode);

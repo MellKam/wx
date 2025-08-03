@@ -116,7 +116,7 @@ pub struct Parser<'input> {
     ast: Ast,
 }
 
-#[derive(Debug, Serialize)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub struct ParserResult {
     pub ast: Ast,
     pub diagnostics: Vec<Diagnostic<FileId>>,
@@ -1138,7 +1138,7 @@ impl<'source> Parser<'source> {
                 symbol,
                 span: label_expr.span,
             },
-            expr => panic!("expected an identifier for label, got: {:#?}", expr),
+            _ => unreachable!(),
         };
         _ = parser.next_expect(TokenKind::Colon)?;
 
