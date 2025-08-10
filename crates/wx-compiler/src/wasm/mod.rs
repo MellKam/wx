@@ -25,12 +25,6 @@ pub enum BlockResult {
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct LocalIndex(pub u32);
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Local {
-    name: SymbolU32,
-    ty: ValueType,
-}
-
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct FuncIndex(pub u32);
 
@@ -438,8 +432,7 @@ pub struct ExportSection {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionBody {
-    name: SymbolU32,
-    locals: Box<[Local]>,
+    locals: Box<[ValueType]>,
     expressions: Box<[Expression]>,
 }
 
@@ -490,7 +483,6 @@ pub struct GlobalSection {
 
 #[derive(Debug, Clone, Serialize)]
 struct Global {
-    name: SymbolU32,
     ty: ValueType,
     mutability: bool,
     value: Expression,

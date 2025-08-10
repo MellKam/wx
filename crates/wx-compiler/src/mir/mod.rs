@@ -1,21 +1,32 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
-use string_interner::symbol::SymbolU32;
-
 #[cfg(test)]
 use serde::{Serialize, Serializer};
+use string_interner::symbol::SymbolU32;
 
 pub mod builder;
+pub mod optimizer;
 pub use builder::*;
-
-use crate::hir;
 
 #[cfg_attr(test, derive(Debug, Serialize))]
 pub struct MIR {
     pub functions: Vec<Function>,
     pub globals: Vec<Global>,
-    pub exports: Vec<hir::ExportItem>,
+    pub exports: Vec<ExportItem>,
+}
+
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, Serialize))]
+pub enum ExportItem {
+    Function {
+        func_index: FunctionIndex,
+        symbol: SymbolU32,
+    },
+    Global {
+        global_index: GlobalIndex,
+        symbol: SymbolU32,
+    },
 }
 
 pub type FunctionIndex = u32;
@@ -43,7 +54,7 @@ impl FunctionType {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Hash)]
 #[cfg_attr(test, derive(Debug, Serialize))]
 pub enum Type {
     I32,
@@ -220,7 +231,6 @@ pub enum Mutability {
 #[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Local {
     pub index: u32,
-    pub symbol: SymbolU32,
     pub ty: Type,
     pub mutability: Mutability,
     #[cfg_attr(test, serde(skip))]
@@ -231,7 +241,6 @@ pub struct Local {
 
 #[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Function {
-    pub symbol: SymbolU32,
     pub ty: FunctionType,
     pub block: Expression,
 }
@@ -301,7 +310,6 @@ where
 
 #[cfg_attr(test, derive(Debug, Serialize))]
 pub struct Global {
-    pub name: SymbolU32,
     pub ty: Type,
     pub mutability: Mutability,
     pub value: Expression,

@@ -1,5 +1,6 @@
 use leb128fmt;
-use string_interner::{StringInterner, backend::StringBackend};
+use string_interner::StringInterner;
+use string_interner::backend::StringBackend;
 
 use crate::wasm;
 
@@ -968,13 +969,13 @@ impl wasm::FunctionBody {
         let func_type = module.types.signatures[type_index.0 as usize].clone();
 
         let mut grouped_locals = Vec::<(wasm::ValueType, u32)>::new();
-        for local in self.locals.iter().skip(func_type.param_count) {
+        for local in self.locals.iter().copied().skip(func_type.param_count) {
             match grouped_locals.last_mut() {
-                Some((last_ty, count)) if *last_ty == local.ty => {
+                Some((last_ty, count)) if *last_ty == local => {
                     *count += 1;
                 }
                 _ => {
-                    grouped_locals.push((local.ty, 1));
+                    grouped_locals.push((local, 1));
                 }
             }
         }

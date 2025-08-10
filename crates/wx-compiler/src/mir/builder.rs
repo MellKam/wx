@@ -49,7 +49,20 @@ impl<'a> Builder<'a> {
             //         value: builder.build_expression(&global.value),
             //     })
             //     .collect(),
-            exports: hir.exports.clone(),
+            exports: hir
+                .exports
+                .iter()
+                .map(|export| match export {
+                    hir::ExportItem::Function { func_index } => mir::ExportItem::Function {
+                        func_index: func_index.0,
+                        symbol: hir.functions[func_index.0 as usize].name.symbol,
+                    },
+                    hir::ExportItem::Global { global_index } => mir::ExportItem::Global {
+                        global_index: global_index.0,
+                        symbol: hir.globals[global_index.0 as usize].name.symbol,
+                    },
+                })
+                .collect(),
         }
     }
 
@@ -85,7 +98,6 @@ impl<'a> Builder<'a> {
         let block = self.build_block_expression(&scopes, &func.block);
 
         mir::Function {
-            symbol: func.name.symbol,
             ty: self.to_mir_function_type(func.ty.clone()),
             block,
         }
@@ -253,7 +265,6 @@ impl<'a> Builder<'a> {
         for (index, hir_local) in hir_locals.iter().enumerate() {
             let mir_local = Rc::new(RefCell::new(mir::Local {
                 index: start_index + index as u32,
-                symbol: hir_local.name.symbol,
                 ty: self.to_mir_type(hir_local.ty),
                 mutability: match hir_local.mutability {
                     Some(_) => mir::Mutability::Mutable,

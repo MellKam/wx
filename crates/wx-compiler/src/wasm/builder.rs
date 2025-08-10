@@ -36,7 +36,7 @@ impl From<mir::Type> for wasm::BlockResult {
 }
 
 struct FunctionContext {
-    pub locals: Vec<wasm::Local>,
+    pub locals: Vec<wasm::ValueType>,
     pub local_indices: HashMap<u32, wasm::LocalIndex>,
     pub scope: Rc<RefCell<mir::BlockScope>>,
 }
@@ -63,10 +63,8 @@ impl FunctionContext {
             };
 
             let local_index = wasm::LocalIndex(self.locals.len() as u32);
-            self.locals.push(wasm::Local {
-                name: local.borrow().symbol,
-                ty: wasm::ValueType::try_from(local.borrow().ty).unwrap(),
-            });
+            self.locals
+                .push(wasm::ValueType::try_from(local.borrow().ty).unwrap());
             self.local_indices.insert(local.borrow().index, local_index);
 
             current_local = local.borrow().next.clone();
@@ -138,23 +136,19 @@ impl Builder {
         let exports: Box<_> = mir
             .exports
             .iter()
+            .cloned()
             .map(|item| match item {
-                hir::ExportItem::Global { global_index } => {
-                    let global = mir.globals.get(global_index.0 as usize).unwrap();
-
-                    wasm::ExportItem::Global {
-                        name: global.name,
-                        global_index: wasm::GlobalIndex(global_index.0),
-                    }
-                }
-                hir::ExportItem::Function { func_index } => {
-                    let func = mir.functions.get(func_index.0 as usize).unwrap();
-
-                    wasm::ExportItem::Function {
-                        func_index: wasm::FuncIndex(func_index.0),
-                        name: func.symbol,
-                    }
-                }
+                mir::ExportItem::Global {
+                    global_index,
+                    symbol,
+                } => wasm::ExportItem::Global {
+                    name: symbol,
+                    global_index: wasm::GlobalIndex(global_index),
+                },
+                mir::ExportItem::Function { func_index, symbol } => wasm::ExportItem::Function {
+                    func_index: wasm::FuncIndex(func_index),
+                    name: symbol,
+                },
             })
             .collect();
         let mut functions = Vec::<wasm::FunctionBody>::with_capacity(mir.functions.len());
@@ -177,7 +171,6 @@ impl Builder {
                 .collect::<Result<Box<_>, ()>>()?;
 
             functions.push(wasm::FunctionBody {
-                name: func.symbol,
                 locals: ctx.locals.into_boxed_slice(),
                 expressions,
             });
@@ -189,7 +182,6 @@ impl Builder {
                     .globals
                     .iter()
                     .map(|global| wasm::Global {
-                        name: global.name,
                         ty: wasm::ValueType::try_from(global.ty.clone()).unwrap(),
                         mutability: global.mutability == mir::Mutability::Mutable,
                         value: builder.build_global_expr(global),
