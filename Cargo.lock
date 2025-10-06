@@ -566,6 +566,7 @@ dependencies = [
  "insta",
  "leb128fmt",
  "serde",
+ "serde_json",
  "string-interner",
 ]
 

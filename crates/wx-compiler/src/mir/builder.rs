@@ -154,7 +154,7 @@ impl<'a> Builder<'a> {
                 local_index,
                 scope_index,
             } => mir::Expression {
-                kind: mir::ExprKind::Local {
+                kind: mir::ExprKind::LocalGet {
                     local_index: local_index.0,
                     scope_index: mir::ScopeIndex(scope_index.0),
                 },
@@ -331,7 +331,21 @@ impl<'a> Builder<'a> {
         let expressions: Box<_> = expressions
             .iter()
             .map(|expr| self.build_expression(expr))
-            .chain(result.map(|result| self.build_expression(result)))
+            .chain(result.map(|result| match scope_index.0 {
+                0 => mir::Expression {
+                    kind: mir::ExprKind::Return {
+                        value: Some(Box::new(self.build_expression(result))),
+                    },
+                    ty: mir::Type::Never,
+                },
+                _ => mir::Expression {
+                    kind: mir::ExprKind::Break {
+                        scope_index: mir::ScopeIndex(scope_index.0),
+                        value: Some(Box::new(self.build_expression(result))),
+                    },
+                    ty: mir::Type::Never,
+                },
+            }))
             .collect();
 
         mir::Expression {

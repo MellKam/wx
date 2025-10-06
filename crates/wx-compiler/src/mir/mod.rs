@@ -3,6 +3,7 @@ use string_interner::symbol::SymbolU32;
 
 pub mod builder;
 pub use builder::*;
+pub mod dfg;
 
 use crate::hir;
 
@@ -54,7 +55,7 @@ pub enum Type {
 #[derive(Debug, Serialize)]
 pub enum ExprKind {
     Noop,
-    Local {
+    LocalGet {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
     },

@@ -475,7 +475,7 @@ impl Builder {
 
                 Ok(expr)
             }
-            mir::ExprKind::Local {
+            mir::ExprKind::LocalGet {
                 local_index,
                 scope_index,
             } => Ok(wasm::Expression::LocalGet {

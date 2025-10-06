@@ -15,7 +15,7 @@ const worker = new Worker(new URL("./worker.ts", import.meta.url), {
 	type: "module",
 });
 
-export const App = defineComponent({
+export default defineComponent({
 	setup: () => {
 		const { monacoRef: monaco } = useMonaco();
 		const diagnostics = ref<Diagnostic[]>();
