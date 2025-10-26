@@ -255,17 +255,18 @@ impl TypeMistmatchDiagnostic {
 
 pub struct IntegerLiteralOutOfRangeDiagnostic {
     pub file_id: FileId,
-    pub primitive: hir::PrimitiveType,
+    pub ty: hir::Type,
     pub value: i64,
     pub span: TextSpan,
 }
 
 impl IntegerLiteralOutOfRangeDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message(format!(
                 "literal `{}` out of range for `{}`",
-                self.value, self.primitive
+                self.value,
+                global.display_type(self.ty)
             ))
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -273,17 +274,18 @@ impl IntegerLiteralOutOfRangeDiagnostic {
 
 pub struct FloatLiteralOutOfRangeDiagnostic {
     pub file_id: FileId,
-    pub primitive: hir::PrimitiveType,
+    pub ty: hir::Type,
     pub value: f64,
     pub span: TextSpan,
 }
 
 impl FloatLiteralOutOfRangeDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
+    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_message(format!(
                 "literal `{}` out of range for `{}`",
-                self.value, self.primitive
+                self.value,
+                global.display_type(self.ty)
             ))
             .with_label(Label::primary(self.file_id, self.span))
     }

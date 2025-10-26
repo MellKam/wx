@@ -1,7 +1,6 @@
 use core::panic;
 
 use codespan_reporting::diagnostic::Diagnostic;
-use serde::Serialize;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 use string_interner::symbol::SymbolU32;
@@ -20,7 +19,6 @@ pub struct Builder<'ast, 'interner> {
     hir: HIR,
 }
 
-#[derive(Debug, Serialize)]
 pub struct BuilderResult {
     pub hir: HIR,
     pub diagnostics: Vec<Diagnostic<FileId>>,
@@ -31,7 +29,6 @@ enum BlockState<T> {
     Incomplete(T),
 }
 
-#[derive(Debug, Clone)]
 pub struct FunctionContext {
     pub lookup: HashMap<(ScopeIndex, SymbolU32), LocalIndex>,
     pub func_index: FuncIndex,
@@ -175,12 +172,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     None => {}
                 };
 
-                let func_type = self.build_function_type(signature)?;
-                let type_index = self.global.get_or_insert_func_type(&func_type);
+                let name_symbol = signature.name.symbol;
+                let signature = self
+                    .global
+                    .build_signature(&signature.params, &signature.result);
+                let type_index = self.global.ensure_signature_index(&signature);
 
                 let func_index = FuncIndex(self.global.functions.len() as u32);
                 self.global.symbol_lookup.insert(
-                    (global::LookupCategory::Value, signature.name.symbol),
+                    (global::LookupCategory::Value, name_symbol),
                     GlobalValue::Function { func_index },
                 );
                 self.global.functions.push(type_index);
@@ -230,21 +230,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         }
     }
 
-    fn build_function_type(
-        &mut self,
-        signature: &ast::FunctionSignature,
-    ) -> Result<FunctionType, ()> {
-        Ok(FunctionType {
-            params: signature
-                .params
-                .inner
-                .iter()
-                .map(|param| self.resolve_type(&param.inner.annotation.ty))
-                .collect::<Result<Box<_>, ()>>()?,
-            result: self.resolve_type(&signature.result.ty)?,
-        })
-    }
-
     fn build_global_item(&mut self, item: &ast::Item) -> Result<Global, ()> {
         let (name, ty, value_expr, mutability) = match &item.kind {
             ast::ItemKind::GlobalDefinition {
@@ -289,19 +274,21 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let locals = signature
+        let params = signature
             .params
             .inner
             .iter()
-            .map(|param| hir::Local {
+            .map(|param| hir::FunctionParam {
                 name: param.inner.name.clone(),
-                ty: self.resolve_type(&param.inner.annotation.ty).unwrap(),
+                ty: TypeWithSpan {
+                    ty: self.resolve_type(&param.inner.annotation.ty).unwrap(),
+                    span: param.inner.annotation.ty.span,
+                },
                 mutability: param.inner.mutable,
-                accesses: Vec::new(),
             })
-            .collect::<Vec<_>>();
+            .collect::<Box<[_]>>();
 
-        let lookup = locals
+        let lookup = params
             .iter()
             .enumerate()
             .map(|(index, param)| ((ScopeIndex(0), param.name.symbol), LocalIndex(index as u32)))
@@ -325,9 +312,17 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             parent: None,
             label: None,
             kind: BlockKind::Block,
-            locals,
+            locals: params
+                .iter()
+                .map(|param| Local {
+                    name: param.name.clone(),
+                    mutability: param.mutability,
+                    accesses: Vec::new(),
+                    ty: param.ty.ty,
+                })
+                .collect(),
             inferred_type: None,
-            expected_type: Some(func_type.result),
+            expected_type: Some(func_type.result()),
         };
 
         let mut ctx = FunctionContext {
@@ -341,7 +336,11 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         let block = self.build_block_expression(&mut ctx, &block)?;
 
         Ok(hir::Function {
-            ty: func_type,
+            params,
+            result: TypeWithSpan {
+                ty: self.resolve_type(&signature.result.ty).unwrap(),
+                span: signature.result.ty.span,
+            },
             name: signature.name.clone(),
             stack: ctx.frame,
             block: Box::new(block),
@@ -358,21 +357,19 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
             _ => unreachable!(),
         };
 
-        let ty = match self.resolve_type(&annotation.ty)? {
-            Type::Primitive(ty) => ty,
-            ty => {
-                self.diagnostics.push(
-                    InvalidEnumTypeDiagnostic {
-                        file_id: self.ast.file_id,
-                        ty,
-                        span: name.span,
-                    }
-                    .report(&self.global),
-                );
+        let ty = self.resolve_type(&annotation.ty)?;
+        if !ty.is_primitive() {
+            self.diagnostics.push(
+                InvalidEnumTypeDiagnostic {
+                    file_id: self.ast.file_id,
+                    ty,
+                    span: name.span,
+                }
+                .report(&self.global),
+            );
 
-                return Err(());
-            }
-        };
+            return Err(());
+        }
 
         let variants = variants
             .inner
@@ -393,7 +390,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     _ => panic!("invalid enum value"),
                 };
 
-                self.coerce_untyped_expr(&mut value, Type::Primitive(ty))?;
+                self.coerce_untyped_expr(&mut value, ty)?;
 
                 Ok(EnumVariant {
                     name: variant.inner.name.clone(),
@@ -1636,7 +1633,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .function_types
                     .get(func_index.0 as usize)
                     .unwrap();
-                let expected_type = func_type.params.get(index).copied().unwrap();
+                let expected_type = func_type.params().get(index).copied().unwrap();
 
                 let mut argument = self.build_expression(
                     ctx,
@@ -1678,7 +1675,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .function_types
                     .get(func_index.0 as usize)
                     .unwrap()
-                    .result,
+                    .result(),
             ),
             span: expr.span,
         })
@@ -1705,8 +1702,8 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         match operator.kind {
             ast::UnOpKind::InvertSign | ast::UnOpKind::BitNot => match operand.ty {
-                Some(Type::Primitive(_)) | None => {
-                    let ty = operand.ty.clone();
+                Some(Type::I32 | Type::I64 | Type::F32 | Type::F64) | None => {
+                    let ty = operand.ty;
                     Ok(hir::Expression {
                         kind: ExprKind::Unary {
                             operator,
@@ -1718,20 +1715,6 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 }
                 _ => panic!("can't apply unary operator to this type"),
             },
-            // ast::UnOpKind::InvertSign | ast::UnOpKind::BitNot => match operand.ty {
-            //     Some(Type::Primitive(_)) | None => {
-            //         let ty = operand.ty.clone();
-            //         Ok(hir::Expression {
-            //             kind: ExprKind::Unary {
-            //                 operator,
-            //                 operand: Box::new(operand),
-            //             },
-            //             ty,
-            //             span: expr.span,
-            //         })
-            //     }
-            //     _ => panic!("can't apply unary operator to this type"),
-            // },
             ast::UnOpKind::Not => match operand.ty {
                 Some(Type::Bool) => Ok(hir::Expression {
                     kind: ExprKind::Unary {
@@ -2071,23 +2054,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                         return Err(());
                     }
                 };
-                match local.ty {
-                    Type::Primitive(_) => {}
-                    _ => {
-                        self.diagnostics.push(
-                            BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.ast.file_id,
-                                operator,
-                                operand: TypeWithSpan {
-                                    ty: local.ty,
-                                    span: left.span,
-                                },
-                            }
-                            .report(&self.global),
-                        );
+                if !local.ty.is_primitive() {
+                    self.diagnostics.push(
+                        BinaryOperatorCannotBeAppliedDiagnostic {
+                            file_id: self.ast.file_id,
+                            operator,
+                            operand: TypeWithSpan {
+                                ty: local.ty,
+                                span: left.span,
+                            },
+                        }
+                        .report(&self.global),
+                    );
 
-                        return Err(());
-                    }
+                    return Err(());
                 }
 
                 match local.mutability {
@@ -2153,23 +2133,20 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .get_mut(global_index.0 as usize)
                     .unwrap();
 
-                match global.ty {
-                    Type::Primitive(_) => {}
-                    _ => {
-                        self.diagnostics.push(
-                            BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.ast.file_id,
-                                operator,
-                                operand: TypeWithSpan {
-                                    ty: global.ty,
-                                    span: left.span,
-                                },
-                            }
-                            .report(&self.global),
-                        );
+                if !global.ty.is_primitive() {
+                    self.diagnostics.push(
+                        BinaryOperatorCannotBeAppliedDiagnostic {
+                            file_id: self.ast.file_id,
+                            operator,
+                            operand: TypeWithSpan {
+                                ty: global.ty,
+                                span: left.span,
+                            },
+                        }
+                        .report(&self.global),
+                    );
 
-                        return Err(());
-                    }
+                    return Err(());
                 }
 
                 match global.mutability {
@@ -2272,35 +2249,30 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         )?;
 
         match (left.ty, right.ty) {
-            (Some(Type::Primitive(p1)), Some(Type::Primitive(p2)))
-                if p1.is_integer() && p2.is_integer() && p1 == p2 =>
-            {
+            (Some(t1), Some(t2)) if t1.is_integer() && t2.is_integer() && t1 == t2 => {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: Some(Type::Primitive(p1)),
+                    ty: Some(t1),
                     span: expr.span,
                 })
             }
             (Some(ty), None) => {
-                match ty {
-                    Type::Primitive(primitive) if primitive.is_integer() => {}
-                    _ => {
-                        self.diagnostics.push(
-                            BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.ast.file_id,
-                                operator: operator.clone(),
-                                operand: TypeWithSpan {
-                                    ty,
-                                    span: left.span,
-                                },
-                            }
-                            .report(&self.global),
-                        );
-                    }
+                if !ty.is_integer() {
+                    self.diagnostics.push(
+                        BinaryOperatorCannotBeAppliedDiagnostic {
+                            file_id: self.ast.file_id,
+                            operator: operator.clone(),
+                            operand: TypeWithSpan {
+                                ty,
+                                span: left.span,
+                            },
+                        }
+                        .report(&self.global),
+                    );
                 }
                 self.coerce_untyped_expr(&mut right, ty)?;
 
@@ -2315,21 +2287,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 })
             }
             (None, Some(ty)) => {
-                match ty {
-                    Type::Primitive(primitive) if primitive.is_integer() => {}
-                    _ => {
-                        self.diagnostics.push(
-                            BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.ast.file_id,
-                                operator: operator.clone(),
-                                operand: TypeWithSpan {
-                                    ty,
-                                    span: right.span,
-                                },
-                            }
-                            .report(&self.global),
-                        );
-                    }
+                if !ty.is_integer() {
+                    self.diagnostics.push(
+                        BinaryOperatorCannotBeAppliedDiagnostic {
+                            file_id: self.ast.file_id,
+                            operator: operator.clone(),
+                            operand: TypeWithSpan {
+                                ty,
+                                span: right.span,
+                            },
+                        }
+                        .report(&self.global),
+                    );
                 }
                 self.coerce_untyped_expr(&mut left, ty)?;
 
@@ -2348,21 +2317,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     self.coerce_untyped_expr(&mut left, expected_type)?;
                     self.coerce_untyped_expr(&mut right, expected_type)?;
 
-                    match expected_type {
-                        Type::Primitive(primitive) if primitive.is_integer() => {}
-                        _ => {
-                            self.diagnostics.push(
-                                BinaryOperatorCannotBeAppliedDiagnostic {
-                                    file_id: self.ast.file_id,
-                                    operator: operator.clone(),
-                                    operand: TypeWithSpan {
-                                        ty: expected_type,
-                                        span: left.span,
-                                    },
-                                }
-                                .report(&self.global),
-                            );
-                        }
+                    if !expected_type.is_integer() {
+                        self.diagnostics.push(
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.ast.file_id,
+                                operator: operator.clone(),
+                                operand: TypeWithSpan {
+                                    ty: expected_type,
+                                    span: left.span,
+                                },
+                            }
+                            .report(&self.global),
+                        );
                     }
 
                     Ok(Expression {
@@ -2449,46 +2415,43 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         )?;
 
         match (left.ty, right.ty) {
-            (Some(Type::Primitive(ty1)), Some(Type::Primitive(ty2))) if ty1 == ty2 => {
+            (Some(ty1), Some(ty2)) if ty1.is_primitive() && ty2.is_primitive() && ty1 == ty2 => {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: Some(Type::Primitive(ty1)),
+                    ty: Some(ty1),
                     span: expr.span,
                 })
             }
             (None, Some(ty)) => {
-                match ty {
-                    Type::Primitive(_) => {}
-                    ty => {
-                        self.diagnostics.push(
-                            BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.ast.file_id,
-                                operator: operator.clone(),
-                                operand: TypeWithSpan {
-                                    ty,
-                                    span: right.span,
-                                },
-                            }
-                            .report(&self.global),
-                        );
+                if !ty.is_primitive() {
+                    self.diagnostics.push(
+                        BinaryOperatorCannotBeAppliedDiagnostic {
+                            file_id: self.ast.file_id,
+                            operator: operator.clone(),
+                            operand: TypeWithSpan {
+                                ty,
+                                span: right.span,
+                            },
+                        }
+                        .report(&self.global),
+                    );
 
-                        return Ok(Expression {
-                            kind: ExprKind::Binary {
-                                operator,
-                                left: Box::new(left),
-                                right: Box::new(right),
-                            },
-                            ty: match access_ctx.expected_type {
-                                Some(expected) => Some(expected),
-                                None => Some(Type::Unknown),
-                            },
-                            span: expr.span,
-                        });
-                    }
+                    return Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        ty: match access_ctx.expected_type {
+                            Some(expected) => Some(expected),
+                            None => Some(Type::Unknown),
+                        },
+                        span: expr.span,
+                    });
                 }
                 self.coerce_untyped_expr(&mut left, ty)?;
 
@@ -2503,6 +2466,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 })
             }
             (Some(ty), None) => {
+                // TODO: check if primitive
                 self.coerce_untyped_expr(&mut right, ty)?;
 
                 Ok(Expression {
@@ -2524,7 +2488,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .report(),
                 );
 
-                return Ok(left);
+                Ok(left)
             }
             (_, Some(Type::Never)) => {
                 self.diagnostics.push(
@@ -2535,7 +2499,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     .report(),
                 );
 
-                return Ok(right);
+                Ok(right)
             }
             (None, None) => match access_ctx.expected_type {
                 Some(_) => Ok(Expression {
@@ -2624,9 +2588,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         )?;
 
         match (left.ty, right.ty) {
-            (Some(Type::Primitive(primitive_1)), Some(Type::Primitive(primitive_2)))
-                if primitive_1 == primitive_2 =>
-            {
+            (Some(ty1), Some(ty2)) if ty1.is_primitive() && ty2.is_primitive() && ty1 == ty2 => {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
@@ -2846,7 +2808,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         target_type: hir::Type,
     ) -> Result<(), ()> {
         match target_type {
-            Type::Primitive(PrimitiveType::I32) => {
+            Type::I32 => {
                 let value = match expr.kind {
                     hir::ExprKind::Int(value) => value,
                     _ => unreachable!(),
@@ -2856,18 +2818,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     self.diagnostics.push(
                         IntegerLiteralOutOfRangeDiagnostic {
                             file_id: self.ast.file_id,
-                            primitive: PrimitiveType::I32,
+                            ty: Type::I32,
                             value,
                             span: expr.span,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                 }
 
-                expr.ty = Some(Type::Primitive(PrimitiveType::I32));
+                expr.ty = Some(Type::I32);
                 Ok(())
             }
-            Type::Primitive(PrimitiveType::I64) => {
+            Type::I64 => {
                 let value = match expr.kind {
                     hir::ExprKind::Int(value) => value,
                     _ => unreachable!(),
@@ -2876,18 +2838,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     self.diagnostics.push(
                         IntegerLiteralOutOfRangeDiagnostic {
                             file_id: self.ast.file_id,
-                            primitive: PrimitiveType::I64,
+                            ty: Type::I64,
                             value,
                             span: expr.span,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                 }
 
-                expr.ty = Some(Type::Primitive(PrimitiveType::I64));
+                expr.ty = Some(Type::I64);
                 Ok(())
             }
-            Type::Primitive(PrimitiveType::F32) => {
+            Type::F32 => {
                 let value = match expr.kind {
                     hir::ExprKind::Int(value) => value,
                     _ => unreachable!(),
@@ -2896,18 +2858,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     self.diagnostics.push(
                         IntegerLiteralOutOfRangeDiagnostic {
                             file_id: self.ast.file_id,
-                            primitive: PrimitiveType::F32,
+                            ty: Type::F32,
                             value,
                             span: expr.span,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                 }
 
-                expr.ty = Some(Type::Primitive(PrimitiveType::F32));
+                expr.ty = Some(Type::F32);
                 Ok(())
             }
-            Type::Primitive(PrimitiveType::F64) => {
+            Type::F64 => {
                 let value = match expr.kind {
                     hir::ExprKind::Int(value) => value,
                     _ => unreachable!(),
@@ -2916,15 +2878,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     self.diagnostics.push(
                         IntegerLiteralOutOfRangeDiagnostic {
                             file_id: self.ast.file_id,
-                            primitive: PrimitiveType::F64,
+                            ty: Type::F64,
                             value,
                             span: expr.span,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                 }
 
-                expr.ty = Some(Type::Primitive(PrimitiveType::F64));
+                expr.ty = Some(Type::F64);
                 Ok(())
             }
             target_type => {
@@ -2948,7 +2910,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
         target_type: hir::Type,
     ) -> Result<(), ()> {
         match target_type {
-            Type::Primitive(PrimitiveType::F32) => {
+            Type::F32 => {
                 let value = match expr.kind {
                     hir::ExprKind::Float(value) => value,
                     _ => unreachable!(),
@@ -2957,18 +2919,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     self.diagnostics.push(
                         FloatLiteralOutOfRangeDiagnostic {
                             file_id: self.ast.file_id,
-                            primitive: PrimitiveType::F32,
+                            ty: Type::F32,
                             value,
                             span: expr.span,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                 }
 
-                expr.ty = Some(Type::Primitive(PrimitiveType::F32));
+                expr.ty = Some(Type::F32);
                 Ok(())
             }
-            Type::Primitive(PrimitiveType::F64) => {
+            Type::F64 => {
                 let value = match expr.kind {
                     hir::ExprKind::Float(value) => value,
                     _ => unreachable!(),
@@ -2977,15 +2939,15 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                     self.diagnostics.push(
                         FloatLiteralOutOfRangeDiagnostic {
                             file_id: self.ast.file_id,
-                            primitive: PrimitiveType::F64,
+                            ty: Type::F64,
                             value,
                             span: expr.span,
                         }
-                        .report(),
+                        .report(&self.global),
                     );
                 }
 
-                expr.ty = Some(Type::Primitive(PrimitiveType::F64));
+                expr.ty = Some(Type::F64);
                 Ok(())
             }
             target_type => {
@@ -3015,7 +2977,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         match operator.kind {
             ast::UnOpKind::BitNot | ast::UnOpKind::InvertSign => match target_type {
-                Type::Primitive(PrimitiveType::I32 | PrimitiveType::I64) => {}
+                Type::I32 | Type::I64 => {}
                 _ => unreachable!(),
             },
             _ => unreachable!(),
@@ -3046,7 +3008,7 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
 
         match operator.kind {
             operator if operator.is_arithmetic() => match target_type {
-                Type::Primitive(_) => {}
+                target_type if target_type.is_primitive() => {}
                 target_type => {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
@@ -3060,23 +3022,18 @@ impl<'ast, 'interner> Builder<'ast, 'interner> {
                 }
             },
             operator if operator.is_bitwise() => match target_type {
-                Type::Primitive(primitive) => match primitive {
-                    PrimitiveType::I32
-                    | PrimitiveType::I64
-                    | PrimitiveType::U32
-                    | PrimitiveType::U64 => {}
-                    PrimitiveType::F32 | PrimitiveType::F64 => {
-                        self.diagnostics.push(
-                            UnableToCoerceDiagnostic {
-                                file_id: self.ast.file_id,
-                                target_type,
-                                span: expr.span,
-                            }
-                            .report(&self.global),
-                        );
-                        return Err(());
-                    }
-                },
+                Type::I32 | Type::I64 | Type::U32 | Type::U64 => {}
+                Type::F32 | Type::F64 => {
+                    self.diagnostics.push(
+                        UnableToCoerceDiagnostic {
+                            file_id: self.ast.file_id,
+                            target_type,
+                            span: expr.span,
+                        }
+                        .report(&self.global),
+                    );
+                    return Err(());
+                }
                 target_type => {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {

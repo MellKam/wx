@@ -1,6 +1,7 @@
 use crate::hir::*;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug))]
 pub enum GlobalValue {
     Global {
         global_index: GlobalIndex,
@@ -21,20 +22,20 @@ pub enum GlobalValue {
     Placeholder,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LookupCategory {
     Type,
     Value,
 }
 
-#[derive(Debug)]
 pub struct GlobalContext<'interner> {
     pub interner: &'interner StringInterner<StringBackend>,
     pub exports: Vec<ExportItem>,
     pub globals: Vec<Global>,
-    pub functions: Vec<FuncTypeIndex>,
-    pub function_types: Vec<FunctionType>,
-    pub function_lookup: HashMap<FunctionType, FuncTypeIndex>,
+    pub functions: Vec<SignatureIndex>,
+    pub function_types: Vec<FunctionSignature>,
+    pub function_lookup: HashMap<FunctionSignature, SignatureIndex>,
     pub enums: Vec<Enum>,
     pub symbol_lookup: HashMap<(LookupCategory, SymbolU32), GlobalValue>,
 }
@@ -84,26 +85,45 @@ impl<'interner> GlobalContext<'interner> {
                 }
             }
             ast::TypeExprKind::Function { params, result } => {
-                let params = params
+                let result = self.resolve_type(&result.ty).unwrap();
+                let items = params
                     .inner
                     .iter()
                     .map(|ty| self.resolve_type(&ty.inner).unwrap())
+                    .chain(Some(result))
                     .collect::<Box<_>>();
-
-                let result = self.resolve_type(&result.ty).unwrap();
-
-                let func_type = FunctionType { params, result };
-                let type_index = self.get_or_insert_func_type(&func_type);
+                let type_index = self.ensure_signature_index(&FunctionSignature {
+                    items,
+                    params_count: params.inner.len() as u32,
+                });
                 Ok(Type::Function(type_index))
             }
         }
     }
 
-    pub fn get_or_insert_func_type(&mut self, func_type: &FunctionType) -> FuncTypeIndex {
+    pub fn build_signature(
+        &mut self,
+        params: &ast::Grouped<Box<[ast::Separated<ast::FunctionParam>]>>,
+        result: &ast::TypeAnnotation,
+    ) -> FunctionSignature {
+        let result = self.resolve_type(&result.ty).unwrap();
+        let items = params
+            .inner
+            .iter()
+            .map(|ty| self.resolve_type(&ty.inner.annotation.ty).unwrap())
+            .chain(Some(result))
+            .collect::<Box<_>>();
+        FunctionSignature {
+            items,
+            params_count: params.inner.len() as u32,
+        }
+    }
+
+    pub fn ensure_signature_index(&mut self, func_type: &FunctionSignature) -> SignatureIndex {
         match self.function_lookup.get(func_type).cloned() {
             Some(type_index) => type_index,
             None => {
-                let type_index = FuncTypeIndex(self.function_types.len() as u32);
+                let type_index = SignatureIndex(self.function_types.len() as u32);
                 self.function_types.push(func_type.clone());
                 self.function_lookup.insert(func_type.clone(), type_index);
                 type_index
@@ -139,29 +159,27 @@ impl<'interner> GlobalContext<'interner> {
             Type::Unit => "unit".to_string(),
             Type::Bool => "bool".to_string(),
             Type::Never => "never".to_string(),
-            Type::Primitive(primitive) => primitive.to_string(),
-            Type::Enum(enum_index) => {
-                let enum_ = self.enums.get(enum_index.0 as usize).unwrap();
-                self.interner
-                    .resolve(enum_.name.symbol)
-                    .unwrap()
-                    .to_string()
-            }
+            Type::I32 => "i32".to_string(),
+            Type::I64 => "i64".to_string(),
+            Type::F32 => "f32".to_string(),
+            Type::F64 => "f64".to_string(),
+            Type::U32 => "u32".to_string(),
+            Type::U64 => "u64".to_string(),
+            Type::Enum(enum_index) => self
+                .interner
+                .resolve(self.enums[enum_index.0 as usize].name.symbol)
+                .unwrap()
+                .to_string(),
             Type::Function(func_index) => {
-                let func = self.function_types.get(func_index.0 as usize).unwrap();
-                let mut result = String::from("func(");
+                let func = &self.function_types[func_index.0 as usize];
+                let params = func
+                    .params()
+                    .iter()
+                    .map(|param| self.display_type(*param))
+                    .collect::<Box<[_]>>()
+                    .join(", ");
 
-                for (index, param) in func.params.iter().enumerate() {
-                    result.push_str(&self.display_type(*param));
-                    if index < func.params.len() - 1 {
-                        result.push_str(", ");
-                    }
-                }
-
-                result.push_str(") -> ");
-                result.push_str(&self.display_type(func.result));
-
-                result
+                format!("func({}) -> {}", params, self.display_type(func.result()))
             }
         }
     }

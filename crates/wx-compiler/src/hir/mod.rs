@@ -6,8 +6,10 @@ mod global;
 mod tests;
 
 use std::collections::HashMap;
+use std::hash::Hash;
 
 pub use builder::*;
+#[cfg(test)]
 use serde::Serialize;
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
@@ -17,7 +19,6 @@ use crate::ast;
 use crate::files::FileId;
 use crate::span::TextSpan;
 
-#[derive(Debug, Clone, Serialize)]
 pub struct HIR {
     pub file_id: FileId,
     pub functions: Vec<Function>,
@@ -58,78 +59,82 @@ impl HIR {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Copy)]
+#[cfg_attr(test, derive(Debug, Serialize))]
 pub enum ExportItem {
     Function { func_index: FuncIndex },
     Global { global_index: GlobalIndex },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-pub enum PrimitiveType {
+impl Type {
+    pub const fn is_primitive(&self) -> bool {
+        match self {
+            Type::I32 | Type::I64 | Type::U32 | Type::U64 | Type::F32 | Type::F64 => true,
+            _ => false,
+        }
+    }
+
+    pub const fn is_integer(&self) -> bool {
+        match self {
+            Type::I32 | Type::I64 | Type::U32 | Type::U64 => true,
+            _ => false,
+        }
+    }
+
+    pub const fn is_float(&self) -> bool {
+        match self {
+            Type::F32 | Type::F64 => true,
+            _ => false,
+        }
+    }
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SignatureIndex(pub u32);
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy)]
+pub struct LocalIndex(pub u32);
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScopeIndex(pub u32);
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FuncIndex(pub u32);
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumIndex(pub u32);
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy, PartialEq)]
+pub struct EnumVariantIndex(pub u32);
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GlobalIndex(pub u32);
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Type {
     I32,
     I64,
     F32,
     F64,
     U32,
     U64,
-}
-
-impl PrimitiveType {
-    pub fn is_integer(&self) -> bool {
-        match self {
-            PrimitiveType::I32 | PrimitiveType::I64 | PrimitiveType::U32 | PrimitiveType::U64 => {
-                true
-            }
-            _ => false,
-        }
-    }
-
-    pub fn is_float(&self) -> bool {
-        match self {
-            PrimitiveType::F32 | PrimitiveType::F64 => true,
-            _ => false,
-        }
-    }
-}
-
-impl std::fmt::Display for PrimitiveType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PrimitiveType::I32 => write!(f, "i32"),
-            PrimitiveType::I64 => write!(f, "i64"),
-            PrimitiveType::F32 => write!(f, "f32"),
-            PrimitiveType::F64 => write!(f, "f64"),
-            PrimitiveType::U32 => write!(f, "u32"),
-            PrimitiveType::U64 => write!(f, "u64"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-pub struct FuncTypeIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, Serialize)]
-pub struct LocalIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-pub struct ScopeIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-pub struct FuncIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-pub struct EnumIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
-pub struct EnumVariantIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-pub struct GlobalIndex(pub u32);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-pub enum Type {
-    Primitive(PrimitiveType),
-    Function(FuncTypeIndex),
+    Function(SignatureIndex),
     Enum(EnumIndex),
     Bool,
     Unit,
@@ -137,6 +142,8 @@ pub enum Type {
     Unknown,
 }
 
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct TypeWithSpan {
     pub ty: Type,
     pub span: TextSpan,
@@ -167,12 +174,12 @@ impl TryFrom<&str> for Type {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "i32" => Ok(Type::Primitive(PrimitiveType::I32)),
-            "i64" => Ok(Type::Primitive(PrimitiveType::I64)),
-            "f32" => Ok(Type::Primitive(PrimitiveType::F32)),
-            "f64" => Ok(Type::Primitive(PrimitiveType::F64)),
-            "u32" => Ok(Type::Primitive(PrimitiveType::U32)),
-            "u64" => Ok(Type::Primitive(PrimitiveType::U64)),
+            "i32" => Ok(Type::I32),
+            "i64" => Ok(Type::I64),
+            "f32" => Ok(Type::F32),
+            "f64" => Ok(Type::F64),
+            "u32" => Ok(Type::U32),
+            "u64" => Ok(Type::U64),
             "bool" => Ok(Type::Bool),
             "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),
@@ -181,13 +188,34 @@ impl TryFrom<&str> for Type {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct FunctionType {
-    pub params: Box<[Type]>,
-    pub result: Type,
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+pub struct FunctionSignature {
+    pub items: Box<[Type]>,
+    pub params_count: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+impl FunctionSignature {
+    pub fn params(&self) -> &[Type] {
+        &self.items[0..self.params_count as usize]
+    }
+
+    pub fn result(&self) -> Type {
+        self.items[self.params_count as usize]
+    }
+}
+
+impl Hash for FunctionSignature {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for item in self.items.iter() {
+            item.hash(state);
+        }
+    }
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub enum ExprKind {
     Error,
     Placeholder,
@@ -252,33 +280,53 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Debug, Clone, Serialize)]
+impl ExprKind {
+    pub fn unwrap_block(&self) -> (ScopeIndex, &Box<[Expression]>, &Option<Box<Expression>>) {
+        match self {
+            ExprKind::Block {
+                scope_index,
+                expressions,
+                result,
+            } => (*scope_index, expressions, result),
+            _ => panic!("expected block expression"),
+        }
+    }
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Expression {
     pub kind: ExprKind,
     pub span: TextSpan,
     pub ty: Option<Type>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub enum AccessKind {
     Read,
     Write,
     ReadWrite,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 struct AccessContext {
     expected_type: Option<Type>,
     access_kind: AccessKind,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct VariableAccess {
     pub span: TextSpan,
     pub kind: AccessKind,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Local {
     pub name: ast::Identifier,
     pub ty: Type,
@@ -286,7 +334,9 @@ pub struct Local {
     pub accesses: Vec<VariableAccess>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Clone, Copy, PartialEq)]
 pub enum BlockKind {
     Block,
     /// Loop blocks have an implicit `continue` at the end.
@@ -295,7 +345,8 @@ pub enum BlockKind {
     Loop,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct BlockScope {
     pub kind: BlockKind,
     pub label: Option<SymbolU32>,
@@ -305,7 +356,8 @@ pub struct BlockScope {
     pub expected_type: Option<Type>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct StackFrame {
     pub scopes: Vec<BlockScope>,
 }
@@ -337,29 +389,42 @@ impl StackFrame {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
+pub struct FunctionParam {
+    pub name: ast::Identifier,
+    pub ty: TypeWithSpan,
+    pub mutability: Option<TextSpan>,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Function {
     pub name: ast::Identifier,
-    pub ty: FunctionType,
+    pub params: Box<[FunctionParam]>,
+    pub result: TypeWithSpan,
     pub stack: StackFrame,
     pub block: Box<Expression>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Enum {
     pub name: ast::Identifier,
-    pub ty: PrimitiveType,
+    pub ty: Type,
     pub variants: Box<[EnumVariant]>,
     pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct EnumVariant {
     pub name: ast::Identifier,
     pub value: Expression,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Global {
     pub name: ast::Identifier,
     pub ty: Type,

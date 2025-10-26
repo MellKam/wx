@@ -11,6 +11,7 @@ codespan-reporting = "0.12.0"
 string-interner = "0.19.0"
 wx-compiler = { path = "../wx-compiler" }
 
+
 [[bin]]
 name = "wx-compiler"
 path = "src/main.rs"

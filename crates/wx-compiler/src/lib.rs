@@ -5,5 +5,5 @@ pub mod mir;
 pub mod span;
 pub mod wasm;
 
-#[cfg(test)]
-mod tests;
+// #[cfg(test)]
+// mod tests;

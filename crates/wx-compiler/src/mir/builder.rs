@@ -1,678 +1,433 @@
-use core::panic;
+use crate::mir::{self, *};
+use crate::{ast, hir};
 
-use crate::hir::{self, ScopeIndex};
-use crate::{ast, mir};
-
-pub struct Builder<'a> {
-    hir: &'a hir::HIR,
+#[derive(Debug)]
+struct ScopeMeta {
+    relative_index: u32,
+    locals_offset: u32,
 }
 
-impl From<hir::PrimitiveType> for mir::Type {
-    fn from(ty: hir::PrimitiveType) -> Self {
-        match ty {
-            hir::PrimitiveType::I32 => mir::Type::I32,
-            hir::PrimitiveType::I64 => mir::Type::I64,
-            hir::PrimitiveType::F32 => mir::Type::F32,
-            hir::PrimitiveType::F64 => mir::Type::F64,
-            hir::PrimitiveType::U32 => mir::Type::U32,
-            hir::PrimitiveType::U64 => mir::Type::U64,
-        }
-    }
+pub struct Builder<'hir> {
+    hir: &'hir hir::HIR,
+    mir: MIR,
+    scopes_meta: Box<[ScopeMeta]>,
+    // func_index: usize,
 }
 
-impl<'a> Builder<'a> {
-    pub fn build(hir: &hir::HIR) -> mir::MIR {
-        let builder = Builder { hir };
-        mir::MIR {
-            functions: hir
-                .functions
-                .iter()
-                .map(|func| builder.build_function(func))
-                .collect(),
-            globals: hir
-                .globals
-                .iter()
-                .map(|global| mir::Global {
-                    name: global.name.symbol,
-                    ty: builder.to_mir_type(global.ty.clone()),
-                    mutability: match global.mutability {
-                        Some(_) => mir::Mutability::Mutable,
-                        None => mir::Mutability::Const,
-                    },
-                    value: builder.build_expression(&global.value),
-                })
-                .collect(),
-            exports: hir.exports.clone(),
-        }
-    }
+impl<'hir> Builder<'hir> {
+    pub fn build_function(hir: &'hir hir::HIR, func_index: usize) -> Result<MIR, ()> {
+        let func = &hir.functions[func_index];
 
-    fn to_mir_function_type(&self, ty: hir::FunctionType) -> mir::FunctionType {
-        mir::FunctionType {
-            param_count: ty.params.len(),
-            params_results: ty
-                .params
-                .into_iter()
-                .map(|ty| self.to_mir_type(ty))
-                .chain(std::iter::once(self.to_mir_type(ty.result)))
-                .collect(),
+        let mut scopes_meta: Vec<ScopeMeta> = Vec::with_capacity(func.stack.scopes.len());
+        scopes_meta.push(ScopeMeta {
+            relative_index: 0,
+            locals_offset: 0,
+        });
+        for scope in func.stack.scopes.iter().skip(1) {
+            let parent_index = scope.parent.unwrap().0 as usize;
+            let parent_scope_meta = &scopes_meta[parent_index];
+            let relative_index = parent_scope_meta.relative_index + 1;
+            let parent_scope = &func.stack.scopes[parent_index];
+            let locals_offset = parent_scope_meta.locals_offset + parent_scope.locals.len() as u32;
+            scopes_meta.push(ScopeMeta {
+                relative_index,
+                locals_offset,
+            });
         }
-    }
+        // println!("scopes_meta: {:#?}", scopes_meta);
 
-    fn to_mir_type(&self, ty: hir::Type) -> mir::Type {
-        match ty {
-            hir::Type::Primitive(ty) => mir::Type::from(ty),
-            hir::Type::Function(index) => mir::Type::Function(index.0),
-            hir::Type::Bool => mir::Type::Bool,
-            hir::Type::Enum(enum_index) => {
-                let enum_ = &self.hir.enums[enum_index.0 as usize];
-                mir::Type::from(enum_.ty)
-            }
-            hir::Type::Unit => mir::Type::Unit,
-            hir::Type::Never => mir::Type::Never,
-            hir::Type::Unknown => panic!("unknown type cannot be converted to MIR"),
-        }
-    }
-
-    fn build_function(&self, function: &hir::Function) -> mir::Function {
-        let block = match &function.block.kind {
-            hir::ExprKind::Block {
-                expressions,
-                result,
-                ..
-            } => self.build_block_expression(
-                ScopeIndex(0),
-                expressions,
-                match result {
-                    Some(result) => Some(result),
-                    None => None,
+        let mut builder = Builder {
+            hir,
+            mir: MIR {
+                data_nodes: Vec::new(),
+                data_lookup: HashMap::new(),
+                block: Block {
+                    statements: Vec::new(),
+                    relative_locals: Box::new([]),
+                    result: StackResult::Unit,
                 },
-                self.to_mir_type(function.ty.result),
-            ),
-            _ => unreachable!(),
+                params: func
+                    .params
+                    .iter()
+                    .map(|param| mir::FunctionParam {
+                        name: param.name.symbol,
+                        ty: ResultType::from_hir(hir, param.ty.ty).unwrap_value(),
+                    })
+                    .collect(),
+                symbol: func.name.symbol,
+            },
+            scopes_meta: scopes_meta.into_boxed_slice(),
+            // func_index,
         };
 
-        mir::Function {
-            name: function.name.symbol,
-            frame: function
-                .stack
-                .scopes
-                .iter()
-                .map(|scope| mir::BlockScope {
-                    kind: match scope.kind {
-                        hir::BlockKind::Block => mir::BlockKind::Block,
-                        hir::BlockKind::Loop => mir::BlockKind::Loop,
-                    },
-                    parent: match scope.parent {
-                        Some(index) => Some(mir::ScopeIndex(index.0)),
-                        None => None,
-                    },
-                    locals: scope
-                        .locals
-                        .iter()
-                        .map(|local| mir::Local {
-                            name: local.name.symbol,
-                            ty: self.to_mir_type(local.ty),
-                            mutability: match local.mutability {
-                                Some(_) => mir::Mutability::Mutable,
-                                None => mir::Mutability::Const,
-                            },
-                        })
-                        .collect(),
-                    result: self.to_mir_type(scope.inferred_type.expect("must be typed")),
-                })
-                .collect(),
-            ty: self.to_mir_function_type(function.ty.clone()),
-            block,
+        match &func.block.kind {
+            hir::ExprKind::Block {
+                scope_index: _,
+                expressions,
+                result,
+            } => {
+                let root_scope = func.stack.scopes.first().unwrap();
+                let mut locals: Vec<StackResult> = Vec::with_capacity(root_scope.locals.len());
+                for (local_index, local) in
+                    root_scope.locals[0..func.params.len()].iter().enumerate()
+                {
+                    let node_id = builder.mir.ensure_data_node(DataNodeKind::Parameter {
+                        index: local_index as u32,
+                        symbol: local.name.symbol,
+                        ty: ResultType::from_hir(hir, local.ty).unwrap_value(),
+                    });
+                    locals.push(StackResult::Value(node_id));
+                }
+                for local in root_scope.locals[func.params.len()..].iter() {
+                    locals.push(builder.create_default_local_value(local.ty));
+                }
+                let mut block = Block {
+                    relative_locals: locals.into_boxed_slice(),
+                    statements: Vec::new(),
+                    result: StackResult::Unit,
+                };
+
+                for expr in expressions.iter() {
+                    builder.build_expr(&mut block, expr)?;
+                }
+                match result {
+                    Some(result) => {
+                        builder.mir.block.result = builder.build_expr(&mut block, result)?;
+                    }
+                    None => {}
+                };
+
+                block.result = builder.mir.block.result;
+                builder.mir.block = block;
+            }
+            _ => unreachable!(),
+        }
+
+        Ok(builder.mir)
+    }
+
+    fn create_default_local_value(&mut self, ty: hir::Type) -> StackResult {
+        match ty {
+            hir::Type::I32 | hir::Type::Bool | hir::Type::U32 | hir::Type::Function(_) => {
+                StackResult::Value(self.mir.ensure_data_node(DataNodeKind::Int {
+                    value: 0,
+                    ty: ValueType::I32,
+                }))
+            }
+            hir::Type::I64 | hir::Type::U64 => {
+                StackResult::Value(self.mir.ensure_data_node(DataNodeKind::Int {
+                    value: 0,
+                    ty: ValueType::I64,
+                }))
+            }
+            hir::Type::F32 => StackResult::Value(self.mir.ensure_data_node(DataNodeKind::Float {
+                value: 0,
+                ty: ValueType::F32,
+            })),
+            hir::Type::F64 => StackResult::Value(self.mir.ensure_data_node(DataNodeKind::Float {
+                value: 0,
+                ty: ValueType::F64,
+            })),
+            hir::Type::Enum(enum_index) => {
+                let enum_def = &self.hir.enums[enum_index.0 as usize];
+                self.create_default_local_value(enum_def.ty)
+            }
+            hir::Type::Unit => StackResult::Unit,
+            hir::Type::Never => StackResult::Never,
+            hir::Type::Unknown => panic!("unknown type"),
         }
     }
 
-    fn build_expression(&self, expr: &hir::Expression) -> mir::Expression {
-        let ty = self.to_mir_type(match expr.ty {
-            Some(ty) => ty,
-            None => panic!("expression type must be defined {expr:?}"),
-        });
-        match &expr.kind {
-            hir::ExprKind::Binary {
-                operator,
-                left,
-                right,
-            } => self.build_binary_expression(operator.kind, &left, &right, ty),
-            hir::ExprKind::Unary { operator, operand } => {
-                self.build_unary_expression(operator.kind, &operand, ty)
-            }
-            hir::ExprKind::Bool(value) => mir::Expression {
-                kind: mir::ExprKind::Bool { value: *value },
-                ty,
-            },
-            hir::ExprKind::Global { global_index } => mir::Expression {
-                kind: mir::ExprKind::Global {
-                    global_index: global_index.0,
-                },
-                ty,
-            },
-            hir::ExprKind::Local {
-                local_index,
-                scope_index,
-            } => mir::Expression {
-                kind: mir::ExprKind::LocalGet {
-                    local_index: local_index.0,
-                    scope_index: mir::ScopeIndex(scope_index.0),
-                },
-                ty,
-            },
-            hir::ExprKind::Function(index) => mir::Expression {
-                kind: mir::ExprKind::Function { index: index.0 },
-                ty,
-            },
-            hir::ExprKind::Call { callee, arguments } => mir::Expression {
-                kind: mir::ExprKind::Call {
-                    callee: Box::new(self.build_expression(callee)),
-                    arguments: arguments
-                        .into_iter()
-                        .map(|arg| self.build_expression(&arg))
-                        .collect(),
-                },
-                ty,
-            },
-            hir::ExprKind::EnumVariant {
-                enum_index,
-                variant_index,
-            } => {
-                let enum_ = &self.hir.enums[enum_index.0 as usize];
-                let variant = &enum_.variants[variant_index.0 as usize];
+    fn build_block(
+        &mut self,
+        parent_block: &Block,
+        scope_index: hir::ScopeIndex,
+        expressions: &Box<[hir::Expression]>,
+        result: &Option<Box<hir::Expression>>,
+    ) -> Result<Block, ()> {
+        let scope = &self.hir.functions[0].stack.scopes[scope_index.0 as usize];
+        let scope_offset = self.scopes_meta[scope_index.0 as usize].locals_offset as usize;
+        let mut relative_locals = Vec::with_capacity(scope_offset + scope.locals.len());
+        unsafe {
+            relative_locals.set_len(scope_offset + scope.locals.len());
+        }
+        relative_locals[..parent_block.relative_locals.len()]
+            .copy_from_slice(&parent_block.relative_locals[..]);
+        for (local_index, local) in scope.locals.iter().enumerate() {
+            relative_locals[scope_offset + local_index] = self.create_default_local_value(local.ty);
+        }
 
-                mir::Expression {
-                    kind: match variant.value.kind {
-                        hir::ExprKind::Int(value) => mir::ExprKind::Int { value },
-                        hir::ExprKind::Float(value) => mir::ExprKind::Float { value },
-                        _ => unreachable!(),
-                    },
-                    ty,
+        let mut block = Block {
+            relative_locals: relative_locals.into_boxed_slice(),
+            statements: Vec::new(),
+            result: StackResult::Unit,
+        };
+
+        for expr in expressions.iter() {
+            match self.build_expr(&mut block, expr)? {
+                StackResult::Unit => {}
+                StackResult::Never => return Ok(block),
+                StackResult::Value(_) => {
+                    println!("{:#?}", expr);
+                    panic!("unused value in statement");
                 }
+            }
+        }
+
+        block.result = match result {
+            Some(result) => self.build_expr(&mut block, result)?,
+            None => StackResult::Unit,
+        };
+
+        return Ok(block);
+    }
+
+    fn build_expr(&mut self, block: &mut Block, expr: &hir::Expression) -> Result<StackResult, ()> {
+        match &expr.kind {
+            hir::ExprKind::Int(value) => {
+                let result = self.mir.ensure_data_node(DataNodeKind::Int {
+                    value: *value,
+                    ty: ResultType::from_hir(self.hir, expr.ty.unwrap()).unwrap_value(),
+                });
+                Ok(StackResult::Value(result))
+            }
+            hir::ExprKind::Local {
+                scope_index,
+                local_index,
+            } => {
+                let relative_local_index =
+                    self.scopes_meta[scope_index.0 as usize].locals_offset + local_index.0;
+                Ok(block.relative_locals[relative_local_index as usize])
             }
             hir::ExprKind::LocalDeclaration {
-                local_index,
+                name: _,
                 scope_index,
+                local_index,
                 expr,
-                ..
-            } => match expr.kind {
-                hir::ExprKind::Int(value) if value == 0 => {
-                    return mir::Expression {
-                        kind: mir::ExprKind::Noop,
-                        ty: mir::Type::Unit,
-                    };
-                }
-                hir::ExprKind::Bool(value) if value == false => {
-                    return mir::Expression {
-                        kind: mir::ExprKind::Noop,
-                        ty: mir::Type::Unit,
-                    };
-                }
-                _ => {
-                    return mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local_index: local_index.0,
-                            scope_index: mir::ScopeIndex(scope_index.0),
-                            value: Box::new(self.build_expression(expr)),
-                        },
-                        ty,
-                    };
-                }
-            },
-            hir::ExprKind::Return { value } => mir::Expression {
-                kind: mir::ExprKind::Return {
-                    value: match value {
-                        Some(value) => Some(Box::new(self.build_expression(value))),
-                        None => None,
-                    },
-                },
-                ty: mir::Type::Never,
-            },
-            hir::ExprKind::Int(value) => mir::Expression {
-                kind: mir::ExprKind::Int { value: *value },
-                ty,
-            },
-            hir::ExprKind::Float(value) => mir::Expression {
-                kind: mir::ExprKind::Float { value: *value },
-                ty,
-            },
-            hir::ExprKind::Placeholder => unreachable!(),
+            } => {
+                let result = self.build_expr(block, expr)?;
+                let relative_local_index =
+                    self.scopes_meta[scope_index.0 as usize].locals_offset + local_index.0;
+                block.relative_locals[relative_local_index as usize] = result;
+                Ok(StackResult::Unit)
+            }
+            hir::ExprKind::Return { value } => {
+                let result = match value {
+                    Some(expr) => self.build_expr(block, expr).unwrap(),
+                    None => StackResult::Unit,
+                };
+                // TODO: handle phi nodes if already assigned
+                self.mir.block.result = result;
+                Ok(StackResult::Never)
+            }
+            hir::ExprKind::Bool(value) => {
+                let node_id = self.mir.ensure_data_node(DataNodeKind::Int {
+                    value: if *value { 1 } else { 0 },
+                    ty: ValueType::I32,
+                });
+                Ok(StackResult::Value(node_id))
+            }
+            hir::ExprKind::Float(value) => {
+                let node_id = self.mir.ensure_data_node(DataNodeKind::Float {
+                    value: value.to_bits(),
+                    ty: ResultType::from_hir(self.hir, expr.ty.unwrap()).unwrap_value(),
+                });
+                Ok(StackResult::Value(node_id))
+            }
             hir::ExprKind::Block {
                 scope_index,
                 expressions,
                 result,
-            } => self.build_block_expression(
-                *scope_index,
-                expressions,
-                match result {
-                    Some(result) => Some(&result),
-                    None => None,
-                },
-                ty,
-            ),
-            hir::ExprKind::IfElse {
-                condition,
-                else_block,
-                then_block,
             } => {
-                let condition = self.build_expression(condition);
-                let then_block = self.build_expression(then_block);
-                let else_block = match else_block {
-                    Some(else_block) => Some(self.build_expression(else_block)),
-                    None => None,
+                let new_block = self.build_block(&block, *scope_index, expressions, result)?;
+
+                block.relative_locals.copy_from_slice(
+                    &new_block.relative_locals
+                        [0..self.scopes_meta[scope_index.0 as usize].locals_offset as usize],
+                );
+                Ok(new_block.result)
+            }
+            // hir::ExprKind::IfElse {
+            //     condition,
+            //     then_block,
+            //     else_block,
+            // } => {
+            //     let condition_id = self.build_expr(block, condition)?.unwrap();
+            //     let (then_result, then_locals) = match &then_block.kind {
+            //         hir::ExprKind::Block {
+            //             expressions,
+            //             result,
+            //             scope_index,
+            //         } => {
+            //             let scope = &self.hir.functions[0].stack.scopes[scope_index.0 as usize];
+            //             let mut then_locals: Box<[Option<DataNodeId>]> = {
+            //                 let mut new_locals = vec![
+            //                     None;
+            //                     self.scopes_meta[scope_index.0 as usize].locals_offset
+            //                         as usize
+            //                         + scope.locals.len()
+            //                 ];
+            //                 new_locals[..locals.len()].copy_from_slice(&locals[..]);
+            //                 new_locals.into_boxed_slice()
+            //             };
+
+            //             for expr in expressions.iter() {
+            //                 self.build_expr(&mut then_locals, expr)?;
+            //             }
+            //             let then_result = match &result {
+            //                 Some(result) => self.build_expr(&mut then_locals, result).unwrap(),
+            //                 None => None,
+            //             };
+            //             (then_result, then_locals)
+            //         }
+            //         _ => unreachable!(),
+            //     };
+            //     let (else_result, else_locals) = match else_block {
+            //         Some(else_block) => match &else_block.kind {
+            //             hir::ExprKind::Block {
+            //                 expressions,
+            //                 result,
+            //                 scope_index,
+            //             } => {
+            //                 let scope = &self.hir.functions[0].stack.scopes[scope_index.0 as
+            // usize];                 let mut else_locals: Box<[Option<DataNodeId>]> =
+            // {                     let mut new_locals = vec![
+            //                         None;
+            //                         self.scopes_meta[scope_index.0 as usize].locals_offset
+            //                             as usize
+            //                             + scope.locals.len()
+            //                     ];
+            //                     new_locals[..locals.len()].copy_from_slice(&locals[..]);
+            //                     new_locals.into_boxed_slice()
+            //                 };
+
+            //                 for expr in expressions.iter() {
+            //                     self.build_expr(&mut else_locals, expr)?;
+            //                 }
+            //                 let else_result = match &result {
+            //                     Some(result) => self.build_expr(&mut else_locals,
+            // result).unwrap(),                     None => None,
+            //                 };
+            //                 (else_result, else_locals)
+            //             }
+            //             _ => unreachable!(),
+            //         },
+            //         None => (None, locals.clone()),
+            //     };
+
+            //     for i in 0..locals.len() {
+            //         let then_value = then_locals[i];
+            //         let else_value = else_locals[i];
+            //         if then_value == else_value {
+            //             locals[i] = then_value;
+            //         } else {
+            //             let ty = self.mir.data_nodes[then_value.unwrap() as usize].kind.ty();
+            //             locals[i] = Some(self.mir.ensure_data_node(DataNodeKind::Phi {
+            //                 left: then_value.unwrap(),
+            //                 right: else_value.unwrap(),
+            //                 ty,
+            //             }));
+            //         }
+            //     }
+
+            //     let result = match (then_result, else_result) {
+            //         (Some(then_id), Some(else_id)) => {
+            //             let ty = self.mir.data_nodes[then_id as usize].kind.ty();
+            //             let result_id = self.mir.ensure_data_node(DataNodeKind::Phi {
+            //                 left: then_id,
+            //                 right: else_id,
+            //                 ty,
+            //             });
+            //             Some(result_id)
+            //         }
+            //         _ => None,
+            //     };
+
+            //     Ok(result)
+            // }
+            hir::ExprKind::Binary {
+                left,
+                operator,
+                right,
+            } => {
+                let left_result = self.build_expr(block, &left)?;
+                let right_result = self.build_expr(block, &right)?;
+                if operator.kind == ast::BinOpKind::Assign {
+                    match &left.kind {
+                        hir::ExprKind::Local {
+                            scope_index,
+                            local_index,
+                        } => {
+                            let relative_local_index = self.scopes_meta[scope_index.0 as usize]
+                                .locals_offset
+                                + local_index.0;
+                            block.relative_locals[relative_local_index as usize] = right_result;
+                            return Ok(StackResult::Unit);
+                        }
+                        _ => unimplemented!(),
+                    }
+                }
+
+                let left = left_result.unwrap_value();
+                let right = right_result.unwrap_value();
+                let ty = ResultType::from_hir(self.hir, expr.ty.unwrap()).unwrap_value();
+                let node_kind = match operator.kind {
+                    ast::BinOpKind::Add => DataNodeKind::Add { left, right, ty },
+                    ast::BinOpKind::Sub => DataNodeKind::Sub { left, right, ty },
+                    ast::BinOpKind::Mul => DataNodeKind::Mul { left, right, ty },
+                    ast::BinOpKind::Div => DataNodeKind::Div { left, right, ty },
+                    ast::BinOpKind::Less => DataNodeKind::Lt { left, right, ty },
+                    ast::BinOpKind::LessEq => DataNodeKind::LtEq { left, right, ty },
+                    ast::BinOpKind::Greater => DataNodeKind::Gt { left, right, ty },
+                    ast::BinOpKind::GreaterEq => DataNodeKind::GtEq { left, right, ty },
+                    ast::BinOpKind::Eq => DataNodeKind::Eq { left, right, ty },
+                    ast::BinOpKind::NotEq => DataNodeKind::NotEq { left, right, ty },
+                    _ => todo!(),
                 };
-
-                mir::Expression {
-                    kind: mir::ExprKind::IfElse {
-                        condition: Box::new(condition),
-                        then_block: Box::new(then_block),
-                        else_block: else_block.map(|block| Box::new(block)),
-                    },
-                    ty,
-                }
+                let result_id = self.mir.ensure_data_node(node_kind);
+                self.mir.data_nodes[left as usize].uses.push(result_id);
+                self.mir.data_nodes[right as usize].uses.push(result_id);
+                Ok(StackResult::Value(result_id))
             }
-            hir::ExprKind::Break { scope_index, value } => mir::Expression {
-                kind: mir::ExprKind::Break {
-                    scope_index: mir::ScopeIndex(scope_index.0),
-                    value: match value {
-                        Some(value) => Some(Box::new(self.build_expression(value))),
-                        None => None,
-                    },
-                },
-                ty,
-            },
-            hir::ExprKind::Continue { scope_index } => mir::Expression {
-                kind: mir::ExprKind::Continue {
-                    scope_index: mir::ScopeIndex(scope_index.0),
-                },
-                ty: mir::Type::Never,
-            },
-            hir::ExprKind::Unreachable => mir::Expression {
-                kind: mir::ExprKind::Unreachable,
-                ty: mir::Type::Never,
-            },
-            hir::ExprKind::Loop { block, scope_index } => {
-                let block = match &block.kind {
-                    hir::ExprKind::Block {
-                        expressions,
-                        result,
-                        ..
-                    } => self.build_block_expression(
-                        *scope_index,
-                        expressions,
-                        match result {
-                            Some(result) => Some(result),
-                            None => None,
-                        },
-                        mir::Type::Never,
-                    ),
-                    _ => unreachable!(),
+            expr => todo!("build_expr: {:?}", expr),
+        }
+    }
+}
+
+// test code
+#[cfg(test)]
+mod tests {
+    use indoc::indoc;
+    use string_interner::StringInterner;
+
+    use super::*;
+    use crate::files;
+
+    #[test]
+    fn build_simple_function() {
+        let source = indoc! {"
+            export func test(mut n: i32): i32 {
+                local d = n * 10;
+                local m: i32 = 10;
+                n = { 
+                  local d = n + m + d;
+                  d + 8
                 };
-
-                mir::Expression {
-                    kind: mir::ExprKind::Loop {
-                        scope_index: mir::ScopeIndex(scope_index.0),
-                        block: Box::new(block),
-                    },
-                    ty: mir::Type::Never,
-                }
+                return { n / 2 * d };
             }
-            hir::ExprKind::Error => panic!("invalid HIR"),
+        "};
+        let mut interner = StringInterner::new();
+        let mut files = files::Files::new();
+        let file_id = files.add("main".to_string(), source.to_string()).unwrap();
+
+        let ast =
+            ast::parser::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+        let hir = hir::Builder::build(&ast.ast, &mut interner);
+        if hir.diagnostics.len() > 0 {
+            panic!("{:#?}", hir.diagnostics);
         }
-    }
 
-    fn build_block_expression(
-        &self,
-        scope_index: hir::ScopeIndex,
-        expressions: &[hir::Expression],
-        result: Option<&hir::Expression>,
-        ty: mir::Type,
-    ) -> mir::Expression {
-        let expressions: Box<_> = expressions
-            .iter()
-            .map(|expr| self.build_expression(expr))
-            .chain(result.map(|result| match scope_index.0 {
-                0 => mir::Expression {
-                    kind: mir::ExprKind::Return {
-                        value: Some(Box::new(self.build_expression(result))),
-                    },
-                    ty: mir::Type::Never,
-                },
-                _ => mir::Expression {
-                    kind: mir::ExprKind::Break {
-                        scope_index: mir::ScopeIndex(scope_index.0),
-                        value: Some(Box::new(self.build_expression(result))),
-                    },
-                    ty: mir::Type::Never,
-                },
-            }))
-            .collect();
-
-        mir::Expression {
-            kind: mir::ExprKind::Block {
-                scope_index: mir::ScopeIndex(scope_index.0),
-                expressions,
-            },
-            ty,
-        }
-    }
-
-    fn build_unary_expression(
-        &self,
-        operator: ast::UnOpKind,
-        operand: &hir::Expression,
-        ty: mir::Type,
-    ) -> mir::Expression {
-        let kind = match operator {
-            ast::UnOpKind::InvertSign => mir::ExprKind::Neg {
-                value: Box::new(self.build_expression(operand)),
-            },
-            ast::UnOpKind::Not => mir::ExprKind::Eqz {
-                value: Box::new(self.build_expression(operand)),
-            },
-            ast::UnOpKind::BitNot => mir::ExprKind::BitNot {
-                value: Box::new(self.build_expression(operand)),
-            },
-        };
-
-        mir::Expression { kind, ty }
-    }
-
-    fn build_binary_expression(
-        &self,
-        operator: ast::BinOpKind,
-        lhs: &hir::Expression,
-        rhs: &hir::Expression,
-        ty: mir::Type,
-    ) -> mir::Expression {
-        use crate::ast::BinOpKind;
-        match operator {
-            BinOpKind::Add => mir::Expression {
-                kind: mir::ExprKind::Add {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Sub => mir::Expression {
-                kind: mir::ExprKind::Sub {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Mul => mir::Expression {
-                kind: mir::ExprKind::Mul {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Div => mir::Expression {
-                kind: mir::ExprKind::Div {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Rem => mir::Expression {
-                kind: mir::ExprKind::Rem {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Less => mir::Expression {
-                kind: mir::ExprKind::Less {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::LessEq => mir::Expression {
-                kind: mir::ExprKind::LessEq {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Greater => mir::Expression {
-                kind: mir::ExprKind::Greater {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::GreaterEq => mir::Expression {
-                kind: mir::ExprKind::GreaterEq {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Assign => {
-                let value = self.build_expression(rhs);
-                match lhs.kind {
-                    hir::ExprKind::Local {
-                        local_index,
-                        scope_index,
-                    } => mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local_index: local_index.0,
-                            scope_index: mir::ScopeIndex(scope_index.0),
-                            value: Box::new(value),
-                        },
-                        ty,
-                    },
-                    hir::ExprKind::Placeholder => mir::Expression {
-                        kind: mir::ExprKind::Drop {
-                            value: Box::new(value),
-                        },
-                        ty,
-                    },
-                    hir::ExprKind::Global { global_index } => mir::Expression {
-                        kind: mir::ExprKind::GlobalSet {
-                            global_index: global_index.0,
-                            value: Box::new(value),
-                        },
-                        ty,
-                    },
-                    _ => unreachable!(),
-                }
-            }
-            BinOpKind::AddAssign => match lhs.kind {
-                hir::ExprKind::Local {
-                    local_index,
-                    scope_index,
-                } => {
-                    let left = self.build_expression(lhs);
-                    let sum_type = left.ty.clone();
-                    let sum = mir::Expression {
-                        kind: mir::ExprKind::Add {
-                            left: Box::new(left),
-                            right: Box::new(self.build_expression(rhs)),
-                        },
-                        ty: sum_type,
-                    };
-
-                    mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local_index: local_index.0,
-                            scope_index: mir::ScopeIndex(scope_index.0),
-                            value: Box::new(sum),
-                        },
-                        ty,
-                    }
-                }
-                _ => unreachable!("add assignment only allowed on local mutable variables"),
-            },
-            BinOpKind::SubAssign => match lhs.kind {
-                hir::ExprKind::Local {
-                    local_index,
-                    scope_index,
-                } => {
-                    let left = self.build_expression(lhs);
-                    let value_ty = left.ty.clone();
-                    let value = mir::Expression {
-                        kind: mir::ExprKind::Sub {
-                            left: Box::new(self.build_expression(lhs)),
-                            right: Box::new(self.build_expression(rhs)),
-                        },
-                        ty: value_ty,
-                    };
-
-                    mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local_index: local_index.0,
-                            scope_index: mir::ScopeIndex(scope_index.0),
-                            value: Box::new(value),
-                        },
-                        ty,
-                    }
-                }
-                _ => unreachable!("sub assignment only allowed on local mutable variables"),
-            },
-            BinOpKind::MulAssign => match lhs.kind {
-                hir::ExprKind::Local {
-                    local_index,
-                    scope_index,
-                } => {
-                    let left = self.build_expression(lhs);
-                    let value_type = left.ty.clone();
-                    let value = mir::Expression {
-                        kind: mir::ExprKind::Mul {
-                            left: Box::new(self.build_expression(lhs)),
-                            right: Box::new(self.build_expression(rhs)),
-                        },
-                        ty: value_type,
-                    };
-
-                    mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local_index: local_index.0,
-                            scope_index: mir::ScopeIndex(scope_index.0),
-                            value: Box::new(value),
-                        },
-                        ty,
-                    }
-                }
-                _ => unreachable!("mul assignment only allowed on local mutable variables"),
-            },
-            BinOpKind::DivAssign => match lhs.kind {
-                hir::ExprKind::Local {
-                    local_index,
-                    scope_index,
-                } => {
-                    let left = self.build_expression(lhs);
-                    let value_type = left.ty.clone();
-                    let value = mir::Expression {
-                        kind: mir::ExprKind::Div {
-                            left: Box::new(self.build_expression(lhs)),
-                            right: Box::new(self.build_expression(rhs)),
-                        },
-                        ty: value_type,
-                    };
-
-                    mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local_index: local_index.0,
-                            scope_index: mir::ScopeIndex(scope_index.0),
-                            value: Box::new(value),
-                        },
-                        ty,
-                    }
-                }
-                _ => unreachable!("div assignment only allowed on local mutable variables"),
-            },
-            BinOpKind::RemAssign => match lhs.kind {
-                hir::ExprKind::Local {
-                    local_index,
-                    scope_index,
-                } => {
-                    let left = self.build_expression(lhs);
-                    let value_type = left.ty.clone();
-                    let value = mir::Expression {
-                        kind: mir::ExprKind::Rem {
-                            left: Box::new(self.build_expression(lhs)),
-                            right: Box::new(self.build_expression(rhs)),
-                        },
-                        ty: value_type,
-                    };
-
-                    mir::Expression {
-                        kind: mir::ExprKind::LocalSet {
-                            local_index: local_index.0,
-                            scope_index: mir::ScopeIndex(scope_index.0),
-                            value: Box::new(value),
-                        },
-                        ty,
-                    }
-                }
-                _ => unreachable!("rem assignment only allowed on local mutable variables"),
-            },
-            BinOpKind::BitAnd => mir::Expression {
-                kind: mir::ExprKind::BitAnd {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::BitOr => mir::Expression {
-                kind: mir::ExprKind::BitOr {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::BitXor => mir::Expression {
-                kind: mir::ExprKind::BitXor {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::LeftShift => mir::Expression {
-                kind: mir::ExprKind::LeftShift {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::RightShift => mir::Expression {
-                kind: mir::ExprKind::RightShift {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Eq => mir::Expression {
-                kind: mir::ExprKind::Eq {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::NotEq => mir::Expression {
-                kind: mir::ExprKind::NotEq {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::And => mir::Expression {
-                kind: mir::ExprKind::And {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-            BinOpKind::Or => mir::Expression {
-                kind: mir::ExprKind::Or {
-                    left: Box::new(self.build_expression(lhs)),
-                    right: Box::new(self.build_expression(rhs)),
-                },
-                ty,
-            },
-        }
+        let mir = Builder::build_function(&hir.hir, 0).unwrap();
+        println!("{:#?}", mir);
     }
 }

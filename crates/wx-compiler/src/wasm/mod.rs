@@ -1,9 +1,10 @@
-pub mod builder;
-pub mod encoder;
-pub mod wat;
+// pub mod builder;
+// pub mod encoder;
+// pub mod wat;
+pub mod scheduler;
 
-pub use builder::*;
-pub use encoder::*;
+// pub use builder::*;
+// pub use encoder::*;
 use serde::Serialize;
 use string_interner::symbol::SymbolU32;
 
@@ -27,7 +28,6 @@ pub struct LocalIndex(pub u32);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Local {
-    name: SymbolU32,
     ty: ValueType,
 }
 
