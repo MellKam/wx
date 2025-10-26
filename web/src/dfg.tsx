@@ -1,34 +1,89 @@
 import * as d3 from "d3";
 import { defineComponent, ref, onMounted, watch, type PropType } from "vue";
 
+type ValueType = "i32" | "i64" | "f32" | "f64";
+
 type DFGNodeKind =
 	| {
-			type: "ConstInt";
+			kind: "Int";
 			value: number;
+			ty: ValueType;
 	  }
 	| {
-			type: "Parameter";
+			kind: "Float";
+			value: number;
+			ty: ValueType;
+	  }
+	| {
+			kind: "Parameter";
 			index: number;
+			ty: ValueType;
 	  }
 	| {
-			type: "Add";
+			kind: "Add";
 			left: number;
 			right: number;
+			ty: ValueType;
 	  }
 	| {
-			type: "Sub";
+			kind: "Sub";
 			left: number;
 			right: number;
+			ty: ValueType;
 	  }
 	| {
-			type: "Mul";
+			kind: "Mul";
 			left: number;
 			right: number;
+			ty: ValueType;
 	  }
 	| {
-			type: "Div";
+			kind: "Div";
 			left: number;
 			right: number;
+			ty: ValueType;
+	  }
+	| {
+			kind: "Phi";
+			left: number;
+			right: number;
+			ty: ValueType;
+	  }
+	| {
+			kind: "Lt";
+			left: number;
+			right: number;
+			ty: ValueType;
+	  }
+	| {
+			kind: "LtEq";
+			left: number;
+			right: number;
+			ty: ValueType;
+	  }
+	| {
+			kind: "Gt";
+			left: number;
+			right: number;
+			ty: ValueType;
+	  }
+	| {
+			kind: "GtEq";
+			left: number;
+			right: number;
+			ty: ValueType;
+	  }
+	| {
+			kind: "Eq";
+			left: number;
+			right: number;
+			ty: ValueType;
+	  }
+	| {
+			kind: "NotEq";
+			left: number;
+			right: number;
+			ty: ValueType;
 	  };
 
 interface DFGNode {
@@ -39,11 +94,15 @@ interface DFGNode {
 const createD3Nodes = (graph: DFGNode[]) => {
 	return graph.map((node, index) => {
 		const { kind } = node;
-		let type: "parameter" | "const" | "operation";
+		let type: "parameter" | "const" | "operation" | "phi";
 		let label: string;
 
-		switch (kind.type) {
-			case "ConstInt":
+		switch (kind.kind) {
+			case "Int":
+				type = "const";
+				label = kind.value.toString();
+				break;
+			case "Float":
 				type = "const";
 				label = kind.value.toString();
 				break;
@@ -67,6 +126,34 @@ const createD3Nodes = (graph: DFGNode[]) => {
 				type = "operation";
 				label = "DIV";
 				break;
+			case "Phi":
+				type = "phi";
+				label = "PHI";
+				break;
+			case "Lt":
+				type = "operation";
+				label = "LT";
+				break;
+			case "LtEq":
+				type = "operation";
+				label = "LTEQ";
+				break;
+			case "Gt":
+				type = "operation";
+				label = "GT";
+				break;
+			case "GtEq":
+				type = "operation";
+				label = "GTEQ";
+				break;
+			case "Eq":
+				type = "operation";
+				label = "EQ";
+				break;
+			case "NotEq":
+				type = "operation";
+				label = "NEQ";
+				break;
 		}
 
 		return {
@@ -89,10 +176,17 @@ const createD3Links = (graph: DFGNode[]) => {
 		const kind = graph[index]!.kind;
 
 		if (
-			kind.type === "Add" ||
-			kind.type === "Sub" ||
-			kind.type === "Mul" ||
-			kind.type === "Div"
+			kind.kind === "Add" ||
+			kind.kind === "Sub" ||
+			kind.kind === "Mul" ||
+			kind.kind === "Div" ||
+			kind.kind === "Phi" ||
+			kind.kind === "Lt" ||
+			kind.kind === "LtEq" ||
+			kind.kind === "Gt" ||
+			kind.kind === "GtEq" ||
+			kind.kind === "Eq" ||
+			kind.kind === "NotEq"
 		) {
 			links.push({
 				source: kind.left,
@@ -132,6 +226,7 @@ const DFGGraph = defineComponent({
 			parameter: "#388E3C",
 			const: "#1976D2",
 			operation: "#E64A19",
+			phi: "#952ad5",
 		};
 
 		const createVisualization = () => {
@@ -328,83 +423,131 @@ export default defineComponent(() => {
 	const graph: DFGNode[] = [
 		{
 			kind: {
-				type: "Parameter",
+				kind: "Parameter",
 				index: 0,
+				symbol: 2,
+				ty: "i32",
 			},
-			uses: [4],
+			uses: [2, 5],
 		},
 		{
 			kind: {
-				type: "Parameter",
-				index: 1,
+				kind: "Int",
+				value: 0,
+				ty: "i32",
 			},
-			uses: [4],
+			uses: [2],
 		},
 		{
 			kind: {
-				type: "Parameter",
-				index: 2,
-			},
-			uses: [5],
-		},
-		{
-			kind: {
-				type: "Parameter",
-				index: 3,
-			},
-			uses: [5],
-		},
-		{
-			kind: {
-				type: "Add",
+				kind: "Eq",
 				left: 0,
 				right: 1,
+				ty: "i32",
 			},
-			uses: [6],
+			uses: [],
 		},
 		{
 			kind: {
-				type: "Mul",
-				left: 2,
+				kind: "Int",
+				value: 1,
+				ty: "i32",
+			},
+			uses: [8, 9],
+		},
+		{
+			kind: {
+				kind: "Int",
+				value: 10,
+				ty: "i32",
+			},
+			uses: [5, 12],
+		},
+		{
+			kind: {
+				kind: "Mul",
+				left: 0,
+				right: 4,
+				ty: "i32",
+			},
+			uses: [7, 8, 9],
+		},
+		{
+			kind: {
+				kind: "Int",
+				value: 100,
+				ty: "i32",
+			},
+			uses: [7],
+		},
+		{
+			kind: {
+				kind: "Lt",
+				left: 5,
+				right: 6,
+				ty: "i32",
+			},
+			uses: [],
+		},
+		{
+			kind: {
+				kind: "Add",
+				left: 5,
 				right: 3,
+				ty: "i32",
 			},
-			uses: [6],
+			uses: [],
 		},
 		{
 			kind: {
-				type: "Sub",
-				left: 4,
-				right: 5,
+				kind: "Sub",
+				left: 5,
+				right: 3,
+				ty: "i32",
 			},
-			uses: [8],
+			uses: [],
 		},
 		{
 			kind: {
-				type: "ConstInt",
-				value: 2,
-			},
-			uses: [8],
-		},
-		{
-			kind: {
-				type: "Div",
-				left: 6,
-				right: 7,
-			},
-			uses: [10],
-		},
-		{
-			kind: {
-				type: "ConstInt",
-				value: 42,
-			},
-			uses: [10],
-		},
-		{
-			kind: {
-				type: "Add",
+				kind: "Phi",
 				left: 8,
 				right: 9,
+				ty: "i32",
+			},
+			uses: [13],
+		},
+		{
+			kind: {
+				kind: "Int",
+				value: 2,
+				ty: "i32",
+			},
+			uses: [12],
+		},
+		{
+			kind: {
+				kind: "Div",
+				left: 4,
+				right: 11,
+				ty: "i32",
+			},
+			uses: [13],
+		},
+		{
+			kind: {
+				kind: "Mul",
+				left: 12,
+				right: 10,
+				ty: "i32",
+			},
+			uses: [],
+		},
+		{
+			kind: {
+				kind: "Phi",
+				left: 3,
+				right: 13,
+				ty: "i32",
 			},
 			uses: [],
 		},

@@ -20,45 +20,34 @@ pub struct FunctionParam {
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Debug)]
 pub struct MIR {
-    pub data_nodes: Vec<DataNode>,
-    pub data_lookup: HashMap<DataNodeKind, DataNodeId>,
-    pub block: Block,
+    pub name: SymbolU32,
     pub params: Box<[FunctionParam]>,
-    pub symbol: SymbolU32,
-}
-
-#[cfg_attr(test, derive(Serialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ResultType {
-    Unit,
-    Never,
-    Value(ValueType),
-}
-
-#[cfg_attr(test, derive(Serialize))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StackResult {
-    Unit,
-    Never,
-    Value(DataNodeId),
-}
-
-impl StackResult {
-    pub fn unwrap_value(&self) -> DataNodeId {
-        match self {
-            StackResult::Value(id) => *id,
-            _ => panic!("expected value result"),
-        }
-    }
+    pub data_nodes: Vec<DataNode>,
+    pub data_lookup: HashMap<DataNodeKind, DataNodeIndex>,
+    pub blocks: Box<[Option<Block>]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(Serialize))]
 pub enum ValueType {
     I32,
     I64,
     F32,
     F64,
+}
+
+#[cfg(test)]
+impl serde::Serialize for ValueType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            ValueType::I32 => "i32",
+            ValueType::I64 => "i64",
+            ValueType::F32 => "f32",
+            ValueType::F64 => "f64",
+        })
+    }
 }
 
 impl ResultType {
@@ -90,8 +79,33 @@ impl ResultType {
     }
 }
 
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResultType {
+    Unit,
+    Never,
+    Value(ValueType),
+}
+
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResultData {
+    Unit,
+    Never,
+    Value(DataNodeIndex),
+}
+
+impl ResultData {
+    pub fn unwrap_value(&self) -> DataNodeIndex {
+        match self {
+            ResultData::Value(node_id) => *node_id,
+            _ => panic!("expected value result"),
+        }
+    }
+}
+
 impl MIR {
-    fn ensure_data_node(&mut self, kind: DataNodeKind) -> DataNodeId {
+    fn ensure_data_node(&mut self, kind: DataNodeKind) -> DataNodeIndex {
         match self.data_lookup.get(&kind).copied() {
             Some(id) => return id,
             None => {}
@@ -105,12 +119,57 @@ impl MIR {
         self.data_lookup.insert(kind, id);
         id
     }
+
+    fn merge_data(&mut self, left: ResultData, right: ResultData) -> ResultData {
+        match (left, right) {
+            (ResultData::Never, result) | (result, ResultData::Never) => result,
+            (ResultData::Unit, ResultData::Unit) => ResultData::Unit,
+            (ResultData::Value(left), ResultData::Value(right)) => {
+                if right == left {
+                    return ResultData::Value(left);
+                }
+
+                match (
+                    &self.data_nodes[left as usize].kind,
+                    &self.data_nodes[right as usize].kind,
+                ) {
+                    (
+                        DataNodeKind::Phi {
+                            left: phi_left,
+                            right: phi_right,
+                            ..
+                        },
+                        _,
+                    ) if *phi_left == right || *phi_right == right => {
+                        return ResultData::Value(right);
+                    }
+                    (
+                        _,
+                        DataNodeKind::Phi {
+                            left: phi_left,
+                            right: phi_right,
+                            ..
+                        },
+                    ) if *phi_left == left || *phi_right == left => {
+                        return ResultData::Value(left);
+                    }
+                    _ => {}
+                };
+
+                let ty = self.data_nodes[left as usize].kind.ty();
+                let phi_node = self.ensure_data_node(DataNodeKind::Phi { left, right, ty });
+                ResultData::Value(phi_node)
+            }
+            _ => panic!("cannot merge {:?} and {:?}", left, right),
+        }
+    }
 }
 
-pub type DataNodeId = u32;
+pub type DataNodeIndex = u32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(Serialize))]
+#[cfg_attr(test, serde(tag = "kind"))]
 pub enum DataNodeKind {
     Int {
         value: i64,
@@ -126,58 +185,58 @@ pub enum DataNodeKind {
         ty: ValueType,
     },
     Add {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     Mul {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     Sub {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     Div {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     Lt {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     LtEq {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     Gt {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     GtEq {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     Eq {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     NotEq {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
     Phi {
-        left: DataNodeId,
-        right: DataNodeId,
+        left: DataNodeIndex,
+        right: DataNodeIndex,
         ty: ValueType,
     },
 }
@@ -207,27 +266,33 @@ impl DataNodeKind {
 #[derive(Debug, Clone)]
 pub struct DataNode {
     pub kind: DataNodeKind,
-    pub uses: Vec<DataNodeId>,
+    pub uses: Vec<DataNodeIndex>,
 }
 
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Debug, Clone)]
 pub enum ControlNode {
     Return {
-        value: StackResult,
+        value: ResultData,
+    },
+    Block {
+        block_index: BlockIndex,
     },
     IfElse {
-        condition: DataNodeId,
-        then_block: Block,
-        else_block: Option<Block>,
-        result: StackResult,
+        condition: DataNodeIndex,
+        then_block: BlockIndex,
+        else_block: Option<BlockIndex>,
+        outputs: Box<[DataNodeIndex]>,
+        result: ResultData,
     },
 }
+
+pub type BlockIndex = u32;
 
 #[cfg_attr(test, derive(Serialize))]
 #[derive(Clone, Debug)]
 pub struct Block {
+    pub parent_index: Option<BlockIndex>,
     pub statements: Vec<ControlNode>,
-    pub result: StackResult,
-    pub relative_locals: Box<[StackResult]>,
+    pub result: ResultData,
 }

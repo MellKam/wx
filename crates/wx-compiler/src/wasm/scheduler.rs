@@ -1,11 +1,14 @@
 use std::collections::HashMap;
 
-use crate::{mir, wasm};
+use crate::{
+    mir,
+    wasm::{self, BlockResult},
+};
 
 pub struct Scheduler<'mir> {
     mir: &'mir mir::MIR,
     locals: Vec<wasm::Local>,
-    node_to_local: HashMap<mir::DataNodeId, wasm::LocalIndex>,
+    node_to_local: HashMap<mir::DataNodeIndex, wasm::LocalIndex>,
     expressions: Vec<wasm::Expression>,
 }
 
@@ -35,7 +38,7 @@ fn should_spill_node(node: &mir::DataNode) -> bool {
         | mir::DataNodeKind::GtEq { .. }
         | mir::DataNodeKind::Lt { .. }
         | mir::DataNodeKind::LtEq { .. } => node.uses.len() > 1,
-        mir::DataNodeKind::Phi { .. } => unimplemented!(),
+        mir::DataNodeKind::Phi { .. } => true,
     }
 }
 
@@ -54,20 +57,20 @@ impl<'mir> Scheduler<'mir> {
             mir,
         };
 
-        let result = match mir.block.result {
-            mir::StackResult::Value(node_id) => scheduler.schedule_expression(node_id),
-            _ => todo!("empty result"),
-        };
-        scheduler.expressions.push(result);
+        for stmt in mir.blocks[0].as_ref().unwrap().statements.iter() {
+            let expr = scheduler.schedule_statement(stmt);
+            println!("Scheduled expr: {:#?}", expr);
+            scheduler.expressions.push(expr);
+        }
 
         wasm::FunctionBody {
-            name: mir.symbol,
+            name: mir.name,
             locals: scheduler.locals.into_boxed_slice(),
             expressions: scheduler.expressions.into_boxed_slice(),
         }
     }
 
-    fn ensure_local(&mut self, node_id: mir::DataNodeId) -> wasm::Expression {
+    fn ensure_local(&mut self, node_id: mir::DataNodeIndex) -> wasm::Expression {
         if let Some(&local_index) = self.node_to_local.get(&node_id) {
             return wasm::Expression::LocalGet { local_index };
         }
@@ -87,7 +90,195 @@ impl<'mir> Scheduler<'mir> {
         wasm::Expression::LocalGet { local_index }
     }
 
-    fn schedule_expression(&mut self, node_id: mir::DataNodeId) -> wasm::Expression {
+    fn schedule_statement(&mut self, stmt: &mir::ControlNode) -> wasm::Expression {
+        match stmt {
+            mir::ControlNode::Return { value } => {
+                let value = match value {
+                    mir::ResultData::Value(node_id) => {
+                        Some(Box::new(self.schedule_expression(*node_id)))
+                    }
+                    _ => None,
+                };
+                wasm::Expression::Return { value }
+            }
+            mir::ControlNode::IfElse {
+                condition,
+                then_block,
+                else_block,
+                outputs,
+                result,
+            } => {
+                let condition_expr = self.schedule_expression(*condition);
+                let output_locals: Vec<wasm::LocalIndex> = outputs
+                    .iter()
+                    .map(|output| match &self.mir.data_nodes[*output as usize].kind {
+                        mir::DataNodeKind::Phi { left, right, ty } => self
+                            .node_to_local
+                            .get(left)
+                            .copied()
+                            .or(self.node_to_local.get(right).copied())
+                            .unwrap_or_else(|| {
+                                let local_index = wasm::LocalIndex(self.locals.len() as u32);
+                                self.locals.push(wasm::Local {
+                                    ty: wasm::ValueType::from(*ty),
+                                });
+                                local_index
+                            }),
+                        _ => unreachable!(),
+                    })
+                    .collect();
+
+                let then_branch = 'then_block: {
+                    let mut expressions = Vec::new();
+                    for stmt in self.mir.blocks[*then_block as usize]
+                        .as_ref()
+                        .unwrap()
+                        .statements
+                        .iter()
+                    {
+                        expressions.push(self.schedule_statement(stmt));
+                    }
+                    for (index, output) in outputs.iter().enumerate() {
+                        match self.mir.data_nodes[*output as usize].kind {
+                            mir::DataNodeKind::Phi { left, .. } => {
+                                let local_index = output_locals[index];
+                                expressions.push(wasm::Expression::LocalSet {
+                                    local_index,
+                                    value: Box::new(self.schedule_expression(left)),
+                                });
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+
+                    match result {
+                        mir::ResultData::Value(node_id) => {
+                            let node_id = match self.mir.data_nodes[*node_id as usize].kind {
+                                mir::DataNodeKind::Phi { left, .. } => left,
+                                _ => *node_id,
+                            };
+                            if expressions.is_empty() {
+                                break 'then_block self.schedule_expression(node_id);
+                            }
+                            expressions.push(self.schedule_expression(node_id));
+                        }
+                        _ => {}
+                    };
+                    wasm::Expression::Block {
+                        expressions: expressions.into_boxed_slice(),
+                        result: match result {
+                            mir::ResultData::Value(node_id) => {
+                                let ty = self.mir.data_nodes[*node_id as usize].kind.ty();
+                                wasm::BlockResult::SingleValue(wasm::ValueType::from(ty))
+                            }
+                            _ => wasm::BlockResult::Empty,
+                        },
+                    }
+                };
+                let else_branch = if let Some(else_block_index) = else_block {
+                    let mut expressions = Vec::new();
+                    for stmt in self.mir.blocks[*else_block_index as usize]
+                        .as_ref()
+                        .unwrap()
+                        .statements
+                        .iter()
+                    {
+                        expressions.push(self.schedule_statement(stmt));
+                    }
+                    for (index, output) in outputs.iter().enumerate() {
+                        match self.mir.data_nodes[*output as usize].kind {
+                            mir::DataNodeKind::Phi { right, .. } => {
+                                let local_index = output_locals[index];
+                                expressions.push(wasm::Expression::LocalSet {
+                                    local_index,
+                                    value: Box::new(self.schedule_expression(right)),
+                                });
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+
+                    match result {
+                        mir::ResultData::Value(node_id) if expressions.is_empty() => {
+                            let node_id = match self.mir.data_nodes[*node_id as usize].kind {
+                                mir::DataNodeKind::Phi { right, .. } => right,
+                                _ => *node_id,
+                            };
+                            Some(Box::new(self.schedule_expression(node_id)))
+                        }
+                        _ => {
+                            match result {
+                                mir::ResultData::Value(node_id) => {
+                                    let node_id = match self.mir.data_nodes[*node_id as usize].kind
+                                    {
+                                        mir::DataNodeKind::Phi { right, .. } => right,
+                                        _ => *node_id,
+                                    };
+
+                                    expressions.push(self.schedule_expression(node_id));
+                                }
+                                _ => {}
+                            };
+                            Some(Box::new(wasm::Expression::Block {
+                                expressions: expressions.into_boxed_slice(),
+                                result: match result {
+                                    mir::ResultData::Value(node_id) => {
+                                        let ty = self.mir.data_nodes[*node_id as usize].kind.ty();
+                                        wasm::BlockResult::SingleValue(wasm::ValueType::from(ty))
+                                    }
+                                    _ => wasm::BlockResult::Empty,
+                                },
+                            }))
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                for (index, output) in outputs.iter().enumerate() {
+                    match self.mir.data_nodes[*output as usize].kind {
+                        mir::DataNodeKind::Phi { .. } => {
+                            let local_index = output_locals[index];
+                            self.node_to_local.insert(*output, local_index);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+
+                let expr = wasm::Expression::IfElse {
+                    condition: Box::new(condition_expr),
+                    then_branch: Box::new(then_branch),
+                    else_branch,
+                    result: match result {
+                        mir::ResultData::Value(node_id) => {
+                            let ty = self.mir.data_nodes[*node_id as usize].kind.ty();
+                            wasm::BlockResult::SingleValue(wasm::ValueType::from(ty))
+                        }
+                        _ => wasm::BlockResult::Empty,
+                    },
+                };
+
+                match result {
+                    mir::ResultData::Value(node_id) => {
+                        let ty = self.mir.data_nodes[*node_id as usize].kind.ty();
+                        let local_index = wasm::LocalIndex(self.locals.len() as u32);
+                        self.locals.push(wasm::Local {
+                            ty: wasm::ValueType::from(ty),
+                        });
+                        self.node_to_local.insert(*node_id, local_index);
+                        wasm::Expression::LocalSet {
+                            local_index,
+                            value: Box::new(expr),
+                        }
+                    }
+                    _ => expr,
+                }
+            }
+            _ => unimplemented!(),
+        }
+    }
+
+    fn schedule_expression(&mut self, node_id: mir::DataNodeIndex) -> wasm::Expression {
         if should_spill_node(&self.mir.data_nodes[node_id as usize]) {
             return self.ensure_local(node_id);
         }
@@ -95,9 +286,8 @@ impl<'mir> Scheduler<'mir> {
         self.schedule_expression_direct(node_id)
     }
 
-    fn schedule_expression_direct(&mut self, node_id: mir::DataNodeId) -> wasm::Expression {
-        let node = &self.mir.data_nodes[node_id as usize];
-        match node.kind {
+    fn schedule_expression_direct(&mut self, node_id: mir::DataNodeIndex) -> wasm::Expression {
+        match self.mir.data_nodes[node_id as usize].kind.clone() {
             mir::DataNodeKind::Int { value, ty } => match ty {
                 mir::ValueType::I32 => wasm::Expression::I32Const {
                     value: value as i32,
@@ -181,7 +371,55 @@ impl<'mir> Scheduler<'mir> {
                     _ => unreachable!(),
                 }
             }
-            _ => unimplemented!(),
+            mir::DataNodeKind::Eq { left, right, ty } => {
+                let left_expr = self.schedule_expression(left);
+                let right_expr = self.schedule_expression(right);
+
+                match ty {
+                    mir::ValueType::I32 => wasm::Expression::I32Eq {
+                        left: Box::new(left_expr),
+                        right: Box::new(right_expr),
+                    },
+                    mir::ValueType::I64 => wasm::Expression::I64Eq {
+                        left: Box::new(left_expr),
+                        right: Box::new(right_expr),
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            mir::DataNodeKind::Lt { left, right, ty } => {
+                let left_expr = self.schedule_expression(left);
+                let right_expr = self.schedule_expression(right);
+
+                match ty {
+                    mir::ValueType::I32 => wasm::Expression::I32LtS {
+                        left: Box::new(left_expr),
+                        right: Box::new(right_expr),
+                    },
+                    mir::ValueType::I64 => wasm::Expression::I64LtS {
+                        left: Box::new(left_expr),
+                        right: Box::new(right_expr),
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            mir::DataNodeKind::Gt { left, right, ty } => {
+                let left_expr = self.schedule_expression(left);
+                let right_expr = self.schedule_expression(right);
+
+                match ty {
+                    mir::ValueType::I32 => wasm::Expression::I32GtS {
+                        left: Box::new(left_expr),
+                        right: Box::new(right_expr),
+                    },
+                    mir::ValueType::I64 => wasm::Expression::I64GtS {
+                        left: Box::new(left_expr),
+                        right: Box::new(right_expr),
+                    },
+                    _ => unreachable!(),
+                }
+            }
+            kind => unimplemented!("{:#?}", kind),
         }
     }
 }
@@ -197,11 +435,20 @@ mod tests {
     #[test]
     fn test_schedule_function_add() {
         let source = indoc! {"
-            export func test(x: i32): i32 {
-                local base = x * x;
-                local left = base + 10;   
-                local right = base - 5;   
-                return { left * right };
+           export func test(a: i32, b: i32): i32 {
+                if a > b {
+                    if a > 100 {
+                        return 100;
+                    } else {
+                        return a;
+                    }
+                } else {
+                    if b > 100 {
+                        return 100;
+                    } else {
+                        return b;
+                    }
+                }
             }
         "};
         let mut interner = StringInterner::new();
@@ -216,6 +463,7 @@ mod tests {
         }
 
         let mir = mir::Builder::build_function(&hir.hir, 0).unwrap();
+        println!("{:#?}", mir);
         let wasm_func = Scheduler::schedule_function(&mir);
         println!("{:#?}", wasm_func);
     }
