@@ -15,8 +15,9 @@ type DFGNodeKind =
 			ty: ValueType;
 	  }
 	| {
-			kind: "Parameter";
+			kind: "Param";
 			index: number;
+			symbol: number;
 			ty: ValueType;
 	  }
 	| {
@@ -84,6 +85,13 @@ type DFGNodeKind =
 			left: number;
 			right: number;
 			ty: ValueType;
+	  }
+	| {
+			kind: "LoopParam";
+			block_index: number;
+			before: number;
+			after: number;
+			ty: ValueType;
 	  };
 
 interface DFGNode {
@@ -94,7 +102,7 @@ interface DFGNode {
 const createD3Nodes = (graph: DFGNode[]) => {
 	return graph.map((node, index) => {
 		const { kind } = node;
-		let type: "parameter" | "const" | "operation" | "phi";
+		let type: "parameter" | "const" | "operation" | "phi" | "loop_param";
 		let label: string;
 
 		switch (kind.kind) {
@@ -106,7 +114,7 @@ const createD3Nodes = (graph: DFGNode[]) => {
 				type = "const";
 				label = kind.value.toString();
 				break;
-			case "Parameter":
+			case "Param":
 				type = "parameter";
 				label = kind.index.toString();
 				break;
@@ -154,6 +162,10 @@ const createD3Nodes = (graph: DFGNode[]) => {
 				type = "operation";
 				label = "NEQ";
 				break;
+			case "LoopParam":
+				type = "loop_param";
+				label = `LOOP_PARAM(${kind.block_index})`;
+				break;
 		}
 
 		return {
@@ -162,7 +174,7 @@ const createD3Nodes = (graph: DFGNode[]) => {
 			label,
 		} as d3.SimulationNodeDatum & {
 			id: number;
-			type: "parameter" | "const" | "operation";
+			type: "parameter" | "const" | "operation" | "phi" | "loop_param";
 			label: string;
 		};
 	});
@@ -198,13 +210,24 @@ const createD3Links = (graph: DFGNode[]) => {
 				target: index,
 				type: "operand",
 			});
+		} else if (kind.kind === "LoopParam") {
+			links.push({
+				source: kind.before,
+				target: index,
+				type: "operand",
+			});
+			links.push({
+				source: kind.after,
+				target: index,
+				type: "operand",
+			});
 		}
 	}
 
 	return links;
 };
 
-const DFGGraph = defineComponent({
+const DataFlowGraph = defineComponent({
 	props: {
 		graph: {
 			type: Array as PropType<DFGNode[]>,
@@ -227,6 +250,7 @@ const DFGGraph = defineComponent({
 			const: "#1976D2",
 			operation: "#E64A19",
 			phi: "#952ad5",
+			loop_param: "#d52a7f",
 		};
 
 		const createVisualization = () => {
@@ -423,12 +447,21 @@ export default defineComponent(() => {
 	const graph: DFGNode[] = [
 		{
 			kind: {
-				kind: "Parameter",
+				kind: "Param",
 				index: 0,
 				symbol: 2,
 				ty: "i32",
 			},
-			uses: [2, 5],
+			uses: [4],
+		},
+		{
+			kind: {
+				kind: "Param",
+				index: 1,
+				symbol: 4,
+				ty: "i32",
+			},
+			uses: [5],
 		},
 		{
 			kind: {
@@ -436,16 +469,7 @@ export default defineComponent(() => {
 				value: 0,
 				ty: "i32",
 			},
-			uses: [2],
-		},
-		{
-			kind: {
-				kind: "Eq",
-				left: 0,
-				right: 1,
-				ty: "i32",
-			},
-			uses: [],
+			uses: [6, 7],
 		},
 		{
 			kind: {
@@ -453,38 +477,74 @@ export default defineComponent(() => {
 				value: 1,
 				ty: "i32",
 			},
-			uses: [8, 9],
+			uses: [11, 16, 8],
 		},
 		{
 			kind: {
-				kind: "Int",
-				value: 10,
+				kind: "LoopParam",
+				block_index: 1,
+				before: 0,
+				after: 0,
 				ty: "i32",
 			},
-			uses: [5, 12],
+			uses: [12],
 		},
 		{
 			kind: {
-				kind: "Mul",
-				left: 0,
-				right: 4,
+				kind: "LoopParam",
+				block_index: 1,
+				before: 1,
+				after: 1,
 				ty: "i32",
 			},
-			uses: [7, 8, 9],
+			uses: [13],
 		},
 		{
 			kind: {
-				kind: "Int",
-				value: 100,
+				kind: "LoopParam",
+				block_index: 1,
+				before: 2,
+				after: 18,
 				ty: "i32",
 			},
-			uses: [7],
+			uses: [18, 23],
 		},
 		{
 			kind: {
-				kind: "Lt",
-				left: 5,
-				right: 6,
+				kind: "LoopParam",
+				block_index: 1,
+				before: 2,
+				after: 11,
+				ty: "i32",
+			},
+			uses: [11],
+		},
+		{
+			kind: {
+				kind: "LoopParam",
+				block_index: 1,
+				before: 3,
+				after: 19,
+				ty: "i32",
+			},
+			uses: [19, 27],
+		},
+		{
+			kind: {
+				kind: "LoopParam",
+				block_index: 1,
+				before: 2,
+				after: 2,
+				ty: "i32",
+			},
+			uses: [],
+		},
+		{
+			kind: {
+				kind: "LoopParam",
+				block_index: 1,
+				before: 2,
+				after: 17,
 				ty: "i32",
 			},
 			uses: [],
@@ -492,29 +552,29 @@ export default defineComponent(() => {
 		{
 			kind: {
 				kind: "Add",
-				left: 5,
+				left: 7,
 				right: 3,
+				ty: "i32",
+			},
+			uses: [12, 13, 15, 16, 19, 7],
+		},
+		{
+			kind: {
+				kind: "Gt",
+				left: 11,
+				right: 4,
 				ty: "i32",
 			},
 			uses: [],
 		},
 		{
 			kind: {
-				kind: "Sub",
-				left: 5,
-				right: 3,
+				kind: "Gt",
+				left: 11,
+				right: 5,
 				ty: "i32",
 			},
 			uses: [],
-		},
-		{
-			kind: {
-				kind: "Phi",
-				left: 8,
-				right: 9,
-				ty: "i32",
-			},
-			uses: [13],
 		},
 		{
 			kind: {
@@ -522,31 +582,128 @@ export default defineComponent(() => {
 				value: 2,
 				ty: "i32",
 			},
-			uses: [12],
-		},
-		{
-			kind: {
-				kind: "Div",
-				left: 4,
-				right: 11,
-				ty: "i32",
-			},
-			uses: [13],
+			uses: [15, 26],
 		},
 		{
 			kind: {
 				kind: "Mul",
-				left: 12,
-				right: 10,
+				left: 11,
+				right: 14,
+				ty: "i32",
+			},
+			uses: [17],
+		},
+		{
+			kind: {
+				kind: "Add",
+				left: 11,
+				right: 3,
+				ty: "i32",
+			},
+			uses: [17],
+		},
+		{
+			kind: {
+				kind: "Phi",
+				left: 15,
+				right: 16,
+				ty: "i32",
+			},
+			uses: [18, 10],
+		},
+		{
+			kind: {
+				kind: "Add",
+				left: 6,
+				right: 17,
+				ty: "i32",
+			},
+			uses: [22, 6],
+		},
+		{
+			kind: {
+				kind: "Mul",
+				left: 8,
+				right: 11,
+				ty: "i32",
+			},
+			uses: [21, 22, 8],
+		},
+		{
+			kind: {
+				kind: "Int",
+				value: 1000,
+				ty: "i32",
+			},
+			uses: [21],
+		},
+		{
+			kind: {
+				kind: "Gt",
+				left: 19,
+				right: 20,
 				ty: "i32",
 			},
 			uses: [],
 		},
 		{
 			kind: {
+				kind: "Add",
+				left: 18,
+				right: 19,
+				ty: "i32",
+			},
+			uses: [23],
+		},
+		{
+			kind: {
 				kind: "Phi",
-				left: 3,
-				right: 13,
+				left: 6,
+				right: 22,
+				ty: "i32",
+			},
+			uses: [25, 26, 27],
+		},
+		{
+			kind: {
+				kind: "Int",
+				value: 100,
+				ty: "i32",
+			},
+			uses: [25],
+		},
+		{
+			kind: {
+				kind: "Gt",
+				left: 23,
+				right: 24,
+				ty: "i32",
+			},
+			uses: [],
+		},
+		{
+			kind: {
+				kind: "Mul",
+				left: 23,
+				right: 14,
+				ty: "i32",
+			},
+			uses: [28],
+		},
+		{
+			kind: {
+				kind: "Add",
+				left: 23,
+				right: 8,
+				ty: "i32",
+			},
+			uses: [28],
+		},
+		{
+			kind: {
+				kind: "Phi",
+				left: 26,
+				right: 27,
 				ty: "i32",
 			},
 			uses: [],
@@ -554,7 +711,7 @@ export default defineComponent(() => {
 	];
 
 	return () => (
-		<DFGGraph
+		<DataFlowGraph
 			graph={graph}
 			width={window.innerWidth}
 			height={window.innerHeight}

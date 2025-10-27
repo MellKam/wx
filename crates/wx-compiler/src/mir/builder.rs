@@ -53,12 +53,12 @@ impl<'hir> Builder<'hir> {
                 for (local_index, local) in
                     root_scope.locals[0..func.params.len()].iter().enumerate()
                 {
-                    let node_id = builder.mir.ensure_data_node(DataNodeKind::Parameter {
+                    let node_index = builder.mir.ensure_data_node(DataNodeKind::Param {
                         index: local_index as u32,
                         symbol: local.name.symbol,
                         ty: ResultType::from_hir(hir, local.ty).unwrap_value(),
                     });
-                    data_bindings.push(ResultData::Value(node_id));
+                    data_bindings.push(ResultData::Value { node_index });
                 }
                 for local in root_scope.locals[func.params.len()..].iter() {
                     data_bindings.push(builder.create_default_local_value(local.ty));
@@ -74,10 +74,10 @@ impl<'hir> Builder<'hir> {
                     match builder.build_expr(0, &mut data_bindings, expr) {
                         ResultData::Unit => {}
                         ResultData::Never => break,
-                        ResultData::Value(node_id) => {
+                        ResultData::Value { node_index } => {
                             panic!(
                                 "unused value in statement: {:#?}",
-                                builder.mir.data_nodes[node_id as usize].kind
+                                builder.mir.data_nodes[node_index as usize].kind
                             );
                         }
                     };
@@ -87,10 +87,10 @@ impl<'hir> Builder<'hir> {
                     Some(result) => {
                         let result = builder.build_expr(0, &mut data_bindings, result);
                         match result {
-                            ResultData::Value(node_id) => {
+                            ResultData::Value { node_index } => {
                                 builder.mir.blocks[0].as_mut().unwrap().statements.push(
                                     ControlNode::Return {
-                                        value: ResultData::Value(node_id),
+                                        value: ResultData::Value { node_index },
                                     },
                                 );
                             }
@@ -112,25 +112,31 @@ impl<'hir> Builder<'hir> {
     fn create_default_local_value(&mut self, ty: hir::Type) -> ResultData {
         match ty {
             hir::Type::I32 | hir::Type::Bool | hir::Type::U32 | hir::Type::Function(_) => {
-                ResultData::Value(self.mir.ensure_data_node(DataNodeKind::Int {
-                    value: 0,
-                    ty: ValueType::I32,
-                }))
+                ResultData::Value {
+                    node_index: self.mir.ensure_data_node(DataNodeKind::Int {
+                        value: 0,
+                        ty: ValueType::I32,
+                    }),
+                }
             }
-            hir::Type::I64 | hir::Type::U64 => {
-                ResultData::Value(self.mir.ensure_data_node(DataNodeKind::Int {
+            hir::Type::I64 | hir::Type::U64 => ResultData::Value {
+                node_index: self.mir.ensure_data_node(DataNodeKind::Int {
                     value: 0,
                     ty: ValueType::I64,
-                }))
-            }
-            hir::Type::F32 => ResultData::Value(self.mir.ensure_data_node(DataNodeKind::Float {
-                value: 0,
-                ty: ValueType::F32,
-            })),
-            hir::Type::F64 => ResultData::Value(self.mir.ensure_data_node(DataNodeKind::Float {
-                value: 0,
-                ty: ValueType::F64,
-            })),
+                }),
+            },
+            hir::Type::F32 => ResultData::Value {
+                node_index: self.mir.ensure_data_node(DataNodeKind::Float {
+                    value: 0,
+                    ty: ValueType::F32,
+                }),
+            },
+            hir::Type::F64 => ResultData::Value {
+                node_index: self.mir.ensure_data_node(DataNodeKind::Float {
+                    value: 0,
+                    ty: ValueType::F64,
+                }),
+            },
             hir::Type::Enum(enum_index) => {
                 let enum_def = &self.hir.enums[enum_index.0 as usize];
                 self.create_default_local_value(enum_def.ty)
@@ -141,20 +147,73 @@ impl<'hir> Builder<'hir> {
         }
     }
 
-    fn create_data_bindings(
+    fn create_block_data_bindings(
         &mut self,
         parent_data_bindings: &Box<[ResultData]>,
         block_index: BlockIndex,
     ) -> Box<[ResultData]> {
         let scope = &self.hir.functions[self.func_index].stack.scopes[block_index as usize];
-        let scope_offset = self.locals_offsets[block_index as usize] as usize;
-        let mut data_bindings = Vec::with_capacity(scope_offset + scope.locals.len());
+        let mut data_bindings = Vec::with_capacity(parent_data_bindings.len() + scope.locals.len());
         unsafe {
-            data_bindings.set_len(scope_offset + scope.locals.len());
+            data_bindings.set_len(parent_data_bindings.len() + scope.locals.len());
         }
         data_bindings[..parent_data_bindings.len()].copy_from_slice(&parent_data_bindings[..]);
         for (local_index, local) in scope.locals.iter().enumerate() {
-            data_bindings[scope_offset + local_index] = self.create_default_local_value(local.ty);
+            data_bindings[parent_data_bindings.len() + local_index] =
+                self.create_default_local_value(local.ty);
+        }
+
+        data_bindings.into_boxed_slice()
+    }
+
+    fn create_loop_data_bindings(
+        &mut self,
+        parent_data_bindings: &Box<[ResultData]>,
+        block_index: BlockIndex,
+    ) -> Box<[ResultData]> {
+        let scope = &self.hir.functions[self.func_index].stack.scopes[block_index as usize];
+        let mut data_bindings = Vec::with_capacity(parent_data_bindings.len() + scope.locals.len());
+        unsafe {
+            data_bindings.set_len(parent_data_bindings.len() + scope.locals.len());
+        }
+
+        for i in 0..parent_data_bindings.len() {
+            let node_id = parent_data_bindings[i].unwrap_value();
+            let ty = self.mir.data_nodes[node_id as usize].kind.ty();
+            data_bindings[i] = ResultData::Value {
+                node_index: self.mir.data_nodes.len() as u32,
+            };
+            self.mir.data_nodes.push(DataNode {
+                kind: DataNodeKind::LoopParam {
+                    block_index,
+                    before: node_id,
+                    after: node_id,
+                    ty,
+                },
+                uses: Vec::new(),
+            });
+        }
+        for (local_index, local) in scope.locals.iter().enumerate() {
+            let defalut_value = self.create_default_local_value(local.ty);
+            data_bindings[parent_data_bindings.len() + local_index] = match defalut_value {
+                ResultData::Value { node_index } => {
+                    let loop_param_id = self.mir.data_nodes.len() as u32;
+                    self.mir.data_nodes.push(DataNode {
+                        kind: DataNodeKind::LoopParam {
+                            block_index,
+                            before: node_index,
+                            after: node_index,
+                            ty: mir::ResultType::from_hir(self.hir, local.ty).unwrap_value(),
+                        },
+                        uses: Vec::new(),
+                    });
+                    ResultData::Value {
+                        node_index: loop_param_id,
+                    }
+                }
+                ResultData::Unit => ResultData::Unit,
+                ResultData::Never => ResultData::Never,
+            };
         }
 
         data_bindings.into_boxed_slice()
@@ -176,10 +235,10 @@ impl<'hir> Builder<'hir> {
                         .unwrap()
                         .result;
                 }
-                ResultData::Value(node_id) => {
+                ResultData::Value { node_index } => {
                     panic!(
                         "unused value in statement: {:#?}",
-                        self.mir.data_nodes[node_id as usize].kind
+                        self.mir.data_nodes[node_index as usize].kind
                     );
                 }
             };
@@ -187,8 +246,134 @@ impl<'hir> Builder<'hir> {
 
         match result {
             Some(result) => self.build_expr(block_index, data_bindings, result),
-            None => ResultData::Unit,
+            None => {
+                self.mir.blocks[block_index as usize]
+                    .as_ref()
+                    .unwrap()
+                    .result
+            }
         }
+    }
+
+    fn build_if_else_expr(
+        &mut self,
+        block_index: BlockIndex,
+        data_bindings: &mut Box<[ResultData]>,
+        expr: &hir::Expression,
+    ) -> ResultData {
+        let (condition, then_block, else_block) = match &expr.kind {
+            hir::ExprKind::IfElse {
+                condition,
+                then_block,
+                else_block,
+            } => (condition, then_block, else_block),
+            _ => unreachable!(),
+        };
+
+        let condition_id = self
+            .build_expr(block_index, data_bindings, condition)
+            .unwrap_value();
+        let (then_result, then_bindings, then_block_index) = match &then_block.kind {
+            hir::ExprKind::Block {
+                expressions,
+                result,
+                scope_index,
+            } => {
+                let mut then_bindings =
+                    self.create_block_data_bindings(&data_bindings, scope_index.0 as BlockIndex);
+                self.mir.blocks[scope_index.0 as usize] = Some(Block {
+                    parent_index: Some(block_index),
+                    statements: Vec::new(),
+                    result: ResultData::Never,
+                });
+                let then_result = self.build_block(
+                    scope_index.0 as BlockIndex,
+                    &mut then_bindings,
+                    expressions,
+                    result,
+                );
+                self.mir.blocks[scope_index.0 as usize]
+                    .as_mut()
+                    .unwrap()
+                    .result = then_result;
+
+                (then_result, then_bindings, scope_index.0 as BlockIndex)
+            }
+            _ => unreachable!(),
+        };
+
+        let (else_result, else_bindings, else_block_index) = match else_block {
+            Some(else_block) => match &else_block.kind {
+                hir::ExprKind::Block {
+                    expressions,
+                    result,
+                    scope_index,
+                } => {
+                    let mut else_bindings = self
+                        .create_block_data_bindings(&data_bindings, scope_index.0 as BlockIndex);
+                    self.mir.blocks[scope_index.0 as usize] = Some(Block {
+                        parent_index: Some(block_index),
+                        statements: Vec::new(),
+                        result: ResultData::Never,
+                    });
+                    let else_result = self.build_block(
+                        scope_index.0 as BlockIndex,
+                        &mut else_bindings,
+                        expressions,
+                        result,
+                    );
+                    self.mir.blocks[scope_index.0 as usize]
+                        .as_mut()
+                        .unwrap()
+                        .result = else_result;
+
+                    (
+                        Some(else_result),
+                        else_bindings,
+                        Some(scope_index.0 as BlockIndex),
+                    )
+                }
+                _ => unreachable!(),
+            },
+            None => (None, data_bindings.clone(), None),
+        };
+
+        let mut outputs = Vec::new();
+        for i in 0..data_bindings.len() {
+            let then_value = then_bindings[i];
+            let else_value = else_bindings[i];
+            data_bindings[i] = if then_value == else_value {
+                then_value
+            } else {
+                let left = then_value.unwrap_value();
+                let right = else_value.unwrap_value();
+                let ty = self.mir.data_nodes[left as usize].kind.ty();
+                let output = self
+                    .mir
+                    .ensure_data_node(DataNodeKind::Phi { left, right, ty });
+                outputs.push(output);
+                ResultData::Value { node_index: output }
+            };
+        }
+
+        let result = match else_result {
+            Some(else_result) => self.mir.merge_data(then_result, else_result),
+            None => ResultData::Unit,
+        };
+
+        self.mir.blocks[block_index as usize]
+            .as_mut()
+            .unwrap()
+            .statements
+            .push(ControlNode::IfElse {
+                condition: condition_id,
+                then_block: then_block_index,
+                else_block: else_block_index,
+                outputs: outputs.into_boxed_slice(),
+                result,
+            });
+
+        result
     }
 
     fn build_expr(
@@ -203,21 +388,21 @@ impl<'hir> Builder<'hir> {
                     value: *value,
                     ty: ResultType::from_hir(self.hir, expr.ty.unwrap()).unwrap_value(),
                 });
-                ResultData::Value(result)
+                ResultData::Value { node_index: result }
             }
             hir::ExprKind::Bool(value) => {
-                let node_id = self.mir.ensure_data_node(DataNodeKind::Int {
+                let node_index = self.mir.ensure_data_node(DataNodeKind::Int {
                     value: if *value { 1 } else { 0 },
                     ty: ValueType::I32,
                 });
-                ResultData::Value(node_id)
+                ResultData::Value { node_index }
             }
             hir::ExprKind::Float(value) => {
-                let node_id = self.mir.ensure_data_node(DataNodeKind::Float {
+                let node_index = self.mir.ensure_data_node(DataNodeKind::Float {
                     value: value.to_bits(),
                     ty: ResultType::from_hir(self.hir, expr.ty.unwrap()).unwrap_value(),
                 });
-                ResultData::Value(node_id)
+                ResultData::Value { node_index }
             }
             hir::ExprKind::Local {
                 scope_index,
@@ -259,193 +444,244 @@ impl<'hir> Builder<'hir> {
                 result,
             } => {
                 let mut new_data_bindings =
-                    self.create_data_bindings(data_bindings, scope_index.0 as BlockIndex);
+                    self.create_block_data_bindings(data_bindings, scope_index.0 as BlockIndex);
                 let result =
                     self.build_block(block_index, &mut new_data_bindings, expressions, result);
                 data_bindings.copy_from_slice(&new_data_bindings[..data_bindings.len()]);
 
                 result
             }
-            hir::ExprKind::IfElse {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                let condition_id = self
-                    .build_expr(block_index, data_bindings, condition)
-                    .unwrap_value();
-                let (then_result, then_bindings, then_block_index) = match &then_block.kind {
-                    hir::ExprKind::Block {
-                        expressions,
-                        result,
-                        scope_index,
-                    } => {
-                        let mut then_bindings =
-                            self.create_data_bindings(&data_bindings, scope_index.0 as BlockIndex);
-
-                        self.mir.blocks[scope_index.0 as usize] = Some(Block {
-                            parent_index: Some(block_index),
-                            statements: Vec::new(),
-                            result: ResultData::Never,
-                        });
-
-                        let then_result = self.build_block(
-                            scope_index.0 as BlockIndex,
-                            &mut then_bindings,
-                            expressions,
-                            result,
-                        );
-                        self.mir.blocks[scope_index.0 as usize]
-                            .as_mut()
-                            .unwrap()
-                            .result = then_result;
-
-                        (then_result, then_bindings, scope_index.0 as BlockIndex)
-                    }
-                    _ => unreachable!(),
+            hir::ExprKind::IfElse { .. } => {
+                self.build_if_else_expr(block_index, data_bindings, expr)
+            }
+            hir::ExprKind::Binary { .. } => {
+                self.build_binary_expr(block_index, data_bindings, expr)
+            }
+            hir::ExprKind::Call { .. } => self.build_call_expr(block_index, data_bindings, expr),
+            hir::ExprKind::Loop { .. } => self.build_loop_expr(block_index, data_bindings, expr),
+            hir::ExprKind::Break { scope_index, value } => {
+                let value = match value {
+                    Some(expr) => self.build_expr(block_index, data_bindings, expr),
+                    None => ResultData::Unit,
                 };
-
-                let (else_result, else_bindings, else_block_index) = match else_block {
-                    Some(else_block) => match &else_block.kind {
-                        hir::ExprKind::Block {
-                            expressions,
-                            result,
-                            scope_index,
-                        } => {
-                            let mut else_bindings = self
-                                .create_data_bindings(&data_bindings, scope_index.0 as BlockIndex);
-
-                            self.mir.blocks[scope_index.0 as usize] = Some(Block {
-                                parent_index: Some(block_index),
-                                statements: Vec::new(),
-                                result: ResultData::Never,
-                            });
-
-                            let else_result = self.build_block(
-                                scope_index.0 as BlockIndex,
-                                &mut else_bindings,
-                                expressions,
-                                result,
-                            );
-                            self.mir.blocks[scope_index.0 as usize]
-                                .as_mut()
-                                .unwrap()
-                                .result = else_result;
-
-                            (
-                                Some(else_result),
-                                else_bindings,
-                                Some(scope_index.0 as BlockIndex),
-                            )
-                        }
-                        _ => unreachable!(),
-                    },
-                    None => (None, data_bindings.clone(), None),
-                };
-
-                let mut outputs = Vec::new();
-                for i in 0..data_bindings.len() {
-                    let then_value = then_bindings[i];
-                    let else_value = else_bindings[i];
-                    data_bindings[i] = if then_value == else_value {
-                        then_value
-                    } else {
-                        let ty = self.mir.data_nodes[then_value.unwrap_value() as usize]
-                            .kind
-                            .ty();
-
-                        let output = self.mir.ensure_data_node(DataNodeKind::Phi {
-                            left: then_value.unwrap_value(),
-                            right: else_value.unwrap_value(),
-                            ty,
-                        });
-                        outputs.push(output);
-                        ResultData::Value(output)
-                    };
-                }
-
-                let result = if else_result.is_none() {
-                    ResultData::Unit
-                } else {
-                    match (then_result, else_result.unwrap()) {
-                        (ResultData::Value(then_id), ResultData::Value(else_id)) => {
-                            let ty = self.mir.data_nodes[then_id as usize].kind.ty();
-                            let result_id = self.mir.ensure_data_node(DataNodeKind::Phi {
-                                left: then_id,
-                                right: else_id,
-                                ty,
-                            });
-                            ResultData::Value(result_id)
-                        }
-                        (ResultData::Unit, ResultData::Unit) => ResultData::Unit,
-                        (ResultData::Never, result) | (result, ResultData::Never) => result,
-                        _ => unimplemented!(),
-                    }
-                };
-
                 self.mir.blocks[block_index as usize]
                     .as_mut()
                     .unwrap()
                     .statements
-                    .push(ControlNode::IfElse {
-                        condition: condition_id,
-                        then_block: then_block_index,
-                        else_block: else_block_index,
-                        outputs: outputs.into_boxed_slice(),
-                        result,
+                    .push(ControlNode::Break {
+                        target_block: scope_index.0 as BlockIndex,
+                        value,
                     });
-
-                result
-            }
-            hir::ExprKind::Binary {
-                left,
-                operator,
-                right,
-            } => {
-                let left_result = self.build_expr(block_index, data_bindings, &left);
-                let right_result = self.build_expr(block_index, data_bindings, &right);
-                if operator.kind == ast::BinOpKind::Assign {
-                    match &left.kind {
-                        hir::ExprKind::Local {
-                            scope_index,
-                            local_index,
-                        } => {
-                            let binding_index =
-                                self.locals_offsets[scope_index.0 as usize] + local_index.0;
-                            data_bindings[binding_index as usize] = right_result;
-                            return ResultData::Unit;
-                        }
-                        _ => unimplemented!(),
-                    }
-                }
-
-                let left = left_result.unwrap_value();
-                let right = right_result.unwrap_value();
-                let ty = ResultType::from_hir(self.hir, expr.ty.unwrap()).unwrap_value();
-                let node_kind = match operator.kind {
-                    ast::BinOpKind::Add => DataNodeKind::Add { left, right, ty },
-                    ast::BinOpKind::Sub => DataNodeKind::Sub { left, right, ty },
-                    ast::BinOpKind::Mul => DataNodeKind::Mul { left, right, ty },
-                    ast::BinOpKind::Div => DataNodeKind::Div { left, right, ty },
-                    ast::BinOpKind::Less => DataNodeKind::Lt { left, right, ty },
-                    ast::BinOpKind::LessEq => DataNodeKind::LtEq { left, right, ty },
-                    ast::BinOpKind::Greater => DataNodeKind::Gt { left, right, ty },
-                    ast::BinOpKind::GreaterEq => DataNodeKind::GtEq { left, right, ty },
-                    ast::BinOpKind::Eq => DataNodeKind::Eq { left, right, ty },
-                    ast::BinOpKind::NotEq => DataNodeKind::NotEq { left, right, ty },
-                    _ => todo!(),
-                };
-                let result_id = self.mir.ensure_data_node(node_kind);
-                self.mir.data_nodes[left as usize].uses.push(result_id);
-                self.mir.data_nodes[right as usize].uses.push(result_id);
-                ResultData::Value(result_id)
+                self.mir.blocks[scope_index.0 as usize]
+                    .as_mut()
+                    .unwrap()
+                    .result = self.mir.merge_data(
+                    self.mir.blocks[scope_index.0 as usize]
+                        .as_ref()
+                        .unwrap()
+                        .result,
+                    value,
+                );
+                ResultData::Never
             }
             expr => todo!("build_expr: {:?}", expr),
         }
     }
+
+    fn build_call_expr(
+        &mut self,
+        block_index: BlockIndex,
+        data_bindings: &mut Box<[ResultData]>,
+        expr: &hir::Expression,
+    ) -> ResultData {
+        let (func_index, arguments) = match &expr.kind {
+            hir::ExprKind::Call { callee, arguments } => (
+                match &callee.kind {
+                    hir::ExprKind::Function(func_index) => func_index.0,
+                    _ => unreachable!(),
+                },
+                arguments,
+            ),
+            _ => unreachable!(),
+        };
+
+        let arg_nodes = arguments
+            .iter()
+            .map(|arg| {
+                self.build_expr(block_index, data_bindings, arg)
+                    .unwrap_value()
+            })
+            .collect::<Box<[_]>>();
+
+        let result_type =
+            ResultType::from_hir(self.hir, self.hir.functions[func_index as usize].result.ty);
+        let result = match result_type {
+            ResultType::Value(ty) => {
+                let node_index = self.mir.ensure_data_node(DataNodeKind::CallResult {
+                    func_index,
+                    args: arg_nodes.clone(),
+                    ty,
+                });
+                ResultData::Value { node_index }
+            }
+            ResultType::Unit => ResultData::Unit,
+            ResultType::Never => ResultData::Never,
+        };
+
+        self.mir.blocks[block_index as usize]
+            .as_mut()
+            .unwrap()
+            .statements
+            .push(ControlNode::Call {
+                func_index,
+                args: arg_nodes,
+                result,
+            });
+
+        result
+    }
+
+    fn build_binary_expr(
+        &mut self,
+        block_index: BlockIndex,
+        data_bindings: &mut Box<[ResultData]>,
+        expr: &hir::Expression,
+    ) -> ResultData {
+        let (left, operator, right) = match &expr.kind {
+            hir::ExprKind::Binary {
+                left,
+                operator,
+                right,
+            } => (left, operator.clone(), right),
+            _ => unreachable!(),
+        };
+
+        let left_result = self.build_expr(block_index, data_bindings, &left);
+        let right_result = self.build_expr(block_index, data_bindings, &right);
+        if operator.kind == ast::BinOpKind::Assign {
+            match &left.kind {
+                hir::ExprKind::Local {
+                    scope_index,
+                    local_index,
+                } => {
+                    let binding_index = self.locals_offsets[scope_index.0 as usize] + local_index.0;
+                    data_bindings[binding_index as usize] = right_result;
+                    return ResultData::Unit;
+                }
+                _ => unimplemented!(),
+            }
+        }
+
+        let left = left_result.unwrap_value();
+        let right = right_result.unwrap_value();
+        let ty = ResultType::from_hir(self.hir, expr.ty.unwrap()).unwrap_value();
+        let node_kind = match operator.kind {
+            ast::BinOpKind::Add => DataNodeKind::Add { left, right, ty },
+            ast::BinOpKind::Sub => DataNodeKind::Sub { left, right, ty },
+            ast::BinOpKind::Mul => DataNodeKind::Mul { left, right, ty },
+            ast::BinOpKind::Div => DataNodeKind::Div { left, right, ty },
+            ast::BinOpKind::Less => DataNodeKind::Lt { left, right, ty },
+            ast::BinOpKind::LessEq => DataNodeKind::LtEq { left, right, ty },
+            ast::BinOpKind::Greater => DataNodeKind::Gt { left, right, ty },
+            ast::BinOpKind::GreaterEq => DataNodeKind::GtEq { left, right, ty },
+            ast::BinOpKind::Eq => DataNodeKind::Eq { left, right, ty },
+            ast::BinOpKind::NotEq => DataNodeKind::NotEq { left, right, ty },
+            _ => todo!(),
+        };
+        ResultData::Value {
+            node_index: self.mir.ensure_data_node(node_kind),
+        }
+    }
+
+    fn build_loop_expr(
+        &mut self,
+        parent_block_index: BlockIndex,
+        data_bindings: &mut Box<[ResultData]>,
+        expr: &hir::Expression,
+    ) -> ResultData {
+        let (block_index, expressions, result) = match &expr.kind {
+            hir::ExprKind::Loop { block, scope_index } => match &block.kind {
+                hir::ExprKind::Block {
+                    expressions,
+                    result,
+                    ..
+                } => (scope_index.0 as BlockIndex, expressions, result),
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+
+        let loop_params = self.create_loop_data_bindings(data_bindings, block_index);
+        let mut loop_data_bindings = loop_params.clone();
+        self.mir.blocks[block_index as usize] = Some(Block {
+            parent_index: Some(parent_block_index),
+            statements: Vec::new(),
+            result: ResultData::Never,
+        });
+        let result = self.build_block(block_index, &mut loop_data_bindings, expressions, result);
+        self.mir.blocks[block_index as usize]
+            .as_mut()
+            .unwrap()
+            .result = result;
+
+        let mut outputs = Vec::new();
+        let parent_bindings_len = data_bindings.len();
+        for (index, loop_param) in loop_params.iter().copied().enumerate() {
+            let loop_param_id = match loop_param {
+                ResultData::Value { node_index } => node_index,
+                _ => continue,
+            };
+
+            match self.mir.data_nodes[loop_param_id as usize].kind.clone() {
+                DataNodeKind::LoopParam {
+                    block_index,
+                    before,
+                    ty,
+                    ..
+                } => {
+                    let after = loop_data_bindings[index].unwrap_value();
+                    if self.mir.data_nodes[loop_param_id as usize].uses.len() > 0 {
+                        self.mir.data_nodes[before as usize]
+                            .uses
+                            .push(loop_param_id);
+                    }
+
+                    if loop_param_id != after {
+                        self.mir.data_nodes[loop_param_id as usize].kind =
+                            DataNodeKind::LoopParam {
+                                block_index,
+                                before,
+                                after,
+                                ty,
+                            };
+
+                        self.mir.data_nodes[after as usize].uses.push(loop_param_id);
+                        if index < parent_bindings_len {
+                            data_bindings[index] = ResultData::Value {
+                                node_index: loop_param_id,
+                            };
+                            outputs.push(loop_param_id);
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        self.mir.blocks[parent_block_index as usize]
+            .as_mut()
+            .unwrap()
+            .statements
+            .push(ControlNode::Loop {
+                body: block_index,
+                outputs: outputs.into_boxed_slice(),
+                result,
+            });
+
+        result
+    }
 }
 
-// test code
 #[cfg(test)]
 mod tests {
     use indoc::indoc;
@@ -457,18 +693,37 @@ mod tests {
     #[test]
     fn build_simple_function() {
         let source = indoc! {"
-            export func test(n: i32): i32 {
-                if n == 0 {
-                    return 1;
+            func test(n: i32, threshold: i32): i32 {
+                local mut sum: i32 = 0;
+                local mut i: i32 = 0;
+                local mut product: i32 = 1;
+                
+                local result: i32 = loop {
+                    i = i + 1;
+                    
+                    if i > n {
+                        break sum;
+                    };
+                    
+                    local factor: i32 = if i > threshold {
+                        i * 2
+                    } else {
+                        i + 1
+                    };
+                    
+                    sum = sum + factor;
+                    product = product * i;
+                    
+                    if product > 1000 {
+                        break sum + product;
+                    };
                 };
-                local mut d = n * 10;
-                local m: i32 = 10;
-                if d < 100 {
-                    d = d + 1;
+                
+                if result > 100 {
+                    return result * 2;
                 } else {
-                    d = d - 1;
-                };
-                return { m / 2 * d };
+                    return result + product;
+                }
             }
         "};
         let mut interner = StringInterner::new();
@@ -487,9 +742,11 @@ mod tests {
         }
 
         let mir = Builder::build_function(&hir.hir, 0).unwrap();
-        println!("{:#?}", mir.blocks);
 
         let json = serde_json::to_string_pretty(&mir.data_nodes).unwrap();
+        println!("{}", json);
+
+        let json = serde_json::to_string_pretty(&mir.blocks).unwrap();
         println!("{}", json);
     }
 }

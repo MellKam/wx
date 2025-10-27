@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{
-    mir,
-    wasm::{self, BlockResult},
-};
+use crate::{mir, wasm};
 
 pub struct Scheduler<'mir> {
     mir: &'mir mir::MIR,
@@ -27,7 +24,8 @@ fn should_spill_node(node: &mir::DataNode) -> bool {
     match node.kind {
         mir::DataNodeKind::Int { .. }
         | mir::DataNodeKind::Float { .. }
-        | mir::DataNodeKind::Parameter { .. } => false,
+        | mir::DataNodeKind::Param { .. }
+        | mir::DataNodeKind::LoopParam { .. } => false,
         mir::DataNodeKind::Add { .. }
         | mir::DataNodeKind::Sub { .. }
         | mir::DataNodeKind::Div { .. }
@@ -38,7 +36,7 @@ fn should_spill_node(node: &mir::DataNode) -> bool {
         | mir::DataNodeKind::GtEq { .. }
         | mir::DataNodeKind::Lt { .. }
         | mir::DataNodeKind::LtEq { .. } => node.uses.len() > 1,
-        mir::DataNodeKind::Phi { .. } => true,
+        mir::DataNodeKind::Phi { .. } | mir::DataNodeKind::CallResult { .. } => true,
     }
 }
 
@@ -70,13 +68,13 @@ impl<'mir> Scheduler<'mir> {
         }
     }
 
-    fn ensure_local(&mut self, node_id: mir::DataNodeIndex) -> wasm::Expression {
-        if let Some(&local_index) = self.node_to_local.get(&node_id) {
+    fn ensure_local(&mut self, node_index: mir::DataNodeIndex) -> wasm::Expression {
+        if let Some(&local_index) = self.node_to_local.get(&node_index) {
             return wasm::Expression::LocalGet { local_index };
         }
 
-        let expr = self.schedule_expression_direct(node_id);
-        let node = &self.mir.data_nodes[node_id as usize];
+        let expr = self.schedule_expression_direct(node_index);
+        let node = &self.mir.data_nodes[node_index as usize];
         let local_index = wasm::LocalIndex(self.locals.len() as u32);
         self.locals.push(wasm::Local {
             ty: wasm::ValueType::from(node.kind.ty()),
@@ -86,7 +84,7 @@ impl<'mir> Scheduler<'mir> {
             value: Box::new(expr),
         });
 
-        self.node_to_local.insert(node_id, local_index);
+        self.node_to_local.insert(node_index, local_index);
         wasm::Expression::LocalGet { local_index }
     }
 
@@ -94,8 +92,8 @@ impl<'mir> Scheduler<'mir> {
         match stmt {
             mir::ControlNode::Return { value } => {
                 let value = match value {
-                    mir::ResultData::Value(node_id) => {
-                        Some(Box::new(self.schedule_expression(*node_id)))
+                    mir::ResultData::Value { node_index } => {
+                        Some(Box::new(self.schedule_expression(*node_index)))
                     }
                     _ => None,
                 };
@@ -152,10 +150,10 @@ impl<'mir> Scheduler<'mir> {
                     }
 
                     match result {
-                        mir::ResultData::Value(node_id) => {
-                            let node_id = match self.mir.data_nodes[*node_id as usize].kind {
+                        mir::ResultData::Value { node_index } => {
+                            let node_id = match self.mir.data_nodes[*node_index as usize].kind {
                                 mir::DataNodeKind::Phi { left, .. } => left,
-                                _ => *node_id,
+                                _ => *node_index,
                             };
                             if expressions.is_empty() {
                                 break 'then_block self.schedule_expression(node_id);
@@ -167,8 +165,8 @@ impl<'mir> Scheduler<'mir> {
                     wasm::Expression::Block {
                         expressions: expressions.into_boxed_slice(),
                         result: match result {
-                            mir::ResultData::Value(node_id) => {
-                                let ty = self.mir.data_nodes[*node_id as usize].kind.ty();
+                            mir::ResultData::Value { node_index } => {
+                                let ty = self.mir.data_nodes[*node_index as usize].kind.ty();
                                 wasm::BlockResult::SingleValue(wasm::ValueType::from(ty))
                             }
                             _ => wasm::BlockResult::Empty,
@@ -199,21 +197,21 @@ impl<'mir> Scheduler<'mir> {
                     }
 
                     match result {
-                        mir::ResultData::Value(node_id) if expressions.is_empty() => {
-                            let node_id = match self.mir.data_nodes[*node_id as usize].kind {
+                        mir::ResultData::Value { node_index } if expressions.is_empty() => {
+                            let node_id = match self.mir.data_nodes[*node_index as usize].kind {
                                 mir::DataNodeKind::Phi { right, .. } => right,
-                                _ => *node_id,
+                                _ => *node_index,
                             };
                             Some(Box::new(self.schedule_expression(node_id)))
                         }
                         _ => {
                             match result {
-                                mir::ResultData::Value(node_id) => {
-                                    let node_id = match self.mir.data_nodes[*node_id as usize].kind
-                                    {
-                                        mir::DataNodeKind::Phi { right, .. } => right,
-                                        _ => *node_id,
-                                    };
+                                mir::ResultData::Value { node_index } => {
+                                    let node_id =
+                                        match self.mir.data_nodes[*node_index as usize].kind {
+                                            mir::DataNodeKind::Phi { right, .. } => right,
+                                            _ => *node_index,
+                                        };
 
                                     expressions.push(self.schedule_expression(node_id));
                                 }
@@ -222,8 +220,9 @@ impl<'mir> Scheduler<'mir> {
                             Some(Box::new(wasm::Expression::Block {
                                 expressions: expressions.into_boxed_slice(),
                                 result: match result {
-                                    mir::ResultData::Value(node_id) => {
-                                        let ty = self.mir.data_nodes[*node_id as usize].kind.ty();
+                                    mir::ResultData::Value { node_index } => {
+                                        let ty =
+                                            self.mir.data_nodes[*node_index as usize].kind.ty();
                                         wasm::BlockResult::SingleValue(wasm::ValueType::from(ty))
                                     }
                                     _ => wasm::BlockResult::Empty,
@@ -250,8 +249,8 @@ impl<'mir> Scheduler<'mir> {
                     then_branch: Box::new(then_branch),
                     else_branch,
                     result: match result {
-                        mir::ResultData::Value(node_id) => {
-                            let ty = self.mir.data_nodes[*node_id as usize].kind.ty();
+                        mir::ResultData::Value { node_index } => {
+                            let ty = self.mir.data_nodes[*node_index as usize].kind.ty();
                             wasm::BlockResult::SingleValue(wasm::ValueType::from(ty))
                         }
                         _ => wasm::BlockResult::Empty,
@@ -259,13 +258,13 @@ impl<'mir> Scheduler<'mir> {
                 };
 
                 match result {
-                    mir::ResultData::Value(node_id) => {
-                        let ty = self.mir.data_nodes[*node_id as usize].kind.ty();
+                    mir::ResultData::Value { node_index } => {
+                        let ty = self.mir.data_nodes[*node_index as usize].kind.ty();
                         let local_index = wasm::LocalIndex(self.locals.len() as u32);
                         self.locals.push(wasm::Local {
                             ty: wasm::ValueType::from(ty),
                         });
-                        self.node_to_local.insert(*node_id, local_index);
+                        self.node_to_local.insert(*node_index, local_index);
                         wasm::Expression::LocalSet {
                             local_index,
                             value: Box::new(expr),
@@ -295,7 +294,7 @@ impl<'mir> Scheduler<'mir> {
                 mir::ValueType::I64 => wasm::Expression::I64Const { value },
                 _ => unreachable!(),
             },
-            mir::DataNodeKind::Parameter { index, .. } => wasm::Expression::LocalGet {
+            mir::DataNodeKind::Param { index, .. } => wasm::Expression::LocalGet {
                 local_index: wasm::LocalIndex(index),
             },
             mir::DataNodeKind::Float { value, ty } => match ty {
@@ -446,7 +445,7 @@ mod tests {
                     if b > 100 {
                         return 100;
                     } else {
-                        return b;
+                        return b; 
                     }
                 }
             }

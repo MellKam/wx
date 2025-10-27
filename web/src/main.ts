@@ -6,7 +6,8 @@ const router = createRouter({
 	history: createWebHistory(),
 	routes: [
 		{ path: "/", component: () => import("./app.tsx") },
-		{ path: "/dfg", component: () => import("./dfg.tsx") },
+		{ path: "/dfg", component: () => import("./data_flow_graph.tsx") },
+		{ path: "/cft", component: () => import("./control_flow_tree.tsx") },
 	],
 });
 

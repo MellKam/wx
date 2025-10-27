@@ -88,17 +88,18 @@ pub enum ResultType {
 }
 
 #[cfg_attr(test, derive(Serialize))]
+#[cfg_attr(test, serde(tag = "kind"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResultData {
     Unit,
     Never,
-    Value(DataNodeIndex),
+    Value { node_index: DataNodeIndex },
 }
 
 impl ResultData {
-    pub fn unwrap_value(&self) -> DataNodeIndex {
+    pub fn unwrap_value(self) -> DataNodeIndex {
         match self {
-            ResultData::Value(node_id) => *node_id,
+            ResultData::Value { node_index } => node_index,
             _ => panic!("expected value result"),
         }
     }
@@ -116,6 +117,33 @@ impl MIR {
             kind: kind.clone(),
             uses: Vec::new(),
         });
+        match kind {
+            DataNodeKind::Add { left, right, .. }
+            | DataNodeKind::Mul { left, right, .. }
+            | DataNodeKind::Sub { left, right, .. }
+            | DataNodeKind::Div { left, right, .. }
+            | DataNodeKind::Lt { left, right, .. }
+            | DataNodeKind::LtEq { left, right, .. }
+            | DataNodeKind::Gt { left, right, .. }
+            | DataNodeKind::GtEq { left, right, .. }
+            | DataNodeKind::Eq { left, right, .. }
+            | DataNodeKind::NotEq { left, right, .. }
+            | DataNodeKind::Phi { left, right, .. }
+            | DataNodeKind::LoopParam {
+                before: left,
+                after: right,
+                ..
+            } => {
+                self.data_nodes[left as usize].uses.push(id);
+                self.data_nodes[right as usize].uses.push(id);
+            }
+            DataNodeKind::CallResult { ref args, .. } => {
+                for &arg in args.iter() {
+                    self.data_nodes[arg as usize].uses.push(id);
+                }
+            }
+            DataNodeKind::Int { .. } | DataNodeKind::Float { .. } | DataNodeKind::Param { .. } => {}
+        }
         self.data_lookup.insert(kind, id);
         id
     }
@@ -124,9 +152,9 @@ impl MIR {
         match (left, right) {
             (ResultData::Never, result) | (result, ResultData::Never) => result,
             (ResultData::Unit, ResultData::Unit) => ResultData::Unit,
-            (ResultData::Value(left), ResultData::Value(right)) => {
+            (ResultData::Value { node_index: left }, ResultData::Value { node_index: right }) => {
                 if right == left {
-                    return ResultData::Value(left);
+                    return ResultData::Value { node_index: left };
                 }
 
                 match (
@@ -141,7 +169,7 @@ impl MIR {
                         },
                         _,
                     ) if *phi_left == right || *phi_right == right => {
-                        return ResultData::Value(right);
+                        return ResultData::Value { node_index: right };
                     }
                     (
                         _,
@@ -151,14 +179,15 @@ impl MIR {
                             ..
                         },
                     ) if *phi_left == left || *phi_right == left => {
-                        return ResultData::Value(left);
+                        return ResultData::Value { node_index: left };
                     }
                     _ => {}
                 };
 
                 let ty = self.data_nodes[left as usize].kind.ty();
-                let phi_node = self.ensure_data_node(DataNodeKind::Phi { left, right, ty });
-                ResultData::Value(phi_node)
+                ResultData::Value {
+                    node_index: self.ensure_data_node(DataNodeKind::Phi { left, right, ty }),
+                }
             }
             _ => panic!("cannot merge {:?} and {:?}", left, right),
         }
@@ -179,7 +208,7 @@ pub enum DataNodeKind {
         value: u64,
         ty: ValueType,
     },
-    Parameter {
+    Param {
         index: u32,
         symbol: SymbolU32,
         ty: ValueType,
@@ -239,6 +268,17 @@ pub enum DataNodeKind {
         right: DataNodeIndex,
         ty: ValueType,
     },
+    CallResult {
+        func_index: u32,
+        args: Box<[DataNodeIndex]>,
+        ty: ValueType,
+    },
+    LoopParam {
+        block_index: BlockIndex,
+        before: DataNodeIndex,
+        after: DataNodeIndex,
+        ty: ValueType,
+    },
 }
 
 impl DataNodeKind {
@@ -246,7 +286,7 @@ impl DataNodeKind {
         match self {
             DataNodeKind::Int { ty, .. } => *ty,
             DataNodeKind::Float { ty, .. } => *ty,
-            DataNodeKind::Parameter { ty, .. } => *ty,
+            DataNodeKind::Param { ty, .. } => *ty,
             DataNodeKind::Add { ty, .. } => *ty,
             DataNodeKind::Mul { ty, .. } => *ty,
             DataNodeKind::Sub { ty, .. } => *ty,
@@ -258,6 +298,8 @@ impl DataNodeKind {
             DataNodeKind::Eq { ty, .. } => *ty,
             DataNodeKind::NotEq { ty, .. } => *ty,
             DataNodeKind::Phi { ty, .. } => *ty,
+            DataNodeKind::CallResult { ty, .. } => *ty,
+            DataNodeKind::LoopParam { ty, .. } => *ty,
         }
     }
 }
@@ -270,18 +312,30 @@ pub struct DataNode {
 }
 
 #[cfg_attr(test, derive(Serialize))]
+#[cfg_attr(test, serde(tag = "kind"))]
 #[derive(Debug, Clone)]
 pub enum ControlNode {
     Return {
         value: ResultData,
     },
-    Block {
-        block_index: BlockIndex,
-    },
     IfElse {
         condition: DataNodeIndex,
         then_block: BlockIndex,
         else_block: Option<BlockIndex>,
+        outputs: Box<[DataNodeIndex]>,
+        result: ResultData,
+    },
+    Call {
+        func_index: u32,
+        args: Box<[DataNodeIndex]>,
+        result: ResultData,
+    },
+    Break {
+        target_block: BlockIndex,
+        value: ResultData,
+    },
+    Loop {
+        body: BlockIndex,
         outputs: Box<[DataNodeIndex]>,
         result: ResultData,
     },
