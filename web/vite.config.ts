@@ -1,12 +1,11 @@
 import { defineConfig } from "vite";
-import vue from "@vitejs/plugin-vue";
-import vueJsx from "@vitejs/plugin-vue-jsx";
+import solid from "vite-plugin-solid";
 import wasm from "vite-plugin-wasm";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
-	plugins: [vue(), vueJsx(), wasm(), tailwindcss()],
+	plugins: [solid(), wasm(), tailwindcss()],
 	build: {
 		target: "esnext",
 	},

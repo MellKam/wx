@@ -90,16 +90,17 @@ pub enum ResultType {
 #[cfg_attr(test, derive(Serialize))]
 #[cfg_attr(test, serde(tag = "kind"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ResultData {
+pub enum StackResult {
+    Value { node_index: DataNodeIndex },
     Unit,
     Never,
-    Value { node_index: DataNodeIndex },
+    Branch { block_index: BlockIndex },
 }
 
-impl ResultData {
+impl StackResult {
     pub fn unwrap_value(self) -> DataNodeIndex {
         match self {
-            ResultData::Value { node_index } => node_index,
+            StackResult::Value { node_index } => node_index,
             _ => panic!("expected value result"),
         }
     }
@@ -148,13 +149,13 @@ impl MIR {
         id
     }
 
-    fn merge_data(&mut self, left: ResultData, right: ResultData) -> ResultData {
+    fn merge_data(&mut self, left: StackResult, right: StackResult) -> StackResult {
         match (left, right) {
-            (ResultData::Never, result) | (result, ResultData::Never) => result,
-            (ResultData::Unit, ResultData::Unit) => ResultData::Unit,
-            (ResultData::Value { node_index: left }, ResultData::Value { node_index: right }) => {
+            (StackResult::Never, result) | (result, StackResult::Never) => result,
+            (StackResult::Unit, StackResult::Unit) => StackResult::Unit,
+            (StackResult::Value { node_index: left }, StackResult::Value { node_index: right }) => {
                 if right == left {
-                    return ResultData::Value { node_index: left };
+                    return StackResult::Value { node_index: left };
                 }
 
                 match (
@@ -169,7 +170,7 @@ impl MIR {
                         },
                         _,
                     ) if *phi_left == right || *phi_right == right => {
-                        return ResultData::Value { node_index: right };
+                        return StackResult::Value { node_index: right };
                     }
                     (
                         _,
@@ -179,13 +180,13 @@ impl MIR {
                             ..
                         },
                     ) if *phi_left == left || *phi_right == left => {
-                        return ResultData::Value { node_index: left };
+                        return StackResult::Value { node_index: left };
                     }
                     _ => {}
                 };
 
                 let ty = self.data_nodes[left as usize].kind.ty();
-                ResultData::Value {
+                StackResult::Value {
                     node_index: self.ensure_data_node(DataNodeKind::Phi { left, right, ty }),
                 }
             }
@@ -316,28 +317,28 @@ pub struct DataNode {
 #[derive(Debug, Clone)]
 pub enum ControlNode {
     Return {
-        value: ResultData,
+        value: StackResult,
     },
     IfElse {
         condition: DataNodeIndex,
         then_block: BlockIndex,
         else_block: Option<BlockIndex>,
         outputs: Box<[DataNodeIndex]>,
-        result: ResultData,
+        result: StackResult,
     },
     Call {
         func_index: u32,
         args: Box<[DataNodeIndex]>,
-        result: ResultData,
+        result: StackResult,
     },
     Break {
         target_block: BlockIndex,
-        value: ResultData,
+        value: StackResult,
     },
     Loop {
         body: BlockIndex,
         outputs: Box<[DataNodeIndex]>,
-        result: ResultData,
+        result: StackResult,
     },
 }
 
@@ -348,5 +349,5 @@ pub type BlockIndex = u32;
 pub struct Block {
     pub parent_index: Option<BlockIndex>,
     pub statements: Vec<ControlNode>,
-    pub result: ResultData,
+    pub result: StackResult,
 }

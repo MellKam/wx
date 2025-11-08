@@ -10,5 +10,5 @@ self.onmessage = async (event) => {
 
 	const userFunc = new Function("bytecode", script);
 	const result = await userFunc()(bytecode);
-	self.postMessage({ result });
+	self.postMessage(result);
 };
