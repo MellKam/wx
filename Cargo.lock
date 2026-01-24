@@ -581,6 +581,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wx-compiler-new"
+version = "0.0.1"
+dependencies = [
+ "codespan-reporting",
+ "indoc",
+ "insta",
+ "leb128fmt",
+ "serde",
+ "serde_json",
+ "string-interner",
+]
+
+[[package]]
 name = "wx-compiler-wasm"
 version = "0.0.6"
 dependencies = [

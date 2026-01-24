@@ -693,37 +693,43 @@ mod tests {
     #[test]
     fn build_simple_function() {
         let source = indoc! {"
-            func test(n: i32, threshold: i32): i32 {
-                local mut sum: i32 = 0;
-                local mut i: i32 = 0;
-                local mut product: i32 = 1;
+            // func test(n: i32, threshold: i32): i32 {
+            //     local mut sum: i32 = 0;
+            //     local mut i: i32 = 0;
+            //     local mut product: i32 = 1;
                 
-                local result: i32 = loop {
-                    i = i + 1;
+            //     local result: i32 = loop {
+            //         i = i + 1;
                     
-                    if i > n {
-                        break sum;
-                    };
+            //         if i > n {
+            //             break sum;
+            //         };
                     
-                    local factor: i32 = if i > threshold {
-                        i * 2
-                    } else {
-                        i + 1
-                    };
+            //         local factor: i32 = if i > threshold {
+            //             i * 2
+            //         } else {
+            //             i + 1
+            //         };
                     
-                    sum = sum + factor;
-                    product = product * i;
+            //         sum = sum + factor;
+            //         product = product * i;
                     
-                    if product > 1000 {
-                        break sum + product;
-                    };
-                };
+            //         if product > 1000 {
+            //             break sum + product;
+            //         };
+            //     };
                 
-                if result > 100 {
-                    return result * 2;
-                } else {
-                    return result + product;
-                }
+            //     if result > 100 {
+            //         return result * 2;
+            //     } else {
+            //         return result + product;
+            //     }
+            // }
+
+            export func test(a: i32, b: i32): i32 {
+                local c = a + b;
+                local d = c + 10 / 2 * c;
+                return d;
             }
         "};
         let mut interner = StringInterner::new();

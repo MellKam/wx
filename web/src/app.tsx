@@ -24,6 +24,58 @@ export default defineComponent({
 			result.value = event.data.result;
 		};
 
+		watch(
+			monaco,
+			(monaco) => {
+				if (!monaco) return;
+				console.log("register monaco wx lang");
+				monaco.languages.register({ id: "wx" });
+				monaco.languages.setLanguageConfiguration("wx", {
+					comments: {
+						lineComment: "//",
+					},
+					brackets: [
+						["{", "}"],
+						["[", "]"],
+						["(", ")"],
+					],
+					autoClosingPairs: [
+						{ open: "{", close: "}" },
+						{ open: "[", close: "]" },
+						{ open: "(", close: ")" },
+					],
+					surroundingPairs: [
+						{ open: "{", close: "}" },
+						{ open: "[", close: "]" },
+						{ open: "(", close: ")" },
+					],
+					folding: {
+						markers: {
+							start: /^\\s*\\{\\s*$/,
+							end: /^\\s*\\}\\s*$/,
+						},
+					},
+				});
+
+				monaco.languages.setMonarchTokensProvider("wx", {
+					tokenizer: {
+						root: [
+							[
+								/\b(func|local|mut|if|else|loop|break|return|true|false|enum|global|continue|export)\b/,
+								"keyword",
+							],
+							[/\b(i32|i64|f32|f64|u32|u64|bool)\b/, "type"],
+							[/\/\/.*$/, "comment"],
+							[/\d+\.\d+/, "number.float"],
+							[/\d+/, "number"],
+							[/[a-zA-Z_]\w*/, "identifier"],
+						],
+					},
+				});
+			},
+			{ immediate: true, flush: "pre" }
+		);
+
 		const { copy, copied } = useClipboard();
 
 		const run = async () => {
@@ -138,6 +190,7 @@ export default defineComponent({
 							value={currentPlayground.value.wx}
 							onUpdate:value={(value) => (currentPlayground.value.wx = value)}
 							style="width: 100%; height: 100%; flex: 1;"
+							language="wx"
 							options={{
 								theme: "vs-dark",
 								language: "wx",

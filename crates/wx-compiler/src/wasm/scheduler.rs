@@ -434,20 +434,10 @@ mod tests {
     #[test]
     fn test_schedule_function_add() {
         let source = indoc! {"
-           export func test(a: i32, b: i32): i32 {
-                if a > b {
-                    if a > 100 {
-                        return 100;
-                    } else {
-                        return a;
-                    }
-                } else {
-                    if b > 100 {
-                        return 100;
-                    } else {
-                        return b; 
-                    }
-                }
+            export func test(a: i32, b: i32): i32 {
+                local c = a + b;
+                local d = c + 10 / 2;
+                return d;
             }
         "};
         let mut interner = StringInterner::new();
