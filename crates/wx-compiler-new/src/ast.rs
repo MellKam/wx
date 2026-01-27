@@ -73,7 +73,7 @@ impl File {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct FileId(u32);
 
 pub struct Files {
@@ -139,7 +139,7 @@ impl<'files> files::Files<'files> for Files {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum Token {
     // Literals
     Int,
@@ -871,7 +871,7 @@ impl<'a> Lexer<'a> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum BinaryOp {
     // Arithmetic
     Add,
@@ -905,6 +905,35 @@ pub enum BinaryOp {
 }
 
 impl BinaryOp {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            BinaryOp::Add => "+",
+            BinaryOp::Sub => "-",
+            BinaryOp::Mul => "*",
+            BinaryOp::Div => "/",
+            BinaryOp::Rem => "%",
+            BinaryOp::Eq => "==",
+            BinaryOp::NotEq => "!=",
+            BinaryOp::Less => "<",
+            BinaryOp::LessEq => "<=",
+            BinaryOp::Greater => ">",
+            BinaryOp::GreaterEq => ">=",
+            BinaryOp::And => "&&",
+            BinaryOp::Or => "||",
+            BinaryOp::Assign => "=",
+            BinaryOp::AddAssign => "+=",
+            BinaryOp::SubAssign => "-=",
+            BinaryOp::MulAssign => "*=",
+            BinaryOp::DivAssign => "/=",
+            BinaryOp::RemAssign => "%=",
+            BinaryOp::BitAnd => "&",
+            BinaryOp::BitOr => "|",
+            BinaryOp::BitXor => "^",
+            BinaryOp::LeftShift => "<<",
+            BinaryOp::RightShift => ">>",
+        }
+    }
+
     pub fn is_assignment(&self) -> bool {
         match self {
             BinaryOp::Assign
@@ -955,6 +984,12 @@ impl BinaryOp {
     }
 }
 
+impl std::fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 impl TryFrom<Token> for BinaryOp {
     type Error = ();
 
@@ -995,7 +1030,7 @@ impl TryFrom<Token> for BinaryOp {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum UnaryOp {
     InvertSign,
     Not,
@@ -1015,50 +1050,17 @@ impl TryFrom<Token> for UnaryOp {
     }
 }
 
-impl std::fmt::Display for BinaryOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let symbol = match self {
-            BinaryOp::Add => "+",
-            BinaryOp::Sub => "-",
-            BinaryOp::Mul => "*",
-            BinaryOp::Div => "/",
-            BinaryOp::Rem => "%",
-            BinaryOp::Eq => "==",
-            BinaryOp::NotEq => "!=",
-            BinaryOp::Less => "<",
-            BinaryOp::LessEq => "<=",
-            BinaryOp::Greater => ">",
-            BinaryOp::GreaterEq => ">=",
-            BinaryOp::And => "&&",
-            BinaryOp::Or => "||",
-            BinaryOp::Assign => "=",
-            BinaryOp::AddAssign => "+=",
-            BinaryOp::SubAssign => "-=",
-            BinaryOp::MulAssign => "*=",
-            BinaryOp::DivAssign => "/=",
-            BinaryOp::RemAssign => "%=",
-            BinaryOp::BitAnd => "&",
-            BinaryOp::BitOr => "|",
-            BinaryOp::BitXor => "^",
-            BinaryOp::LeftShift => "<<",
-            BinaryOp::RightShift => ">>",
-        };
-        write!(f, "{}", symbol)
-    }
-}
-
-impl std::fmt::Display for UnaryOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let symbol = match self {
+impl UnaryOp {
+    pub fn as_str(&self) -> &str {
+        match self {
             UnaryOp::InvertSign => "-",
             UnaryOp::Not => "!",
             UnaryOp::BitNot => "^",
-        };
-        write!(f, "{}", symbol)
+        }
     }
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct Spanned<T> {
     pub inner: T,
     pub span: TextSpan,
@@ -1088,7 +1090,7 @@ impl Clone for Spanned<SymbolU32> {
 /// Used for type annotations (`: i32`) and return types (`-> i32`) where a
 /// special token precedes the actual value. The `separator` field stores the
 /// prefix token's span.
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct Annotated<T> {
     pub prefix: TextSpan,
     pub inner: T,
@@ -1100,7 +1102,7 @@ pub struct Annotated<T> {
 /// b, c)`, code blocks `{ stmt; stmt; }`, and array literals `[1, 2, 3]`. The
 /// `open` and `close` fields store the spans of the opening and closing
 /// delimiters respectively.
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct Grouped<T> {
     pub open: TextSpan,
     pub inner: T,
@@ -1113,13 +1115,13 @@ pub struct Grouped<T> {
 /// Used for comma-separated lists like function parameters `(a, b, c)` or
 /// statement sequences. The `separator` field holds the token that follows this
 /// item (e.g., `,` or `;`), if present.
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct Separated<T> {
     pub inner: T,
     pub separator: Option<TextSpan>,
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum Expression {
     Error,
     /// `1`
@@ -1200,7 +1202,7 @@ pub enum Expression {
     Unreachable,
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum TypeExpression {
     Error,
     /// `i32`
@@ -1214,7 +1216,7 @@ pub enum TypeExpression {
     },
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum Statement {
     /// `{expr}`
     Expression(Box<Spanned<Expression>>),
@@ -1227,14 +1229,14 @@ pub enum Statement {
     },
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct FunctionParam {
     pub mut_span: Option<TextSpan>,
     pub name: Spanned<SymbolU32>,
     pub type_annotation: Annotated<Box<Spanned<TypeExpression>>>,
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct FunctionSignature {
     pub fn_span: TextSpan,
     pub name: Spanned<SymbolU32>,
@@ -1242,7 +1244,7 @@ pub struct FunctionSignature {
     pub result: Annotated<Box<Spanned<TypeExpression>>>,
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum Item {
     FunctionDefinition {
         signature: FunctionSignature,
@@ -1260,7 +1262,7 @@ pub enum Item {
     },
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct Ast {
     pub file_id: FileId,
     pub diagnostics: Vec<Diagnostic<FileId>>,
@@ -1366,7 +1368,7 @@ impl TryFrom<&str> for Keyword {
     }
 }
 
-type StringInterner =
+pub type StringInterner =
     string_interner::StringInterner<string_interner::backend::StringBackend<SymbolU32>>;
 
 pub struct Parser<'input> {
@@ -1723,7 +1725,7 @@ impl<'input> Parser<'input> {
 
         let result = parser
             .lexer
-            .next_if(Token::Colon)
+            .next_if(Token::Arrow)
             .ok_or(())
             .and_then(|colon| {
                 Ok(Annotated {
@@ -2568,11 +2570,7 @@ mod tests {
 
     #[test]
     fn test_parse_simple_addition() {
-        let case = TestCase::new(indoc! {"
-            fn test(a: i32  b: i32): i32 { 
-                a + b
-            }
-        "});
+        let case = TestCase::new(indoc! {"fn add(a:i32,b:i32)->i32{a+b}"});
         insta::assert_yaml_snapshot!(case.ast);
     }
 }
