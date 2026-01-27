@@ -584,6 +584,7 @@ dependencies = [
 name = "wx-compiler-new"
 version = "0.0.1"
 dependencies = [
+ "bumpalo",
  "codespan-reporting",
  "indoc",
  "insta",
