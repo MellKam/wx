@@ -1285,7 +1285,7 @@ enum BindingPower {
     Unary,
     Cast,
     Call,
-    Member,
+    // Member,
     Primary,
 }
 
