@@ -5,11 +5,11 @@ enum Node {
     /// An atomic sequence of tokens that cannot be broken up
     Text(String),
     /// A possible line break, otherwise rendered as a space
-    BreakOrSpace,
-    /// A possible line break, otherwise rendered as nothing
-    BreakOrNone,
+    SoftLine,
+    /// A possible line break, otherwise nothing
+    Line,
     /// Always break the line
-    Break,
+    HardLine,
     /// A sequence of nodes concatenated together
     Concat(Vec<Node>),
     /// All lines under this node must either break or not break together
@@ -23,55 +23,38 @@ enum Node {
 struct Builder;
 
 impl Builder {
-    fn build(ast: &Ast, interner: &StringInterner) -> Node {
+    fn count_blank_lines(source: &str, end_pos: usize, start_pos: usize) -> usize {
+        if start_pos <= end_pos {
+            return 0;
+        }
+        let between = &source[end_pos..start_pos];
+        let newlines = between.matches('\n').count();
+        // Subtract 1 because one newline is normal separation, max 1 blank line
+        newlines.saturating_sub(1).min(1)
+    }
+
+    fn build(ast: &Ast, interner: &StringInterner, source: &str) -> Node {
         let mut items = Vec::new();
         for item in ast.items.iter() {
             items.push(match &item.inner {
                 Item::FunctionDefinition { signature, block } => {
+                    Self::build_function_definition(interner, source, signature, &block.inner)
+                }
+                Item::ExportModifier { item, .. } => {
                     let mut items = Vec::new();
-                    items.push(Node::Text(format!(
-                        "fn {}(",
-                        interner.resolve(signature.name.inner).unwrap()
-                    )));
-
-                    if signature.params.inner.len() > 0 {
-                        items.push(Node::Indent(Box::new({
-                            let mut items = Vec::new();
-                            // items.push(Node::BreakOrNone);
-
-                            for (index, param) in signature.params.inner.iter().enumerate() {
-                                items.push(Node::Text(format!(
-                                    "{}: ",
-                                    interner
-                                        .resolve(param.inner.inner.name.inner)
-                                        .unwrap()
-                                        .to_string()
-                                )));
-                                items.push(Self::build_type_expression(
-                                    interner,
-                                    &param.inner.inner.type_annotation.inner.inner,
-                                ));
-                                if index + 1 < signature.params.inner.len() {
-                                    items.push(Node::Text(",".to_string()));
-                                    items.push(Node::BreakOrSpace);
-                                } else {
-                                    items.push(Node::IfBreak(",".to_string()));
-                                }
-                            }
-
-                            Node::Concat(items)
-                        })));
-                        items.push(Node::BreakOrNone);
+                    items.push(Node::Text("export ".to_string()));
+                    match &item.inner {
+                        Item::FunctionDefinition { signature, block } => {
+                            items.push(Self::build_function_definition(
+                                interner,
+                                source,
+                                signature,
+                                &block.inner,
+                            ));
+                        }
+                        _ => todo!(),
                     }
-                    items.push(Node::Text(") -> ".to_string()));
-                    items.push(Self::build_type_expression(
-                        interner,
-                        &signature.result.inner.inner,
-                    ));
-                    items.push(Node::Text(" ".to_string()));
-                    items.push(Self::build_expression(interner, &block.inner));
-
-                    Node::Group(Box::new(Node::Concat(items)))
+                    Node::Concat(items)
                 }
                 _ => todo!(),
             });
@@ -80,7 +63,63 @@ impl Builder {
         Node::Concat(items)
     }
 
-    fn build_expression(interner: &StringInterner, expression: &Expression) -> Node {
+    fn build_function_definition(
+        interner: &StringInterner,
+        source: &str,
+        signature: &FunctionSignature,
+        block: &Expression,
+    ) -> Node {
+        let mut items = Vec::new();
+        items.push(Node::Text(format!(
+            "fn {}(",
+            interner.resolve(signature.name.inner).unwrap()
+        )));
+
+        if signature.params.inner.len() > 0 {
+            items.push(Node::Indent(Box::new({
+                let mut items = Vec::new();
+                items.push(Node::Line);
+
+                for (index, param) in signature.params.inner.iter().enumerate() {
+                    items.push(Node::Text(format!(
+                        "{}{}: ",
+                        match param.inner.inner.mut_span {
+                            Some(_) => "mut ",
+                            None => "",
+                        },
+                        interner
+                            .resolve(param.inner.inner.name.inner)
+                            .unwrap()
+                            .to_string()
+                    )));
+                    items.push(Self::build_type_expression(
+                        interner,
+                        &param.inner.inner.type_annotation.inner.inner,
+                    ));
+                    if index + 1 < signature.params.inner.len() {
+                        items.push(Node::Text(",".to_string()));
+                        items.push(Node::SoftLine);
+                    } else {
+                        items.push(Node::IfBreak(",".to_string()));
+                    }
+                }
+
+                Node::Concat(items)
+            })));
+            items.push(Node::Line);
+        }
+        items.push(Node::Text(") -> ".to_string()));
+        items.push(Self::build_type_expression(
+            interner,
+            &signature.result.inner.inner,
+        ));
+        items.push(Node::Text(" ".to_string()));
+        items.push(Self::build_expression(interner, source, block));
+
+        Node::Group(Box::new(Node::Concat(items)))
+    }
+
+    fn build_expression(interner: &StringInterner, source: &str, expression: &Expression) -> Node {
         match expression {
             Expression::Identifier { symbol } => {
                 Node::Text(interner.resolve(*symbol).unwrap().to_string())
@@ -89,38 +128,39 @@ impl Builder {
                 left,
                 operator,
                 right,
-            } => Node::Group(Box::new(Node::Concat(vec![
-                Self::build_expression(interner, &left.inner),
-                Node::BreakOrSpace,
+            } => Node::Concat(vec![
+                Self::build_expression(interner, source, &left.inner),
+                Node::SoftLine,
                 Node::Text(format!("{} ", operator.inner.as_str())),
-                Self::build_expression(interner, &right.inner),
-            ]))),
+                Self::build_expression(interner, source, &right.inner),
+            ]),
             Expression::Block { statements } => {
                 let mut items = Vec::new();
                 items.push(Node::Text("{".to_string()));
 
                 match statements.inner.as_ref() {
-                    [
-                        Separated {
-                            inner:
-                                Spanned {
-                                    inner: Statement::Expression(expression),
-                                    ..
-                                },
-                            separator: None,
-                        },
-                    ] => {
-                        items.push(Node::BreakOrSpace);
-                        items.push(Self::build_expression(interner, &expression.inner));
-                    }
                     statements if statements.len() == 0 => {}
                     statements => {
                         items.push(Node::Indent(Box::new({
                             let mut items = Vec::new();
-                            items.push(Node::Break);
+                            items.push(Node::HardLine);
 
                             for (index, statement) in statements.iter().enumerate() {
-                                items.push(Self::build_statement(interner, &statement.inner.inner));
+                                // Preserve blank lines between statements
+                                if index > 0 {
+                                    let prev_end = statements[index - 1].inner.span.end as usize;
+                                    let curr_start = statement.inner.span.start as usize;
+                                    let blank_lines =
+                                        Self::count_blank_lines(source, prev_end, curr_start);
+                                    for _ in 0..blank_lines {
+                                        items.push(Node::HardLine);
+                                    }
+                                }
+                                items.push(Self::build_statement(
+                                    interner,
+                                    source,
+                                    &statement.inner.inner,
+                                ));
                                 if index + 1 == statements.len() {
                                     match statement.separator {
                                         Some(_) => {
@@ -130,17 +170,16 @@ impl Builder {
                                     }
                                 } else {
                                     items.push(Node::Text(";".to_string()));
-                                    items.push(Node::Break);
+                                    items.push(Node::HardLine);
                                 }
                             }
 
                             Node::Concat(items)
                         })));
-                        items.push(Node::Break);
+                        items.push(Node::HardLine);
                     }
                 }
 
-                items.push(Node::BreakOrSpace);
                 items.push(Node::Text("}".to_string()));
                 Node::Group(Box::new(Node::Concat(items)))
             }
@@ -152,12 +191,12 @@ impl Builder {
             } => {
                 let mut items = Vec::new();
                 items.push(Node::Text("if ".to_string()));
-                items.push(Self::build_expression(interner, &condition.inner));
+                items.push(Self::build_expression(interner, source, &condition.inner));
                 items.push(Node::Text(" ".to_string()));
-                items.push(Self::build_expression(interner, &then_block.inner));
+                items.push(Self::build_expression(interner, source, &then_block.inner));
                 if let Some(else_block) = else_block {
                     items.push(Node::Text(" else ".to_string()));
-                    items.push(Self::build_expression(interner, &else_block.inner));
+                    items.push(Self::build_expression(interner, source, &else_block.inner));
                 }
 
                 Node::Group(Box::new(Node::Concat(items)))
@@ -165,9 +204,9 @@ impl Builder {
             Expression::Loop { block } => {
                 let mut items = Vec::new();
                 items.push(Node::Text("loop ".to_string()));
-                items.push(Self::build_expression(interner, &block.inner));
+                items.push(Self::build_expression(interner, source, &block.inner));
 
-                Node::Concat(items)
+                Node::Group(Box::new(Node::Concat(items)))
             }
             Expression::Break { label, value } => {
                 let mut items = Vec::new();
@@ -180,7 +219,7 @@ impl Builder {
                 }
                 if let Some(value) = value {
                     items.push(Node::Text(" ".to_string()));
-                    items.push(Self::build_expression(interner, &value.inner));
+                    items.push(Self::build_expression(interner, source, &value.inner));
                 }
 
                 Node::Concat(items)
@@ -190,14 +229,14 @@ impl Builder {
                 items.push(Node::Text("return".to_string()));
                 if let Some(value) = value {
                     items.push(Node::Text(" ".to_string()));
-                    items.push(Self::build_expression(interner, &value.inner));
+                    items.push(Self::build_expression(interner, source, &value.inner));
                 }
 
                 Node::Concat(items)
             }
             Expression::Cast { value, ty } => {
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, &value.inner));
+                items.push(Self::build_expression(interner, source, &value.inner));
                 items.push(Node::Text(" as ".to_string()));
                 items.push(Self::build_type_expression(interner, &ty.inner));
 
@@ -219,7 +258,7 @@ impl Builder {
             Expression::Unary { operator, operand } => {
                 let mut items = Vec::new();
                 items.push(Node::Text(operator.inner.as_str().to_string()));
-                items.push(Self::build_expression(interner, &operand.inner));
+                items.push(Self::build_expression(interner, source, &operand.inner));
 
                 Node::Concat(items)
             }
@@ -227,10 +266,10 @@ impl Builder {
         }
     }
 
-    fn build_statement(interner: &StringInterner, statement: &Statement) -> Node {
+    fn build_statement(interner: &StringInterner, source: &str, statement: &Statement) -> Node {
         match statement {
             Statement::Expression(expression) => {
-                Self::build_expression(interner, &expression.inner)
+                Self::build_expression(interner, source, &expression.inner)
             }
             Statement::LocalDefinition {
                 mut_span,
@@ -257,9 +296,12 @@ impl Builder {
                     }
                     None => {}
                 }
-                items.push(Node::BreakOrSpace);
-                items.push(Node::Text("= ".to_string()));
-                items.push(Self::build_expression(interner, &value.inner));
+                items.push(Node::Text(" = ".to_string()));
+                items.push(Node::Indent(Box::new(Self::build_expression(
+                    interner,
+                    source,
+                    &value.inner,
+                ))));
 
                 Node::Group(Box::new(Node::Concat(items)))
             }
@@ -277,11 +319,11 @@ impl Builder {
                     Node::Indent(Box::new({
                         let mut items = Vec::new();
 
-                        items.push(Node::BreakOrSpace);
+                        items.push(Node::SoftLine);
                         for param in params.inner.iter() {
                             items.push(Self::build_type_expression(interner, &param.inner.inner));
                             items.push(Node::Text(",".to_string()));
-                            items.push(Node::BreakOrSpace);
+                            items.push(Node::SoftLine);
                         }
 
                         Node::Concat(items)
@@ -345,7 +387,7 @@ impl Renderer {
                 self.buffer.push_str(s);
                 self.position += s.len();
             }
-            Node::BreakOrSpace => match mode {
+            Node::SoftLine => match mode {
                 RenderMode::Flat => {
                     self.buffer.push(' ');
                     self.position += 1;
@@ -356,7 +398,7 @@ impl Renderer {
                     self.position = self.indent;
                 }
             },
-            Node::BreakOrNone => match mode {
+            Node::Line => match mode {
                 RenderMode::Flat => {}
                 RenderMode::Break => {
                     self.buffer.push('\n');
@@ -392,7 +434,7 @@ impl Renderer {
                     self.position += s.len();
                 }
             },
-            Node::Break => {
+            Node::HardLine => {
                 self.buffer.push('\n');
                 self.buffer.push_str(" ".repeat(self.indent).as_str());
                 self.position = self.indent;
@@ -407,10 +449,10 @@ impl Renderer {
         while let Some(current) = stack.pop() {
             match current {
                 Node::Text(s) => width += s.len(),
-                Node::BreakOrSpace => width += 1,
-                Node::BreakOrNone => {}
+                Node::SoftLine => width += 1,
+                Node::Line => {}
                 Node::IfBreak(_) => {}
-                Node::Break => return width,
+                Node::HardLine => return width,
                 Node::Group(inner) => stack.push(inner),
                 Node::Indent(inner) => stack.push(inner),
                 Node::Concat(nodes) => {
@@ -424,8 +466,13 @@ impl Renderer {
     }
 }
 
-pub fn format(ast: &Ast, interner: &StringInterner, config: RendererConfig) -> String {
-    let root = Builder::build(ast, interner);
+pub fn format(
+    ast: &Ast,
+    interner: &StringInterner,
+    source: &str,
+    config: RendererConfig,
+) -> String {
+    let root = Builder::build(ast, interner, source);
     let renderer = Renderer::new(config);
     renderer.render(&root)
 }
@@ -463,26 +510,25 @@ mod tests {
     #[test]
     fn test_format_simple_function() {
         let case = TestCase::new(indoc! {"
-            fn pow(base: i32, mut exp: i32) -> i32 {
-                if exp < 0 {
-                    return 0; 
-                };
-                
-                local mut result: i32 = 1;
+            export fn add(a: i32, mut b: i32, mut c: f64, mut d: i64) -> i32 { 
+                local mut result: i32 = a + b + b + b + b;
                 loop {
-                    if exp == 0 {
-                    break result; 
-                    };
-                    
-                    result *= base;
-                    exp -= 1;
+                    if result > 100 {
+                        break result;
+                    } else {
+                        result = result + 1;
+                    }
                 }
-            }"});
+
+                return result;
+            }
+        "});
         let output = format(
             &case.ast,
             &case.interner,
+            &case.files.get(case.ast.file_id).unwrap().source,
             RendererConfig {
-                max_line_width: 80,
+                max_line_width: 40,
                 indent_width: 4,
                 trailing_comma: true,
             },
