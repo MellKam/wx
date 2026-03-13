@@ -871,7 +871,8 @@ impl<'a> Lexer<'a> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum BinaryOp {
     // Arithmetic
     Add,
@@ -1030,7 +1031,8 @@ impl TryFrom<Token> for BinaryOp {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum UnaryOp {
     InvertSign,
     Not,
@@ -1060,7 +1062,8 @@ impl UnaryOp {
     }
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Spanned<T> {
     pub inner: T,
     pub span: TextSpan,
