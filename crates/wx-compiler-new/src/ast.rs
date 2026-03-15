@@ -1062,6 +1062,12 @@ impl UnaryOp {
     }
 }
 
+impl std::fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Spanned<T> {
@@ -1079,6 +1085,24 @@ impl Clone for Spanned<Token> {
 }
 
 impl Clone for Spanned<SymbolU32> {
+    fn clone(&self) -> Self {
+        Spanned {
+            inner: self.inner,
+            span: self.span,
+        }
+    }
+}
+
+impl Clone for Spanned<BinaryOp> {
+    fn clone(&self) -> Self {
+        Spanned {
+            inner: self.inner,
+            span: self.span,
+        }
+    }
+}
+
+impl Clone for Spanned<UnaryOp> {
     fn clone(&self) -> Self {
         Spanned {
             inner: self.inner,
@@ -1266,7 +1290,7 @@ pub enum Item {
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
-pub struct Ast {
+pub struct AST {
     pub file_id: FileId,
     pub diagnostics: Vec<Diagnostic<FileId>>,
     pub items: Vec<Spanned<Item>>,
@@ -1378,7 +1402,7 @@ pub struct Parser<'input> {
     source: &'input str,
     lexer: Lexer<'input>,
     interner: &'input mut StringInterner,
-    ast: Ast,
+    ast: AST,
 }
 
 struct SeparatedGroup<T> {
@@ -1506,12 +1530,12 @@ impl<'input> Parser<'input> {
         file_id: FileId,
         source: &'input str,
         interner: &'input mut StringInterner,
-    ) -> Ast {
+    ) -> AST {
         let mut parser = Self {
             source,
             lexer: Lexer::new(source),
             interner,
-            ast: Ast {
+            ast: AST {
                 file_id,
                 diagnostics: Vec::new(),
                 items: Vec::new(),
@@ -2551,7 +2575,7 @@ mod tests {
     struct TestCase {
         interner: StringInterner,
         files: Files,
-        ast: Ast,
+        ast: AST,
     }
 
     impl<'case> TestCase {

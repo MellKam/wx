@@ -1,0 +1,118 @@
+---
+source: crates/wx-compiler-new/src/tir.rs
+assertion_line: 3905
+expression: case.tir
+---
+file_id: 0
+functions:
+  - name:
+      inner: 1
+      span:
+        start: 10
+        end: 13
+    params:
+      - mut_span: ~
+        name:
+          inner: 3
+          span:
+            start: 14
+            end: 15
+        ty:
+          inner: I32
+          span:
+            start: 17
+            end: 20
+      - mut_span: ~
+        name:
+          inner: 4
+          span:
+            start: 22
+            end: 23
+        ty:
+          inner: I32
+          span:
+            start: 25
+            end: 28
+    result:
+      inner: I32
+      span:
+        start: 33
+        end: 36
+    stack:
+      scopes:
+        - kind: Block
+          label: ~
+          parent: ~
+          locals:
+            - name:
+                inner: 3
+                span:
+                  start: 14
+                  end: 15
+              ty: I32
+              mut_span: ~
+              accesses:
+                - span:
+                    start: 39
+                    end: 40
+                  kind: Read
+            - name:
+                inner: 4
+                span:
+                  start: 22
+                  end: 23
+              ty: I32
+              mut_span: ~
+              accesses:
+                - span:
+                    start: 43
+                    end: 44
+                  kind: Read
+          inferred_type: I32
+          expected_type: I32
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions: []
+          result:
+            kind:
+              Binary:
+                operator:
+                  inner: Add
+                  span:
+                    start: 41
+                    end: 42
+                left:
+                  kind:
+                    Local:
+                      scope_index: 0
+                      local_index: 0
+                  ty: I32
+                  span:
+                    start: 39
+                    end: 40
+                right:
+                  kind:
+                    Local:
+                      scope_index: 0
+                      local_index: 1
+                  ty: I32
+                  span:
+                    start: 43
+                    end: 44
+            ty: I32
+            span:
+              start: 39
+              end: 44
+      ty: I32
+      span:
+        start: 37
+        end: 46
+    accesses: []
+enums: []
+globals: []
+exports:
+  - Function:
+      func_index: 0
+diagnostics: []

@@ -33,7 +33,7 @@ impl Builder {
         newlines.saturating_sub(1).min(1)
     }
 
-    fn build(ast: &Ast, interner: &StringInterner, source: &str) -> Node {
+    fn build(ast: &AST, interner: &StringInterner, source: &str) -> Node {
         let mut items = Vec::new();
         for item in ast.items.iter() {
             items.push(match &item.inner {
@@ -467,7 +467,7 @@ impl Renderer {
 }
 
 pub fn format(
-    ast: &Ast,
+    ast: &AST,
     interner: &StringInterner,
     source: &str,
     config: RendererConfig,
@@ -487,7 +487,7 @@ mod tests {
     struct TestCase {
         interner: StringInterner,
         files: Files,
-        ast: Ast,
+        ast: AST,
     }
 
     impl<'case> TestCase {
