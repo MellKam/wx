@@ -1,0 +1,215 @@
+(* 
+  This grammar does not encode operator precedence. Instead, it is simplified for readability, making the structure easier to follow.
+*)
+
+digit      = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+integer    = digit , { digit } ;
+float      = integer , "." , integer ;
+
+line_comment = "//" , { ? any character except newline ? } ;
+skip         = { " " | "\t" | "\r" | "\n" | line_comment } ;
+
+(* grouping *)
+open_paren  = "(" , skip ;
+close_paren = ")" , skip ;
+open_brace  = "{" , skip ;
+close_brace = "}" , skip ;
+
+(* separators *)
+colon       = ":" , ( ? not ":" ? ) , skip ;
+colon_colon = "::" , skip ;
+semi_colon  = ";" , skip ;
+comma       = "," , skip ;
+arrow       = "->" , skip ;
+
+(* operators *)
+eq          = "=" , ( ? not "=" ? ) , skip ;
+eq_eq       = "==" , skip ;
+bang        = "!" , ( ? not "=" ? ) , skip ;
+bang_eq     = "!=" , skip ;
+left_shift  = "<<" , skip ;
+lt_eq       = "<=" , skip ;
+lt          = "<" , ( ? not ("=" | "<") ? ) , skip ;
+right_shift = ">>" , skip ;
+gt_eq       = ">=" , skip ;
+gt          = ">" , ( ? not "=" ? ) , skip ;
+plus        = "+" , ( ? not "=" ? ) , skip ;
+plus_eq     = "+=" , skip ;
+minus       = "-" , ( ? not "=" ? ) , skip ;
+minus_eq    = "-=" , skip ;
+star        = "*" , ( ? not "=" ? ) , skip ;
+star_eq     = "*=" , skip ;
+slash       = "/" , ( ? not "=" ? ) , skip ;
+slash_eq    = "/=" , skip ;
+percent     = "%" , ( ? not "=" ? ) , skip ;
+percent_eq  = "%=" , skip ;
+or          = "||" , skip ;
+bit_or      = "|" , ( ? not "|" ? ) , skip ;
+and         = "&&" , skip ;
+bit_and     = "&" , ( ? not "&" ? ) , skip ;
+caret       = "^" , skip ;
+
+end_of_word = ( ? not [a-zA-Z0-9_] ? ) , skip ;
+
+(* keywords *)
+keyword_local       = "local" , end_of_word ;
+keyword_mut         = "mut" , end_of_word ;
+keyword_global      = "global" , end_of_word ;
+keyword_fn          = "fn" , end_of_word ;
+keyword_if          = "if" , end_of_word ;
+keyword_else        = "else" , end_of_word ;
+keyword_loop        = "loop" , end_of_word ;
+keyword_return      = "return" , end_of_word ;
+keyword_break       = "break" , end_of_word ;
+keyword_continue    = "continue" , end_of_word ;
+keyword_true        = "true" , end_of_word ;
+keyword_false       = "false" , end_of_word ;
+keyword_enum        = "enum" , end_of_word ;
+keyword_as          = "as" , end_of_word ;
+keyword_unreachable = "unreachable" , end_of_word ;
+keyword_export      = "export" , end_of_word ;
+keyword_placeholder = "_" , end_of_word ;
+
+keyword =
+      keyword_local
+    | keyword_global
+    | keyword_fn
+    | keyword_if
+    | keyword_else
+    | keyword_loop
+    | keyword_return
+    | keyword_break
+    | keyword_continue
+    | keyword_true
+    | keyword_false
+    | keyword_enum
+    | keyword_as
+    | keyword_unreachable
+    | keyword_export ;
+
+letter     = "A" … "Z" | "a" … "z" ;
+identifier = ( letter | "_" ) , { letter | digit | "_" } , skip ;
+(* Note: Identifiers must not be keywords. *)
+
+(* types *)
+type_expression =
+      identifier
+    | keyword_fn , open_paren ,
+      [ type_expression , { comma , type_expression } , [ comma ] ] ,
+      close_paren , arrow , type_expression ;
+
+(* expressions *)
+expression =
+      keyword_true
+    | keyword_false
+    | keyword_unreachable
+    | float
+    | integer
+    | grouping_expression
+    | assignment_expr
+    | binary_expr
+    | block_expression
+    | loop_expression
+    | if_expression
+    | label_expression
+    | break_expression
+    | continue_expression
+    | return_expression
+    | identifier ;
+
+assignment_op =
+      eq
+    | plus_eq
+    | minus_eq
+    | star_eq
+    | slash_eq
+    | percent_eq ;
+
+binary_op =
+      eq_eq
+    | bang_eq
+    | lt_eq
+    | lt
+    | gt_eq
+    | gt
+    | bit_and
+    | caret
+    | bit_or
+    | or
+    | and
+    | left_shift
+    | right_shift
+    | plus
+    | minus
+    | star
+    | slash
+    | percent ;
+
+binary_expr =
+      expression , binary_op , expression
+    | ( identifier | keyword_placeholder ) , assignment_op , expression ;
+
+unary_expr          = ( bang | minus ) , expression ;
+cast_expr           = expression , keyword_as , type_expression ;
+call_expr           = expression , open_paren ,
+                      [ expression , { comma , expression } , [ comma ] ] ,
+                      close_paren ;
+member_expr         = expression , colon_colon , identifier ;
+grouping_expression = open_paren , expression , close_paren ;
+return_expression   = keyword_return , [ expression ] ;
+
+(* statements *)
+statement =
+      expression
+    | keyword_local , [ keyword_mut ] , identifier ,
+      [ colon , type_expression ] , eq , expression ;
+
+(* control structures *)
+block_expression =
+    open_brace , { statement , semi_colon } , [ expression ] , close_brace ;
+
+loop_expression = keyword_loop , block_expression ;
+
+if_expression =
+    keyword_if , expression , block_expression ,
+    [ keyword_else , block_expression ] ;
+
+labelled_expression = block_expression | loop_expression | if_expression ;
+label_expression    = identifier , colon , labelled_expression ;
+
+break_expression    = keyword_break , [ colon , identifier ] , [ expression ] ;
+continue_expression = keyword_continue , [ colon , identifier ] ;
+
+(* functions and items *)
+function_parameter =
+    identifier , colon , type_expression ;
+
+function_definition_item =
+    keyword_fn , identifier , open_paren ,
+    [ function_parameter , { comma , function_parameter } , [ comma ] ] ,
+    close_paren , arrow , type_expression , block_expression ;
+
+global_definition_item =
+    keyword_global , [ keyword_mut ] , identifier ,
+    colon , type_expression , eq , expression , semi_colon ;
+
+export_modifier_item =
+    keyword_export , ( function_definition_item | global_definition_item ) ;
+
+enum_variant =
+    identifier , eq , integer ;
+
+enum_definition_item =
+    keyword_enum , identifier , colon , type_expression ,
+    open_brace ,
+    [ enum_variant , { comma , enum_variant } , [ comma ] ] ,
+    close_brace ;
+
+item =
+      function_definition_item
+    | global_definition_item
+    | export_modifier_item
+    | enum_definition_item ;
+
+EOF     = ( ? not any character ? ) ;
+program = skip , { item } , EOF ;
