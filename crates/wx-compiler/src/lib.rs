@@ -1,9 +1,5 @@
 pub mod ast;
-pub mod files;
-pub mod hir;
+pub mod codegen;
+pub mod fmt;
 pub mod mir;
-pub mod span;
-pub mod wasm;
-
-// #[cfg(test)]
-// mod tests;
+pub mod tir;

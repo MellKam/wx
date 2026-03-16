@@ -1,0 +1,101 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "WX",
+	"patterns": [
+		{
+			"include": "#comments"
+		},
+		{
+			"include": "#keywords"
+		},
+		{
+			"include": "#types"
+		},
+		{
+			"include": "#numbers"
+		},
+		{
+			"include": "#strings"
+		},
+		{
+			"include": "#functions"
+		},
+		{
+			"include": "#identifiers"
+		}
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.line.double-slash.wx",
+					"match": "//.*$"
+				}
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{
+					"name": "keyword.control.wx",
+					"match": "\\b(fn|local|mut|if|else|loop|break|return|continue|export|enum|global)\\b"
+				},
+				{
+					"name": "constant.language.wx",
+					"match": "\\b(true|false)\\b"
+				}
+			]
+		},
+		"types": {
+			"patterns": [
+				{
+					"name": "storage.type.wx",
+					"match": "\\b(i32|i64|f32|f64|u32|u64|bool)\\b"
+				}
+			]
+		},
+		"numbers": {
+			"patterns": [
+				{
+					"name": "constant.numeric.float.wx",
+					"match": "\\b\\d+\\.\\d+\\b"
+				},
+				{
+					"name": "constant.numeric.integer.wx",
+					"match": "\\b\\d+\\b"
+				}
+			]
+		},
+		"strings": {
+			"patterns": [
+				{
+					"name": "string.quoted.double.wx",
+					"begin": "\"",
+					"end": "\"",
+					"patterns": [
+						{
+							"name": "constant.character.escape.wx",
+							"match": "\\\\."
+						}
+					]
+				}
+			]
+		},
+		"functions": {
+			"patterns": [
+				{
+					"name": "entity.name.function.wx",
+					"match": "\\b([a-zA-Z_]\\w*)\\s*(?=\\()"
+				}
+			]
+		},
+		"identifiers": {
+			"patterns": [
+				{
+					"name": "variable.other.wx",
+					"match": "\\b[a-zA-Z_]\\w*\\b"
+				}
+			]
+		}
+	},
+	"scopeName": "source.wx"
+}

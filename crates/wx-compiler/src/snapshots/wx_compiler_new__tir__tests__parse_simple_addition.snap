@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler-new/src/tir.rs
-assertion_line: 3905
 expression: case.tir
 ---
 file_id: 0

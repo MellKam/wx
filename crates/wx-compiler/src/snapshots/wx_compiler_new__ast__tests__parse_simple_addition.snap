@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler-new/src/ast.rs
-assertion_line: 2574
 expression: case.ast
 ---
 file_id: 0

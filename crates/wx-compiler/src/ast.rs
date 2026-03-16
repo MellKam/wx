@@ -1280,7 +1280,7 @@ pub enum Item {
     GlobalDefinition {
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
-        type_annotation: Annotated<Box<Spanned<TypeExpression>>>,
+        type_annotation: Option<Annotated<Box<Spanned<TypeExpression>>>>,
         value: Box<Spanned<Expression>>,
     },
     ExportModifier {
@@ -2506,10 +2506,16 @@ impl<'input> Parser<'input> {
             span: name_span,
         };
 
-        let colon_span = parser.next_expect(Token::Colon)?.span;
-        let type_annotation = Annotated {
-            prefix: colon_span,
-            inner: Box::new(parser.parse_type_expression()?),
+        let type_annotation = match parser.lexer.peek().inner {
+            Token::Colon => {
+                let colon_span = parser.lexer.next().span;
+                let type_expr = parser.parse_type_expression()?;
+                Some(Annotated {
+                    prefix: colon_span,
+                    inner: Box::new(type_expr),
+                })
+            }
+            _ => None,
         };
 
         let _ = parser.next_expect(Token::Eq)?;

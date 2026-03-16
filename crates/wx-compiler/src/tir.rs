@@ -312,10 +312,16 @@ pub struct Function {
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ExportItem {
-    Function { func_index: u32 },
-    Global { global_index: u32 },
+    Function {
+        name: Spanned<SymbolU32>,
+        func_index: u32,
+    },
+    Global {
+        name: Spanned<SymbolU32>,
+        global_index: u32,
+    },
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -642,6 +648,7 @@ pub enum DiagnosticCode {
     CannotMutateImmutable,
     InvalidAssignmentTarget,
     ComparisonTypeAnnotationRequired,
+    NonConstantGlobalInitializer,
 }
 
 impl DiagnosticCode {
@@ -662,6 +669,7 @@ impl DiagnosticCode {
             DiagnosticCode::BreakOutsideOfLoop => "E1012",
             DiagnosticCode::InvalidAssignmentTarget => "E1013",
             DiagnosticCode::ComparisonTypeAnnotationRequired => "E1014",
+            DiagnosticCode::NonConstantGlobalInitializer => "E1015",
 
             DiagnosticCode::CannotMutateImmutable => "W1000",
             DiagnosticCode::UnusedVariable => "W1001",
@@ -702,6 +710,20 @@ impl DuplicateDefinitionDiagnostic<'_> {
                 "`{}` must be defined only once in the {} namespace of this module",
                 self.name, namespace
             ))
+    }
+}
+
+struct NonConstantGlobalInitializerDiagnostic {
+    file_id: FileId,
+    span: TextSpan,
+}
+
+impl NonConstantGlobalInitializerDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::NonConstantGlobalInitializer.code())
+            .with_message("global variable initializers can only contain constant expressions")
+            .with_label(Label::primary(self.file_id, self.span))
     }
 }
 
@@ -1115,7 +1137,7 @@ impl Builder<'_, '_> {
                                 let global = &self.global.globals[global_index as usize];
                                 global.name.span
                             }
-                            _ => unimplemented!(),
+                            _ => unreachable!(),
                         };
 
                         self.diagnostics.push(
@@ -1152,12 +1174,109 @@ impl Builder<'_, '_> {
                 });
                 Ok(GlobalValue::Function { func_index })
             }
-            ast::Item::GlobalDefinition { .. } => unimplemented!(),
-            ast::Item::ExportModifier { item, .. } => {
+            ast::Item::GlobalDefinition {
+                mut_span,
+                name,
+                type_annotation,
+                value,
+            } => {
+                match self
+                    .global
+                    .symbol_lookup
+                    .get(&(SymbolNamespace::Value, name.inner))
+                    .cloned()
+                {
+                    Some(first_definition) => {
+                        let name_str = self.global.interner.resolve(name.inner).unwrap();
+                        let first_definition_span = match first_definition {
+                            GlobalValue::Function { func_index } => {
+                                let func = &self.global.function_meta[func_index as usize];
+                                func.name.span
+                            }
+                            GlobalValue::Global { global_index } => {
+                                let global = &self.global.globals[global_index as usize];
+                                global.name.span
+                            }
+                            GlobalValue::EnumVariant { .. } | GlobalValue::Enum { .. } => todo!(),
+                            _ => unreachable!(),
+                        };
+
+                        self.diagnostics.push(
+                            DuplicateDefinitionDiagnostic {
+                                file_id: self.ast.file_id,
+                                name: name_str,
+                                namespace: SymbolNamespace::Value,
+                                first_definition: first_definition_span,
+                                second_definition: name.span,
+                            }
+                            .report(),
+                        );
+
+                        return Err(());
+                    }
+                    None => {}
+                };
+
+                // Resolve the type
+                let (ty, ty_span) = match type_annotation {
+                    Some(type_ann) => match self.global.resolve_type(&type_ann.inner.inner) {
+                        Ok(ty) => (ty, type_ann.inner.span),
+                        Err(_) => {
+                            // Type resolution error - still register the global with Error type
+                            (Type::Error, type_ann.inner.span)
+                        }
+                    },
+                    None => {
+                        self.diagnostics.push(
+                            TypeAnnotationRequiredDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: name.span,
+                            }
+                            .report(),
+                        );
+                        // Use Error type but still register the global
+                        (Type::Error, name.span)
+                    }
+                };
+
+                let global_index = self.global.globals.len() as u32;
+                self.global.symbol_lookup.insert(
+                    (SymbolNamespace::Value, name.inner),
+                    GlobalValue::Global { global_index },
+                );
+
+                // Add a placeholder global - the value will be built in build_item
+                self.global.globals.push(Global {
+                    name: name.clone(),
+                    ty: ast::Spanned {
+                        inner: ty,
+                        span: ty_span,
+                    },
+                    mut_span: mut_span.clone(),
+                    value: Box::new(Expression {
+                        kind: ExprKind::Error,
+                        ty: Type::Error,
+                        span: value.span,
+                    }),
+                    accesses: Vec::new(),
+                });
+
+                Ok(GlobalValue::Global { global_index })
+            }
+            ast::Item::ExportModifier { item, alias } => {
                 let global_value = self.define_item(&item.inner)?;
+                let alias = alias.clone();
                 let export_item = match global_value {
-                    GlobalValue::Function { func_index } => ExportItem::Function { func_index },
-                    GlobalValue::Global { global_index } => ExportItem::Global { global_index },
+                    GlobalValue::Function { func_index } => ExportItem::Function {
+                        func_index,
+                        name: alias
+                            .unwrap_or(self.global.function_meta[func_index as usize].name.clone()),
+                    },
+                    GlobalValue::Global { global_index } => ExportItem::Global {
+                        global_index,
+                        name: alias
+                            .unwrap_or(self.global.globals[global_index as usize].name.clone()),
+                    },
                     _ => unreachable!(),
                 };
                 self.global.exports.push(export_item);
@@ -1174,8 +1293,151 @@ impl Builder<'_, '_> {
 
                 Ok(())
             }
-            ast::Item::GlobalDefinition { .. } => Ok(()),
+            ast::Item::GlobalDefinition { name, value, .. } => {
+                let global_index = match self.global.resolve_value(name.inner) {
+                    Some(GlobalValue::Global { global_index }) => global_index,
+                    _ => return Err(()),
+                };
+
+                // Build the constant value expression
+                let global_ty = self.global.globals[global_index as usize].ty.inner;
+                let value_expr = self.build_const_expression(value, global_ty)?;
+
+                // Verify the value type matches the declared type
+                match value_expr.ty {
+                    Type::Unknown => {
+                        self.diagnostics.push(
+                            TypeAnnotationRequiredDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: value.span,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
+                    ty if !ty.coercible_to(global_ty) => {
+                        self.diagnostics.push(
+                            TypeMistmatchDiagnostic {
+                                file_id: self.ast.file_id,
+                                expected_type: global_ty,
+                                actual_type: ty,
+                                span: value.span,
+                            }
+                            .report(&self.global),
+                        );
+                        return Err(());
+                    }
+                    _ => {}
+                }
+
+                // Update the global with the actual value
+                self.global.globals[global_index as usize].value = Box::new(value_expr);
+
+                Ok(())
+            }
             ast::Item::ExportModifier { item, .. } => self.build_item(&item.inner),
+        }
+    }
+
+    fn build_const_expression(
+        &mut self,
+        expr: &ast::Spanned<ast::Expression>,
+        expected_type: Type,
+    ) -> Result<Expression, ()> {
+        match &expr.inner {
+            ast::Expression::Int { value } => Ok(Expression {
+                kind: ExprKind::Int { value: *value },
+                ty: expected_type,
+                span: expr.span,
+            }),
+            ast::Expression::Float { value } => Ok(Expression {
+                kind: ExprKind::Float { value: *value },
+                ty: expected_type,
+                span: expr.span,
+            }),
+            ast::Expression::Identifier { symbol } => {
+                // Allow references to global constants like true/false
+                match self.global.resolve_value(*symbol) {
+                    Some(GlobalValue::True) => Ok(Expression {
+                        kind: ExprKind::Bool { value: true },
+                        ty: Type::Bool,
+                        span: expr.span,
+                    }),
+                    Some(GlobalValue::False) => Ok(Expression {
+                        kind: ExprKind::Bool { value: false },
+                        ty: Type::Bool,
+                        span: expr.span,
+                    }),
+                    _ => {
+                        self.diagnostics.push(
+                            NonConstantGlobalInitializerDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
+            }
+            ast::Expression::Unary { operator, operand } => {
+                let operand_expr = self.build_const_expression(operand, expected_type)?;
+
+                Ok(Expression {
+                    kind: ExprKind::Unary {
+                        operator: operator.clone(),
+                        operand: Box::new(operand_expr),
+                    },
+                    ty: expected_type,
+                    span: expr.span,
+                })
+            }
+            ast::Expression::Binary {
+                left,
+                right,
+                operator,
+            } => {
+                let left_expr = self.build_const_expression(left, expected_type)?;
+                let right_expr = self.build_const_expression(right, expected_type)?;
+
+                let result_ty = match operator.inner {
+                    operator if operator.is_comparison() || operator.is_logical() => Type::Bool,
+                    _ => left_expr.ty,
+                };
+
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator: operator.clone(),
+                        left: Box::new(left_expr),
+                        right: Box::new(right_expr),
+                    },
+                    ty: result_ty,
+                    span: expr.span,
+                })
+            }
+            ast::Expression::Grouping { value } => {
+                self.build_const_expression(&value.inner, expected_type)
+            }
+            ast::Expression::Cast { value, ty } => {
+                let cast_type = self.global.resolve_type(&ty.inner)?;
+                let value_expr = self.build_const_expression(value, cast_type)?;
+
+                Ok(Expression {
+                    kind: value_expr.kind,
+                    ty: cast_type,
+                    span: expr.span,
+                })
+            }
+            _ => {
+                self.diagnostics.push(
+                    NonConstantGlobalInitializerDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: expr.span,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
         }
     }
 
@@ -1870,8 +2132,8 @@ impl Builder<'_, '_> {
             }
             None => match then_block.ty {
                 Type::Unit | Type::Never => (None, Type::Unit),
-                ty => panic!(
-                    "if you want to return a value from if-else, you must provide an else block {ty:?}"
+                _ => panic!(
+                    "if you want to return a value from if-else, you must provide an else block"
                 ),
             },
         };
@@ -1910,6 +2172,10 @@ impl Builder<'_, '_> {
                 )?;
                 match value.ty {
                     Type::Unknown => self.coerce_untyped_expr(&mut value, cast_type)?,
+                    ty if ty == cast_type => {
+                        // TODO: report redundant cast
+                    }
+                    Type::Bool if cast_type.is_integer() => value.ty = cast_type,
                     ty if ty != cast_type => {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
@@ -1920,6 +2186,8 @@ impl Builder<'_, '_> {
                             }
                             .report(&self.global),
                         );
+                        // Set the type to the cast target to avoid cascading errors
+                        value.ty = cast_type;
                     }
                     _ => {}
                 };
@@ -2306,6 +2574,9 @@ impl Builder<'_, '_> {
             },
         )?;
         match left.ty {
+            Type::Error => {
+                // Error already reported, allow operation to continue
+            }
             Type::Unknown => {
                 self.diagnostics.push(
                     TypeAnnotationRequiredDiagnostic {
@@ -2337,6 +2608,9 @@ impl Builder<'_, '_> {
             },
         )?;
         match right.ty {
+            Type::Error => {
+                // Error already reported, allow operation to continue
+            }
             Type::Unknown => {
                 self.diagnostics.push(
                     TypeAnnotationRequiredDiagnostic {
@@ -2402,6 +2676,16 @@ impl Builder<'_, '_> {
         )?;
 
         match (left.ty, right.ty) {
+            // Allow operations with Error type (error already reported elsewhere)
+            (Type::Error, _) | (_, Type::Error) => Ok(Expression {
+                kind: ExprKind::Binary {
+                    operator,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                ty: access_ctx.expected_type.unwrap_or(Type::Error),
+                span: expr.span,
+            }),
             (Type::Unknown, Type::Unknown) => match access_ctx.expected_type {
                 Some(expected_type) => {
                     self.coerce_untyped_expr(&mut left, expected_type)?;
@@ -2568,6 +2852,16 @@ impl Builder<'_, '_> {
         )?;
 
         match (left.ty, right.ty) {
+            // Allow operations with Error type (error already reported elsewhere)
+            (Type::Error, _) | (_, Type::Error) => Ok(Expression {
+                kind: ExprKind::Binary {
+                    operator,
+                    left: Box::new(left),
+                    right: Box::new(right),
+                },
+                ty: Type::Bool,
+                span: expr.span,
+            }),
             (Type::Unknown, Type::Unknown) => {
                 self.diagnostics.push(
                     ComparisonTypeAnnotationRequiredDiagnostic {
@@ -2932,6 +3226,26 @@ impl Builder<'_, '_> {
                         return Err(());
                     }
                 };
+                // Allow operations with Error type (error already reported elsewhere)
+                if local.ty == Type::Error {
+                    let right = self.build_expression(
+                        ctx,
+                        right,
+                        AccessContext {
+                            expected_type: Some(Type::Error),
+                            access_kind: AccessKind::Read,
+                        },
+                    )?;
+                    return Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        ty: Type::Unit,
+                        span: expr.span,
+                    });
+                }
                 if !local.ty.is_primitive() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
@@ -3510,7 +3824,9 @@ impl Builder<'_, '_> {
                     }
                     .report(),
                 );
-                return Err(());
+                // Use Error type for recovery - this allows later references to work
+                // without cascading "undeclared identifier" errors
+                Type::Error
             }
             (ty, None) => ty,
             (Type::Unknown, Some(expected_type)) => {

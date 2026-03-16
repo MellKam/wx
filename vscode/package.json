@@ -30,7 +30,39 @@
 				],
 				"configuration": "./language-configuration.json"
 			}
-		]
+		],
+		"grammars": [
+			{
+				"language": "wx",
+				"scopeName": "source.wx",
+				"path": "./syntaxes/wx.tmLanguage.json"
+			}
+		],
+		"configuration": {
+			"type": "object",
+			"title": "WX Language Configuration",
+			"properties": {
+				"wx.formatOnSave": {
+					"type": "boolean",
+					"default": true,
+					"description": "Automatically format WX files on save"
+				},
+				"wx.formatter.indentSize": {
+					"type": "number",
+					"default": 2,
+					"description": "Number of spaces for indentation",
+					"minimum": 1,
+					"maximum": 8
+				},
+				"wx.formatter.maxWidth": {
+					"type": "number",
+					"default": 100,
+					"description": "Maximum line width for formatting",
+					"minimum": 40,
+					"maximum": 200
+				}
+			}
+		}
 	},
 	"scripts": {
 		"vscode:prepublish": "deno run build",

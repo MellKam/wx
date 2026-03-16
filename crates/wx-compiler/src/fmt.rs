@@ -35,7 +35,13 @@ impl Builder {
 
     fn build(ast: &AST, interner: &StringInterner, source: &str) -> Node {
         let mut items = Vec::new();
-        for item in ast.items.iter() {
+        for (index, item) in ast.items.iter().enumerate() {
+            // Add spacing between top-level items
+            if index > 0 {
+                items.push(Node::HardLine);
+                items.push(Node::HardLine);
+            }
+
             items.push(match &item.inner {
                 Item::FunctionDefinition { signature, block } => {
                     Self::build_function_definition(interner, source, signature, &block.inner)
@@ -255,6 +261,48 @@ impl Builder {
                 Node::Concat(items)
             }
             Expression::Int { value } => Node::Text(value.to_string()),
+            Expression::Float { value } => Node::Text(value.to_string()),
+            Expression::Grouping { value } => {
+                let mut items = Vec::new();
+                items.push(Node::Text("(".to_string()));
+                items.push(Self::build_expression(interner, source, &value.inner.inner));
+                items.push(Node::Text(")".to_string()));
+                Node::Concat(items)
+            }
+            Expression::Call { callee, arguments } => {
+                let mut items = Vec::new();
+                items.push(Self::build_expression(interner, source, &callee.inner));
+                items.push(Node::Text("(".to_string()));
+
+                for (index, arg) in arguments.inner.iter().enumerate() {
+                    items.push(Self::build_expression(interner, source, &arg.inner.inner));
+                    if index + 1 < arguments.inner.len() {
+                        items.push(Node::Text(", ".to_string()));
+                    }
+                }
+
+                items.push(Node::Text(")".to_string()));
+                Node::Concat(items)
+            }
+            Expression::Label { label, block } => {
+                let mut items = Vec::new();
+                items.push(Node::Text(format!(
+                    "{}: ",
+                    interner.resolve(label.inner).unwrap()
+                )));
+                items.push(Self::build_expression(interner, source, &block.inner));
+                Node::Concat(items)
+            }
+            Expression::Namespace { namespace, member } => {
+                let mut items = Vec::new();
+                items.push(Self::build_type_expression(interner, namespace));
+                items.push(Node::Text("::".to_string()));
+                items.push(Node::Text(
+                    interner.resolve(member.inner).unwrap().to_string(),
+                ));
+                Node::Concat(items)
+            }
+            Expression::Error => Node::Text("/* error */".to_string()),
             Expression::Unary { operator, operand } => {
                 let mut items = Vec::new();
                 items.push(Node::Text(operator.inner.as_str().to_string()));
@@ -262,7 +310,6 @@ impl Builder {
 
                 Node::Concat(items)
             }
-            _ => todo!(),
         }
     }
 
@@ -472,7 +519,11 @@ pub fn format(
     source: &str,
     config: RendererConfig,
 ) -> String {
-    let root = Builder::build(ast, interner, source);
+    let mut root_items = Vec::new();
+    root_items.push(Builder::build(ast, interner, source));
+    root_items.push(Node::HardLine);
+
+    let root = Node::Concat(root_items);
     let renderer = Renderer::new(config);
     renderer.render(&root)
 }

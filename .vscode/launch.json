@@ -5,9 +5,9 @@
 			"name": "Run Extension",
 			"type": "extensionHost",
 			"request": "launch",
-			"cwd": "${workspaceFolder}/wx-vscode",
-			"args": ["--extensionDevelopmentPath=${workspaceFolder}/wx-vscode"],
-			"outFiles": ["${workspaceFolder}/wx-vscode/out/**/*.js"],
+			"cwd": "${workspaceFolder}/vscode",
+			"args": ["--extensionDevelopmentPath=${workspaceFolder}/vscode"],
+			"outFiles": ["${workspaceFolder}/vscode/out/**/*.js"],
 			"preLaunchTask": "deno: watch"
 		}
 	]

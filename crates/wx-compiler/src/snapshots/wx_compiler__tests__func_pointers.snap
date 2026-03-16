@@ -1,6 +1,0 @@
----
-source: crates/wx-compiler/src/tests.rs
-expression: bytecode.clone()
-extension: wasm
-snapshot_kind: binary
----
