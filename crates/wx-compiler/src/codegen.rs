@@ -761,10 +761,10 @@ impl Builder {
     fn build_global_expr(&self, global: &mir::Global) -> Expression {
         match global.value.kind {
             mir::ExprKind::Int { value } => match global.ty {
-                mir::Type::I32 => Expression::I32Const {
+                mir::Type::I32 | mir::Type::U32 => Expression::I32Const {
                     value: value as i32,
                 },
-                mir::Type::I64 => Expression::I64Const { value },
+                mir::Type::I64 | mir::Type::U64 => Expression::I64Const { value },
                 _ => unreachable!(),
             },
             mir::ExprKind::Float { value } => match global.ty {

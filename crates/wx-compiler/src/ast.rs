@@ -249,35 +249,60 @@ impl std::fmt::Display for Token {
     }
 }
 
-pub enum DiagnosticCode {
-    UnknownToken,
-    UnexpectedToken,
-    MissingSeparator,
-    UnclosedDelimiter,
-    InvalidLiteral,
-    IncompleteExpression,
-    ChainedComparison,
-    ReservedIdentifier,
-    InvalidItem,
-    MissingInitializer,
-    MissingTypeAnnotation,
+macro_rules! define_diagnostic_codes {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $variant:ident => $code:literal,
+            )*
+        }
+    ) => {
+        $(#[$meta])*
+        $vis enum $name {
+            $($variant,)*
+        }
+
+        impl $name {
+            pub const fn code(&self) -> &'static str {
+                match self {
+                    $(Self::$variant => $code,)*
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = ();
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $($code => Ok(Self::$variant),)*
+                    _ => Err(()),
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.code())
+            }
+        }
+    };
 }
 
-impl DiagnosticCode {
-    const fn code(self) -> &'static str {
-        match self {
-            DiagnosticCode::UnknownToken => "E0001",
-            DiagnosticCode::UnexpectedToken => "E0002",
-            DiagnosticCode::MissingSeparator => "E0003",
-            DiagnosticCode::UnclosedDelimiter => "E0004",
-            DiagnosticCode::InvalidLiteral => "E0005",
-            DiagnosticCode::IncompleteExpression => "E0006",
-            DiagnosticCode::ChainedComparison => "E0007",
-            DiagnosticCode::ReservedIdentifier => "E0008",
-            DiagnosticCode::InvalidItem => "E0009",
-            DiagnosticCode::MissingInitializer => "E0010",
-            DiagnosticCode::MissingTypeAnnotation => "E0011",
-        }
+define_diagnostic_codes! {
+    pub enum DiagnosticCode {
+        UnknownToken => "E0001",
+        UnexpectedToken => "E0002",
+        MissingSeparator => "E0003",
+        UnclosedDelimiter => "E0004",
+        InvalidLiteral => "E0005",
+        IncompleteExpression => "E0006",
+        ChainedComparison => "E0007",
+        ReservedIdentifier => "E0008",
+        InvalidItem => "E0009",
+        MissingInitializer => "E0010",
+        MissingTypeAnnotation => "E0011",
     }
 }
 
@@ -1354,7 +1379,7 @@ impl From<BinaryOp> for BindingPower {
 }
 
 #[derive(Clone, Copy)]
-enum Keyword {
+pub enum Keyword {
     Export,
     Local,
     Global,

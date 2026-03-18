@@ -628,54 +628,72 @@ impl FunctionContext {
     }
 }
 
-pub enum DiagnosticCode {
-    DuplicateDefinition,
-    TypeMistmatch,
-    TypeAnnotationRequired,
-    UnusedVariable,
-    UnnecessaryMutability,
-    UnreachableCode,
-    UnusedValue,
-    IntegerLiteralOutOfRange,
-    IntegerLiteralForFloatType,
-    UnableToCoerce,
-    UndeclaredIdentifier,
-    BinaryOperatorCannotBeApplied,
-    CannotCallExpression,
-    UnaryOperatorCannotBeApplied,
-    UndeclaredLabel,
-    BreakOutsideOfLoop,
-    CannotMutateImmutable,
-    InvalidAssignmentTarget,
-    ComparisonTypeAnnotationRequired,
-    NonConstantGlobalInitializer,
+macro_rules! define_diagnostic_codes {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $variant:ident => $code:literal,
+            )*
+        }
+    ) => {
+        $(#[$meta])*
+        $vis enum $name {
+            $($variant,)*
+        }
+
+        impl $name {
+            pub const fn code(&self) -> &'static str {
+                match self {
+                    $(Self::$variant => $code,)*
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = ();
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $($code => Ok(Self::$variant),)*
+                    _ => Err(()),
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.code())
+            }
+        }
+    };
 }
 
-impl DiagnosticCode {
-    const fn code(self) -> &'static str {
-        match self {
-            DiagnosticCode::DuplicateDefinition => "E1000",
-            DiagnosticCode::TypeMistmatch => "E1001",
-            DiagnosticCode::TypeAnnotationRequired => "E1002",
-            DiagnosticCode::UnusedValue => "E1003",
-            DiagnosticCode::IntegerLiteralOutOfRange => "E1004",
-            DiagnosticCode::UnableToCoerce => "E1005",
-            DiagnosticCode::IntegerLiteralForFloatType => "E1006",
-            DiagnosticCode::UndeclaredIdentifier => "E1007",
-            DiagnosticCode::BinaryOperatorCannotBeApplied => "E1008",
-            DiagnosticCode::CannotCallExpression => "E1009",
-            DiagnosticCode::UnaryOperatorCannotBeApplied => "E1010",
-            DiagnosticCode::UndeclaredLabel => "E1011",
-            DiagnosticCode::BreakOutsideOfLoop => "E1012",
-            DiagnosticCode::InvalidAssignmentTarget => "E1013",
-            DiagnosticCode::ComparisonTypeAnnotationRequired => "E1014",
-            DiagnosticCode::NonConstantGlobalInitializer => "E1015",
-
-            DiagnosticCode::CannotMutateImmutable => "W1000",
-            DiagnosticCode::UnusedVariable => "W1001",
-            DiagnosticCode::UnnecessaryMutability => "W1002",
-            DiagnosticCode::UnreachableCode => "W1003", // Is this a warning or an error?
-        }
+define_diagnostic_codes! {
+    pub enum DiagnosticCode {
+        DuplicateDefinition => "E1000",
+        TypeMistmatch => "E1001",
+        TypeAnnotationRequired => "E1002",
+        UnusedValue => "E1003",
+        IntegerLiteralOutOfRange => "E1004",
+        UnableToCoerce => "E1005",
+        IntegerLiteralForFloatType => "E1006",
+        UndeclaredIdentifier => "E1007",
+        BinaryOperatorCannotBeApplied => "E1008",
+        CannotCallExpression => "E1009",
+        UnaryOperatorCannotBeApplied => "E1010",
+        UndeclaredLabel => "E1011",
+        BreakOutsideOfLoop => "E1012",
+        InvalidAssignmentTarget => "E1013",
+        ComparisonTypeAnnotationRequired => "E1014",
+        NonConstantGlobalInitializer => "E1015",
+        ArgumentCountMismatch => "E1016",
+        CannotExportMutableGlobal => "E1017",
+        CannotMutateImmutable => "W1000",
+        UnusedVariable => "W1001",
+        UnnecessaryMutability => "W1002",
+        UnreachableCode => "W1003",
+        UnusedItem => "W1004",
     }
 }
 
@@ -773,6 +791,36 @@ impl UnusedVariableDiagnostic {
         Diagnostic::warning()
             .with_code(DiagnosticCode::UnusedVariable.code())
             .with_message("unused variable")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+struct UnusedFunctionDiagnostic {
+    file_id: FileId,
+    name: String,
+    span: TextSpan,
+}
+
+impl UnusedFunctionDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::warning()
+            .with_code(DiagnosticCode::UnusedItem.code())
+            .with_message(format!("function `{}` is never used", self.name))
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+struct UnusedGlobalDiagnostic {
+    file_id: FileId,
+    name: String,
+    span: TextSpan,
+}
+
+impl UnusedGlobalDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::warning()
+            .with_code(DiagnosticCode::UnusedItem.code())
+            .with_message(format!("global variable `{}` is never used", self.name))
             .with_label(Label::primary(self.file_id, self.span))
     }
 }
@@ -1104,6 +1152,73 @@ impl ComparisonTypeAnnotationRequiredDiagnostic {
     }
 }
 
+struct ArgumentCountMismatchDiagnostic<'a> {
+    file_id: FileId,
+    expected_count: usize,
+    actual_count: usize,
+    param_types: &'a [Type],
+    call_span: TextSpan,
+    global: &'a GlobalContext<'a>,
+}
+
+impl ArgumentCountMismatchDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        let mut diagnostic = Diagnostic::error()
+            .with_code(DiagnosticCode::ArgumentCountMismatch.code())
+            .with_message(format!(
+                "this function takes {} {} but {} {} supplied",
+                self.expected_count,
+                if self.expected_count == 1 {
+                    "argument"
+                } else {
+                    "arguments"
+                },
+                self.actual_count,
+                if self.actual_count == 1 {
+                    "argument was"
+                } else {
+                    "arguments were"
+                },
+            ))
+            .with_label(Label::primary(self.file_id, self.call_span));
+
+        if self.actual_count < self.expected_count {
+            // Missing arguments
+            let missing_count = self.expected_count - self.actual_count;
+            let missing_types: Vec<String> = self.param_types[self.actual_count..]
+                .iter()
+                .map(|ty| self.global.display_type(*ty))
+                .collect();
+
+            if missing_count == 1 {
+                diagnostic = diagnostic.with_note(format!(
+                    "argument #{} of type `{}` is missing",
+                    self.actual_count + 1,
+                    missing_types[0]
+                ));
+            } else {
+                let types_str = missing_types.join("`, `");
+                diagnostic = diagnostic.with_note(format!(
+                    "{} arguments of type `{}` are missing",
+                    missing_count.to_string(),
+                    types_str
+                ));
+            }
+        } else {
+            // Extra arguments
+            let extra_count = self.actual_count - self.expected_count;
+            if extra_count == 1 {
+                diagnostic =
+                    diagnostic.with_note(format!("unexpected argument #{}", self.actual_count));
+            } else {
+                diagnostic = diagnostic.with_note(format!("{} unexpected arguments", extra_count));
+            }
+        }
+
+        diagnostic
+    }
+}
+
 struct Builder<'ast, 'interner> {
     ast: &'ast ast::AST,
     global: GlobalContext<'interner>,
@@ -1272,11 +1387,27 @@ impl Builder<'_, '_> {
                         name: alias
                             .unwrap_or(self.global.function_meta[func_index as usize].name.clone()),
                     },
-                    GlobalValue::Global { global_index } => ExportItem::Global {
-                        global_index,
-                        name: alias
-                            .unwrap_or(self.global.globals[global_index as usize].name.clone()),
-                    },
+                    GlobalValue::Global { global_index } => {
+                        let global = &self.global.globals[global_index as usize];
+                        
+                        // WebAssembly MVP limitation: exported globals must be immutable
+                        if global.mut_span.is_some() {
+                            self.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_code(DiagnosticCode::CannotExportMutableGlobal.code())
+                                    .with_message("cannot export mutable global")
+                                    .with_label(Label::primary(self.ast.file_id, global.name.span))
+                                    .with_note("WebAssembly exported globals must be immutable")
+                                    .with_note("Remove the 'mut' keyword to export this global, or remove the 'export' modifier")
+                            );
+                            return Err(());
+                        }
+                        
+                        ExportItem::Global {
+                            global_index,
+                            name: alias.unwrap_or(global.name.clone()),
+                        }
+                    }
                     _ => unreachable!(),
                 };
                 self.global.exports.push(export_item);
@@ -1666,12 +1797,73 @@ impl Builder<'_, '_> {
                     self.diagnostics.push(
                         UnnecessaryMutabilityDiagnostic {
                             file_id: self.ast.file_id,
-                            span: TextSpan::merge(mut_span, local.name.span),
+                            span: mut_span,
                         }
                         .report(),
                     );
                 }
                 _ => {}
+            }
+        }
+    }
+
+    fn report_unused_items(&mut self) {
+        use std::collections::HashSet;
+
+        // Collect exported function and global indices
+        let mut exported_functions = HashSet::new();
+        let mut exported_globals = HashSet::new();
+
+        for export in self.global.exports.iter() {
+            match export {
+                ExportItem::Function { func_index, .. } => {
+                    exported_functions.insert(*func_index);
+                }
+                ExportItem::Global { global_index, .. } => {
+                    exported_globals.insert(*global_index);
+                }
+            }
+        }
+
+        // Check for unused functions
+        for (func_index, func) in self.functions.iter().enumerate() {
+            let func_index = func_index as u32;
+            if !exported_functions.contains(&func_index) && func.accesses.is_empty() {
+                let name = self
+                    .global
+                    .interner
+                    .resolve(func.name.inner)
+                    .unwrap()
+                    .to_string();
+                self.diagnostics.push(
+                    UnusedFunctionDiagnostic {
+                        file_id: self.ast.file_id,
+                        name,
+                        span: func.name.span,
+                    }
+                    .report(),
+                );
+            }
+        }
+
+        // Check for unused globals
+        for (global_index, global) in self.global.globals.iter().enumerate() {
+            let global_index = global_index as u32;
+            if !exported_globals.contains(&global_index) && global.accesses.is_empty() {
+                let name = self
+                    .global
+                    .interner
+                    .resolve(global.name.inner)
+                    .unwrap()
+                    .to_string();
+                self.diagnostics.push(
+                    UnusedGlobalDiagnostic {
+                        file_id: self.ast.file_id,
+                        name,
+                        span: global.name.span,
+                    }
+                    .report(),
+                );
             }
         }
     }
@@ -1724,12 +1916,15 @@ impl Builder<'_, '_> {
             };
 
             match expr.ty {
-                Type::Unit => expressions.push(expr),
                 Type::Never => {
                     expressions.push(expr);
                     return BlockState::Exhaustive(expressions.into_boxed_slice());
                 }
-                _ => unreachable!(),
+                _ => {
+                    // Expression statement with unused value (already reported as warning)
+                    // Treat it as a Unit statement
+                    expressions.push(expr);
+                }
             }
         }
 
@@ -1819,6 +2014,10 @@ impl Builder<'_, '_> {
         )?;
         match value.ty {
             Type::Unit => Ok(value),
+            Type::Error => {
+                // Skip reporting unused value for error types, as the error has already been reported
+                Ok(value)
+            }
             Type::Never => {
                 let scope = ctx.frame.scopes.get_mut(ctx.scope_index as usize).unwrap();
                 scope.inferred_type = scope.inferred_type.or(Some(Type::Never));
@@ -3729,47 +3928,71 @@ impl Builder<'_, '_> {
             }
         };
 
+        let func_type = self
+            .global
+            .signatures
+            .get(signature_index as usize)
+            .unwrap()
+            .clone();
+
+        let expected_count = func_type.params().len();
+        let actual_count = ast_arguments.inner.len();
+
         let arguments: Box<_> = ast_arguments
             .inner
             .iter()
             .enumerate()
             .map(|(index, argument)| {
-                let func_type = self
-                    .global
-                    .signatures
-                    .get(signature_index as usize)
-                    .unwrap();
-                let expected_type = func_type.params().get(index).copied().unwrap();
+                let expected_type = func_type.params().get(index).copied();
 
                 let mut argument = self.build_expression(
                     ctx,
                     &argument.inner,
                     AccessContext {
-                        expected_type: Some(expected_type),
+                        expected_type,
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                match argument.ty {
-                    Type::Unknown => {
-                        self.coerce_untyped_expr(&mut argument, expected_type)?;
+
+                // Only do type checking if we have a valid parameter at this index
+                if let Some(expected_type) = expected_type {
+                    match argument.ty {
+                        Type::Unknown => {
+                            self.coerce_untyped_expr(&mut argument, expected_type)?;
+                        }
+                        ty if !ty.coercible_to(expected_type) => {
+                            self.diagnostics.push(
+                                TypeMistmatchDiagnostic {
+                                    file_id: self.ast.file_id,
+                                    expected_type,
+                                    actual_type: ty,
+                                    span: argument.span,
+                                }
+                                .report(&self.global),
+                            );
+                        }
+                        _ => {}
                     }
-                    ty if !ty.coercible_to(expected_type) => {
-                        self.diagnostics.push(
-                            TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                expected_type,
-                                actual_type: ty,
-                                span: argument.span,
-                            }
-                            .report(&self.global),
-                        );
-                    }
-                    _ => {}
                 }
 
                 Ok(argument)
             })
             .collect::<Result<_, _>>()?;
+
+        // Check argument count mismatch
+        if actual_count != expected_count {
+            self.diagnostics.push(
+                ArgumentCountMismatchDiagnostic {
+                    file_id: self.ast.file_id,
+                    expected_count,
+                    actual_count,
+                    param_types: func_type.params(),
+                    call_span: callee.span,
+                    global: &self.global,
+                }
+                .report(),
+            );
+        }
 
         Ok(Expression {
             kind: ExprKind::Call {
@@ -4160,6 +4383,8 @@ impl TIR {
                 Err(_) => continue,
             }
         }
+
+        builder.report_unused_items();
 
         let Builder {
             global,

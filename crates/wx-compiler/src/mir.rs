@@ -151,7 +151,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum Type {
     I32,

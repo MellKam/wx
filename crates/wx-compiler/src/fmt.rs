@@ -1,3 +1,5 @@
+use string_interner::symbol::SymbolU32;
+
 use crate::ast::*;
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
@@ -44,8 +46,21 @@ impl Builder {
 
             items.push(match &item.inner {
                 Item::FunctionDefinition { signature, block } => {
-                    Self::build_function_definition(interner, source, signature, &block.inner)
+                    Self::build_function_definition(interner, source, signature, block)
                 }
+                Item::GlobalDefinition {
+                    mut_span,
+                    name,
+                    type_annotation,
+                    value,
+                } => Self::build_global_definition(
+                    interner,
+                    source,
+                    *mut_span,
+                    name,
+                    type_annotation,
+                    value,
+                ),
                 Item::ExportModifier { item, .. } => {
                     let mut items = Vec::new();
                     items.push(Node::Text("export ".to_string()));
@@ -55,14 +70,28 @@ impl Builder {
                                 interner,
                                 source,
                                 signature,
-                                &block.inner,
+                                block,
                             ));
                         }
-                        _ => todo!(),
+                        Item::GlobalDefinition {
+                            mut_span,
+                            name,
+                            type_annotation,
+                            value,
+                        } => {
+                            items.push(Self::build_global_definition(
+                                interner,
+                                source,
+                                *mut_span,
+                                name,
+                                type_annotation,
+                                value,
+                            ));
+                        }
+                        Item::ExportModifier { .. } => unreachable!(),
                     }
                     Node::Concat(items)
                 }
-                _ => todo!(),
             });
         }
 
@@ -73,7 +102,7 @@ impl Builder {
         interner: &StringInterner,
         source: &str,
         signature: &FunctionSignature,
-        block: &Expression,
+        block: &Spanned<Expression>,
     ) -> Node {
         let mut items = Vec::new();
         items.push(Node::Text(format!(
@@ -125,8 +154,37 @@ impl Builder {
         Node::Group(Box::new(Node::Concat(items)))
     }
 
-    fn build_expression(interner: &StringInterner, source: &str, expression: &Expression) -> Node {
-        match expression {
+    fn build_global_definition(
+        interner: &StringInterner,
+        source: &str,
+        mut_span: Option<TextSpan>,
+        name: &Spanned<SymbolU32>,
+        type_annotation: &Option<Annotated<Box<Spanned<TypeExpression>>>>,
+        value: &Box<Spanned<Expression>>,
+    ) -> Node {
+        let mut items = Vec::new();
+        items.push(Node::Text(format!(
+            "global {}{}",
+            if mut_span.is_some() { "mut " } else { "" },
+            interner.resolve(name.inner).unwrap()
+        )));
+
+        if let Some(annotation) = type_annotation {
+            items.push(Node::Text(": ".to_string()));
+            items.push(Self::build_type_expression(
+                interner,
+                &annotation.inner.inner,
+            ));
+        }
+
+        items.push(Node::Text(" = ".to_string()));
+        items.push(Self::build_expression(interner, source, value));
+
+        Node::Concat(items)
+    }
+
+    fn build_expression(interner: &StringInterner, source: &str, expression: &Spanned<Expression>) -> Node {
+        match &expression.inner {
             Expression::Identifier { symbol } => {
                 Node::Text(interner.resolve(*symbol).unwrap().to_string())
             }
@@ -135,10 +193,10 @@ impl Builder {
                 operator,
                 right,
             } => Node::Concat(vec![
-                Self::build_expression(interner, source, &left.inner),
+                Self::build_expression(interner, source, left),
                 Node::SoftLine,
                 Node::Text(format!("{} ", operator.inner.as_str())),
-                Self::build_expression(interner, source, &right.inner),
+                Self::build_expression(interner, source, right),
             ]),
             Expression::Block { statements } => {
                 let mut items = Vec::new();
@@ -197,12 +255,12 @@ impl Builder {
             } => {
                 let mut items = Vec::new();
                 items.push(Node::Text("if ".to_string()));
-                items.push(Self::build_expression(interner, source, &condition.inner));
+                items.push(Self::build_expression(interner, source, condition));
                 items.push(Node::Text(" ".to_string()));
-                items.push(Self::build_expression(interner, source, &then_block.inner));
+                items.push(Self::build_expression(interner, source, then_block));
                 if let Some(else_block) = else_block {
                     items.push(Node::Text(" else ".to_string()));
-                    items.push(Self::build_expression(interner, source, &else_block.inner));
+                    items.push(Self::build_expression(interner, source, else_block));
                 }
 
                 Node::Group(Box::new(Node::Concat(items)))
@@ -210,7 +268,7 @@ impl Builder {
             Expression::Loop { block } => {
                 let mut items = Vec::new();
                 items.push(Node::Text("loop ".to_string()));
-                items.push(Self::build_expression(interner, source, &block.inner));
+                items.push(Self::build_expression(interner, source, block));
 
                 Node::Group(Box::new(Node::Concat(items)))
             }
@@ -225,7 +283,7 @@ impl Builder {
                 }
                 if let Some(value) = value {
                     items.push(Node::Text(" ".to_string()));
-                    items.push(Self::build_expression(interner, source, &value.inner));
+                    items.push(Self::build_expression(interner, source, value));
                 }
 
                 Node::Concat(items)
@@ -235,14 +293,14 @@ impl Builder {
                 items.push(Node::Text("return".to_string()));
                 if let Some(value) = value {
                     items.push(Node::Text(" ".to_string()));
-                    items.push(Self::build_expression(interner, source, &value.inner));
+                    items.push(Self::build_expression(interner, source, value));
                 }
 
                 Node::Concat(items)
             }
             Expression::Cast { value, ty } => {
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, source, &value.inner));
+                items.push(Self::build_expression(interner, source, value));
                 items.push(Node::Text(" as ".to_string()));
                 items.push(Self::build_type_expression(interner, &ty.inner));
 
@@ -260,22 +318,28 @@ impl Builder {
 
                 Node::Concat(items)
             }
-            Expression::Int { value } => Node::Text(value.to_string()),
-            Expression::Float { value } => Node::Text(value.to_string()),
+            Expression::Int { .. } => {
+                // Preserve the original literal text from source
+                Node::Text(expression.span.extract_str(source).to_string())
+            }
+            Expression::Float { .. } => {
+                // Preserve the original literal text from source
+                Node::Text(expression.span.extract_str(source).to_string())
+            }
             Expression::Grouping { value } => {
                 let mut items = Vec::new();
                 items.push(Node::Text("(".to_string()));
-                items.push(Self::build_expression(interner, source, &value.inner.inner));
+                items.push(Self::build_expression(interner, source, &value.inner));
                 items.push(Node::Text(")".to_string()));
                 Node::Concat(items)
             }
             Expression::Call { callee, arguments } => {
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, source, &callee.inner));
+                items.push(Self::build_expression(interner, source, callee));
                 items.push(Node::Text("(".to_string()));
 
                 for (index, arg) in arguments.inner.iter().enumerate() {
-                    items.push(Self::build_expression(interner, source, &arg.inner.inner));
+                    items.push(Self::build_expression(interner, source, &arg.inner));
                     if index + 1 < arguments.inner.len() {
                         items.push(Node::Text(", ".to_string()));
                     }
@@ -290,7 +354,7 @@ impl Builder {
                     "{}: ",
                     interner.resolve(label.inner).unwrap()
                 )));
-                items.push(Self::build_expression(interner, source, &block.inner));
+                items.push(Self::build_expression(interner, source, block));
                 Node::Concat(items)
             }
             Expression::Namespace { namespace, member } => {
@@ -306,7 +370,7 @@ impl Builder {
             Expression::Unary { operator, operand } => {
                 let mut items = Vec::new();
                 items.push(Node::Text(operator.inner.as_str().to_string()));
-                items.push(Self::build_expression(interner, source, &operand.inner));
+                items.push(Self::build_expression(interner, source, operand));
 
                 Node::Concat(items)
             }
@@ -316,7 +380,7 @@ impl Builder {
     fn build_statement(interner: &StringInterner, source: &str, statement: &Statement) -> Node {
         match statement {
             Statement::Expression(expression) => {
-                Self::build_expression(interner, source, &expression.inner)
+                Self::build_expression(interner, source, expression)
             }
             Statement::LocalDefinition {
                 mut_span,
@@ -347,7 +411,7 @@ impl Builder {
                 items.push(Node::Indent(Box::new(Self::build_expression(
                     interner,
                     source,
-                    &value.inner,
+                    value,
                 ))));
 
                 Node::Group(Box::new(Node::Concat(items)))
@@ -361,23 +425,34 @@ impl Builder {
                 Node::Text(interner.resolve(*symbol).unwrap().to_string())
             }
             TypeExpression::Function { params, result } => {
-                Node::Group(Box::new(Node::Concat(vec![
-                    Node::Text("fn(".to_string()),
-                    Node::Indent(Box::new({
-                        let mut items = Vec::new();
+                let mut items = Vec::new();
+                items.push(Node::Text("fn(".to_string()));
 
-                        items.push(Node::SoftLine);
-                        for param in params.inner.iter() {
-                            items.push(Self::build_type_expression(interner, &param.inner.inner));
-                            items.push(Node::Text(",".to_string()));
-                            items.push(Node::SoftLine);
+                if params.inner.len() > 0 {
+                    items.push(Node::Indent(Box::new({
+                        let mut param_items = Vec::new();
+                        param_items.push(Node::Line);
+
+                        for (index, param) in params.inner.iter().enumerate() {
+                            param_items
+                                .push(Self::build_type_expression(interner, &param.inner.inner));
+                            if index + 1 < params.inner.len() {
+                                param_items.push(Node::Text(",".to_string()));
+                                param_items.push(Node::SoftLine);
+                            } else {
+                                param_items.push(Node::IfBreak(",".to_string()));
+                            }
                         }
 
-                        Node::Concat(items)
-                    })),
-                    Node::Text(") -> ".to_string()),
-                    Self::build_type_expression(interner, &result.inner.inner),
-                ])))
+                        Node::Concat(param_items)
+                    })));
+                    items.push(Node::Line);
+                }
+
+                items.push(Node::Text(") -> ".to_string()));
+                items.push(Self::build_type_expression(interner, &result.inner.inner));
+
+                Node::Group(Box::new(Node::Concat(items)))
             }
             TypeExpression::Error => unreachable!(),
         }

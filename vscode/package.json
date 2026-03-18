@@ -14,8 +14,8 @@
 	"contributes": {
 		"commands": [
 			{
-				"command": "wx-vscode.helloWorld",
-				"title": "Hello World"
+				"command": "wx-vscode.restartServer",
+				"title": "WX: Restart Language Server"
 			}
 		],
 		"languages": [

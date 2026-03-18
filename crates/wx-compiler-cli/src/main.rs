@@ -55,10 +55,21 @@ fn main() {
         let writer = StandardStream::stderr(ColorChoice::Always);
         let config = codespan_reporting::term::Config::default();
 
+        let has_errors = ast.diagnostics.iter().any(|d| {
+            matches!(
+                d.severity,
+                codespan_reporting::diagnostic::Severity::Error
+                    | codespan_reporting::diagnostic::Severity::Bug
+            )
+        });
+
         for diagnostic in ast.diagnostics.iter() {
             term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
         }
-        std::process::exit(1);
+
+        if has_errors {
+            std::process::exit(1);
+        }
     }
 
     let tir = tir::TIR::build(&ast, &mut interner);
@@ -67,10 +78,21 @@ fn main() {
         let writer = StandardStream::stderr(ColorChoice::Always);
         let config = codespan_reporting::term::Config::default();
 
+        let has_errors = tir.diagnostics.iter().any(|d| {
+            matches!(
+                d.severity,
+                codespan_reporting::diagnostic::Severity::Error
+                    | codespan_reporting::diagnostic::Severity::Bug
+            )
+        });
+
         for diagnostic in tir.diagnostics.iter() {
             term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
         }
-        std::process::exit(1);
+
+        if has_errors {
+            std::process::exit(1);
+        }
     }
 
     let mir = mir::MIR::build(&tir, &interner);
@@ -81,5 +103,5 @@ fn main() {
     let filename = parts[0..parts.len() - 1].join(".");
     let mut file = fs::File::create(filename.clone() + ".wasm").unwrap();
     file.write(&bytecode).unwrap();
-    println!("Wrote {} bytes to out.wasm", bytecode.len());
+    println!("Wrote {} bytes to {}.wasm", bytecode.len(), filename);
 }

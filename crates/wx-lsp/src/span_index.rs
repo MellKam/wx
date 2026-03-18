@@ -7,7 +7,8 @@ use wx_compiler::tir::{
 };
 
 /// The kind of symbol being referenced or defined
-#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(Clone, PartialEq)]
 pub enum SymbolKind {
     LocalVariable {
         func_idx: FunctionIndex,
@@ -37,7 +38,8 @@ pub enum SymbolKind {
 }
 
 /// How the symbol is being used at this location
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SymbolUsage {
     /// Where the symbol is defined
     Definition,
@@ -48,7 +50,8 @@ pub enum SymbolUsage {
 }
 
 /// Information about a symbol at a specific text span
-#[derive(Debug, Clone)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(Clone)]
 pub struct SpanInfo {
     pub span: TextSpan,
     pub kind: SymbolKind,
@@ -83,9 +86,10 @@ impl SpanIndex {
     /// Returns the innermost/smallest span containing the position
     pub fn find_at_position(&self, pos: u32) -> Option<&SpanInfo> {
         // Find the smallest (most specific) span containing the position
+        // Use <= for the end check to handle cursor positions at symbol boundaries
         self.entries
             .iter()
-            .filter(|entry| entry.span.start <= pos && pos < entry.span.end)
+            .filter(|entry| entry.span.start <= pos && pos <= entry.span.end)
             .min_by_key(|entry| entry.span.end - entry.span.start)
     }
 
@@ -153,6 +157,30 @@ impl SpanIndex {
                     param_idx: p2,
                 },
             ) => f1 == f2 && p1 == p2,
+            // Function parameters are also local variables in scope 0
+            // FunctionParam at index N corresponds to LocalVariable at scope 0, index N
+            (
+                SymbolKind::FunctionParam {
+                    func_idx: f1,
+                    param_idx: p1,
+                },
+                SymbolKind::LocalVariable {
+                    func_idx: f2,
+                    scope_idx: 0,
+                    local_idx: l2,
+                },
+            ) => f1 == f2 && *p1 == *l2,
+            (
+                SymbolKind::LocalVariable {
+                    func_idx: f1,
+                    scope_idx: 0,
+                    local_idx: l1,
+                },
+                SymbolKind::FunctionParam {
+                    func_idx: f2,
+                    param_idx: p2,
+                },
+            ) => f1 == f2 && *l1 == *p2,
             _ => false,
         }
     }
@@ -238,6 +266,12 @@ pub fn build_span_index(tir: &TIR) -> SpanIndex {
         // Index local variables in all scopes
         for (scope_idx, scope) in func.stack.scopes.iter().enumerate() {
             for (local_idx, local) in scope.locals.iter().enumerate() {
+                // Skip the first N locals in scope 0, where N = number of parameters
+                // These are the parameters, already indexed above
+                if scope_idx == 0 && local_idx < func.params.len() {
+                    continue;
+                }
+
                 index.add(SpanInfo {
                     span: local.name.span,
                     kind: SymbolKind::LocalVariable {

@@ -37,7 +37,7 @@
 			"patterns": [
 				{
 					"name": "keyword.control.wx",
-					"match": "\\b(fn|local|mut|if|else|loop|break|return|continue|export|enum|global)\\b"
+					"match": "\\b(fn|local|mut|if|else|loop|break|return|continue|export|enum|global|unreachable)\\b"
 				},
 				{
 					"name": "constant.language.wx",
@@ -49,7 +49,7 @@
 			"patterns": [
 				{
 					"name": "storage.type.wx",
-					"match": "\\b(i32|i64|f32|f64|u32|u64|bool)\\b"
+					"match": "\\b(i32|i64|f32|f64|u32|u64|bool|never|unit)\\b"
 				}
 			]
 		},
