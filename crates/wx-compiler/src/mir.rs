@@ -172,7 +172,9 @@ pub struct Expression {
     pub ty: Type,
 }
 
-// the role of MIR is to desugar the syntax like x += 1 into x = x + 1 and lower the concepts like enums into primitive constants, convert labels from symbols in interner into numeric indices
+// the role of MIR is to desugar the syntax like x += 1 into x = x + 1 and lower
+// the concepts like enums into primitive constants, convert labels from symbols
+// in interner into numeric indices
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct MIR {
@@ -180,6 +182,26 @@ pub struct MIR {
     pub signatures: Vec<FunctionSignature>,
     pub globals: Vec<Global>,
     pub exports: Vec<ExportItem>,
+    pub imports: Vec<ImportModule>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ImportModule {
+    pub name: String,
+    pub items: Vec<ImportModuleItem>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum ImportModuleItem {
+    Function {
+        name: String,
+        func_index: FunctionIndex,
+        signature_index: SignatureIndex,
+    },
+    Global {
+        name: String,
+        global_index: GlobalIndex,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -248,19 +270,18 @@ pub struct Global {
 impl MIR {
     pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
         let mut builder = Builder {
-            tir,
-            enums: &tir.enums,
+            namespaces: &tir.namespaces,
         };
 
         let functions = tir
-            .functions
-            .iter()
+            .defined_functions
+            .values()
             .map(|func| builder.lower_function(func))
             .collect();
 
         let globals = tir
-            .globals
-            .iter()
+            .defined_globals
+            .values()
             .map(|global| builder.lower_global(global))
             .collect();
 
@@ -279,17 +300,76 @@ impl MIR {
                     params_count: signature.params_count,
                 })
                 .collect(),
+            imports: tir
+                .namespaces
+                .iter()
+                .filter_map(|namespace| match namespace {
+                    tir::Namespace::ImportModule(module) => Some(ImportModule {
+                        name: interner
+                            .resolve(module.external_name.inner)
+                            .unwrap()
+                            .to_string(),
+                        items: module
+                            .lookup
+                            .iter()
+                            .map(|(symbol, value)| match value {
+                                tir::ImportValue::Function { func_index } => {
+                                    let signature_index = tir.declared_functions
+                                        [*func_index as usize]
+                                        .signature_index;
+                                    ImportModuleItem::Function {
+                                        name: interner.resolve(*symbol).unwrap().to_string(),
+                                        func_index: *func_index,
+                                        signature_index,
+                                    }
+                                }
+                                tir::ImportValue::Global { global_index } => {
+                                    ImportModuleItem::Global {
+                                        name: interner.resolve(*symbol).unwrap().to_string(),
+                                        global_index: *global_index,
+                                    }
+                                }
+                            })
+                            .collect(),
+                    }),
+                    _ => None,
+                })
+                .collect(),
             exports: tir
                 .exports
                 .iter()
                 .map(|export| match export {
-                    tir::ExportItem::Function { func_index, name } => ExportItem::Function {
+                    tir::ExportItem::Function {
+                        func_index,
+                        external_name,
+                        internal_name,
+                    } => ExportItem::Function {
                         func_index: *func_index,
-                        name: interner.resolve(name.inner).unwrap().to_string(),
+                        name: interner
+                            .resolve(
+                                external_name
+                                    .clone()
+                                    .map(|n| n.inner)
+                                    .unwrap_or(internal_name.inner),
+                            )
+                            .unwrap()
+                            .to_string(),
                     },
-                    tir::ExportItem::Global { global_index, name } => ExportItem::Global {
+                    tir::ExportItem::Global {
+                        global_index,
+                        external_name,
+                        internal_name,
+                    } => ExportItem::Global {
                         global_index: *global_index,
-                        name: interner.resolve(name.inner).unwrap().to_string(),
+                        name: interner
+                            .resolve(
+                                external_name
+                                    .clone()
+                                    .map(|n| n.inner)
+                                    .unwrap_or(internal_name.inner),
+                            )
+                            .unwrap()
+                            .to_string(),
                     },
                 })
                 .collect(),
@@ -298,8 +378,7 @@ impl MIR {
 }
 
 struct Builder<'a> {
-    tir: &'a tir::TIR,
-    enums: &'a [tir::Enum],
+    namespaces: &'a [tir::Namespace],
 }
 
 impl<'a> Builder<'a> {
@@ -315,11 +394,8 @@ impl<'a> Builder<'a> {
             tir::Type::Never => Type::Never,
             tir::Type::Bool => Type::Bool,
             tir::Type::Function { signature_index } => Type::Function { signature_index },
-            tir::Type::Enum { enum_index } => {
-                // Lower enum to its underlying type
-                self.lower_type(self.enums[enum_index as usize].ty)
-            }
-            tir::Type::Unknown | tir::Type::Error => {
+            // TODO: handle enums
+            tir::Type::Unknown | tir::Type::Error | tir::Type::Namespace { .. } => {
                 // These shouldn't appear in valid TIR, but handle gracefully
                 Type::I32
             }
@@ -373,18 +449,18 @@ impl<'a> Builder<'a> {
             } else {
                 Mutability::Immutable
             },
-            value: self.lower_expression(&global.value),
+            value: self.lower_expression(&global.value.inner),
         }
     }
 
     fn lower_expression(&mut self, expr: &tir::Expression) -> Expression {
         let ty = self.lower_type(expr.ty);
-        let kind = self.lower_expr_kind(&expr.kind, &expr);
+        let kind = self.lower_expr_kind(&expr.kind);
 
         Expression { kind, ty }
     }
 
-    fn lower_expr_kind(&mut self, kind: &tir::ExprKind, _expr: &tir::Expression) -> ExprKind {
+    fn lower_expr_kind(&mut self, kind: &tir::ExprKind) -> ExprKind {
         use crate::ast::{BinaryOp, UnaryOp};
 
         match kind {
@@ -410,14 +486,15 @@ impl<'a> Builder<'a> {
                 value: value.as_ref().map(|v| Box::new(self.lower_expression(v))),
             },
             tir::ExprKind::EnumVariant {
-                enum_index,
+                namespace_index,
                 variant_index,
-            } => {
-                // Lower enum variant to its constant value
-                let enum_def = &self.enums[*enum_index as usize];
-                let variant = &enum_def.variants[*variant_index as usize];
-                self.lower_expr_kind(&variant.value.kind, &variant.value)
-            }
+            } => match &self.namespaces[*namespace_index as usize] {
+                tir::Namespace::Enum(enum_) => {
+                    let variant = &enum_.variants[*variant_index as usize];
+                    self.lower_expression(&variant.value).kind
+                }
+                _ => unreachable!(),
+            },
             tir::ExprKind::Call { callee, arguments } => {
                 let callee = Box::new(self.lower_expression(callee));
                 let arguments = arguments
@@ -425,6 +502,17 @@ impl<'a> Builder<'a> {
                     .map(|arg| self.lower_expression(arg))
                     .collect();
                 ExprKind::Call { callee, arguments }
+            }
+            tir::ExprKind::NamespaceAccess {
+                namespace_index,
+                member,
+                ..
+            } => {
+                let namespace = &self.namespaces[*namespace_index as usize];
+                match namespace {
+                    tir::Namespace::ImportModule(_) => self.lower_expression(member).kind,
+                    tir::Namespace::Enum(_) => self.lower_expression(member).kind,
+                }
             }
             tir::ExprKind::IfElse {
                 condition,
@@ -703,9 +791,8 @@ impl<'a> Builder<'a> {
 mod tests {
     use indoc::indoc;
 
-    use crate::{ast, tir};
-
     use super::*;
+    use crate::{ast, tir};
 
     #[allow(unused)]
     struct TestCase {
@@ -741,7 +828,16 @@ mod tests {
     #[test]
     fn test_parse_simple_addition() {
         let case = TestCase::new(indoc! {"
-            export fn add(mut a: i32, b: i32) -> i32 { a += b; a }
+            import \"console\" {
+                fn log(ptr: i32, len: i32) -> unit;
+            }
+
+            fn main() -> unit {
+                local x: i32 = 5;
+                console::log(x, 4);
+            }
+
+            export { main }
         "});
         insta::assert_yaml_snapshot!(case.mir);
     }

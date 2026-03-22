@@ -1,0 +1,70 @@
+---
+source: crates/wx-compiler/src/mir.rs
+expression: case.mir
+---
+functions:
+  - signature_index: 1
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: I32
+            mutability: Immutable
+        result: Unit
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                LocalSet:
+                  scope_index: 0
+                  local_index: 0
+                  value:
+                    kind:
+                      Int:
+                        value: 5
+                    ty: I32
+              ty: Unit
+            - kind:
+                Call:
+                  callee:
+                    kind:
+                      Function:
+                        func_index: 0
+                    ty:
+                      Function:
+                        signature_index: 0
+                  arguments:
+                    - kind:
+                        LocalGet:
+                          scope_index: 0
+                          local_index: 0
+                      ty: I32
+                    - kind:
+                        Int:
+                          value: 4
+                      ty: I32
+              ty: Unit
+      ty: Unit
+signatures:
+  - items:
+      - I32
+      - I32
+      - Unit
+    params_count: 2
+  - items:
+      - Unit
+    params_count: 0
+globals: []
+exports:
+  - Function:
+      func_index: 1
+      name: main
+imports:
+  - name: console
+    items:
+      - Function:
+          name: log
+          func_index: 0
+          signature_index: 0

@@ -1,9 +1,47 @@
 use std::collections::HashMap;
+use std::hash::Hash;
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use string_interner::symbol::SymbolU32;
 
 use crate::ast::{self, Annotated, FileId, Grouped, Separated, Spanned, StringInterner, TextSpan};
+
+/// Unescape a string literal, removing quotes and handling escape sequences.
+/// Supports basic Rust-like escape sequences: \n, \r, \t, \\, \", \'
+pub fn unescape_string(s: &str) -> String {
+    // Remove surrounding quotes
+    let s = if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('\\') => result.push('\\'),
+                Some('"') => result.push('"'),
+                Some('0') => result.push('\0'),
+                // If we encounter an unknown escape, keep the backslash and the character
+                Some(c) => {
+                    result.push('\\');
+                    result.push(c);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -21,7 +59,16 @@ pub enum Type {
     Error,
     Bool,
     Function { signature_index: u32 },
-    Enum { enum_index: u32 },
+    Namespace { namespace_index: u32 },
+}
+
+impl Clone for ast::Spanned<Type> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner,
+            span: self.span,
+        }
+    }
 }
 
 impl Type {
@@ -116,7 +163,7 @@ impl std::hash::Hash for FunctionSignature {
 pub type LocalIndex = u32;
 pub type ScopeIndex = u32;
 pub type FunctionIndex = u32;
-pub type EnumIndex = u32;
+pub type NamespaceIndex = u32;
 pub type GlobalIndex = u32;
 pub type SignatureIndex = u32;
 pub type EnumVariantIndex = u32;
@@ -156,7 +203,7 @@ pub enum ExprKind {
         value: Option<Box<Expression>>,
     },
     EnumVariant {
-        enum_index: EnumIndex,
+        namespace_index: NamespaceIndex,
         variant_index: EnumVariantIndex,
     },
     Unary {
@@ -193,6 +240,11 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         block: Box<Expression>,
     },
+    NamespaceAccess {
+        namespace_index: NamespaceIndex,
+        namespace_span: ast::TextSpan,
+        member: Box<Expression>,
+    },
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -222,7 +274,7 @@ struct AccessContext {
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
-pub struct VariableAccess {
+pub struct LocalAccess {
     pub span: ast::TextSpan,
     pub kind: AccessKind,
 }
@@ -233,7 +285,7 @@ pub struct Local {
     pub name: ast::Spanned<SymbolU32>,
     pub ty: Type,
     pub mut_span: Option<ast::TextSpan>,
-    pub accesses: Vec<VariableAccess>,
+    pub accesses: Vec<LocalAccess>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -308,18 +360,19 @@ pub struct Function {
     pub signature_index: SignatureIndex,
     pub stack: StackFrame,
     pub block: Box<Expression>,
-    pub accesses: Vec<ast::TextSpan>,
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 #[derive(Clone)]
 pub enum ExportItem {
     Function {
-        name: Spanned<SymbolU32>,
+        internal_name: Spanned<SymbolU32>,
+        external_name: Option<Spanned<SymbolU32>>,
         func_index: u32,
     },
     Global {
-        name: Spanned<SymbolU32>,
+        internal_name: Spanned<SymbolU32>,
+        external_name: Option<Spanned<SymbolU32>>,
         global_index: u32,
     },
 }
@@ -342,34 +395,53 @@ pub struct EnumVariant {
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
-pub struct Global {
+pub struct DeclaredGlobal {
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<Type>,
     pub mut_span: Option<ast::TextSpan>,
-    pub value: Box<Expression>,
-    pub accesses: Vec<VariableAccess>,
+    pub accesses: Vec<ast::TextSpan>,
 }
 
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 pub enum GlobalValue {
-    Global {
-        global_index: GlobalIndex,
-    },
-    Function {
-        func_index: FunctionIndex,
-    },
-    Enum {
-        enum_index: EnumIndex,
-    },
-    EnumVariant {
-        enum_index: EnumIndex,
-        variant_index: EnumVariantIndex,
-    },
+    Global { global_index: GlobalIndex },
+    Function { func_index: FunctionIndex },
+    Namespace { namespace_index: u32 },
     True,
     False,
     Unreachable,
     Placeholder,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum ImportValue {
+    Function { func_index: FunctionIndex },
+    Global { global_index: GlobalIndex },
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ImportedFunction {
+    pub external_name: ast::Spanned<SymbolU32>,
+    pub internal_name: ast::Spanned<SymbolU32>,
+    pub signature_index: SignatureIndex,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ImportedGlobal {
+    pub external_name: ast::Spanned<SymbolU32>,
+    pub internal_name: ast::Spanned<SymbolU32>,
+    pub ty: ast::Spanned<Type>,
+    pub mut_span: Option<ast::TextSpan>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ImportModule {
+    pub external_name: ast::Spanned<SymbolU32>,
+    pub internal_name: Option<ast::Spanned<SymbolU32>>,
+    pub lookup: HashMap<SymbolU32, ImportValue>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -381,179 +453,10 @@ pub enum SymbolNamespace {
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
-pub struct FunctionMeta {
-    signature_index: SignatureIndex,
-    name: ast::Spanned<SymbolU32>,
-}
-
-pub struct GlobalContext<'interner> {
-    pub interner: &'interner ast::StringInterner,
-    pub exports: Vec<ExportItem>,
-    pub globals: Vec<Global>,
-    pub function_meta: Vec<FunctionMeta>,
-    pub signatures: Vec<FunctionSignature>,
-    pub function_lookup: HashMap<FunctionSignature, SignatureIndex>,
-    pub enums: Vec<Enum>,
-    pub symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), GlobalValue>,
-}
-
-impl<'interner> GlobalContext<'interner> {
-    pub fn new(interner: &'interner mut ast::StringInterner) -> Self {
-        let mut lookup = HashMap::new();
-        lookup.insert(
-            (SymbolNamespace::Value, interner.get_or_intern("_")),
-            GlobalValue::Placeholder,
-        );
-        lookup.insert(
-            (SymbolNamespace::Value, interner.get_or_intern("true")),
-            GlobalValue::True,
-        );
-        lookup.insert(
-            (SymbolNamespace::Value, interner.get_or_intern("false")),
-            GlobalValue::False,
-        );
-        lookup.insert(
-            (
-                SymbolNamespace::Value,
-                interner.get_or_intern("unreachable"),
-            ),
-            GlobalValue::Unreachable,
-        );
-
-        GlobalContext {
-            exports: Vec::new(),
-            signatures: Vec::new(),
-            enums: Vec::new(),
-            interner,
-            globals: Vec::new(),
-            function_meta: Vec::new(),
-            function_lookup: HashMap::new(),
-            symbol_lookup: lookup,
-        }
-    }
-
-    pub fn resolve_type(&mut self, type_expr: &ast::TypeExpression) -> Result<Type, ()> {
-        match &type_expr {
-            ast::TypeExpression::Error => Err(()),
-            ast::TypeExpression::Identifier { symbol } => {
-                let symbol = *symbol;
-                let text = self.interner.resolve(symbol).unwrap();
-                match Type::try_from(text) {
-                    Ok(ty) => return Ok(ty),
-                    Err(_) => {}
-                }
-                match self.symbol_lookup.get(&(SymbolNamespace::Type, symbol)) {
-                    Some(GlobalValue::Enum { enum_index }) => Ok(Type::Enum {
-                        enum_index: *enum_index,
-                    }),
-                    Some(_) => Err(()),
-                    None => Err(()),
-                }
-            }
-            ast::TypeExpression::Function { params, result } => {
-                let result = self.resolve_type(&result.inner.inner).unwrap();
-                let items = params
-                    .inner
-                    .iter()
-                    .map(|ty| self.resolve_type(&ty.inner.inner).unwrap())
-                    .chain(Some(result))
-                    .collect::<Box<_>>();
-                let signature_index = self.ensure_signature_index(&FunctionSignature {
-                    items,
-                    params_count: params.inner.len(),
-                });
-                Ok(Type::Function { signature_index })
-            }
-        }
-    }
-
-    pub fn build_signature(
-        &mut self,
-        params: &Grouped<Box<[Separated<Spanned<ast::FunctionParam>>]>>,
-        result: &Annotated<Box<Spanned<ast::TypeExpression>>>,
-    ) -> FunctionSignature {
-        let result = self.resolve_type(&result.inner.inner).unwrap();
-        let params_count = params.inner.len();
-        let mut items = Vec::with_capacity(params_count + 1);
-        for param in params.inner.iter() {
-            items.push(
-                self.resolve_type(&param.inner.inner.type_annotation.inner.inner)
-                    .unwrap(),
-            );
-        }
-        items.push(result);
-        FunctionSignature {
-            items: items.into_boxed_slice(),
-            params_count,
-        }
-    }
-
-    pub fn ensure_signature_index(&mut self, signature: &FunctionSignature) -> SignatureIndex {
-        match self.function_lookup.get(signature).cloned() {
-            Some(type_index) => type_index,
-            None => {
-                let signature_index = self.signatures.len() as u32;
-                self.signatures.push(signature.clone());
-                self.function_lookup
-                    .insert(signature.clone(), signature_index);
-                signature_index
-            }
-        }
-    }
-
-    pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<GlobalValue> {
-        match self
-            .symbol_lookup
-            .get(&(SymbolNamespace::Value, symbol))
-            .cloned()
-        {
-            Some(value) => Some(value),
-            None => None,
-        }
-    }
-
-    pub fn resolve_func(&self, symbol: SymbolU32) -> Option<FunctionIndex> {
-        match self
-            .symbol_lookup
-            .get(&(SymbolNamespace::Value, symbol))
-            .cloned()
-        {
-            Some(GlobalValue::Function { func_index }) => Some(func_index),
-            _ => None,
-        }
-    }
-
-    pub fn display_type(&self, ty: Type) -> String {
-        match ty {
-            Type::Unknown => "unknown".to_string(),
-            Type::Error => "error".to_string(),
-            Type::Unit => "unit".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::Never => "never".to_string(),
-            Type::I32 => "i32".to_string(),
-            Type::I64 => "i64".to_string(),
-            Type::F32 => "f32".to_string(),
-            Type::F64 => "f64".to_string(),
-            Type::U32 => "u32".to_string(),
-            Type::U64 => "u64".to_string(),
-            Type::Enum { enum_index } => self
-                .interner
-                .resolve(self.enums[enum_index as usize].name.inner)
-                .unwrap()
-                .to_string(),
-            Type::Function { signature_index } => {
-                let func = &self.signatures[signature_index as usize];
-                let params = func
-                    .params()
-                    .iter()
-                    .map(|param| self.display_type(*param))
-                    .collect::<Box<[_]>>()
-                    .join(", ");
-
-                format!("fn({}) -> {}", params, self.display_type(func.result()))
-            }
-        }
-    }
+pub struct DeclaredFunction {
+    pub signature_index: SignatureIndex,
+    pub name: ast::Spanned<SymbolU32>,
+    pub accesses: Vec<ast::TextSpan>,
 }
 
 pub struct FunctionContext {
@@ -688,7 +591,8 @@ define_diagnostic_codes! {
         ComparisonTypeAnnotationRequired => "E1014",
         NonConstantGlobalInitializer => "E1015",
         ArgumentCountMismatch => "E1016",
-        CannotExportMutableGlobal => "E1017",
+        DuplicateExport => "E1018",
+        CannotExportItem => "E1019",
         CannotMutateImmutable => "W1000",
         UnusedVariable => "W1001",
         UnnecessaryMutability => "W1002",
@@ -753,15 +657,15 @@ struct TypeMistmatchDiagnostic {
 }
 
 impl TypeMistmatchDiagnostic {
-    fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_code(DiagnosticCode::TypeMistmatch.code())
             .with_message("type mismatch")
             .with_label(
                 Label::primary(self.file_id, self.span).with_message(format!(
                     "expected `{}`, found `{}`",
-                    global.display_type(self.expected_type),
-                    global.display_type(self.actual_type)
+                    builder.display_type(self.expected_type),
+                    builder.display_type(self.actual_type)
                 )),
             )
     }
@@ -879,16 +783,16 @@ struct IntegerLiteralOutOfRangeDiagnostic {
 }
 
 impl IntegerLiteralOutOfRangeDiagnostic {
-    fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
         // TODO: add the actual value and the type in the message, e.g.
-        // the literal `2_583` does not fit into the type `i8` whose range is `-128..=127`
-        // consider using the type `i16` instead
+        // the literal `2_583` does not fit into the type `i8` whose range is
+        // `-128..=127` consider using the type `i16` instead
         Diagnostic::error()
             .with_code(DiagnosticCode::IntegerLiteralOutOfRange.code())
             .with_message(format!(
                 "literal `{}` out of range for `{}`",
                 self.value,
-                global.display_type(self.ty)
+                builder.display_type(self.ty)
             ))
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -901,12 +805,12 @@ struct UnableToCoerceDiagnostic {
 }
 
 impl UnableToCoerceDiagnostic {
-    fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_code(DiagnosticCode::UnableToCoerce.code())
             .with_message(format!(
                 "unable to coerce to type `{}`",
-                global.display_type(self.target_type)
+                builder.display_type(self.target_type)
             ))
             .with_label(Label::primary(self.file_id, self.span))
     }
@@ -948,13 +852,13 @@ struct BinaryOperatorCannotBeAppliedDiagnostic {
 }
 
 impl BinaryOperatorCannotBeAppliedDiagnostic {
-    pub fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+    pub fn report(self, builder: &Builder) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_code(DiagnosticCode::BinaryOperatorCannotBeApplied.code())
             .with_message(format!(
                 "operator `{}` cannot be applied to type `{}`",
                 self.operator.inner,
-                global.display_type(self.operand.inner)
+                builder.display_type(self.operand.inner)
             ))
             .with_label(Label::primary(self.file_id, self.operand.span))
             .with_label(Label::secondary(self.file_id, self.operator.span))
@@ -969,9 +873,9 @@ struct BinaryExpressionMistmatchDiagnostic {
 }
 
 impl BinaryExpressionMistmatchDiagnostic {
-    fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
-        let left_type = global.display_type(self.left_type.inner);
-        let right_type = global.display_type(self.right_type.inner);
+    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
+        let left_type = builder.display_type(self.left_type.inner);
+        let right_type = builder.display_type(self.right_type.inner);
 
         let message = match self.operator.inner {
             ast::BinaryOp::Add => format!("cannot add `{}` to `{}`", left_type, right_type),
@@ -1040,14 +944,14 @@ struct CannotCallExpressionDiagnostic {
 }
 
 impl CannotCallExpressionDiagnostic {
-    fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_code(DiagnosticCode::CannotCallExpression.code())
             .with_message("call expression requires function")
             .with_label(
                 Label::primary(self.file_id, self.span).with_message(format!(
                     "expected function, found `{}`",
-                    global.display_type(self.ty)
+                    builder.display_type(self.ty)
                 )),
             )
     }
@@ -1060,13 +964,13 @@ struct UnaryOperatorCannotBeAppliedDiagnostic {
 }
 
 impl UnaryOperatorCannotBeAppliedDiagnostic {
-    fn report(self, global: &GlobalContext) -> Diagnostic<FileId> {
+    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
         Diagnostic::error()
             .with_code(DiagnosticCode::UnaryOperatorCannotBeApplied.code())
             .with_message(format!(
                 "operator `{}` cannot be applied to type `{}`",
                 self.operator.inner,
-                global.display_type(self.operand.inner)
+                builder.display_type(self.operand.inner)
             ))
             .with_label(Label::primary(self.file_id, self.operand.span))
             .with_label(Label::secondary(self.file_id, self.operator.span))
@@ -1094,7 +998,8 @@ struct BreakOutsideOfLoopDiagnostic {
 
 impl BreakOutsideOfLoopDiagnostic {
     fn report(self) -> Diagnostic<FileId> {
-        // TODO: we can break from if else expressions as well, so the message should be more general, e.g. "`break` outside of loop or labeled block"
+        // TODO: we can break from if else expressions as well, so the message should be
+        // more general, e.g. "`break` outside of loop or labeled block"
         Diagnostic::error()
             .with_code(DiagnosticCode::BreakOutsideOfLoop.code())
             .with_message("`break` outside of loop")
@@ -1135,6 +1040,33 @@ impl InvalidAssignmentTargetDiagnostic {
     }
 }
 
+struct DuplicateExportDiagnostic<'interner> {
+    file_id: FileId,
+    name: &'interner str,
+    first_export: TextSpan,
+    second_export: TextSpan,
+}
+
+impl DuplicateExportDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::DuplicateExport.code())
+            .with_message(format!(
+                "the name `{}` is exported multiple times",
+                self.name
+            ))
+            .with_label(Label::primary(self.file_id, self.second_export))
+            .with_label(
+                Label::secondary(self.file_id, self.first_export)
+                    .with_message(format!("previous export of `{}` here", self.name)),
+            )
+            .with_note(format!(
+                "`{}` can only be exported once from this module",
+                self.name
+            ))
+    }
+}
+
 struct ComparisonTypeAnnotationRequiredDiagnostic {
     file_id: FileId,
     left: TextSpan,
@@ -1152,17 +1084,32 @@ impl ComparisonTypeAnnotationRequiredDiagnostic {
     }
 }
 
+struct CannotExportItemDiagnostic<'interner> {
+    file_id: FileId,
+    name: &'interner str,
+    span: TextSpan,
+}
+
+impl CannotExportItemDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::CannotExportItem.code())
+            .with_message(format!("cannot export `{}`", self.name))
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("only functions and global variables can be exported")
+    }
+}
+
 struct ArgumentCountMismatchDiagnostic<'a> {
     file_id: FileId,
     expected_count: usize,
     actual_count: usize,
     param_types: &'a [Type],
     call_span: TextSpan,
-    global: &'a GlobalContext<'a>,
 }
 
 impl ArgumentCountMismatchDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
+    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
         let mut diagnostic = Diagnostic::error()
             .with_code(DiagnosticCode::ArgumentCountMismatch.code())
             .with_message(format!(
@@ -1187,7 +1134,7 @@ impl ArgumentCountMismatchDiagnostic<'_> {
             let missing_count = self.expected_count - self.actual_count;
             let missing_types: Vec<String> = self.param_types[self.actual_count..]
                 .iter()
-                .map(|ty| self.global.display_type(*ty))
+                .map(|ty| builder.display_type(*ty))
                 .collect();
 
             if missing_count == 1 {
@@ -1219,11 +1166,28 @@ impl ArgumentCountMismatchDiagnostic<'_> {
     }
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct Global {
+    pub name: ast::Spanned<SymbolU32>,
+    pub ty: ast::Spanned<Type>,
+    pub mut_span: Option<ast::TextSpan>,
+    pub value: Box<ast::Spanned<Expression>>,
+}
+
 struct Builder<'ast, 'interner> {
     ast: &'ast ast::AST,
-    global: GlobalContext<'interner>,
-    functions: Vec<Function>,
+    interner: &'interner mut ast::StringInterner,
+
+    defined_functions: HashMap<FunctionIndex, Function>,
+    defined_globals: HashMap<GlobalIndex, Global>,
+    exports: HashMap<SymbolU32, ExportItem>,
     diagnostics: Vec<Diagnostic<FileId>>,
+    namespaces: Vec<Namespace>,
+    declared_globals: Vec<DeclaredGlobal>,
+    declared_functions: Vec<DeclaredFunction>,
+    signatures: Vec<FunctionSignature>,
+    signature_index_lookup: HashMap<FunctionSignature, SignatureIndex>,
+    symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), GlobalValue>,
 }
 
 enum BlockState<T> {
@@ -1232,24 +1196,156 @@ enum BlockState<T> {
 }
 
 impl Builder<'_, '_> {
-    fn define_item(&mut self, item: &ast::Item) -> Result<GlobalValue, ()> {
+    pub fn resolve_type(&mut self, type_expr: &ast::TypeExpression) -> Result<Type, ()> {
+        match &type_expr {
+            ast::TypeExpression::Error => Err(()),
+            ast::TypeExpression::Identifier { symbol } => {
+                let symbol = *symbol;
+                let text = self.interner.resolve(symbol).unwrap();
+                if let Ok(ty) = Type::try_from(text) {
+                    return Ok(ty);
+                }
+                match self.symbol_lookup.get(&(SymbolNamespace::Type, symbol)) {
+                    Some(GlobalValue::Namespace { namespace_index }) => Ok(Type::Namespace {
+                        namespace_index: *namespace_index,
+                    }),
+                    _ => Err(()),
+                }
+            }
+            ast::TypeExpression::Function { params, result } => {
+                let result = self.resolve_type(&result.inner.inner).unwrap();
+                let items = params
+                    .inner
+                    .iter()
+                    .map(|ty| self.resolve_type(&ty.inner.inner).unwrap())
+                    .chain(Some(result))
+                    .collect::<Box<_>>();
+                let signature_index = self.ensure_signature_index(&FunctionSignature {
+                    items,
+                    params_count: params.inner.len(),
+                });
+                Ok(Type::Function { signature_index })
+            }
+        }
+    }
+
+    pub fn build_signature(
+        &mut self,
+        params: &Grouped<Box<[Separated<Spanned<ast::FunctionParam>>]>>,
+        result: &Annotated<Box<Spanned<ast::TypeExpression>>>,
+    ) -> FunctionSignature {
+        let result = self.resolve_type(&result.inner.inner).unwrap();
+        let params_count = params.inner.len();
+        let mut items = Vec::with_capacity(params_count + 1);
+        for param in params.inner.iter() {
+            items.push(
+                self.resolve_type(&param.inner.inner.type_annotation.inner.inner)
+                    .unwrap(),
+            );
+        }
+        items.push(result);
+        FunctionSignature {
+            items: items.into_boxed_slice(),
+            params_count,
+        }
+    }
+
+    pub fn ensure_signature_index(&mut self, signature: &FunctionSignature) -> SignatureIndex {
+        match self.signature_index_lookup.get(signature).cloned() {
+            Some(type_index) => type_index,
+            None => {
+                let signature_index = self.signatures.len() as u32;
+                self.signatures.push(signature.clone());
+                self.signature_index_lookup
+                    .insert(signature.clone(), signature_index);
+                signature_index
+            }
+        }
+    }
+
+    pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<GlobalValue> {
+        match self
+            .symbol_lookup
+            .get(&(SymbolNamespace::Value, symbol))
+            .cloned()
+        {
+            Some(value) => Some(value),
+            None => None,
+        }
+    }
+
+    pub fn resolve_func(&self, symbol: SymbolU32) -> Option<FunctionIndex> {
+        match self
+            .symbol_lookup
+            .get(&(SymbolNamespace::Value, symbol))
+            .cloned()
+        {
+            Some(GlobalValue::Function { func_index }) => Some(func_index),
+            _ => None,
+        }
+    }
+
+    pub fn display_type(&self, ty: Type) -> String {
+        match ty {
+            Type::Unknown => "unknown".to_string(),
+            Type::Error => "error".to_string(),
+            Type::Unit => "unit".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::Never => "never".to_string(),
+            Type::I32 => "i32".to_string(),
+            Type::I64 => "i64".to_string(),
+            Type::F32 => "f32".to_string(),
+            Type::F64 => "f64".to_string(),
+            Type::U32 => "u32".to_string(),
+            Type::U64 => "u64".to_string(),
+            Type::Namespace { namespace_index } => {
+                let ns = &self.namespaces[namespace_index as usize];
+                match ns {
+                    Namespace::ImportModule(module) => {
+                        let name = module
+                            .internal_name
+                            .as_ref()
+                            .map(|x| x.inner)
+                            .unwrap_or(module.external_name.inner);
+                        self.interner.resolve(name).unwrap().to_string()
+                    }
+                    Namespace::Enum(enum_) => {
+                        let name = enum_.name.inner;
+                        self.interner.resolve(name).unwrap().to_string()
+                    }
+                }
+            }
+            Type::Function { signature_index } => {
+                let func = &self.signatures[signature_index as usize];
+                let params = func
+                    .params()
+                    .iter()
+                    .map(|param| self.display_type(*param))
+                    .collect::<Box<[_]>>()
+                    .join(", ");
+
+                format!("fn({}) -> {}", params, self.display_type(func.result()))
+            }
+        }
+    }
+
+    fn define_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match item {
             ast::Item::FunctionDefinition { signature, .. } => {
                 match self
-                    .global
                     .symbol_lookup
                     .get(&(SymbolNamespace::Value, signature.name.inner))
                     .cloned()
                 {
                     Some(first_definition) => {
-                        let name = self.global.interner.resolve(signature.name.inner).unwrap();
+                        let name = self.interner.resolve(signature.name.inner).unwrap();
                         let first_definition_span = match first_definition {
                             GlobalValue::Function { func_index } => {
-                                let func = &self.global.function_meta[func_index as usize];
+                                let func = &self.declared_functions[func_index as usize];
                                 func.name.span
                             }
                             GlobalValue::Global { global_index } => {
-                                let global = &self.global.globals[global_index as usize];
+                                let global = &self.declared_globals[global_index as usize];
                                 global.name.span
                             }
                             _ => unreachable!(),
@@ -1266,54 +1362,52 @@ impl Builder<'_, '_> {
                             .report(),
                         );
 
-                        // TODO: we should probably continue processing the function to find more errors
+                        // TODO: we should probably continue processing the function to find more
+                        // errors
                         return Err(());
                     }
                     None => {}
                 };
 
                 let name_symbol = signature.name.inner;
-                let ty = self
-                    .global
-                    .build_signature(&signature.params, &signature.result);
-                let type_index = self.global.ensure_signature_index(&ty);
+                let ty = self.build_signature(&signature.params, &signature.result);
+                let type_index = self.ensure_signature_index(&ty);
 
-                let func_index = self.global.function_meta.len() as u32;
-                self.global.symbol_lookup.insert(
+                let func_index = self.declared_functions.len() as u32;
+                self.symbol_lookup.insert(
                     (SymbolNamespace::Value, name_symbol),
                     GlobalValue::Function { func_index },
                 );
-                self.global.function_meta.push(FunctionMeta {
+                self.declared_functions.push(DeclaredFunction {
                     signature_index: type_index,
                     name: signature.name.clone(),
+                    accesses: Vec::new(),
                 });
-                Ok(GlobalValue::Function { func_index })
+                Ok(())
             }
             ast::Item::GlobalDefinition {
                 mut_span,
                 name,
                 type_annotation,
-                value,
+                ..
             } => {
                 match self
-                    .global
                     .symbol_lookup
                     .get(&(SymbolNamespace::Value, name.inner))
                     .cloned()
                 {
                     Some(first_definition) => {
-                        let name_str = self.global.interner.resolve(name.inner).unwrap();
+                        let name_str = self.interner.resolve(name.inner).unwrap();
                         let first_definition_span = match first_definition {
                             GlobalValue::Function { func_index } => {
-                                let func = &self.global.function_meta[func_index as usize];
+                                let func = &self.declared_functions[func_index as usize];
                                 func.name.span
                             }
                             GlobalValue::Global { global_index } => {
-                                let global = &self.global.globals[global_index as usize];
+                                let global = &self.declared_globals[global_index as usize];
                                 global.name.span
                             }
-                            GlobalValue::EnumVariant { .. } | GlobalValue::Enum { .. } => todo!(),
-                            _ => unreachable!(),
+                            _ => todo!(),
                         };
 
                         self.diagnostics.push(
@@ -1334,7 +1428,7 @@ impl Builder<'_, '_> {
 
                 // Resolve the type
                 let (ty, ty_span) = match type_annotation {
-                    Some(type_ann) => match self.global.resolve_type(&type_ann.inner.inner) {
+                    Some(type_ann) => match self.resolve_type(&type_ann.inner.inner) {
                         Ok(ty) => (ty, type_ann.inner.span),
                         Err(_) => {
                             // Type resolution error - still register the global with Error type
@@ -1354,87 +1448,208 @@ impl Builder<'_, '_> {
                     }
                 };
 
-                let global_index = self.global.globals.len() as u32;
-                self.global.symbol_lookup.insert(
+                let global_index = self.declared_globals.len() as u32;
+                self.symbol_lookup.insert(
                     (SymbolNamespace::Value, name.inner),
                     GlobalValue::Global { global_index },
                 );
 
-                // Add a placeholder global - the value will be built in build_item
-                self.global.globals.push(Global {
+                self.declared_globals.push(DeclaredGlobal {
                     name: name.clone(),
                     ty: ast::Spanned {
                         inner: ty,
                         span: ty_span,
                     },
                     mut_span: mut_span.clone(),
-                    value: Box::new(Expression {
-                        kind: ExprKind::Error,
-                        ty: Type::Error,
-                        span: value.span,
-                    }),
                     accesses: Vec::new(),
                 });
 
-                Ok(GlobalValue::Global { global_index })
+                Ok(())
             }
-            ast::Item::ExportModifier { item, alias } => {
-                let global_value = self.define_item(&item.inner)?;
-                let alias = alias.clone();
-                let export_item = match global_value {
-                    GlobalValue::Function { func_index } => ExportItem::Function {
-                        func_index,
-                        name: alias
-                            .unwrap_or(self.global.function_meta[func_index as usize].name.clone()),
-                    },
-                    GlobalValue::Global { global_index } => {
-                        let global = &self.global.globals[global_index as usize];
-                        
-                        // WebAssembly MVP limitation: exported globals must be immutable
-                        if global.mut_span.is_some() {
-                            self.diagnostics.push(
-                                Diagnostic::error()
-                                    .with_code(DiagnosticCode::CannotExportMutableGlobal.code())
-                                    .with_message("cannot export mutable global")
-                                    .with_label(Label::primary(self.ast.file_id, global.name.span))
-                                    .with_note("WebAssembly exported globals must be immutable")
-                                    .with_note("Remove the 'mut' keyword to export this global, or remove the 'export' modifier")
-                            );
-                            return Err(());
-                        }
-                        
-                        ExportItem::Global {
-                            global_index,
-                            name: alias.unwrap_or(global.name.clone()),
-                        }
+            ast::Item::Export { .. } => Ok(()),
+            ast::Item::Import {
+                module,
+                alias,
+                entries,
+            } => {
+                let ns_index = self.namespaces.len() as u32;
+
+                let external_name = {
+                    let module_str = self.interner.resolve(module.inner).unwrap();
+                    let unquoted = unescape_string(module_str);
+                    Spanned {
+                        inner: self.interner.get_or_intern(&unquoted),
+                        span: module.span,
                     }
-                    _ => unreachable!(),
                 };
-                self.global.exports.push(export_item);
-                Ok(global_value)
+
+                let module_symbol = match alias {
+                    Some(alias) => alias.inner,
+                    None => external_name.inner,
+                };
+
+                if let Some(existing) = self
+                    .symbol_lookup
+                    .get(&(SymbolNamespace::Type, module_symbol))
+                {
+                    let name_str = self.interner.resolve(module_symbol).unwrap();
+                    let first_definition_span = match existing {
+                        GlobalValue::Function { func_index } => {
+                            self.declared_functions[*func_index as usize].name.span
+                        }
+                        GlobalValue::Global { global_index } => {
+                            self.declared_globals[*global_index as usize].name.span
+                        }
+                        GlobalValue::Namespace { namespace_index } => {
+                            match &self.namespaces[*namespace_index as usize] {
+                                Namespace::ImportModule(module) => module
+                                    .internal_name
+                                    .as_ref()
+                                    .map(|x| x.span)
+                                    .unwrap_or(module.external_name.span),
+                                Namespace::Enum(enum_) => enum_.name.span,
+                            }
+                        }
+                        _ => alias.as_ref().unwrap_or(module).span,
+                    };
+
+                    self.diagnostics.push(
+                        DuplicateDefinitionDiagnostic {
+                            file_id: self.ast.file_id,
+                            name: name_str,
+                            namespace: SymbolNamespace::Value,
+                            first_definition: first_definition_span,
+                            second_definition: alias.as_ref().unwrap_or(module).span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+
+                self.symbol_lookup.insert(
+                    (SymbolNamespace::Type, module_symbol),
+                    GlobalValue::Namespace {
+                        namespace_index: ns_index,
+                    },
+                );
+
+                let module = self.define_import_module(external_name, alias.clone(), entries)?;
+                self.namespaces.push(Namespace::ImportModule(module));
+
+                Ok(())
             }
         }
+    }
+
+    fn define_import_module(
+        &mut self,
+        external_name: ast::Spanned<SymbolU32>,
+        internal_name: Option<ast::Spanned<SymbolU32>>,
+        entries: &Grouped<Box<[Separated<Spanned<ast::ImportEntry>>]>>,
+    ) -> Result<ImportModule, ()> {
+        let mut module = ImportModule {
+            lookup: HashMap::new(),
+            external_name,
+            internal_name,
+        };
+
+        for entry in &entries.inner {
+            let entry_name_symbol = match &entry.inner.inner.declaration {
+                ast::ImportDeclaration::Function { signature } => signature.name.inner,
+                ast::ImportDeclaration::Global { name, .. } => name.inner,
+            };
+
+            match module.lookup.get(&entry_name_symbol) {
+                Some(existing_value) => {
+                    let existing_span = match existing_value {
+                        ImportValue::Function { func_index } => {
+                            self.declared_functions[*func_index as usize].name.span
+                        }
+                        ImportValue::Global { global_index } => {
+                            self.declared_globals[*global_index as usize].name.span
+                        }
+                    };
+
+                    let name_str = self.interner.resolve(entry_name_symbol).unwrap();
+                    self.diagnostics.push(
+                        DuplicateDefinitionDiagnostic {
+                            file_id: self.ast.file_id,
+                            name: name_str,
+                            namespace: SymbolNamespace::Value,
+                            first_definition: existing_span,
+                            second_definition: entry.inner.span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+                None => {}
+            };
+
+            let import_value = match &entry.inner.inner.declaration {
+                ast::ImportDeclaration::Function { signature } => {
+                    let func_signature = self.build_signature(&signature.params, &signature.result);
+                    let signature_index = self.ensure_signature_index(&func_signature);
+
+                    let func_index = self.declared_functions.len() as u32;
+                    self.declared_functions.push(DeclaredFunction {
+                        name: signature.name.clone(),
+                        signature_index,
+                        accesses: Vec::new(),
+                    });
+
+                    ImportValue::Function { func_index }
+                }
+                ast::ImportDeclaration::Global {
+                    name,
+                    mut_span,
+                    type_annotation,
+                } => {
+                    let ty = match self.resolve_type(&type_annotation.inner.inner) {
+                        Ok(ty) => ty,
+                        Err(_) => Type::Error,
+                    };
+
+                    let global_index = self.declared_globals.len() as u32;
+                    self.declared_globals.push(DeclaredGlobal {
+                        name: name.clone(),
+                        ty: ast::Spanned {
+                            inner: ty,
+                            span: type_annotation.inner.span,
+                        },
+                        mut_span: *mut_span,
+                        accesses: Vec::new(),
+                    });
+
+                    ImportValue::Global { global_index }
+                }
+            };
+
+            module.lookup.insert(entry_name_symbol, import_value);
+        }
+
+        Ok(module)
     }
 
     fn build_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match item {
             ast::Item::FunctionDefinition { signature, block } => {
-                let func = self.build_function_definition(signature, block)?;
-                self.functions.push(func);
-
-                Ok(())
+                self.build_function_definition(signature, block)
             }
-            ast::Item::GlobalDefinition { name, value, .. } => {
-                let global_index = match self.global.resolve_value(name.inner) {
+            ast::Item::GlobalDefinition {
+                name,
+                value,
+                mut_span,
+                ..
+            } => {
+                let global_index = match self.resolve_value(name.inner) {
                     Some(GlobalValue::Global { global_index }) => global_index,
                     _ => return Err(()),
                 };
 
-                // Build the constant value expression
-                let global_ty = self.global.globals[global_index as usize].ty.inner;
-                let value_expr = self.build_const_expression(value, global_ty)?;
+                let global_type = self.declared_globals[global_index as usize].ty.clone();
+                let value_expr = self.build_const_expression(value, global_type.inner)?;
 
-                // Verify the value type matches the declared type
                 match value_expr.ty {
                     Type::Unknown => {
                         self.diagnostics.push(
@@ -1446,27 +1661,175 @@ impl Builder<'_, '_> {
                         );
                         return Err(());
                     }
-                    ty if !ty.coercible_to(global_ty) => {
+                    ty if !ty.coercible_to(global_type.inner) => {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
-                                expected_type: global_ty,
+                                expected_type: global_type.inner,
                                 actual_type: ty,
                                 span: value.span,
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                         return Err(());
                     }
                     _ => {}
                 }
 
-                // Update the global with the actual value
-                self.global.globals[global_index as usize].value = Box::new(value_expr);
+                self.defined_globals.insert(
+                    global_index,
+                    Global {
+                        name: name.clone(),
+                        ty: global_type,
+                        mut_span: *mut_span,
+                        value: Box::new(ast::Spanned {
+                            inner: value_expr,
+                            span: value.span,
+                        }),
+                    },
+                );
 
                 Ok(())
             }
-            ast::Item::ExportModifier { item, .. } => self.build_item(&item.inner),
+            ast::Item::Export { entries } => {
+                // Process exports - look up already-defined items and add them to exports
+                for entry in entries.inner.iter() {
+                    let internal_name = &entry.inner.inner.name;
+
+                    // Look up the item to export
+                    let global_value = match self
+                        .symbol_lookup
+                        .get(&(SymbolNamespace::Value, internal_name.inner))
+                    {
+                        Some(value) => value.clone(),
+                        None => {
+                            self.diagnostics.push(
+                                UndeclaredIdentifierDiagnostic {
+                                    file_id: self.ast.file_id,
+                                    span: internal_name.span,
+                                }
+                                .report(),
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Determine the export alias (or use the item name)
+                    let external_name = entry.inner.inner.alias.as_ref().map(|alias_span| {
+                        // Get the original escaped text from the interner (includes quotes)
+                        let escaped_text = self.interner.resolve(alias_span.inner).unwrap();
+                        let unescaped = unescape_string(escaped_text);
+                        let symbol = self.interner.get_or_intern(&unescaped);
+                        ast::Spanned {
+                            inner: symbol,
+                            span: alias_span.span,
+                        }
+                    });
+
+                    // Create the export item
+                    let export_item = match global_value {
+                        GlobalValue::Function { func_index } => {
+                            self.declared_functions[func_index as usize]
+                                .accesses
+                                .push(internal_name.span);
+
+                            ExportItem::Function {
+                                func_index,
+                                internal_name: internal_name.clone(),
+                                external_name,
+                            }
+                        }
+                        GlobalValue::Global { global_index } => {
+                            self.declared_globals[global_index as usize]
+                                .accesses
+                                .push(internal_name.span);
+
+                            ExportItem::Global {
+                                global_index,
+                                internal_name: internal_name.clone(),
+                                external_name,
+                            }
+                        }
+                        _ => {
+                            self.diagnostics.push(
+                                CannotExportItemDiagnostic {
+                                    file_id: self.ast.file_id,
+                                    name: self.interner.resolve(internal_name.inner).unwrap(),
+                                    span: internal_name.span,
+                                }
+                                .report(),
+                            );
+                            continue;
+                        }
+                    };
+
+                    // Check for duplicate exports based on external export name
+                    // The external name is either the alias or the internal name if no alias
+                    let (export_symbol, export_span) = match &export_item {
+                        ExportItem::Function {
+                            internal_name,
+                            external_name,
+                            ..
+                        }
+                        | ExportItem::Global {
+                            internal_name,
+                            external_name,
+                            ..
+                        } => {
+                            if let Some(ext) = external_name {
+                                (ext.inner, ext.span)
+                            } else {
+                                (internal_name.inner, internal_name.span)
+                            }
+                        }
+                    };
+
+                    match self.exports.get(&export_symbol) {
+                        Some(existing_export) => {
+                            let name = self.interner.resolve(export_symbol).unwrap();
+                            let first_export_span = match existing_export {
+                                ExportItem::Function {
+                                    internal_name,
+                                    external_name,
+                                    ..
+                                }
+                                | ExportItem::Global {
+                                    internal_name,
+                                    external_name,
+                                    ..
+                                } => {
+                                    if let Some(ext) = external_name {
+                                        ext.span
+                                    } else {
+                                        internal_name.span
+                                    }
+                                }
+                            };
+
+                            self.diagnostics.push(
+                                DuplicateExportDiagnostic {
+                                    file_id: self.ast.file_id,
+                                    name,
+                                    first_export: first_export_span,
+                                    second_export: export_span,
+                                }
+                                .report(),
+                            );
+                            continue;
+                        }
+                        None => {
+                            self.exports.insert(export_symbol, export_item);
+                        }
+                    }
+                }
+
+                Ok(())
+            }
+            ast::Item::Import { .. } => {
+                // Imports are defined in define_item to handle duplicate definition errors, so
+                // nothing to do here
+                Ok(())
+            }
         }
     }
 
@@ -1488,7 +1851,7 @@ impl Builder<'_, '_> {
             }),
             ast::Expression::Identifier { symbol } => {
                 // Allow references to global constants like true/false
-                match self.global.resolve_value(*symbol) {
+                match self.resolve_value(*symbol) {
                     Some(GlobalValue::True) => Ok(Expression {
                         kind: ExprKind::Bool { value: true },
                         ty: Type::Bool,
@@ -1550,7 +1913,7 @@ impl Builder<'_, '_> {
                 self.build_const_expression(&value.inner, expected_type)
             }
             ast::Expression::Cast { value, ty } => {
-                let cast_type = self.global.resolve_type(&ty.inner)?;
+                let cast_type = self.resolve_type(&ty.inner)?;
                 let value_expr = self.build_const_expression(value, cast_type)?;
 
                 Ok(Expression {
@@ -1576,7 +1939,7 @@ impl Builder<'_, '_> {
         &mut self,
         signature: &ast::FunctionSignature,
         block: &Spanned<ast::Expression>,
-    ) -> Result<Function, ()> {
+    ) -> Result<(), ()> {
         let params = signature
             .params
             .inner
@@ -1585,7 +1948,6 @@ impl Builder<'_, '_> {
                 name: param.inner.inner.name.clone(),
                 ty: Spanned {
                     inner: self
-                        .global
                         .resolve_type(&param.inner.inner.type_annotation.inner.inner)
                         .unwrap(),
                     span: param.inner.inner.type_annotation.inner.span,
@@ -1600,15 +1962,13 @@ impl Builder<'_, '_> {
             .map(|(index, param)| ((0 as ScopeIndex, param.name.inner), index as LocalIndex))
             .collect();
 
-        let func_index = self.global.resolve_func(signature.name.inner).unwrap();
+        let func_index = self.resolve_func(signature.name.inner).unwrap();
         let func_meta = self
-            .global
-            .function_meta
+            .declared_functions
             .get(func_index as usize)
             .cloned()
             .unwrap();
         let typed_signature = self
-            .global
             .signatures
             .get(func_meta.signature_index as usize)
             .unwrap()
@@ -1641,18 +2001,21 @@ impl Builder<'_, '_> {
         };
         let block = self.build_block_expression(&mut ctx, &block)?;
 
-        Ok(Function {
-            params,
-            result: Spanned {
-                inner: typed_signature.result(),
-                span: signature.result.inner.span,
+        self.defined_functions.insert(
+            func_index,
+            Function {
+                params,
+                result: Spanned {
+                    inner: typed_signature.result(),
+                    span: signature.result.inner.span,
+                },
+                signature_index: func_meta.signature_index,
+                name: signature.name.clone(),
+                stack: ctx.frame,
+                block: Box::new(block),
             },
-            signature_index: func_meta.signature_index,
-            name: signature.name.clone(),
-            stack: ctx.frame,
-            accesses: Vec::new(),
-            block: Box::new(block),
-        })
+        );
+        Ok(())
     }
 
     fn build_block_expression(
@@ -1756,7 +2119,7 @@ impl Builder<'_, '_> {
                                 actual_type: inferred_type,
                                 span: block.span,
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                         return Err(());
                     }
@@ -1778,7 +2141,7 @@ impl Builder<'_, '_> {
 
     fn report_local_warnings(&mut self, block: &BlockScope) {
         for local in block.locals.iter() {
-            if local.accesses.is_empty() {
+            if local.accesses.is_empty() && local.ty != Type::Error {
                 self.diagnostics.push(
                     UnusedVariableDiagnostic {
                         file_id: self.ast.file_id,
@@ -1808,33 +2171,12 @@ impl Builder<'_, '_> {
     }
 
     fn report_unused_items(&mut self) {
-        use std::collections::HashSet;
-
-        // Collect exported function and global indices
-        let mut exported_functions = HashSet::new();
-        let mut exported_globals = HashSet::new();
-
-        for export in self.global.exports.iter() {
-            match export {
-                ExportItem::Function { func_index, .. } => {
-                    exported_functions.insert(*func_index);
-                }
-                ExportItem::Global { global_index, .. } => {
-                    exported_globals.insert(*global_index);
-                }
-            }
-        }
-
-        // Check for unused functions
-        for (func_index, func) in self.functions.iter().enumerate() {
-            let func_index = func_index as u32;
-            if !exported_functions.contains(&func_index) && func.accesses.is_empty() {
-                let name = self
-                    .global
-                    .interner
-                    .resolve(func.name.inner)
-                    .unwrap()
-                    .to_string();
+        for (func_index, func) in self.defined_functions.iter() {
+            if self.declared_functions[*func_index as usize]
+                .accesses
+                .is_empty()
+            {
+                let name = self.interner.resolve(func.name.inner).unwrap().to_string();
                 self.diagnostics.push(
                     UnusedFunctionDiagnostic {
                         file_id: self.ast.file_id,
@@ -1846,12 +2188,12 @@ impl Builder<'_, '_> {
             }
         }
 
-        // Check for unused globals
-        for (global_index, global) in self.global.globals.iter().enumerate() {
-            let global_index = global_index as u32;
-            if !exported_globals.contains(&global_index) && global.accesses.is_empty() {
+        for (global_index, global) in self.defined_globals.iter() {
+            if self.declared_globals[*global_index as usize]
+                .accesses
+                .is_empty()
+            {
                 let name = self
-                    .global
                     .interner
                     .resolve(global.name.inner)
                     .unwrap()
@@ -1955,7 +2297,7 @@ impl Builder<'_, '_> {
                             actual_type: result_type,
                             span: value.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                     Ok(inferred_type)
                 }
@@ -1969,7 +2311,7 @@ impl Builder<'_, '_> {
                                 actual_type: result_type,
                                 span: value.span,
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                         Err(())
                     }
@@ -2015,7 +2357,8 @@ impl Builder<'_, '_> {
         match value.ty {
             Type::Unit => Ok(value),
             Type::Error => {
-                // Skip reporting unused value for error types, as the error has already been reported
+                // Skip reporting unused value for error types, as the error has already been
+                // reported
                 Ok(value)
             }
             Type::Never => {
@@ -2089,7 +2432,9 @@ impl Builder<'_, '_> {
                 self.build_unary_expression(func_ctx, expr, access_ctx)
             }
             ast::Expression::Call { .. } => self.build_call_expression(func_ctx, expr),
-            ast::Expression::Namespace { .. } => unimplemented!(),
+            ast::Expression::NamespaceAccess { namespace, member } => {
+                self.build_namespace_access_expression(namespace, member.clone())
+            }
             ast::Expression::Return { .. } => self.build_return_expression(func_ctx, expr),
             ast::Expression::Block { .. } => func_ctx.enter_block(
                 BlockScope {
@@ -2114,6 +2459,107 @@ impl Builder<'_, '_> {
             ast::Expression::Label { .. } => {
                 self.build_label_expression(func_ctx, expr, access_ctx)
             }
+        }
+    }
+
+    fn build_namespace_access_expression(
+        &mut self,
+        namespace_expr: &Spanned<ast::TypeExpression>,
+        member: Spanned<SymbolU32>,
+    ) -> Result<Expression, ()> {
+        let namespace_ty = self.resolve_type(&namespace_expr.inner)?;
+        let namespace_index = match namespace_ty {
+            Type::Namespace { namespace_index } => namespace_index,
+            ty => {
+                // TODO: Better error message that includes the actual type
+                todo!("type `{}` is not a namespace", self.display_type(ty))
+            }
+        };
+
+        let namespace = &self.namespaces[namespace_index as usize];
+        match namespace {
+            Namespace::Enum(enum_) => match enum_.lookup.get(&member.inner) {
+                Some(variant_index) => Ok(Expression {
+                    kind: ExprKind::NamespaceAccess {
+                        namespace_index,
+                        namespace_span: namespace_expr.span,
+                        member: Box::new(Expression {
+                            kind: ExprKind::EnumVariant {
+                                namespace_index,
+                                variant_index: *variant_index,
+                            },
+                            ty: enum_.ty,
+                            span: member.span,
+                        }),
+                    },
+                    ty: enum_.ty,
+                    span: ast::TextSpan::merge(namespace_expr.span, member.span),
+                }),
+                _ => {
+                    self.diagnostics.push(
+                        UndeclaredIdentifierDiagnostic {
+                            file_id: self.ast.file_id,
+                            span: member.span,
+                        }
+                        .report(),
+                    );
+                    Err(())
+                }
+            },
+            Namespace::ImportModule(module) => match module.lookup.get(&member.inner) {
+                Some(ImportValue::Function { func_index }) => {
+                    let func = &mut self.declared_functions[*func_index as usize];
+                    func.accesses.push(member.span);
+                    let ty = Type::Function {
+                        signature_index: func.signature_index,
+                    };
+                    Ok(Expression {
+                        kind: ExprKind::NamespaceAccess {
+                            namespace_index,
+                            namespace_span: namespace_expr.span,
+                            member: Box::new(Expression {
+                                kind: ExprKind::Function {
+                                    func_index: *func_index,
+                                },
+                                ty,
+                                span: member.span,
+                            }),
+                        },
+                        ty,
+                        span: ast::TextSpan::merge(namespace_expr.span, member.span),
+                    })
+                }
+                Some(ImportValue::Global { global_index }) => {
+                    let global = &mut self.declared_globals[*global_index as usize];
+                    global.accesses.push(member.span);
+
+                    Ok(Expression {
+                        kind: ExprKind::NamespaceAccess {
+                            namespace_index,
+                            namespace_span: namespace_expr.span,
+                            member: Box::new(Expression {
+                                kind: ExprKind::Global {
+                                    global_index: *global_index,
+                                },
+                                ty: global.ty.inner,
+                                span: member.span,
+                            }),
+                        },
+                        ty: global.ty.inner,
+                        span: ast::TextSpan::merge(namespace_expr.span, member.span),
+                    })
+                }
+                None => {
+                    self.diagnostics.push(
+                        UndeclaredIdentifierDiagnostic {
+                            file_id: self.ast.file_id,
+                            span: member.span,
+                        }
+                        .report(),
+                    );
+                    Err(())
+                }
+            },
         }
     }
 
@@ -2198,7 +2644,7 @@ impl Builder<'_, '_> {
                                 actual_type: inferred_type,
                                 span: expr.span,
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                         return Err(());
                     }
@@ -2323,7 +2769,7 @@ impl Builder<'_, '_> {
                                 actual_type: else_block.ty,
                                 span: ast_else_block.span,
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                         return Err(());
                     }
@@ -2359,7 +2805,7 @@ impl Builder<'_, '_> {
             _ => unreachable!(),
         };
 
-        match self.global.resolve_type(&cast_type.inner) {
+        match self.resolve_type(&cast_type.inner) {
             Ok(cast_type) => {
                 let mut value = self.build_expression(
                     ctx,
@@ -2383,7 +2829,7 @@ impl Builder<'_, '_> {
                                 actual_type: ty,
                                 span: value.span,
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                         // Set the type to the cast target to avoid cascading errors
                         value.ty = cast_type;
@@ -2419,7 +2865,8 @@ impl Builder<'_, '_> {
                         .report(),
                     );
 
-                    // TODO: how to handle this better? we don't parse the value if the label is undeclared
+                    // TODO: how to handle this better? we don't parse the value if the label is
+                    // undeclared
                     return Ok(Expression {
                         kind: ExprKind::Error,
                         ty: Type::Never,
@@ -2438,7 +2885,8 @@ impl Builder<'_, '_> {
                         .report(),
                     );
 
-                    // TODO: same as above, we don't parse the value if the break is outside of a loop
+                    // TODO: same as above, we don't parse the value if the break is outside of a
+                    // loop
                     return Ok(Expression {
                         kind: ExprKind::Error,
                         ty: Type::Never,
@@ -2501,7 +2949,7 @@ impl Builder<'_, '_> {
                                     actual_type: Type::Unit,
                                     span: expr.span,
                                 }
-                                .report(&self.global),
+                                .report(&self),
                             );
                         }
                     },
@@ -2539,7 +2987,7 @@ impl Builder<'_, '_> {
                     .get_mut_local(scope_index, local_index)
                     .unwrap();
 
-                local.accesses.push(VariableAccess {
+                local.accesses.push(LocalAccess {
                     kind: access_ctx.access_kind,
                     span: expr.span,
                 });
@@ -2556,7 +3004,7 @@ impl Builder<'_, '_> {
             None => {}
         }
 
-        match self.global.resolve_value(symbol) {
+        match self.resolve_value(symbol) {
             Some(global) => match global {
                 GlobalValue::True => Ok(Expression {
                     kind: ExprKind::Bool { value: true },
@@ -2573,32 +3021,20 @@ impl Builder<'_, '_> {
                     ty: access_ctx.expected_type.unwrap_or(Type::Error),
                     span: expr.span,
                 }),
-                GlobalValue::Function { func_index } => Ok(Expression {
-                    kind: ExprKind::Function { func_index },
-                    ty: Type::Function {
-                        signature_index: self.global.function_meta[func_index as usize]
-                            .signature_index,
-                    },
-                    span: expr.span,
-                }),
-                GlobalValue::EnumVariant {
-                    enum_index,
-                    variant_index,
-                } => Ok(Expression {
-                    kind: ExprKind::EnumVariant {
-                        enum_index,
-                        variant_index,
-                    },
-                    ty: Type::Enum { enum_index },
-                    span: expr.span,
-                }),
-                GlobalValue::Global { global_index } => {
-                    let global = self.global.globals.get_mut(global_index as usize).unwrap();
-
-                    global.accesses.push(VariableAccess {
-                        kind: access_ctx.access_kind,
+                GlobalValue::Function { func_index } => {
+                    let func = &mut self.declared_functions[func_index as usize];
+                    func.accesses.push(expr.span);
+                    Ok(Expression {
+                        kind: ExprKind::Function { func_index },
+                        ty: Type::Function {
+                            signature_index: func.signature_index,
+                        },
                         span: expr.span,
-                    });
+                    })
+                }
+                GlobalValue::Global { global_index } => {
+                    let global = &mut self.declared_globals[global_index as usize];
+                    global.accesses.push(expr.span);
 
                     Ok(Expression {
                         kind: ExprKind::Global { global_index },
@@ -2606,7 +3042,9 @@ impl Builder<'_, '_> {
                         span: expr.span,
                     })
                 }
-                _ => unreachable!(),
+                // this must be handled in the namespace access expression
+                GlobalValue::Namespace { .. } => todo!(),
+                GlobalValue::Unreachable => unreachable!(),
             },
             None => {
                 self.diagnostics.push(
@@ -2733,7 +3171,7 @@ impl Builder<'_, '_> {
                                 span: operand.span,
                             },
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
 
                     Ok(Expression {
@@ -2793,7 +3231,7 @@ impl Builder<'_, '_> {
                         actual_type,
                         span: left.span,
                     }
-                    .report(&self.global),
+                    .report(&self),
                 );
             }
             _ => {}
@@ -2827,7 +3265,7 @@ impl Builder<'_, '_> {
                         actual_type,
                         span: right.span,
                     }
-                    .report(&self.global),
+                    .report(&self),
                 );
             }
             _ => {}
@@ -2900,7 +3338,7 @@ impl Builder<'_, '_> {
                                     span: left.span,
                                 },
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                     }
 
@@ -2936,7 +3374,7 @@ impl Builder<'_, '_> {
                                 span: right.span,
                             },
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                 }
                 self.coerce_untyped_expr(&mut left, right_type)?;
@@ -2962,7 +3400,7 @@ impl Builder<'_, '_> {
                                 span: left.span,
                             },
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                 }
                 self.coerce_untyped_expr(&mut right, left_type)?;
@@ -3002,7 +3440,7 @@ impl Builder<'_, '_> {
                             span: right.span,
                         },
                     }
-                    .report(&self.global),
+                    .report(&self),
                 );
 
                 Ok(Expression {
@@ -3127,23 +3565,20 @@ impl Builder<'_, '_> {
                     span: expr.span,
                 })
             }
-            (
-                Type::Enum {
-                    enum_index: enum_index_1,
-                },
-                Type::Enum {
-                    enum_index: enum_index_2,
-                },
-            ) if enum_index_1 == enum_index_2 => Ok(Expression {
-                kind: ExprKind::Binary {
-                    operator,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                },
-                ty: Type::Bool,
-                span: expr.span,
-            }),
-
+            // TODO: compare namespace variants
+            // (Type::Namespace { namespace_index }, Type::Namespace { namespace_index })
+            //     if enum_index_1 == enum_index_2 =>
+            // {
+            //     Ok(Expression {
+            //         kind: ExprKind::Binary {
+            //             operator,
+            //             left: Box::new(left),
+            //             right: Box::new(right),
+            //         },
+            //         ty: Type::Bool,
+            //         span: expr.span,
+            //     })
+            // }
             (left_type, right_type) => {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
@@ -3158,7 +3593,7 @@ impl Builder<'_, '_> {
                             span: right.span,
                         },
                     }
-                    .report(&self.global),
+                    .report(&self),
                 );
 
                 Ok(Expression {
@@ -3255,7 +3690,7 @@ impl Builder<'_, '_> {
                                     span: right.span,
                                 },
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                     }
                     _ => {}
@@ -3272,8 +3707,7 @@ impl Builder<'_, '_> {
                 })
             }
             ExprKind::Global { global_index } => {
-                let global = self.global.globals.get_mut(global_index as usize).unwrap();
-
+                let global = &self.declared_globals[global_index as usize];
                 match global.mut_span {
                     None => {
                         self.diagnostics.push(
@@ -3314,7 +3748,7 @@ impl Builder<'_, '_> {
                                     span: right.span,
                                 },
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                     }
                     _ => {}
@@ -3455,7 +3889,7 @@ impl Builder<'_, '_> {
                                 span: left.span,
                             },
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
 
                     return Err(());
@@ -3497,7 +3931,7 @@ impl Builder<'_, '_> {
                                     span: right.span,
                                 },
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                     }
                     _ => {}
@@ -3514,7 +3948,10 @@ impl Builder<'_, '_> {
                 })
             }
             ExprKind::Global { global_index } => {
-                let global = self.global.globals.get_mut(global_index as usize).unwrap();
+                let global = self
+                    .declared_globals
+                    .get_mut(global_index as usize)
+                    .unwrap();
 
                 if !global.ty.inner.is_primitive() {
                     self.diagnostics.push(
@@ -3526,7 +3963,7 @@ impl Builder<'_, '_> {
                                 span: left.span,
                             },
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
 
                     return Err(());
@@ -3569,7 +4006,7 @@ impl Builder<'_, '_> {
                                     span: right.span,
                                 },
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                     }
                     _ => {}
@@ -3643,7 +4080,7 @@ impl Builder<'_, '_> {
                                     actual_type: inferred_type,
                                     span: value.span,
                                 }
-                                .report(&self.global),
+                                .report(&self),
                             );
                             return Err(());
                         }
@@ -3678,7 +4115,7 @@ impl Builder<'_, '_> {
                                 actual_type: inferred_type,
                                 span: expr.span,
                             }
-                            .report(&self.global),
+                            .report(&self),
                         );
                         return Err(());
                     }
@@ -3764,7 +4201,7 @@ impl Builder<'_, '_> {
                                 span: right.span,
                             },
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
 
                     return Ok(Expression {
@@ -3850,7 +4287,7 @@ impl Builder<'_, '_> {
                             span: right.span,
                         },
                     }
-                    .report(&self.global),
+                    .report(&self),
                 );
 
                 match access_ctx.expected_type {
@@ -3914,7 +4351,7 @@ impl Builder<'_, '_> {
                         span: ast_callee.span,
                         ty,
                     }
-                    .report(&self.global),
+                    .report(&self),
                 );
 
                 return Ok(Expression {
@@ -3929,7 +4366,6 @@ impl Builder<'_, '_> {
         };
 
         let func_type = self
-            .global
             .signatures
             .get(signature_index as usize)
             .unwrap()
@@ -3968,7 +4404,7 @@ impl Builder<'_, '_> {
                                     actual_type: ty,
                                     span: argument.span,
                                 }
-                                .report(&self.global),
+                                .report(&self),
                             );
                         }
                         _ => {}
@@ -3988,9 +4424,8 @@ impl Builder<'_, '_> {
                     actual_count,
                     param_types: func_type.params(),
                     call_span: callee.span,
-                    global: &self.global,
                 }
-                .report(),
+                .report(&self),
             );
         }
 
@@ -4000,7 +4435,6 @@ impl Builder<'_, '_> {
                 arguments,
             },
             ty: self
-                .global
                 .signatures
                 .get(signature_index as usize)
                 .unwrap()
@@ -4026,7 +4460,7 @@ impl Builder<'_, '_> {
         };
 
         let expected_type = match annotation {
-            Some(annotation) => self.global.resolve_type(&annotation.inner.inner).ok(),
+            Some(annotation) => self.resolve_type(&annotation.inner.inner).ok(),
             None => None,
         };
         let mut value = self.build_expression(
@@ -4067,7 +4501,7 @@ impl Builder<'_, '_> {
                             actual_type,
                             span: value.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                     expected_type // Recover by using the expected type
                 }
@@ -4132,7 +4566,7 @@ impl Builder<'_, '_> {
                             value,
                             span: expr.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                 }
 
@@ -4152,7 +4586,7 @@ impl Builder<'_, '_> {
                             value,
                             span: expr.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                 }
 
@@ -4173,7 +4607,7 @@ impl Builder<'_, '_> {
                             value,
                             span: expr.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                 }
 
@@ -4194,7 +4628,7 @@ impl Builder<'_, '_> {
                             value,
                             span: expr.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                 }
 
@@ -4219,7 +4653,7 @@ impl Builder<'_, '_> {
                         target_type,
                         span: expr.span,
                     }
-                    .report(&self.global),
+                    .report(&self),
                 );
 
                 Err(())
@@ -4250,7 +4684,7 @@ impl Builder<'_, '_> {
                         target_type,
                         span: expr.span,
                     }
-                    .report(&self.global),
+                    .report(&self),
                 );
 
                 Err(())
@@ -4304,7 +4738,7 @@ impl Builder<'_, '_> {
                             target_type,
                             span: expr.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                     return Err(());
                 }
@@ -4318,7 +4752,7 @@ impl Builder<'_, '_> {
                             target_type,
                             span: expr.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                     return Err(());
                 }
@@ -4329,7 +4763,7 @@ impl Builder<'_, '_> {
                             target_type,
                             span: expr.span,
                         }
-                        .report(&self.global),
+                        .report(&self),
                     );
                     return Err(());
                 }
@@ -4350,24 +4784,61 @@ impl Builder<'_, '_> {
     }
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct TIR {
     pub file_id: ast::FileId,
     pub signatures: Vec<FunctionSignature>,
-    pub functions: Vec<Function>,
-    pub enums: Vec<Enum>,
-    pub globals: Vec<Global>,
+    pub defined_functions: HashMap<FunctionIndex, Function>,
+    pub defined_globals: HashMap<GlobalIndex, Global>,
+    pub namespaces: Vec<Namespace>,
     pub exports: Vec<ExportItem>,
+    pub declared_functions: Vec<DeclaredFunction>,
+    pub declared_globals: Vec<DeclaredGlobal>,
     pub diagnostics: Vec<Diagnostic<FileId>>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum Namespace {
+    Enum(Enum),
+    ImportModule(ImportModule),
 }
 
 impl TIR {
     pub fn build(ast: &ast::AST, interner: &mut StringInterner) -> TIR {
+        let mut symbol_lookup = HashMap::new();
+        symbol_lookup.insert(
+            (SymbolNamespace::Value, interner.get_or_intern("_")),
+            GlobalValue::Placeholder,
+        );
+        symbol_lookup.insert(
+            (SymbolNamespace::Value, interner.get_or_intern("true")),
+            GlobalValue::True,
+        );
+        symbol_lookup.insert(
+            (SymbolNamespace::Value, interner.get_or_intern("false")),
+            GlobalValue::False,
+        );
+        symbol_lookup.insert(
+            (
+                SymbolNamespace::Value,
+                interner.get_or_intern("unreachable"),
+            ),
+            GlobalValue::Unreachable,
+        );
+
         let mut builder = Builder {
             ast,
-            global: GlobalContext::new(interner),
-            functions: Vec::new(),
+            interner,
+            defined_globals: HashMap::new(),
+            exports: HashMap::new(),
+            defined_functions: HashMap::new(),
             diagnostics: Vec::new(),
+            declared_functions: Vec::new(),
+            declared_globals: Vec::new(),
+            namespaces: Vec::new(),
+            signature_index_lookup: HashMap::new(),
+            signatures: Vec::new(),
+            symbol_lookup,
         };
 
         for item in ast.items.iter() {
@@ -4386,21 +4857,16 @@ impl TIR {
 
         builder.report_unused_items();
 
-        let Builder {
-            global,
-            diagnostics,
-            functions,
-            ..
-        } = builder;
-
         TIR {
             file_id: ast.file_id,
-            functions,
-            enums: global.enums,
-            globals: global.globals,
-            exports: global.exports,
-            signatures: global.signatures,
-            diagnostics,
+            defined_functions: builder.defined_functions,
+            defined_globals: builder.defined_globals,
+            namespaces: builder.namespaces,
+            exports: builder.exports.into_values().collect(),
+            signatures: builder.signatures,
+            declared_functions: builder.declared_functions,
+            declared_globals: builder.declared_globals,
+            diagnostics: builder.diagnostics,
         }
     }
 }
@@ -4409,9 +4875,8 @@ impl TIR {
 mod tests {
     use indoc::indoc;
 
-    use crate::ast::{AST, Files};
-
     use super::*;
+    use crate::ast::{AST, Files};
 
     #[allow(unused)]
     struct TestCase {
@@ -4443,9 +4908,110 @@ mod tests {
     }
 
     #[test]
+    fn test_unescape_string() {
+        assert_eq!(unescape_string(r#""hello""#), "hello");
+        assert_eq!(unescape_string(r#""hello\nworld""#), "hello\nworld");
+        assert_eq!(unescape_string(r#""tab\tthere""#), "tab\tthere");
+        assert_eq!(unescape_string(r#""quote\"here""#), "quote\"here");
+        assert_eq!(unescape_string(r#""backslash\\here""#), "backslash\\here");
+        assert_eq!(unescape_string(r#""null\0byte""#), "null\0byte");
+        assert_eq!(unescape_string(r#""carriage\rreturn""#), "carriage\rreturn");
+        // Multiple escapes
+        assert_eq!(
+            unescape_string(r#""line1\nline2\nline3""#),
+            "line1\nline2\nline3"
+        );
+        // No quotes (should return as-is)
+        assert_eq!(unescape_string("hello"), "hello");
+    }
+
+    #[test]
+    fn test_duplicate_export() {
+        let case = TestCase::new(indoc! {"
+            fn foo() -> i32 { 42 }
+            fn bar() -> i32 { 43 }
+            
+            export {
+                foo as \"add\",
+                bar as \"add\",
+            }
+        "});
+
+        // Should have a duplicate export diagnostic (but not duplicate definition)
+        assert!(!case.tir.diagnostics.is_empty());
+
+        // Check that we have a duplicate export diagnostic
+        let has_duplicate_export = case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("exported multiple times"));
+        assert!(has_duplicate_export, "Expected duplicate export diagnostic");
+    }
+
+    #[test]
+    fn test_duplicate_export_with_alias() {
+        let case = TestCase::new(indoc! {"
+            fn foo() -> i32 { 42 }
+            fn bar() -> i32 { 43 }
+            
+            export {
+                foo,
+                bar as \"foo\",
+            }
+        "});
+
+        // Should have a duplicate export diagnostic (but not duplicate definition)
+        assert!(!case.tir.diagnostics.is_empty());
+
+        // Check that we have a duplicate export diagnostic
+        let has_duplicate_export = case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("exported multiple times"));
+        assert!(has_duplicate_export, "Expected duplicate export diagnostic");
+    }
+
+    #[test]
     fn test_parse_simple_addition() {
         let case = TestCase::new(indoc! {"
-            export fn add(a: i32, b: i32) -> i32 { a + b }
+            fn add(a: i32, b: i32) -> i32 { a + b }
+            
+            export { add, add as \"plus\" }
+        "});
+        insta::assert_yaml_snapshot!(case.tir);
+    }
+
+    #[test]
+    fn test_parse_import_with_alias() {
+        let case = TestCase::new(indoc! {"
+            import \"console\" as console {
+                fn log(ptr: u32, len: u32) -> unit;
+            }
+
+            fn main() -> unit {
+                console::log(0, 0);
+            }
+
+            export { main }
+        "});
+        insta::assert_yaml_snapshot!(case.tir);
+    }
+
+    #[test]
+    fn test_local_variable_used_in_import_call() {
+        let case = TestCase::new(indoc! {"
+            import \"console\" {
+                fn log(ptr: i32, len: i32) -> unit;
+            }
+
+            fn main() -> unit {
+                local x: i32 = 5;
+                console::log(x, 4);
+            }
+
+            export { main }
         "});
         insta::assert_yaml_snapshot!(case.tir);
     }

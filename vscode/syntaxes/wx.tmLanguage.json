@@ -37,7 +37,7 @@
 			"patterns": [
 				{
 					"name": "keyword.control.wx",
-					"match": "\\b(fn|local|mut|if|else|loop|break|return|continue|export|enum|global|unreachable)\\b"
+					"match": "\\b(fn|local|mut|if|else|loop|break|return|continue|export|enum|global|unreachable|as|import)\\b"
 				},
 				{
 					"name": "constant.language.wx",

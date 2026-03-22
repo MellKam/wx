@@ -1,0 +1,154 @@
+---
+source: crates/wx-compiler/src/tir.rs
+expression: case.tir
+---
+file_id: 0
+signatures:
+  - items:
+      - I32
+      - I32
+      - Unit
+    params_count: 2
+  - items:
+      - Unit
+    params_count: 0
+defined_functions:
+  1:
+    name:
+      inner: 7
+      span:
+        start: 65
+        end: 69
+    params: []
+    result:
+      inner: Unit
+      span:
+        start: 75
+        end: 79
+    signature_index: 1
+    stack:
+      scopes:
+        - kind: Block
+          label: ~
+          parent: ~
+          locals:
+            - name:
+                inner: 8
+                span:
+                  start: 92
+                  end: 93
+              ty: I32
+              mut_span: ~
+              accesses:
+                - span:
+                    start: 121
+                    end: 122
+                  kind: Read
+          inferred_type: Unit
+          expected_type: Unit
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                LocalDeclaration:
+                  name:
+                    inner: 8
+                    span:
+                      start: 92
+                      end: 93
+                  scope_index: 0
+                  local_index: 0
+                  value:
+                    kind:
+                      Int:
+                        value: 5
+                    ty: I32
+                    span:
+                      start: 101
+                      end: 102
+              ty: Unit
+              span:
+                start: 86
+                end: 102
+            - kind:
+                Call:
+                  callee:
+                    kind:
+                      Function:
+                        func_index: 0
+                    ty:
+                      Function:
+                        signature_index: 0
+                    span:
+                      start: 117
+                      end: 120
+                  arguments:
+                    - kind:
+                        Local:
+                          scope_index: 0
+                          local_index: 0
+                      ty: I32
+                      span:
+                        start: 121
+                        end: 122
+                    - kind:
+                        Int:
+                          value: 4
+                      ty: I32
+                      span:
+                        start: 124
+                        end: 125
+              ty: Unit
+              span:
+                start: 108
+                end: 126
+          result: ~
+      ty: Unit
+      span:
+        start: 80
+        end: 129
+defined_globals: {}
+namespaces:
+  - ImportModule:
+      external_name:
+        inner: 1
+        span:
+          start: 7
+          end: 16
+      internal_name: ~
+      lookup:
+        2:
+          Function:
+            func_index: 0
+exports:
+  - Function:
+      internal_name:
+        inner: 7
+        span:
+          start: 140
+          end: 144
+      external_name: ~
+      func_index: 1
+declared_functions:
+  - signature_index: 0
+    name:
+      inner: 2
+      span:
+        start: 26
+        end: 29
+    accesses:
+      - start: 117
+        end: 120
+  - signature_index: 1
+    name:
+      inner: 7
+      span:
+        start: 65
+        end: 69
+    accesses:
+      - start: 140
+        end: 144
+declared_globals: []
+diagnostics: []

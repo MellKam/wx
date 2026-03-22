@@ -1,6 +1,8 @@
-use crate::{mir, tir};
-use leb128fmt;
 use std::collections::HashMap;
+
+use leb128fmt;
+
+use crate::{mir, tir};
 
 #[derive(Clone, Copy, PartialEq, Hash, Eq)]
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -57,13 +59,24 @@ impl FunctionSignature {
 
 impl From<mir::FunctionSignature> for FunctionSignature {
     fn from(ty: mir::FunctionSignature) -> Self {
+        let param_count = ty.params().len();
+
+        // Filter out Unit return types (functions with no return value in WASM)
+        let param_results: Box<[ValueType]> = ty
+            .items
+            .into_iter()
+            .filter_map(|ty| {
+                if matches!(ty, mir::Type::Unit) {
+                    None
+                } else {
+                    Some(ValueType::try_from(ty).unwrap())
+                }
+            })
+            .collect();
+
         FunctionSignature {
-            param_count: ty.params().len(),
-            param_results: ty
-                .items
-                .into_iter()
-                .map(|ty| ValueType::try_from(ty).unwrap())
-                .collect(),
+            param_count,
+            param_results,
         }
     }
 }
@@ -506,7 +519,8 @@ pub struct GlobalSection {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
-enum Mutability {
+#[derive(Debug, Clone)]
+pub enum Mutability {
     Immutable,
     Mutable,
 }
@@ -518,9 +532,35 @@ struct Global {
     value: Expression,
 }
 
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum ImportDesc {
+    Function {
+        signature_index: SignatureIndex,
+    },
+    Global {
+        ty: ValueType,
+        mutability: Mutability,
+    },
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct Import {
+    pub module: String,
+    pub name: String,
+    pub desc: ImportDesc,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ImportSection {
+    imports: Box<[Import]>,
+}
+
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct WasmModule {
     types: TypeSection,
+    imports: ImportSection,
     globals: GlobalSection,
     tables: TableSection,
     elements: ElementSection,
@@ -633,6 +673,59 @@ impl Builder {
         };
 
         let mut signatures = HashMap::<FunctionSignature, SignatureIndex>::new();
+
+        // Process imports first to build signatures for imported functions
+        let mut imports = Vec::<Import>::new();
+        for import_module in &mir.imports {
+            for item in &import_module.items {
+                match item {
+                    mir::ImportModuleItem::Function {
+                        name,
+                        func_index: _,
+                        signature_index,
+                    } => {
+                        // Get the signature from MIR and ensure it's in the signatures map
+                        let signature = FunctionSignature::from(
+                            mir.signatures[*signature_index as usize].clone(),
+                        );
+                        let next_signature_index = SignatureIndex(signatures.len() as u32);
+                        let sig_index = signatures
+                            .entry(signature)
+                            .or_insert(next_signature_index)
+                            .clone();
+
+                        imports.push(Import {
+                            module: import_module.name.clone(),
+                            name: name.clone(),
+                            desc: ImportDesc::Function {
+                                signature_index: sig_index,
+                            },
+                        });
+                    }
+                    mir::ImportModuleItem::Global {
+                        name,
+                        global_index: _,
+                    } => {
+                        // For now, assume imported globals are i32 and immutable
+                        // TODO: Get actual type from the MIR
+                        imports.push(Import {
+                            module: import_module.name.clone(),
+                            name: name.clone(),
+                            desc: ImportDesc::Global {
+                                ty: ValueType::I32,
+                                mutability: Mutability::Immutable,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
+        let _imported_function_count = imports
+            .iter()
+            .filter(|imp| matches!(imp.desc, ImportDesc::Function { .. }))
+            .count();
+
         let mut function_signatures = Vec::<SignatureIndex>::with_capacity(mir.functions.len());
         let exports: Box<_> = mir
             .exports
@@ -644,6 +737,8 @@ impl Builder {
                 },
                 mir::ExportItem::Function { func_index, name } => ExportItem::Function {
                     name: name.clone(),
+                    // MIR func_index already accounts for imports (absolute index in function
+                    // space)
                     func_index: FuncIndex(*func_index),
                 },
             })
@@ -704,6 +799,19 @@ impl Builder {
         }
 
         Ok(WasmModule {
+            types: TypeSection {
+                signatures: {
+                    let mut sorted_types: Vec<_> = signatures.into_iter().collect();
+                    sorted_types.sort_by_key(|&(_, index)| index);
+                    sorted_types
+                        .into_iter()
+                        .map(|(ty, _)| ty)
+                        .collect::<Box<_>>()
+                },
+            },
+            imports: ImportSection {
+                imports: imports.into_boxed_slice(),
+            },
             globals: GlobalSection {
                 globals: mir
                     .globals
@@ -735,16 +843,6 @@ impl Builder {
                         offset: 0,
                         indices: builder.table.into_boxed_slice(),
                     }]),
-                },
-            },
-            types: TypeSection {
-                signatures: {
-                    let mut sorted_types: Vec<_> = signatures.into_iter().collect();
-                    sorted_types.sort_by_key(|&(_, index)| index);
-                    sorted_types
-                        .into_iter()
-                        .map(|(ty, _)| ty)
-                        .collect::<Box<_>>()
                 },
             },
             functions: FunctionSection {
@@ -2090,6 +2188,43 @@ impl Encode for TypeSection {
     }
 }
 
+impl Encode for ImportSection {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        sink.push(SectionId::Import as u8);
+
+        let mut section_sink: Vec<u8> = Vec::new();
+        (self.imports.len() as u32).encode(&mut section_sink);
+        for import in &self.imports {
+            // Module name
+            (import.module.len() as u32).encode(&mut section_sink);
+            section_sink.extend_from_slice(import.module.as_bytes());
+
+            // Import name
+            (import.name.len() as u32).encode(&mut section_sink);
+            section_sink.extend_from_slice(import.name.as_bytes());
+
+            // Import description
+            match &import.desc {
+                ImportDesc::Function { signature_index } => {
+                    section_sink.push(0x00); // Function import kind
+                    signature_index.0.encode(&mut section_sink);
+                }
+                ImportDesc::Global { ty, mutability } => {
+                    section_sink.push(0x03); // Global import kind
+                    ty.encode(&mut section_sink);
+                    match mutability {
+                        Mutability::Immutable => section_sink.push(0x00),
+                        Mutability::Mutable => section_sink.push(0x01),
+                    }
+                }
+            }
+        }
+
+        (section_sink.len() as u32).encode(sink);
+        sink.extend_from_slice(&section_sink);
+    }
+}
+
 impl Encode for FunctionSection {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(SectionId::Function as u8);
@@ -2345,6 +2480,10 @@ impl WasmModule {
         .to_vec();
 
         self.types.encode(&mut sink);
+        match self.imports.imports.len() {
+            0 => {}
+            _ => self.imports.encode(&mut sink),
+        }
         self.functions.encode(&mut sink);
         match self.tables.tables.len() {
             0 => {}
@@ -2366,15 +2505,12 @@ impl WasmModule {
 mod tests {
     use std::os::unix::process;
 
-    use codespan_reporting::term::{
-        self,
-        termcolor::{ColorChoice, StandardStream},
-    };
+    use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
+    use codespan_reporting::term::{self};
     use indoc::indoc;
 
-    use crate::{ast, mir, tir};
-
     use super::*;
+    use crate::{ast, mir, tir};
 
     #[allow(unused)]
     struct TestCase {
@@ -2434,7 +2570,9 @@ mod tests {
     #[test]
     fn test_parse_simple_addition() {
         let case = TestCase::new(indoc! {"
-            export fn add(mut a: i32, b: i32) -> i32 { a += b; a }
+            fn add(mut a: i32, b: i32) -> i32 { a += b; a }
+
+            export { add }
         "});
         insta::assert_yaml_snapshot!(case.bytecode);
 
@@ -2472,10 +2610,17 @@ mod tests {
     #[test]
     fn test_arithmetic_operations() {
         let case = TestCase::new(indoc! {"
-            export fn sub(a: i32, b: i32) -> i32 { a - b }
-            export fn mul(a: i32, b: i32) -> i32 { a * b }
-            export fn div(a: i32, b: i32) -> i32 { a / b }
-            export fn rem(a: i32, b: i32) -> i32 { a % b }
+            fn sub(a: i32, b: i32) -> i32 { a - b }
+            fn mul(a: i32, b: i32) -> i32 { a * b }
+            fn div(a: i32, b: i32) -> i32 { a / b }
+            fn rem(a: i32, b: i32) -> i32 { a % b }
+
+            export {
+                sub,
+                mul,
+                div,
+                rem
+            }
         "});
 
         let engine = wasmtime::Engine::default();
@@ -2511,17 +2656,24 @@ mod tests {
     #[test]
     fn test_comparison_operations() {
         let case = TestCase::new(indoc! {"
-            export fn lt(a: i32, b: i32) -> i32 { 
+            fn lt(a: i32, b: i32) -> i32 { 
                 if a < b { 1 } else { 0 }
             }
-            export fn gt(a: i32, b: i32) -> i32 { 
+            fn gt(a: i32, b: i32) -> i32 { 
                 if a > b { 1 } else { 0 }
             }
-            export fn eq(a: i32, b: i32) -> i32 { 
+            fn eq(a: i32, b: i32) -> i32 { 
                 if a == b { 1 } else { 0 }
             }
-            export fn ne(a: i32, b: i32) -> i32 { 
+            fn ne(a: i32, b: i32) -> i32 { 
                 if a != b { 1 } else { 0 }
+            }
+
+            export {
+                lt,
+                gt,
+                eq,
+                ne
             }
         "});
 
@@ -2558,11 +2710,16 @@ mod tests {
     #[test]
     fn test_conditional_expression() {
         let case = TestCase::new(indoc! {"
-            export fn max(a: i32, b: i32) -> i32 {
+            fn max(a: i32, b: i32) -> i32 {
                 if a > b { a } else { b }
             }
-            export fn abs(a: i32) -> i32 {
+            fn abs(a: i32) -> i32 {
                 if a < 0 { -a } else { a }
+            }
+
+            export {
+                max,
+                abs
             }
         "});
 
@@ -2589,7 +2746,7 @@ mod tests {
     #[test]
     fn test_loops() {
         let case = TestCase::new(indoc! {"
-            export fn factorial(n: i32) -> i32 {
+            fn factorial(n: i32) -> i32 {
                 local mut result: i32 = 1;
                 local mut i: i32 = 1;
                 loop {
@@ -2598,7 +2755,7 @@ mod tests {
                     i += 1;
                 }
             }
-            export fn sum_to_n(n: i32) -> i32 {
+            fn sum_to_n(n: i32) -> i32 {
                 local mut sum: i32 = 0;
                 local mut i: i32 = 1;
                 loop {
@@ -2607,6 +2764,11 @@ mod tests {
                     i += 1;
                 };
                 sum
+            }
+
+            export {
+                factorial,
+                sum_to_n
             }
         "});
 
@@ -2632,8 +2794,13 @@ mod tests {
     #[test]
     fn test_i64_operations() {
         let case = TestCase::new(indoc! {"
-            export fn add64(a: i64, b: i64) -> i64 { a + b }
-            export fn mul64(a: i64, b: i64) -> i64 { a * b }
+            fn add64(a: i64, b: i64) -> i64 { a + b }
+            fn mul64(a: i64, b: i64) -> i64 { a * b }
+
+            export {
+                add64,
+                mul64
+            }
         "});
 
         let engine = wasmtime::Engine::default();
@@ -2662,9 +2829,15 @@ mod tests {
     #[test]
     fn test_f32_operations() {
         let case = TestCase::new(indoc! {"
-            export fn add_f32(a: f32, b: f32) -> f32 { a + b }
-            export fn mul_f32(a: f32, b: f32) -> f32 { a * b }
-            export fn div_f32(a: f32, b: f32) -> f32 { a / b }
+            fn add_f32(a: f32, b: f32) -> f32 { a + b }
+            fn mul_f32(a: f32, b: f32) -> f32 { a * b }
+            fn div_f32(a: f32, b: f32) -> f32 { a / b }
+
+            export {
+                add_f32,
+                mul_f32,
+                div_f32
+            }
         "});
 
         let engine = wasmtime::Engine::default();
@@ -2691,8 +2864,13 @@ mod tests {
     #[test]
     fn test_f64_operations() {
         let case = TestCase::new(indoc! {"
-            export fn add_f64(a: f64, b: f64) -> f64 { a + b }
-            export fn sub_f64(a: f64, b: f64) -> f64 { a - b }
+            fn add_f64(a: f64, b: f64) -> f64 { a + b }
+            fn sub_f64(a: f64, b: f64) -> f64 { a - b }
+
+            export {
+                add_f64,
+                sub_f64
+            }
         "});
 
         let engine = wasmtime::Engine::default();
@@ -2714,11 +2892,19 @@ mod tests {
     #[test]
     fn test_bitwise_operations() {
         let case = TestCase::new(indoc! {"
-            export fn bit_and(a: i32, b: i32) -> i32 { a & b }
-            export fn bit_or(a: i32, b: i32) -> i32 { a | b }
-            export fn bit_xor(a: i32, b: i32) -> i32 { a ^ b }
-            export fn left_shift(a: i32, b: i32) -> i32 { a << b }
-            export fn right_shift(a: i32, b: i32) -> i32 { a >> b }
+            fn bit_and(a: i32, b: i32) -> i32 { a & b }
+            fn bit_or(a: i32, b: i32) -> i32 { a | b }
+            fn bit_xor(a: i32, b: i32) -> i32 { a ^ b }
+            fn left_shift(a: i32, b: i32) -> i32 { a << b }
+            fn right_shift(a: i32, b: i32) -> i32 { a >> b }
+
+            export {
+                bit_and,
+                bit_or,
+                bit_xor,
+                left_shift,
+                right_shift
+            }
         "});
 
         let engine = wasmtime::Engine::default();
@@ -2755,8 +2941,10 @@ mod tests {
     #[test]
     fn test_logical_operations() {
         let case = TestCase::new(indoc! {"
-            export fn and(a: i32, b: i32) -> i32 { ((a != 0) && (b != 0)) as i32 }
-            export fn or(a: i32, b: i32) -> i32 { ((a != 0) || (b != 0)) as i32 }
+            fn and(a: i32, b: i32) -> i32 { ((a != 0) && (b != 0)) as i32 }
+            fn or(a: i32, b: i32) -> i32 { ((a != 0) || (b != 0)) as i32 }
+
+            export { and, or }
         "});
 
         let engine = wasmtime::Engine::default();
@@ -2786,13 +2974,18 @@ mod tests {
         let case = TestCase::new(indoc! {"
             global mut global_counter: i32 = 0
             
-            export fn increment() -> i32 {
+            fn increment() -> i32 {
                 global_counter += 1;
                 global_counter
             }
             
-            export fn get_counter() -> i32 {
+            fn get_counter() -> i32 {
                 global_counter
+            }
+
+            export {
+                increment,
+                get_counter
             }
         "});
 
@@ -2819,7 +3012,7 @@ mod tests {
     #[test]
     fn test_fibonacci() {
         let case = TestCase::new(indoc! {"
-            export fn fibonacci(n: i32) -> i32 {
+            fn fibonacci(n: i32) -> i32 {
                 if n <= 1 { return n };
                 local mut a: i32 = 0;
                 local mut b: i32 = 1;
@@ -2833,6 +3026,8 @@ mod tests {
                 };
                 b
             }
+
+            export { fibonacci }
         "});
 
         let engine = wasmtime::Engine::default();
@@ -2850,5 +3045,45 @@ mod tests {
         assert_eq!(fibonacci.call(&mut store, 4).unwrap(), 3);
         assert_eq!(fibonacci.call(&mut store, 5).unwrap(), 5);
         assert_eq!(fibonacci.call(&mut store, 10).unwrap(), 55);
+    }
+
+    #[test]
+    fn test_imports() {
+        let case = TestCase::new(indoc! {"
+            import \"env\" as env {
+                fn print_i32(value: i32) -> unit;
+            }
+
+            fn main() -> unit {
+                env::print_i32(42);
+            }
+
+            export { main }
+        "});
+
+        // The compiled module should have the import section
+        // insta::assert_yaml_snapshot!(case.wasm);
+
+        // Execute the wasm bytecode using wasmtime to verify it works
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+        let mut linker = wasmtime::Linker::new(&engine);
+
+        // Provide the imported print_i32 function
+        linker
+            .func_wrap("env", "print_i32", |value: i32| {
+                println!("print_i32 called with: {}", value);
+            })
+            .unwrap();
+
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+
+        let main = instance
+            .get_typed_func::<(), ()>(&mut store, "main")
+            .unwrap();
+
+        // Call main, which should call print_i32(42)
+        main.call(&mut store, ()).unwrap();
     }
 }

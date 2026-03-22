@@ -23,10 +23,12 @@ use lsp_types::{
     DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
     HoverParams, HoverProviderCapability, InitializeParams, LanguageString, Location, MarkedString,
     NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position,
-    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, ServerCapabilities,
-    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions,
-    WorkspaceEdit,
+    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SemanticToken,
+    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
@@ -66,8 +68,8 @@ const BUILTIN_TYPES: &[(&str, &str)] = &[
 struct DocumentData {
     source: String,
     ast: wx_compiler::ast::AST,
-    tir: wx_compiler::tir::TIR,
-    span_index: SpanIndex,
+    tir: Option<wx_compiler::tir::TIR>,
+    span_index: Option<SpanIndex>,
     interner: StringInterner<StringBackend>,
 }
 
@@ -110,6 +112,19 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
                 work_done_progress: None,
             },
         }),
+        semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+            SemanticTokensOptions {
+                legend: SemanticTokensLegend {
+                    token_types: vec![SemanticTokenType::NAMESPACE, SemanticTokenType::ENUM],
+                    token_modifiers: vec![],
+                },
+                full: Some(SemanticTokensFullOptions::Bool(true)),
+                range: None,
+                work_done_progress_options: WorkDoneProgressOptions {
+                    work_done_progress: None,
+                },
+            },
+        )),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             lsp_types::TextDocumentSyncOptions {
                 open_close: Some(true),
@@ -304,6 +319,26 @@ fn main_loop(
                     }
                 };
 
+                // Try to handle as semantic tokens request
+                let req = match cast_request::<lsp_types::request::SemanticTokensFullRequest>(req) {
+                    Ok((id, params)) => {
+                        let result = handle_semantic_tokens(state, &params);
+                        let result = serde_json::to_value(result).ok();
+                        let resp = Response {
+                            id,
+                            result,
+                            error: None,
+                        };
+                        connection.sender.send(Message::Response(resp))?;
+                        continue;
+                    }
+                    Err(ExtractError::MethodMismatch(req)) => req,
+                    Err(err) => {
+                        debug_log!("error: could not cast request: {:?}", err);
+                        continue;
+                    }
+                };
+
                 // Unknown request type
                 debug_log!("warn: received unknown request: {:?}", req.method);
             }
@@ -417,36 +452,21 @@ fn compile_document(uri: Uri, content: String) -> DocumentData {
         &mut interner,
     );
 
-    debug_log!("AST has {} diagnostics", ast.diagnostics.len());
-    for diag in &ast.diagnostics {
-        debug_log!("  AST diagnostic: {:?}", diag.message);
+    if ast.diagnostics.iter().any(|d| match d.severity {
+        codespan_reporting::diagnostic::Severity::Error
+        | codespan_reporting::diagnostic::Severity::Bug => true,
+        _ => false,
+    }) {
+        return DocumentData {
+            source: content,
+            ast,
+            tir: None,
+            span_index: None,
+            interner,
+        };
     }
 
     let tir = wx_compiler::tir::TIR::build(&ast, &mut interner);
-
-    debug_log!("TIR has {} diagnostics", tir.diagnostics.len());
-    for diag in &tir.diagnostics {
-        debug_log!("  TIR diagnostic: {:?}", diag.message);
-    }
-
-    debug_log!("TIR has {} functions", tir.functions.len());
-    for (i, func) in tir.functions.iter().enumerate() {
-        debug_log!("  Function {}: {} scopes", i, func.stack.scopes.len());
-        for (j, scope) in func.stack.scopes.iter().enumerate() {
-            debug_log!("    Scope {}: {} locals", j, scope.locals.len());
-            for (k, local) in scope.locals.iter().enumerate() {
-                let name = interner.resolve(local.name.inner).unwrap();
-                debug_log!(
-                    "      Local {}: {} at {}..{}",
-                    k,
-                    name,
-                    local.name.span.start,
-                    local.name.span.end
-                );
-            }
-        }
-    }
-
     let span_index = span_index::build_span_index(&tir);
 
     debug_log!(
@@ -468,8 +488,8 @@ fn compile_document(uri: Uri, content: String) -> DocumentData {
     DocumentData {
         source: content,
         ast,
-        tir,
-        span_index,
+        tir: Some(tir),
+        span_index: Some(span_index),
         interner,
     }
 }
@@ -525,6 +545,7 @@ fn convert_diagnostic(
     // Add diagnostic tags for special cases
     let tags = diagnostic.code.as_ref().and_then(|code| {
         use std::str::FromStr;
+
         use wx_compiler::tir::DiagnosticCode;
 
         DiagnosticCode::from_str(code)
@@ -563,8 +584,10 @@ fn convert_diagnostics(doc: &DocumentData, uri: &Uri) -> Vec<Diagnostic> {
     for diagnostic in &doc.ast.diagnostics {
         diagnostics.push(convert_diagnostic(doc, uri, diagnostic));
     }
-    for diagnostic in &doc.tir.diagnostics {
-        diagnostics.push(convert_diagnostic(doc, uri, diagnostic));
+    if let Some(tir) = &doc.tir {
+        for diagnostic in &tir.diagnostics {
+            diagnostics.push(convert_diagnostic(doc, uri, diagnostic));
+        }
     }
 
     debug_log!(
@@ -654,41 +677,49 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
         offset
     );
 
-    let span_info = doc.span_index.find_at_position(offset)?;
+    let (tir, span_index) = match (&doc.tir, &doc.span_index) {
+        (Some(tir), Some(span_index)) => (tir, span_index),
+        _ => {
+            debug_log!("TIR or span index not available for document");
+            return None;
+        }
+    };
+
+    debug_log!("Looking up symbol at hover position...");
+
+    let span_info = span_index.find_at_position(offset)?;
 
     debug_log!("Found symbol: {:?}", span_info.kind);
 
     // Format hover information based on symbol kind
     let hover_text = match &span_info.kind {
         span_index::SymbolKind::Function { func_idx } => {
-            let func = &doc.tir.functions[*func_idx as usize];
+            let func = &tir.declared_functions[*func_idx as usize];
             let name = doc.interner.resolve(func.name.inner).unwrap();
-            let sig = &doc.tir.signatures[func.signature_index as usize];
+            let sig = &tir.signatures[func.signature_index as usize];
 
-            let params: Vec<String> = func
-                .params
+            let params: String = sig
+                .params()
                 .iter()
-                .map(|p| {
-                    let param_name = doc.interner.resolve(p.name.inner).unwrap();
-                    let param_type = format_type(&doc.tir, &doc.interner, p.ty.inner);
-                    let mut_prefix = if p.mut_span.is_some() { "mut " } else { "" };
-                    format!("{}{}: {}", mut_prefix, param_name, param_type)
-                })
-                .collect();
+                .copied()
+                .map(|ty| format_type(&tir, &doc.interner, ty))
+                .collect::<Box<[_]>>()
+                .join(", ");
 
-            let return_type = format_type(&doc.tir, &doc.interner, sig.result());
+            let return_type = format_type(&tir, &doc.interner, sig.result());
 
-            format!("fn {}({}) -> {}", name, params.join(", "), return_type)
+            format!("fn {}({}) -> {}", name, params, return_type)
         }
         span_index::SymbolKind::LocalVariable {
             func_idx,
             scope_idx,
             local_idx,
         } => {
-            let func = &doc.tir.functions[*func_idx as usize];
-            let local = &func.stack.scopes[*scope_idx as usize].locals[*local_idx as usize];
+            let local = &tir.defined_functions.get(func_idx).unwrap().stack.scopes
+                [*scope_idx as usize]
+                .locals[*local_idx as usize];
             let name = doc.interner.resolve(local.name.inner).unwrap();
-            let type_str = format_type(&doc.tir, &doc.interner, local.ty);
+            let type_str = format_type(&tir, &doc.interner, local.ty);
             let mut_keyword = if local.mut_span.is_some() { "mut " } else { "" };
 
             format!("local {}{}: {}", mut_keyword, name, type_str)
@@ -697,18 +728,18 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
             func_idx,
             param_idx,
         } => {
-            let func = &doc.tir.functions[*func_idx as usize];
-            let param = &func.params[*param_idx as usize];
+            // TODO: this might be incorrect if the parameter is from only declared function
+            let param = &tir.defined_functions.get(func_idx).unwrap().params[*param_idx as usize];
             let name = doc.interner.resolve(param.name.inner).unwrap();
-            let type_str = format_type(&doc.tir, &doc.interner, param.ty.inner);
+            let type_str = format_type(&tir, &doc.interner, param.ty.inner);
             let mut_keyword = if param.mut_span.is_some() { "mut " } else { "" };
 
             format!("local {}{}: {}", mut_keyword, name, type_str)
         }
         span_index::SymbolKind::GlobalVariable { global_idx } => {
-            let global = &doc.tir.globals[*global_idx as usize];
+            let global = &tir.declared_globals[*global_idx as usize];
             let name = doc.interner.resolve(global.name.inner).unwrap();
-            let type_str = format_type(&doc.tir, &doc.interner, global.ty.inner);
+            let type_str = format_type(&tir, &doc.interner, global.ty.inner);
             let mut_keyword = if global.mut_span.is_some() {
                 "mut "
             } else {
@@ -717,24 +748,19 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
 
             format!("global {}{}: {}", mut_keyword, name, type_str)
         }
-        span_index::SymbolKind::EnumType { enum_idx } => {
-            let enum_def = &doc.tir.enums[*enum_idx as usize];
-            let name = doc.interner.resolve(enum_def.name.inner).unwrap();
-
-            format!("enum {}", name)
-        }
+        span_index::SymbolKind::Type { ty } => format_type(&tir, &doc.interner, *ty),
         span_index::SymbolKind::EnumVariant {
-            enum_idx,
+            namespace_index,
             variant_idx,
-        } => {
-            let enum_def = &doc.tir.enums[*enum_idx as usize];
-            let variant = &enum_def.variants[*variant_idx as usize];
-            let enum_name = doc.interner.resolve(enum_def.name.inner).unwrap();
-            let variant_name = doc.interner.resolve(variant.name.inner).unwrap();
-
-            format!("{}::{}", enum_name, variant_name)
-        }
-        span_index::SymbolKind::Type { ty } => format_type(&doc.tir, &doc.interner, *ty),
+        } => match &tir.namespaces[*namespace_index as usize] {
+            wx_compiler::tir::Namespace::Enum(enum_) => {
+                let variant = &enum_.variants[*variant_idx as usize];
+                let enum_name = doc.interner.resolve(enum_.name.inner).unwrap();
+                let variant_name = doc.interner.resolve(variant.name.inner).unwrap();
+                format!("{}::{}", enum_name, variant_name)
+            }
+            _ => unreachable!(),
+        },
     };
 
     let hover_contents = HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
@@ -764,13 +790,21 @@ fn handle_definition(
         offset
     );
 
+    let span_index = match &doc.span_index {
+        Some(span_index) => span_index,
+        _ => {
+            debug_log!("Span index not available for document");
+            return None;
+        }
+    };
+
     // Find the symbol at the cursor position
-    let span_info = doc.span_index.find_at_position(offset)?;
+    let span_info = span_index.find_at_position(offset)?;
 
     debug_log!("Found symbol: {:?}", span_info.kind);
 
     // Find the definition of this symbol
-    let def_span = doc.span_index.find_definition(&span_info.kind)?;
+    let def_span = span_index.find_definition(&span_info.kind)?;
 
     debug_log!(
         "Found definition at span: {}..{}",
@@ -805,13 +839,21 @@ fn handle_references(state: &ServerState, params: &ReferenceParams) -> Option<Ve
         offset
     );
 
+    let span_index = match &doc.span_index {
+        Some(span_index) => span_index,
+        _ => {
+            debug_log!("Span index not available for document");
+            return None;
+        }
+    };
+
     // Find the symbol at the cursor position
-    let span_info = doc.span_index.find_at_position(offset)?;
+    let span_info = span_index.find_at_position(offset)?;
 
     debug_log!("Found symbol: {:?}", span_info.kind);
 
     // Find all references to this symbol
-    let all_spans = doc.span_index.find_all_references(&span_info.kind);
+    let all_spans = span_index.find_all_references(&span_info.kind);
 
     if all_spans.is_empty() {
         debug_log!("No references found for symbol {:?}", span_info.kind);
@@ -837,7 +879,7 @@ fn handle_references(state: &ServerState, params: &ReferenceParams) -> Option<Ve
 
     // If include_declaration is false, filter out the definition
     if !params.context.include_declaration {
-        let def_span = doc.span_index.find_definition(&span_info.kind)?;
+        let def_span = span_index.find_definition(&span_info.kind)?;
         let filtered: Vec<Location> = locations
             .into_iter()
             .filter(|loc| {
@@ -980,15 +1022,23 @@ fn handle_rename(state: &ServerState, params: &RenameParams) -> Option<Workspace
     }
     let offset = offset.unwrap();
 
+    let span_index = match &doc.span_index {
+        Some(span_index) => span_index,
+        _ => {
+            debug_log!("Span index not available for document");
+            return None;
+        }
+    };
+
     // Find the symbol at the cursor position
-    let span_info = doc.span_index.find_at_position(offset);
+    let span_info = span_index.find_at_position(offset);
     if span_info.is_none() {
         debug_log!(
             "Rename failed: no symbol found at position (offset: {})",
             offset
         );
         debug_log!("Available entries in span index:");
-        for (i, entry) in doc.span_index.entries().iter().take(20).enumerate() {
+        for (i, entry) in span_index.entries().iter().take(20).enumerate() {
             let text = entry.span.extract_str(&doc.source);
             debug_log!(
                 "  Entry {}: {:?} at {}..{} = '{}'",
@@ -1019,7 +1069,7 @@ fn handle_rename(state: &ServerState, params: &RenameParams) -> Option<Workspace
     }
 
     // Find all references (includes definition and all usages)
-    let all_spans = doc.span_index.find_all_references(&span_info.kind);
+    let all_spans = span_index.find_all_references(&span_info.kind);
 
     if all_spans.is_empty() {
         debug_log!(
@@ -1091,22 +1141,30 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
         });
     }
 
+    let tir = match &doc.tir {
+        Some(tir) => tir,
+        _ => {
+            debug_log!("TIR not available for document");
+            return None;
+        }
+    };
+
     // Add all functions
-    for func in &doc.tir.functions {
+    for func in tir.defined_functions.values() {
         let name = doc.interner.resolve(func.name.inner).unwrap();
-        let sig = &doc.tir.signatures[func.signature_index as usize];
+        let sig = &tir.signatures[func.signature_index as usize];
 
         let params: Vec<String> = func
             .params
             .iter()
             .map(|p| {
                 let param_name = doc.interner.resolve(p.name.inner).unwrap();
-                let param_type = format_type(&doc.tir, &doc.interner, p.ty.inner);
+                let param_type = format_type(tir, &doc.interner, p.ty.inner);
                 format!("{}: {}", param_name, param_type)
             })
             .collect();
 
-        let return_type = format_type(&doc.tir, &doc.interner, sig.result());
+        let return_type = format_type(tir, &doc.interner, sig.result());
         let detail = format!("fn({}) -> {}", params.join(", "), return_type);
 
         items.push(CompletionItem {
@@ -1118,9 +1176,9 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
     }
 
     // Add global variables
-    for global in &doc.tir.globals {
+    for global in tir.defined_globals.values() {
         let name = doc.interner.resolve(global.name.inner).unwrap();
-        let type_str = format_type(&doc.tir, &doc.interner, global.ty.inner);
+        let type_str = format_type(&tir, &doc.interner, global.ty.inner);
         let mut_prefix = if global.mut_span.is_some() {
             "mut "
         } else {
@@ -1135,33 +1193,9 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
         });
     }
 
-    // Add enums
-    for enum_def in &doc.tir.enums {
-        let enum_name = doc.interner.resolve(enum_def.name.inner).unwrap();
-
-        items.push(CompletionItem {
-            label: enum_name.to_string(),
-            kind: Some(CompletionItemKind::ENUM),
-            detail: Some(format!("enum {}", enum_name)),
-            ..Default::default()
-        });
-
-        // Add enum variants
-        for variant in &enum_def.variants {
-            let variant_name = doc.interner.resolve(variant.name.inner).unwrap();
-
-            items.push(CompletionItem {
-                label: format!("{}::{}", enum_name, variant_name),
-                kind: Some(CompletionItemKind::ENUM_MEMBER),
-                detail: Some(format!("{}::{}", enum_name, variant_name)),
-                ..Default::default()
-            });
-        }
-    }
-
     // Try to find locals in scope at the cursor position
     // We need to determine which function we're in
-    for func in &doc.tir.functions {
+    for func in tir.defined_functions.values() {
         // Check if cursor is within this function's body
         let func_start = func.block.span.start;
         let func_end = func.block.span.end;
@@ -1170,7 +1204,7 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
             // Add parameters
             for param in &func.params {
                 let name = doc.interner.resolve(param.name.inner).unwrap();
-                let type_str = format_type(&doc.tir, &doc.interner, param.ty.inner);
+                let type_str = format_type(&tir, &doc.interner, param.ty.inner);
                 let mut_keyword = if param.mut_span.is_some() { "mut " } else { "" };
 
                 items.push(CompletionItem {
@@ -1190,7 +1224,7 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
                     }
 
                     let name = doc.interner.resolve(local.name.inner).unwrap();
-                    let type_str = format_type(&doc.tir, &doc.interner, local.ty);
+                    let type_str = format_type(&tir, &doc.interner, local.ty);
                     let mut_keyword = if local.mut_span.is_some() { "mut " } else { "" };
 
                     items.push(CompletionItem {
@@ -1241,17 +1275,27 @@ fn handle_signature_help(
     // Extract function name and find it in the TIR
     let func_name_str = &doc.source[func_name_start..func_name_end];
 
+    let tir = match &doc.tir {
+        Some(tir) => tir,
+        _ => {
+            debug_log!("TIR not available for document");
+            return None;
+        }
+    };
+
     // Try to find this function in the TIR
-    for func in &doc.tir.functions {
+    // TODO: need to handle imported functions as well, currently only defined
+    // functions are supported
+    for func in tir.defined_functions.values() {
         let name = doc.interner.resolve(func.name.inner).unwrap();
         if name == func_name_str {
-            let sig = &doc.tir.signatures[func.signature_index as usize];
+            let sig = &tir.signatures[func.signature_index as usize];
 
             // Build parameter information
             let mut parameters = Vec::new();
             for param in &func.params {
                 let param_name = doc.interner.resolve(param.name.inner).unwrap();
-                let param_type = format_type(&doc.tir, &doc.interner, param.ty.inner);
+                let param_type = format_type(&tir, &doc.interner, param.ty.inner);
                 let param_label = format!("{}: {}", param_name, param_type);
 
                 parameters.push(ParameterInformation {
@@ -1260,13 +1304,13 @@ fn handle_signature_help(
                 });
             }
 
-            let return_type = format_type(&doc.tir, &doc.interner, sig.result());
+            let return_type = format_type(&tir, &doc.interner, sig.result());
             let param_labels: Vec<String> = func
                 .params
                 .iter()
                 .map(|p| {
                     let param_name = doc.interner.resolve(p.name.inner).unwrap();
-                    let param_type = format_type(&doc.tir, &doc.interner, p.ty.inner);
+                    let param_type = format_type(&tir, &doc.interner, p.ty.inner);
                     format!("{}: {}", param_name, param_type)
                 })
                 .collect();
@@ -1380,6 +1424,24 @@ fn format_type(
         Type::Never => "never".to_string(),
         Type::Unknown => "unknown".to_string(),
         Type::Error => "error".to_string(),
+        Type::Namespace { namespace_index } => {
+            let ns = &tir.namespaces[namespace_index as usize];
+            let name = match ns {
+                wx_compiler::tir::Namespace::ImportModule(module) => interner
+                    .resolve(
+                        module
+                            .internal_name
+                            .clone()
+                            .map(|m| m.inner)
+                            .unwrap_or(module.external_name.inner),
+                    )
+                    .unwrap(),
+                wx_compiler::tir::Namespace::Enum(enum_) => {
+                    interner.resolve(enum_.name.inner).unwrap()
+                }
+            };
+            format!("namespace {}", name)
+        }
         Type::Function { signature_index } => {
             let sig = &tir.signatures[signature_index as usize];
             let params: Vec<String> = sig
@@ -1390,11 +1452,162 @@ fn format_type(
             let result = format_type(tir, interner, sig.result());
             format!("fn({}) -> {}", params.join(", "), result)
         }
-        Type::Enum { enum_index } => {
-            let enum_def = &tir.enums[enum_index as usize];
-            interner.resolve(enum_def.name.inner).unwrap().to_string()
+    }
+}
+
+fn handle_semantic_tokens(
+    state: &ServerState,
+    params: &SemanticTokensParams,
+) -> Option<SemanticTokensResult> {
+    let doc = state.documents.get(&params.text_document.uri)?;
+    let tir = doc.tir.as_ref()?;
+
+    let mut tokens = Vec::new();
+
+    // Collect namespace reference tokens (when namespaces are used, not when
+    // defined) Traverse all functions to find NamespaceAccess expressions
+    for func in tir.defined_functions.values() {
+        collect_namespace_tokens(&func.block, &tir.namespaces, &doc.source, &mut tokens);
+    }
+
+    // Sort tokens by position (line, then character)
+    tokens.sort_by(|a, b| {
+        a.0.line
+            .cmp(&b.0.line)
+            .then(a.0.character.cmp(&b.0.character))
+    });
+
+    // Convert to LSP format (delta-encoded)
+    let semantic_tokens = encode_semantic_tokens(&tokens);
+
+    Some(SemanticTokensResult::Tokens(lsp_types::SemanticTokens {
+        result_id: None,
+        data: semantic_tokens,
+    }))
+}
+
+/// Recursively traverse expressions to find namespace accesses
+fn collect_namespace_tokens(
+    expr: &wx_compiler::tir::Expression,
+    namespaces: &[wx_compiler::tir::Namespace],
+    source: &str,
+    tokens: &mut Vec<(Position, u32, u32)>,
+) {
+    use wx_compiler::tir::ExprKind;
+
+    match &expr.kind {
+        ExprKind::NamespaceAccess {
+            namespace_index,
+            namespace_span,
+            member,
+        } => {
+            // Determine token type based on namespace type
+            let token_type = match &namespaces[*namespace_index as usize] {
+                wx_compiler::tir::Namespace::ImportModule(_) => 0, // NAMESPACE
+                wx_compiler::tir::Namespace::Enum(_) => 1,         // ENUM
+            };
+
+            let pos = offset_to_position(source, namespace_span.start);
+            let length = namespace_span.end - namespace_span.start;
+            tokens.push((pos, length, token_type));
+
+            // Continue traversing the member expression
+            collect_namespace_tokens(member, namespaces, source, tokens);
+        }
+        ExprKind::Int { .. }
+        | ExprKind::Float { .. }
+        | ExprKind::Bool { .. }
+        | ExprKind::Error
+        | ExprKind::Placeholder
+        | ExprKind::Unreachable
+        | ExprKind::Global { .. }
+        | ExprKind::Local { .. }
+        | ExprKind::Function { .. }
+        | ExprKind::EnumVariant { .. } => {
+            // Terminal expressions, no recursion needed
+        }
+        ExprKind::LocalDeclaration { value, .. } => {
+            collect_namespace_tokens(value, namespaces, source, tokens);
+        }
+        ExprKind::Unary { operand, .. } => {
+            collect_namespace_tokens(operand, namespaces, source, tokens);
+        }
+        ExprKind::Binary { left, right, .. } => {
+            collect_namespace_tokens(left, namespaces, source, tokens);
+            collect_namespace_tokens(right, namespaces, source, tokens);
+        }
+        ExprKind::Call { callee, arguments } => {
+            collect_namespace_tokens(callee, namespaces, source, tokens);
+            for arg in arguments.iter() {
+                collect_namespace_tokens(arg, namespaces, source, tokens);
+            }
+        }
+        ExprKind::IfElse {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            collect_namespace_tokens(condition, namespaces, source, tokens);
+            collect_namespace_tokens(then_block, namespaces, source, tokens);
+            if let Some(else_expr) = else_block {
+                collect_namespace_tokens(else_expr, namespaces, source, tokens);
+            }
+        }
+        ExprKind::Block {
+            expressions,
+            result,
+            ..
+        } => {
+            for expr in expressions.iter() {
+                collect_namespace_tokens(expr, namespaces, source, tokens);
+            }
+            if let Some(result_expr) = result {
+                collect_namespace_tokens(result_expr, namespaces, source, tokens);
+            }
+        }
+        ExprKind::Loop { block, .. } => {
+            collect_namespace_tokens(block, namespaces, source, tokens);
+        }
+        ExprKind::Break { value, .. } => {
+            if let Some(val) = value {
+                collect_namespace_tokens(val, namespaces, source, tokens);
+            }
+        }
+        ExprKind::Continue { .. } => {}
+        ExprKind::Return { value } => {
+            if let Some(val) = value {
+                collect_namespace_tokens(val, namespaces, source, tokens);
+            }
         }
     }
+}
+
+fn encode_semantic_tokens(tokens: &[(Position, u32, u32)]) -> Vec<SemanticToken> {
+    let mut result = Vec::new();
+    let mut prev_line = 0;
+    let mut prev_char = 0;
+
+    for &(pos, length, token_type) in tokens {
+        let delta_line = pos.line - prev_line;
+        let delta_start = if delta_line == 0 {
+            pos.character - prev_char
+        } else {
+            pos.character
+        };
+
+        result.push(SemanticToken {
+            delta_line,
+            delta_start,
+            length,
+            token_type,
+            token_modifiers_bitset: 0,
+        });
+
+        prev_line = pos.line;
+        prev_char = pos.character;
+    }
+
+    result
 }
 
 fn cast_request<R>(req: Request) -> Result<(RequestId, R::Params), ExtractError<Request>>

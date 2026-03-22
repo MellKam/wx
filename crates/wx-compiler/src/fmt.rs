@@ -61,35 +61,172 @@ impl Builder {
                     type_annotation,
                     value,
                 ),
-                Item::ExportModifier { item, .. } => {
+                Item::Export { entries } => {
                     let mut items = Vec::new();
-                    items.push(Node::Text("export ".to_string()));
-                    match &item.inner {
-                        Item::FunctionDefinition { signature, block } => {
-                            items.push(Self::build_function_definition(
-                                interner,
-                                source,
-                                signature,
-                                block,
-                            ));
-                        }
-                        Item::GlobalDefinition {
-                            mut_span,
-                            name,
-                            type_annotation,
-                            value,
-                        } => {
-                            items.push(Self::build_global_definition(
-                                interner,
-                                source,
-                                *mut_span,
-                                name,
-                                type_annotation,
-                                value,
-                            ));
-                        }
-                        Item::ExportModifier { .. } => unreachable!(),
+                    items.push(Node::Text("export {".to_string()));
+
+                    if !entries.inner.is_empty() {
+                        let entry_items = entries
+                            .inner
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(index, entry)| {
+                                let mut entry_nodes = Vec::new();
+
+                                let name = interner.resolve(entry.inner.inner.name.inner).unwrap();
+                                entry_nodes.push(Node::Text(name.to_string()));
+
+                                if let Some(alias) = &entry.inner.inner.alias {
+                                    let alias_str = interner.resolve(alias.inner).unwrap();
+                                    entry_nodes.push(Node::Text(format!(" as {}", alias_str)));
+                                }
+
+                                if entry.separator.is_some() {
+                                    entry_nodes.push(Node::Text(",".to_string()));
+                                }
+
+                                let mut result = vec![Node::Concat(entry_nodes)];
+
+                                // Add line break after each entry except the last
+                                if index + 1 < entries.inner.len() {
+                                    result.push(Node::Line);
+                                }
+
+                                result
+                            })
+                            .collect::<Vec<_>>();
+
+                        items.push(Node::Indent(Box::new(Node::Concat(
+                            std::iter::once(Node::Line)
+                                .chain(entry_items)
+                                .collect::<Vec<_>>(),
+                        ))));
                     }
+
+                    items.push(Node::Line);
+                    items.push(Node::Text("}".to_string()));
+                    Node::Concat(items)
+                }
+                Item::Import {
+                    module,
+                    alias,
+                    entries,
+                } => {
+                    let mut items = Vec::new();
+
+                    // "import "module""
+                    items.push(Node::Text("import ".to_string()));
+                    let module_str = interner.resolve(module.inner).unwrap();
+                    items.push(Node::Text(module_str.to_string()));
+
+                    // Optional "as alias"
+                    if let Some(alias) = alias {
+                        items.push(Node::Text(" as ".to_string()));
+                        let alias_str = interner.resolve(alias.inner).unwrap();
+                        items.push(Node::Text(alias_str.to_string()));
+                    }
+
+                    items.push(Node::Text(" {".to_string()));
+
+                    if !entries.inner.is_empty() {
+                        let entry_items = entries
+                            .inner
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(index, entry)| {
+                                let mut entry_nodes = Vec::new();
+
+                                // Optional external name: "X":
+                                if let Some(ext_name) = &entry.inner.inner.external_name {
+                                    let ext_str = interner.resolve(ext_name.inner).unwrap();
+                                    entry_nodes.push(Node::Text(format!("{}: ", ext_str)));
+                                }
+
+                                // Declaration
+                                match &entry.inner.inner.declaration {
+                                    crate::ast::ImportDeclaration::Function { signature } => {
+                                        // Format function signature
+                                        entry_nodes.push(Node::Text("fn ".to_string()));
+                                        let fn_name =
+                                            interner.resolve(signature.name.inner).unwrap();
+                                        entry_nodes.push(Node::Text(format!("{}(", fn_name)));
+
+                                        // Parameters
+                                        for (i, param) in signature.params.inner.iter().enumerate()
+                                        {
+                                            let param_name = interner
+                                                .resolve(param.inner.inner.name.inner)
+                                                .unwrap();
+                                            let mut_prefix = if param.inner.inner.mut_span.is_some()
+                                            {
+                                                "mut "
+                                            } else {
+                                                ""
+                                            };
+                                            entry_nodes.push(Node::Text(format!(
+                                                "{}{}: ",
+                                                mut_prefix, param_name
+                                            )));
+                                            entry_nodes.push(Self::build_type_expression(
+                                                interner,
+                                                &param.inner.inner.type_annotation.inner.inner,
+                                            ));
+
+                                            if i + 1 < signature.params.inner.len() {
+                                                entry_nodes.push(Node::Text(", ".to_string()));
+                                            }
+                                        }
+
+                                        entry_nodes.push(Node::Text(") -> ".to_string()));
+                                        entry_nodes.push(Self::build_type_expression(
+                                            interner,
+                                            &signature.result.inner.inner,
+                                        ));
+                                    }
+                                    crate::ast::ImportDeclaration::Global {
+                                        mut_span,
+                                        name,
+                                        type_annotation,
+                                    } => {
+                                        // Format global declaration
+                                        let mut_prefix =
+                                            if mut_span.is_some() { "mut " } else { "" };
+                                        let global_name = interner.resolve(name.inner).unwrap();
+                                        entry_nodes.push(Node::Text(format!(
+                                            "global {}{}: ",
+                                            mut_prefix, global_name
+                                        )));
+                                        entry_nodes.push(Self::build_type_expression(
+                                            interner,
+                                            &type_annotation.inner.inner,
+                                        ));
+                                    }
+                                }
+
+                                if entry.separator.is_some() {
+                                    entry_nodes.push(Node::Text(";".to_string()));
+                                }
+
+                                let mut result = vec![Node::Concat(entry_nodes)];
+
+                                // Add line break after each entry except the last
+                                if index + 1 < entries.inner.len() {
+                                    result.push(Node::Line);
+                                }
+
+                                result
+                            })
+                            .collect::<Vec<_>>();
+
+                        items.push(Node::Indent(Box::new(Node::Concat(
+                            std::iter::once(Node::Line)
+                                .chain(entry_items)
+                                .collect::<Vec<_>>(),
+                        ))));
+                    }
+
+                    items.push(Node::Line);
+                    items.push(Node::Text("}".to_string()));
                     Node::Concat(items)
                 }
             });
@@ -183,7 +320,11 @@ impl Builder {
         Node::Concat(items)
     }
 
-    fn build_expression(interner: &StringInterner, source: &str, expression: &Spanned<Expression>) -> Node {
+    fn build_expression(
+        interner: &StringInterner,
+        source: &str,
+        expression: &Spanned<Expression>,
+    ) -> Node {
         match &expression.inner {
             Expression::Identifier { symbol } => {
                 Node::Text(interner.resolve(*symbol).unwrap().to_string())
@@ -226,6 +367,7 @@ impl Builder {
                                     &statement.inner.inner,
                                 ));
                                 if index + 1 == statements.len() {
+                                    // Last statement: preserve original separator
                                     match statement.separator {
                                         Some(_) => {
                                             items.push(Node::Text(";".to_string()));
@@ -233,7 +375,10 @@ impl Builder {
                                         None => {}
                                     }
                                 } else {
-                                    items.push(Node::Text(";".to_string()));
+                                    // Non-last statement: only add semicolon if not block-like
+                                    if !statement.inner.inner.is_block_like() {
+                                        items.push(Node::Text(";".to_string()));
+                                    }
                                     items.push(Node::HardLine);
                                 }
                             }
@@ -277,7 +422,7 @@ impl Builder {
                 items.push(Node::Text("break".to_string()));
                 if let Some(label) = label {
                     items.push(Node::Text(format!(
-                        " {}",
+                        " :{}",
                         interner.resolve(label.inner).unwrap()
                     )));
                 }
@@ -311,7 +456,7 @@ impl Builder {
                 items.push(Node::Text("continue".to_string()));
                 if let Some(label) = label {
                     items.push(Node::Text(format!(
-                        " {}",
+                        " :{}",
                         interner.resolve(label.inner).unwrap()
                     )));
                 }
@@ -357,9 +502,9 @@ impl Builder {
                 items.push(Self::build_expression(interner, source, block));
                 Node::Concat(items)
             }
-            Expression::Namespace { namespace, member } => {
+            Expression::NamespaceAccess { namespace, member } => {
                 let mut items = Vec::new();
-                items.push(Self::build_type_expression(interner, namespace));
+                items.push(Self::build_type_expression(interner, &namespace.inner));
                 items.push(Node::Text("::".to_string()));
                 items.push(Node::Text(
                     interner.resolve(member.inner).unwrap().to_string(),
@@ -408,11 +553,15 @@ impl Builder {
                     None => {}
                 }
                 items.push(Node::Text(" = ".to_string()));
-                items.push(Node::Indent(Box::new(Self::build_expression(
-                    interner,
-                    source,
-                    value,
-                ))));
+
+                // Only indent if it's not a block-like expression that manages its own
+                // indentation
+                let value_node = Self::build_expression(interner, source, value);
+                if !value.inner.is_block_like() {
+                    items.push(Node::Indent(Box::new(value_node)));
+                } else {
+                    items.push(value_node);
+                }
 
                 Node::Group(Box::new(Node::Concat(items)))
             }
@@ -636,18 +785,11 @@ mod tests {
     #[test]
     fn test_format_simple_function() {
         let case = TestCase::new(indoc! {"
-            export fn add(a: i32, mut b: i32, mut c: f64, mut d: i64) -> i32 { 
-                local mut result: i32 = a + b + b + b + b;
-                loop {
-                    if result > 100 {
-                        break result;
-                    } else {
-                        result = result + 1;
-                    }
-                }
-
-                return result;
+            fn add(a: i32, b: i32) -> i32 { 
+                a + b
             }
+
+            export { add, add as \"plus\", minus }
         "});
         let output = format(
             &case.ast,
@@ -655,6 +797,31 @@ mod tests {
             &case.files.get(case.ast.file_id).unwrap().source,
             RendererConfig {
                 max_line_width: 40,
+                indent_width: 4,
+                trailing_comma: true,
+            },
+        );
+        println!("{}", output);
+    }
+
+    #[test]
+    fn test_format_import_block() {
+        let case = TestCase::new(indoc! {"
+            import \"console\" as c {
+                fn log(ptr: i32, len: i32) -> unit;
+                \"memory\": global mut memory_location: i32;
+            }
+
+            fn main() -> i32 {
+                42
+            }
+        "});
+        let output = format(
+            &case.ast,
+            &case.interner,
+            &case.files.get(case.ast.file_id).unwrap().source,
+            RendererConfig {
+                max_line_width: 80,
                 indent_width: 4,
                 trailing_comma: true,
             },

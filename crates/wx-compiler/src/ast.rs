@@ -573,7 +573,7 @@ impl MissingReturnTypeDiagnostic {
             .with_message("missing return type annotation")
             .with_label(
                 Label::primary(self.file_id, self.span)
-                    .with_message("expected colon `:` followed by type"),
+                    .with_message("expected arrow `->` followed by type"),
             )
     }
 }
@@ -1214,8 +1214,8 @@ pub enum Expression {
         arguments: Grouped<Box<[Separated<Spanned<Expression>>]>>,
     },
     /// `{expr}::{expr}`
-    Namespace {
-        namespace: Box<TypeExpression>,
+    NamespaceAccess {
+        namespace: Box<Spanned<TypeExpression>>,
         member: Spanned<SymbolU32>,
     },
     /// `return {expr}`
@@ -1254,6 +1254,18 @@ pub enum Expression {
     Unreachable,
 }
 
+impl Expression {
+    pub fn is_block_like(&self) -> bool {
+        match self {
+            Expression::Block { .. }
+            | Expression::IfElse { .. }
+            | Expression::Loop { .. }
+            | Expression::Label { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum TypeExpression {
     Error,
@@ -1281,6 +1293,15 @@ pub enum Statement {
     },
 }
 
+impl Statement {
+    pub fn is_block_like(&self) -> bool {
+        match self {
+            Statement::Expression(expr) => expr.inner.is_block_like(),
+            Statement::LocalDefinition { .. } => false,
+        }
+    }
+}
+
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct FunctionParam {
     pub mut_span: Option<TextSpan>,
@@ -1297,6 +1318,30 @@ pub struct FunctionSignature {
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
+pub struct ExportEntry {
+    pub name: Spanned<SymbolU32>,
+    pub alias: Option<Spanned<SymbolU32>>,
+}
+
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
+pub enum ImportDeclaration {
+    Function {
+        signature: FunctionSignature,
+    },
+    Global {
+        mut_span: Option<TextSpan>,
+        name: Spanned<SymbolU32>,
+        type_annotation: Annotated<Box<Spanned<TypeExpression>>>,
+    },
+}
+
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
+pub struct ImportEntry {
+    pub external_name: Option<Spanned<SymbolU32>>,
+    pub declaration: ImportDeclaration,
+}
+
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum Item {
     FunctionDefinition {
         signature: FunctionSignature,
@@ -1308,9 +1353,13 @@ pub enum Item {
         type_annotation: Option<Annotated<Box<Spanned<TypeExpression>>>>,
         value: Box<Spanned<Expression>>,
     },
-    ExportModifier {
+    Export {
+        entries: Grouped<Box<[Separated<Spanned<ExportEntry>>]>>,
+    },
+    Import {
+        module: Spanned<SymbolU32>,
         alias: Option<Spanned<SymbolU32>>,
-        item: Box<Spanned<Item>>,
+        entries: Grouped<Box<[Separated<Spanned<ImportEntry>>]>>,
     },
 }
 
@@ -1337,7 +1386,7 @@ enum BindingPower {
     Unary,
     Cast,
     Call,
-    // Member,
+    Member,
     Primary,
 }
 
@@ -1381,6 +1430,7 @@ impl From<BinaryOp> for BindingPower {
 #[derive(Clone, Copy)]
 pub enum Keyword {
     Export,
+    Import,
     Local,
     Global,
     Mut,
@@ -1401,18 +1451,19 @@ impl TryFrom<&str> for Keyword {
 
     fn try_from(text: &str) -> Result<Self, Self::Error> {
         match text {
-            "export" => Ok(Keyword::Export),
             "local" => Ok(Keyword::Local),
+            "export" => Ok(Keyword::Export),
+            "import" => Ok(Keyword::Import),
             "global" => Ok(Keyword::Global),
             "mut" => Ok(Keyword::Mut),
-            "enum" => Ok(Keyword::Enum),
+            "return" => Ok(Keyword::Return),
             "fn" => Ok(Keyword::Fn),
             "if" => Ok(Keyword::If),
             "else" => Ok(Keyword::Else),
+            "enum" => Ok(Keyword::Enum),
             "loop" => Ok(Keyword::Loop),
             "break" => Ok(Keyword::Break),
             "continue" => Ok(Keyword::Continue),
-            "return" => Ok(Keyword::Return),
             "as" => Ok(Keyword::As),
             "unreachable" => Ok(Keyword::Unreachable),
             _ => Err(()),
@@ -1435,6 +1486,10 @@ struct SeparatedGroup<T> {
     open_token: Token,
     close_token: Token,
     separator_token: Token,
+    /// Optional callback to determine if a missing separator should emit a
+    /// diagnostic. If None, always emits a diagnostic. If Some, calls the
+    /// function with the item.
+    should_warn_missing_separator: Option<fn(&T) -> bool>,
 }
 
 impl<T> SeparatedGroup<T> {
@@ -1505,14 +1560,22 @@ impl<T> SeparatedGroup<T> {
                 break eof_span;
             }
 
-            parser.ast.diagnostics.push(
-                MissingSeparatorDiagnostic {
-                    file_id: parser.ast.file_id,
-                    span: TextSpan::new(item.span.end, item.span.end),
-                    separator: self.separator_token,
-                }
-                .report(),
-            );
+            // Check if we should emit a missing separator diagnostic
+            let should_warn = self
+                .should_warn_missing_separator
+                .map(|f| f(&item.inner))
+                .unwrap_or(true);
+
+            if should_warn {
+                parser.ast.diagnostics.push(
+                    MissingSeparatorDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: TextSpan::new(item.span.end, item.span.end),
+                        separator: self.separator_token,
+                    }
+                    .report(),
+                );
+            }
             items.push(Separated {
                 inner: item,
                 separator: None,
@@ -1637,7 +1700,8 @@ impl<'input> Parser<'input> {
         match keyword {
             Some(Keyword::Fn) => Ok(Parser::parse_function_definition_item),
             Some(Keyword::Global) => Ok(Parser::parse_global_definition_item),
-            Some(Keyword::Export) => Ok(Parser::parse_export_modifier_item),
+            Some(Keyword::Export) => Ok(Parser::parse_export_block),
+            Some(Keyword::Import) => Ok(Parser::parse_import_block),
             _ => return Err(()),
         }
     }
@@ -1772,6 +1836,7 @@ impl<'input> Parser<'input> {
             close_token: Token::CloseParen,
             separator_token: Token::Comma,
             item_handler: Parser::parse_function_param_item,
+            should_warn_missing_separator: None,
         }
         .parse(parser)?;
 
@@ -1858,6 +1923,7 @@ impl<'input> Parser<'input> {
             close_token: Token::CloseParen,
             separator_token: Token::Comma,
             item_handler: |parser| parser.parse_type_expression(),
+            should_warn_missing_separator: None,
         }
         .parse(self)?;
 
@@ -1947,10 +2013,10 @@ impl<'input> Parser<'input> {
                 Some((Parser::parse_binary_expression, BindingPower::BitwiseShift))
             }
             Token::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
-            // Token::ColonColon => Some((
-            //     Parser::parse_namespace_member_expression,
-            //     BindingPower::Member,
-            // )),
+            Token::ColonColon => Some((
+                Parser::parse_namespace_access_expression,
+                BindingPower::Member,
+            )),
             Token::Identifier => match Keyword::try_from(token.span.extract_str(self.source)) {
                 Ok(Keyword::As) => Some((Parser::parse_cast_expression, BindingPower::Cast)),
                 _ => None,
@@ -2349,6 +2415,7 @@ impl<'input> Parser<'input> {
                     }
                 }
             },
+            should_warn_missing_separator: Some(Statement::is_block_like),
         }
         .parse(parser)?;
 
@@ -2406,6 +2473,49 @@ impl<'input> Parser<'input> {
         }
     }
 
+    fn parse_namespace_access_expression(
+        parser: &mut Parser,
+        left: Spanned<Expression>,
+        _: BindingPower,
+    ) -> Result<Spanned<Expression>, ()> {
+        // Convert the left expression to a type expression
+        let namespace = match left.inner {
+            Expression::Identifier { symbol } => TypeExpression::Identifier { symbol },
+            _ => {
+                parser.ast.diagnostics.push(
+                    InvalidNamespaceDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: left.span,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+        };
+
+        // Consume the :: token
+        _ = parser.lexer.next();
+
+        // Parse the member identifier
+        let member_token = parser.next_expect(Token::Identifier)?;
+        let member_symbol = parser.intern_identifier(member_token.span)?;
+
+        let span = TextSpan::merge(left.span, member_token.span);
+        Ok(Spanned {
+            inner: Expression::NamespaceAccess {
+                namespace: Box::new(Spanned {
+                    inner: namespace,
+                    span: left.span,
+                }),
+                member: Spanned {
+                    inner: member_symbol,
+                    span: member_token.span,
+                },
+            },
+            span,
+        })
+    }
+
     fn parse_call_expression(
         parser: &mut Parser,
         callee: Spanned<Expression>,
@@ -2416,6 +2526,7 @@ impl<'input> Parser<'input> {
             close_token: Token::CloseParen,
             separator_token: Token::Comma,
             item_handler: |parser| parser.parse_expression(BindingPower::Default),
+            should_warn_missing_separator: None,
         }
         .parse(parser)?;
 
@@ -2566,30 +2677,252 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_export_modifier_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+    fn parse_export_block(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let export_keyword = parser.lexer.next();
-        let next_token = parser.lexer.peek();
-        let keyword = Keyword::try_from(next_token.span.extract_str(parser.source));
-        let item = match keyword {
-            Ok(Keyword::Fn) => Parser::parse_function_definition_item(parser)?,
-            Ok(Keyword::Global) => Parser::parse_global_definition_item(parser)?,
-            _ => {
-                parser.ast.diagnostics.push(
-                    InvalidItemDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: export_keyword.span,
+
+        let entries = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::Comma,
+            item_handler: |parser: &mut Parser| -> Result<Spanned<ExportEntry>, ()> {
+                // Parse: name or name as "alias"
+                let name_token = parser.next_expect(Token::Identifier)?;
+                let name_symbol = parser.intern_identifier(name_token.span)?;
+
+                // Check for optional "as" alias
+                let alias = if let Token::Identifier = parser.lexer.peek().inner {
+                    let potential_as = parser.lexer.peek();
+                    if let Ok(Keyword::As) =
+                        Keyword::try_from(potential_as.span.extract_str(parser.source))
+                    {
+                        _ = parser.lexer.next(); // consume "as"
+
+                        let alias_token = parser.next_expect(Token::String)?;
+                        let alias_symbol = parser.intern_identifier(alias_token.span)?;
+
+                        Some(Spanned {
+                            inner: alias_symbol,
+                            span: alias_token.span,
+                        })
+                    } else {
+                        None
                     }
-                    .report(),
-                );
-                return Err(());
-            }
+                } else {
+                    None
+                };
+
+                let span = match &alias {
+                    Some(alias) => TextSpan::merge(name_token.span, alias.span),
+                    None => name_token.span,
+                };
+
+                Ok(Spanned {
+                    inner: ExportEntry {
+                        name: Spanned {
+                            inner: name_symbol,
+                            span: name_token.span,
+                        },
+                        alias: alias.clone(),
+                    },
+                    span,
+                })
+            },
+            should_warn_missing_separator: None,
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(export_keyword.span, entries.close);
+
+        Ok(Spanned {
+            inner: Item::Export { entries },
+            span,
+        })
+    }
+
+    fn parse_import_block(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let import_keyword = parser.lexer.next();
+
+        // Parse module string literal (e.g., "console")
+        let module_token = parser.next_expect(Token::String)?;
+        let module_symbol = parser.intern_identifier(module_token.span)?;
+        let module = Spanned {
+            inner: module_symbol,
+            span: module_token.span,
         };
 
-        let span = TextSpan::merge(export_keyword.span, item.span);
+        // Parse optional "as" alias
+        let alias = if let Token::Identifier = parser.lexer.peek().inner {
+            let potential_as = parser.lexer.peek();
+            if let Ok(Keyword::As) = Keyword::try_from(potential_as.span.extract_str(parser.source))
+            {
+                _ = parser.lexer.next(); // consume "as"
+
+                let alias_token = parser.next_expect(Token::Identifier)?;
+                let alias_symbol = parser.intern_identifier(alias_token.span)?;
+
+                Some(Spanned {
+                    inner: alias_symbol,
+                    span: alias_token.span,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Parse import entries
+        let entries = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::SemiColon,
+            item_handler: |parser: &mut Parser| -> Result<Spanned<ImportEntry>, ()> {
+                // Check for optional external name: "X": ...
+                let external_name = if let Token::String = parser.lexer.peek().inner {
+                    let ext_token = parser.lexer.next();
+                    let ext_symbol = parser.intern_identifier(ext_token.span)?;
+                    parser.next_expect(Token::Colon)?;
+
+                    Some(Spanned {
+                        inner: ext_symbol,
+                        span: ext_token.span,
+                    })
+                } else {
+                    None
+                };
+
+                let start_span = external_name
+                    .as_ref()
+                    .map(|e| e.span)
+                    .unwrap_or_else(|| parser.lexer.peek().span);
+
+                // Parse declaration kind
+                let token = parser.lexer.peek();
+                let keyword = match token.inner {
+                    Token::Identifier => {
+                        Keyword::try_from(token.span.extract_str(parser.source)).ok()
+                    }
+                    _ => None,
+                };
+
+                let declaration = match keyword {
+                    Some(Keyword::Fn) => {
+                        // Parse function declaration
+                        let fn_span = parser.lexer.next();
+                        let name_span = parser.next_expect(Token::Identifier)?.span;
+                        let name_symbol = parser.intern_identifier(name_span)?;
+                        let name = Spanned {
+                            inner: name_symbol,
+                            span: name_span,
+                        };
+
+                        let params = SeparatedGroup {
+                            open_token: Token::OpenParen,
+                            close_token: Token::CloseParen,
+                            separator_token: Token::Comma,
+                            item_handler: Parser::parse_function_param_item,
+                            should_warn_missing_separator: None,
+                        }
+                        .parse(parser)?;
+
+                        let result = parser
+                            .lexer
+                            .next_if(Token::Arrow)
+                            .ok_or(())
+                            .and_then(|arrow| {
+                                Ok(Annotated {
+                                    prefix: arrow.span,
+                                    inner: Box::new(parser.parse_type_expression()?),
+                                })
+                            })
+                            .unwrap_or_else(|_| Annotated {
+                                prefix: params.close,
+                                inner: Box::new(Spanned {
+                                    inner: TypeExpression::Error,
+                                    span: params.close,
+                                }),
+                            });
+
+                        ImportDeclaration::Function {
+                            signature: FunctionSignature {
+                                fn_span: fn_span.span,
+                                name,
+                                params,
+                                result,
+                            },
+                        }
+                    }
+                    Some(Keyword::Global) => {
+                        // Parse global declaration
+                        let _ = parser.lexer.next(); // consume "global"
+
+                        let token = parser.lexer.peek();
+                        let mut_span =
+                            match Keyword::try_from(token.span.extract_str(parser.source)) {
+                                Ok(Keyword::Mut) => Some(parser.lexer.next().span),
+                                _ => None,
+                            };
+
+                        let name_span = parser.next_expect(Token::Identifier)?.span;
+                        let name_symbol = parser.intern_identifier(name_span)?;
+                        let name = Spanned {
+                            inner: name_symbol,
+                            span: name_span,
+                        };
+
+                        let colon_span = parser.next_expect(Token::Colon)?.span;
+                        let type_expr = parser.parse_type_expression()?;
+
+                        ImportDeclaration::Global {
+                            mut_span,
+                            name,
+                            type_annotation: Annotated {
+                                prefix: colon_span,
+                                inner: Box::new(type_expr),
+                            },
+                        }
+                    }
+                    _ => {
+                        parser.ast.diagnostics.push(
+                            UnexpectedTokenDiagnostic {
+                                file_id: parser.ast.file_id,
+                                received: token,
+                                expected: Token::Identifier,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
+                };
+
+                let end_span = match &declaration {
+                    ImportDeclaration::Function { signature } => signature.result.inner.span,
+                    ImportDeclaration::Global {
+                        type_annotation, ..
+                    } => type_annotation.inner.span,
+                };
+
+                let span = TextSpan::merge(start_span, end_span);
+
+                Ok(Spanned {
+                    inner: ImportEntry {
+                        external_name,
+                        declaration,
+                    },
+                    span,
+                })
+            },
+            should_warn_missing_separator: None,
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(import_keyword.span, entries.close);
+
         Ok(Spanned {
-            inner: Item::ExportModifier {
-                alias: None,
-                item: Box::new(item),
+            inner: Item::Import {
+                module,
+                alias,
+                entries,
             },
             span,
         })
@@ -2627,8 +2960,30 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_simple_addition() {
-        let case = TestCase::new(indoc! {"fn add(a:i32,b:i32)->i32{a+b}"});
+    fn test_parse_export_with_alias() {
+        let case = TestCase::new(indoc! {"
+            fn test() -> i32 {
+                local x: i32 = a: loop {
+                    break :a 1 as i32;
+                };
+
+                x
+            }
+            
+            export {
+                test as \"test\",
+            }
+        "});
+        insta::assert_yaml_snapshot!(case.ast);
+    }
+
+    #[test]
+    fn test_parse_import_with_alias() {
+        let case = TestCase::new(indoc! {"
+            import \"console\" as console {
+                fn log(ptr: u32, len: u32) -> unit;
+            }
+        "});
         insta::assert_yaml_snapshot!(case.ast);
     }
 }
