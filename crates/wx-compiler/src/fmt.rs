@@ -519,6 +519,12 @@ impl Builder {
 
                 Node::Concat(items)
             }
+            Expression::String { symbol } => {
+                todo!()
+            }
+            Expression::ObjectAccess { object, member } => {
+                todo!()
+            }
         }
     }
 

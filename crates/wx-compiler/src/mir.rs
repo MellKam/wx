@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+
+use string_interner::symbol::SymbolU32;
+
 use crate::{ast, tir};
 
 pub type LocalIndex = u32;
@@ -5,6 +9,8 @@ pub type ScopeIndex = u32;
 pub type GlobalIndex = u32;
 pub type SignatureIndex = u32;
 pub type FunctionIndex = u32;
+pub type TupleIndex = u32;
+pub type StringIndex = u32;
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ExprKind {
@@ -29,6 +35,9 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
         value: Box<Expression>,
+    },
+    String {
+        string_index: StringIndex,
     },
     Global {
         global_index: GlobalIndex,
@@ -151,7 +160,7 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum Type {
     I32,
@@ -163,6 +172,8 @@ pub enum Type {
     Unit,
     Never,
     Bool,
+    Pointer,
+    Tuple { tuple_index: TupleIndex },
     Function { signature_index: SignatureIndex },
 }
 
@@ -170,6 +181,19 @@ pub enum Type {
 pub struct Expression {
     pub kind: ExprKind,
     pub ty: Type,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Tuple {
+    fields: Box<[Type]>,
+}
+
+impl std::hash::Hash for Tuple {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for field in self.fields.iter() {
+            field.hash(state);
+        }
+    }
 }
 
 // the role of MIR is to desugar the syntax like x += 1 into x = x + 1 and lower
@@ -267,10 +291,53 @@ pub struct Global {
     pub value: Expression,
 }
 
+struct TuplePool {
+    lookup: HashMap<Tuple, TupleIndex>,
+    tuples: Vec<Tuple>,
+}
+
+impl TuplePool {
+    const STRING_TUPLE_INDEX: TupleIndex = 0;
+
+    fn new() -> Self {
+        let mut lookup = HashMap::new();
+        let string_tuple = Tuple {
+            fields: Box::new([Type::Pointer, Type::U32]),
+        };
+        lookup.insert(string_tuple.clone(), 0);
+
+        TuplePool {
+            lookup,
+            tuples: vec![string_tuple],
+        }
+    }
+
+    fn add(&mut self, tuple: Tuple) -> TupleIndex {
+        if let Some(&index) = self.lookup.get(&tuple) {
+            index
+        } else {
+            let index = self.lookup.len() as TupleIndex;
+            self.lookup.insert(tuple.clone(), index);
+            self.tuples.push(tuple);
+            index
+        }
+    }
+
+    fn get(&self, index: TupleIndex) -> Option<&Tuple> {
+        self.tuples.get(index as usize)
+    }
+}
+
 impl MIR {
     pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
         let mut builder = Builder {
+            interner,
+            string_pool: StringPool {
+                lookup: HashMap::new(),
+                strings: Vec::new(),
+            },
             namespaces: &tir.namespaces,
+            tuple_pool: TuplePool::new(),
         };
 
         let functions = tir
@@ -377,11 +444,42 @@ impl MIR {
     }
 }
 
-struct Builder<'a> {
-    namespaces: &'a [tir::Namespace],
+struct StringPool {
+    lookup: HashMap<SymbolU32, StringIndex>,
+    strings: Vec<SymbolU32>,
 }
 
-impl<'a> Builder<'a> {
+impl StringPool {
+    fn new() -> Self {
+        StringPool {
+            lookup: HashMap::new(),
+            strings: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, symbol: SymbolU32) -> StringIndex {
+        if let Some(&index) = self.lookup.get(&symbol) {
+            index
+        } else {
+            let index = self.lookup.len() as StringIndex;
+            self.lookup.insert(symbol, index);
+            index
+        }
+    }
+
+    fn get(&self, index: StringIndex) -> Option<SymbolU32> {
+        self.strings.get(index as usize).cloned()
+    }
+}
+
+struct Builder<'tir, 'interner> {
+    interner: &'interner ast::StringInterner,
+    namespaces: &'tir [tir::Namespace],
+    string_pool: StringPool,
+    tuple_pool: TuplePool,
+}
+
+impl<'tir, 'interner> Builder<'tir, 'interner> {
     fn lower_type(&self, ty: tir::Type) -> Type {
         match ty {
             tir::Type::I32 => Type::I32,
@@ -393,6 +491,9 @@ impl<'a> Builder<'a> {
             tir::Type::Unit => Type::Unit,
             tir::Type::Never => Type::Never,
             tir::Type::Bool => Type::Bool,
+            tir::Type::String => Type::Tuple {
+                tuple_index: TuplePool::STRING_TUPLE_INDEX,
+            },
             tir::Type::Function { signature_index } => Type::Function { signature_index },
             // TODO: handle enums
             tir::Type::Unknown | tir::Type::Error | tir::Type::Namespace { .. } => {
@@ -481,6 +582,9 @@ impl<'a> Builder<'a> {
             },
             tir::ExprKind::Function { func_index } => ExprKind::Function {
                 func_index: *func_index,
+            },
+            tir::ExprKind::String { symbol } => ExprKind::String {
+                string_index: self.string_pool.add(*symbol),
             },
             tir::ExprKind::Return { value } => ExprKind::Return {
                 value: value.as_ref().map(|v| Box::new(self.lower_expression(v))),
@@ -833,8 +937,7 @@ mod tests {
             }
 
             fn main() -> unit {
-                local x: i32 = 5;
-                console::log(x, 4);
+                console::log(\"hello world\");
             }
 
             export { main }

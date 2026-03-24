@@ -1218,6 +1218,11 @@ pub enum Expression {
         namespace: Box<Spanned<TypeExpression>>,
         member: Spanned<SymbolU32>,
     },
+    /// `{expr}.{expr}`
+    ObjectAccess {
+        object: Box<Spanned<Expression>>,
+        member: Spanned<SymbolU32>,
+    },
     /// `return {expr}`
     Return {
         value: Option<Box<Spanned<Expression>>>,
@@ -1252,6 +1257,10 @@ pub enum Expression {
     },
     /// `unreachable`
     Unreachable,
+    /// "hello world"
+    String {
+        symbol: SymbolU32,
+    },
 }
 
 impl Expression {
@@ -1970,7 +1979,7 @@ impl<'input> Parser<'input> {
             Token::Minus | Token::Bang | Token::Caret => {
                 Some((Parser::parse_unary_expression, BindingPower::Unary))
             }
-            // TokenKind::String { .. } => Some((parse_string_expression, BindingPower::Primary)),
+            Token::String => Some((Parser::parse_string_expression, BindingPower::Primary)),
             // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
             _ => None,
         }
@@ -2022,7 +2031,7 @@ impl<'input> Parser<'input> {
                 _ => None,
             },
             Token::Colon => Some((Parser::parse_labelled_expression, BindingPower::Primary)),
-            // TokenKind::Dot => Some((parse_member_expression, BindingPower::Member)),
+            Token::Dot => Some((Parser::parse_object_access_expression, BindingPower::Member)),
             _ => None,
         }
     }
@@ -2056,6 +2065,28 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: Expression::Identifier { symbol },
             span: token.span,
+        })
+    }
+
+    fn parse_object_access_expression(
+        parser: &mut Parser,
+        object: Spanned<Expression>,
+        _: BindingPower,
+    ) -> Result<Spanned<Expression>, ()> {
+        _ = parser.lexer.next();
+        let member_token = parser.next_expect(Token::Identifier)?;
+        let member_symbol = parser.intern_identifier(member_token.span)?;
+
+        let span = TextSpan::merge(object.span, member_token.span);
+        Ok(Spanned {
+            inner: Expression::ObjectAccess {
+                object: Box::new(object),
+                member: Spanned {
+                    inner: member_symbol,
+                    span: member_token.span,
+                },
+            },
+            span,
         })
     }
 
@@ -2130,6 +2161,17 @@ impl<'input> Parser<'input> {
                 },
             },
             span,
+        })
+    }
+
+    fn parse_string_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
+        let token = parser.lexer.next();
+        let string_content = token.span.extract_str(parser.source);
+        let symbol = parser.interner.get_or_intern(string_content);
+
+        Ok(Spanned {
+            inner: Expression::String { symbol },
+            span: token.span,
         })
     }
 

@@ -57,6 +57,7 @@ pub enum Type {
     Never,
     Unknown,
     Error,
+    String,
     Bool,
     Function { signature_index: u32 },
     Namespace { namespace_index: u32 },
@@ -128,6 +129,7 @@ impl TryFrom<&str> for Type {
             "bool" => Ok(Type::Bool),
             "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),
+            "string" => Ok(Type::String),
             _ => Err(()),
         }
     }
@@ -244,6 +246,9 @@ pub enum ExprKind {
         namespace_index: NamespaceIndex,
         namespace_span: ast::TextSpan,
         member: Box<Expression>,
+    },
+    String {
+        symbol: SymbolU32,
     },
 }
 
@@ -1298,6 +1303,7 @@ impl Builder<'_, '_> {
             Type::F64 => "f64".to_string(),
             Type::U32 => "u32".to_string(),
             Type::U64 => "u64".to_string(),
+            Type::String => "string".to_string(),
             Type::Namespace { namespace_index } => {
                 let ns = &self.namespaces[namespace_index as usize];
                 match ns {
@@ -2416,7 +2422,12 @@ impl Builder<'_, '_> {
             }),
             ast::Expression::Error => Ok(Expression {
                 kind: ExprKind::Error,
-                ty: Type::Never,
+                ty: Type::Error,
+                span: expr.span,
+            }),
+            ast::Expression::String { symbol } => Ok(Expression {
+                kind: ExprKind::String { symbol: *symbol },
+                ty: Type::String,
                 span: expr.span,
             }),
             ast::Expression::Identifier { .. } => {
@@ -2434,6 +2445,9 @@ impl Builder<'_, '_> {
             ast::Expression::Call { .. } => self.build_call_expression(func_ctx, expr),
             ast::Expression::NamespaceAccess { namespace, member } => {
                 self.build_namespace_access_expression(namespace, member.clone())
+            }
+            ast::Expression::ObjectAccess { object, member } => {
+                self.build_object_access_expression(func_ctx, object, member.clone(), access_ctx)
             }
             ast::Expression::Return { .. } => self.build_return_expression(func_ctx, expr),
             ast::Expression::Block { .. } => func_ctx.enter_block(
@@ -2459,6 +2473,22 @@ impl Builder<'_, '_> {
             ast::Expression::Label { .. } => {
                 self.build_label_expression(func_ctx, expr, access_ctx)
             }
+        }
+    }
+
+    fn build_object_access_expression(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        object_expr: &Spanned<ast::Expression>,
+        member: Spanned<SymbolU32>,
+        access_ctx: AccessContext,
+    ) -> Result<Expression, ()> {
+        let object = self.build_expression(func_ctx, object_expr, access_ctx)?;
+        match object.ty {
+            Type::String => {
+                todo!("string member access is not implemented yet")
+            }
+            _ => todo!(),
         }
     }
 
