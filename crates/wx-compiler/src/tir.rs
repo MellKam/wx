@@ -250,6 +250,10 @@ pub enum ExprKind {
     String {
         symbol: SymbolU32,
     },
+    ObjectAccess {
+        object: Box<Expression>,
+        member: ast::Spanned<SymbolU32>,
+    },
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -454,6 +458,11 @@ pub struct ImportModule {
 pub enum SymbolNamespace {
     Type,
     Value,
+}
+
+pub enum FunctionType {
+    Defined,
+    Imported,
 }
 
 #[derive(Clone)]
@@ -4818,7 +4827,7 @@ impl Builder<'_, '_> {
 pub struct TIR {
     pub file_id: ast::FileId,
     pub signatures: Vec<FunctionSignature>,
-    pub defined_functions: HashMap<FunctionIndex, Function>,
+    pub defined_functions: Vec<Function>,
     pub defined_globals: HashMap<GlobalIndex, Global>,
     pub namespaces: Vec<Namespace>,
     pub exports: Vec<ExportItem>,

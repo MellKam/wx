@@ -31,12 +31,19 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
     },
+    LocalTupleGet {
+        scope_index: ScopeIndex,
+        local_index: LocalIndex,
+        field_index: u32,
+    },
     LocalSet {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
         value: Box<Expression>,
     },
     String {
+        scope_index: ScopeIndex,
+        local_index: LocalIndex,
         string_index: StringIndex,
     },
     Global {
@@ -172,7 +179,7 @@ pub enum Type {
     Unit,
     Never,
     Bool,
-    Pointer,
+    StringPointer,
     Tuple { tuple_index: TupleIndex },
     Function { signature_index: SignatureIndex },
 }
@@ -184,8 +191,9 @@ pub struct Expression {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-struct Tuple {
-    fields: Box<[Type]>,
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct Tuple {
+    pub fields: Box<[Type]>,
 }
 
 impl std::hash::Hash for Tuple {
@@ -207,6 +215,8 @@ pub struct MIR {
     pub globals: Vec<Global>,
     pub exports: Vec<ExportItem>,
     pub imports: Vec<ImportModule>,
+    pub tuples: Box<[Tuple]>,
+    pub strings: Box<[SymbolU32]>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -241,12 +251,14 @@ pub enum ExportItem {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy)]
 pub enum Mutability {
     Mutable,
     Immutable,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone)]
 pub struct Local {
     pub ty: Type,
     pub mutability: Mutability,
@@ -302,7 +314,7 @@ impl TuplePool {
     fn new() -> Self {
         let mut lookup = HashMap::new();
         let string_tuple = Tuple {
-            fields: Box::new([Type::Pointer, Type::U32]),
+            fields: Box::new([Type::StringPointer, Type::U32]),
         };
         lookup.insert(string_tuple.clone(), 0);
 
@@ -332,19 +344,21 @@ impl MIR {
     pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
         let mut builder = Builder {
             interner,
-            string_pool: StringPool {
-                lookup: HashMap::new(),
-                strings: Vec::new(),
-            },
-            namespaces: &tir.namespaces,
+            tir,
+            string_pool: StringPool::new(),
             tuple_pool: TuplePool::new(),
         };
 
-        let functions = tir
+        let mut functions: Vec<_> = tir
             .defined_functions
-            .values()
-            .map(|func| builder.lower_function(func))
+            .iter()
+            .map(|(func_index, func)| (*func_index, builder.lower_function(func)))
             .collect();
+        functions.sort_by_key(|(k, _)| *k);
+        let functions = functions
+            .into_iter()
+            .map(|(_, func)| func)
+            .collect::<Vec<_>>();
 
         let globals = tir
             .defined_globals
@@ -352,21 +366,25 @@ impl MIR {
             .map(|global| builder.lower_global(global))
             .collect();
 
+        let signatures = tir
+            .signatures
+            .iter()
+            .map(|signature| FunctionSignature {
+                items: signature
+                    .items
+                    .iter()
+                    .map(|&ty| builder.lower_type(ty))
+                    .collect(),
+                params_count: signature.params_count,
+            })
+            .collect();
+
         MIR {
             functions,
             globals,
-            signatures: tir
-                .signatures
-                .iter()
-                .map(|signature| FunctionSignature {
-                    items: signature
-                        .items
-                        .iter()
-                        .map(|&ty| builder.lower_type(ty))
-                        .collect(),
-                    params_count: signature.params_count,
-                })
-                .collect(),
+            strings: builder.string_pool.strings.into_boxed_slice(),
+            signatures,
+            tuples: builder.tuple_pool.tuples.into_boxed_slice(),
             imports: tir
                 .namespaces
                 .iter()
@@ -474,9 +492,14 @@ impl StringPool {
 
 struct Builder<'tir, 'interner> {
     interner: &'interner ast::StringInterner,
-    namespaces: &'tir [tir::Namespace],
+    tir: &'tir tir::TIR,
     string_pool: StringPool,
     tuple_pool: TuplePool,
+}
+
+struct FunctionContext {
+    frame: Vec<BlockScope>,
+    current_scope_index: usize,
 }
 
 impl<'tir, 'interner> Builder<'tir, 'interner> {
@@ -511,11 +534,16 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
             .map(|scope| self.lower_block_scope(scope))
             .collect();
 
-        let block = self.lower_expression(&func.block);
+        let mut ctx = FunctionContext {
+            current_scope_index: 0,
+            frame,
+        };
+
+        let block = self.lower_expression(&mut ctx, &func.block);
 
         Function {
             signature_index: func.signature_index,
-            scopes: frame,
+            scopes: ctx.frame,
             block,
         }
     }
@@ -550,72 +578,148 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
             } else {
                 Mutability::Immutable
             },
-            value: self.lower_expression(&global.value.inner),
+            value: todo!(),
+            // value: self.lower_expression(func_ctx, &global.value.inner),
         }
     }
 
-    fn lower_expression(&mut self, expr: &tir::Expression) -> Expression {
-        let ty = self.lower_type(expr.ty);
-        let kind = self.lower_expr_kind(&expr.kind);
-
-        Expression { kind, ty }
-    }
-
-    fn lower_expr_kind(&mut self, kind: &tir::ExprKind) -> ExprKind {
+    fn lower_expression(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        expr: &tir::Expression,
+    ) -> Expression {
         use crate::ast::{BinaryOp, UnaryOp};
 
-        match kind {
-            tir::ExprKind::Error | tir::ExprKind::Placeholder => ExprKind::Noop,
-            tir::ExprKind::Unreachable => ExprKind::Unreachable,
-            tir::ExprKind::Int { value } => ExprKind::Int { value: *value },
-            tir::ExprKind::Float { value } => ExprKind::Float { value: *value },
-            tir::ExprKind::Bool { value } => ExprKind::Bool { value: *value },
-            tir::ExprKind::Global { global_index } => ExprKind::Global {
-                global_index: *global_index,
+        match &expr.kind {
+            tir::ExprKind::Error | tir::ExprKind::Placeholder => unreachable!(),
+            tir::ExprKind::Unreachable => Expression {
+                kind: ExprKind::Unreachable,
+                ty: Type::Never,
+            },
+            tir::ExprKind::Int { value } => Expression {
+                kind: ExprKind::Int { value: *value },
+                ty: self.lower_type(expr.ty),
+            },
+            tir::ExprKind::Float { value } => Expression {
+                kind: ExprKind::Float { value: *value },
+                ty: self.lower_type(expr.ty),
+            },
+            tir::ExprKind::Bool { value } => Expression {
+                kind: ExprKind::Bool { value: *value },
+                ty: Type::Bool,
+            },
+            tir::ExprKind::Global { global_index } => Expression {
+                kind: ExprKind::Global {
+                    global_index: *global_index,
+                },
+                ty: self.lower_type(expr.ty),
             },
             tir::ExprKind::Local {
                 scope_index,
                 local_index,
-            } => ExprKind::LocalGet {
-                scope_index: *scope_index,
-                local_index: *local_index,
+            } => Expression {
+                kind: ExprKind::LocalGet {
+                    scope_index: *scope_index,
+                    local_index: *local_index,
+                },
+                ty: self.lower_type(expr.ty),
             },
-            tir::ExprKind::Function { func_index } => ExprKind::Function {
-                func_index: *func_index,
+            tir::ExprKind::Function { func_index } => Expression {
+                kind: ExprKind::Function {
+                    func_index: *func_index,
+                },
+                ty: self.lower_type(expr.ty),
             },
-            tir::ExprKind::String { symbol } => ExprKind::String {
-                string_index: self.string_pool.add(*symbol),
-            },
-            tir::ExprKind::Return { value } => ExprKind::Return {
-                value: value.as_ref().map(|v| Box::new(self.lower_expression(v))),
+            tir::ExprKind::String { symbol } => {
+                let local_index = func_ctx.frame[func_ctx.current_scope_index].locals.len();
+                func_ctx.frame[func_ctx.current_scope_index]
+                    .locals
+                    .push(Local {
+                        mutability: Mutability::Immutable,
+                        ty: Type::Tuple {
+                            tuple_index: TuplePool::STRING_TUPLE_INDEX,
+                        },
+                    });
+                Expression {
+                    kind: ExprKind::String {
+                        scope_index: func_ctx.current_scope_index as ScopeIndex,
+                        local_index: local_index as LocalIndex,
+                        string_index: self.string_pool.add(*symbol),
+                    },
+                    ty: Type::Tuple {
+                        tuple_index: TuplePool::STRING_TUPLE_INDEX,
+                    },
+                }
+            }
+            tir::ExprKind::Return { value } => Expression {
+                kind: ExprKind::Return {
+                    value: value
+                        .as_ref()
+                        .map(|v| Box::new(self.lower_expression(func_ctx, v))),
+                },
+                ty: Type::Never,
             },
             tir::ExprKind::EnumVariant {
                 namespace_index,
                 variant_index,
-            } => match &self.namespaces[*namespace_index as usize] {
+            } => match &self.tir.namespaces[*namespace_index as usize] {
                 tir::Namespace::Enum(enum_) => {
                     let variant = &enum_.variants[*variant_index as usize];
-                    self.lower_expression(&variant.value).kind
+                    self.lower_expression(func_ctx, &variant.value)
                 }
                 _ => unreachable!(),
             },
             tir::ExprKind::Call { callee, arguments } => {
-                let callee = Box::new(self.lower_expression(callee));
+                let callee = Box::new(self.lower_expression(func_ctx, callee));
                 let arguments = arguments
                     .iter()
-                    .map(|arg| self.lower_expression(arg))
+                    .map(|arg| self.lower_expression(func_ctx, arg))
                     .collect();
-                ExprKind::Call { callee, arguments }
+
+                Expression {
+                    kind: ExprKind::Call { callee, arguments },
+                    ty: self.lower_type(expr.ty),
+                }
             }
             tir::ExprKind::NamespaceAccess {
                 namespace_index,
                 member,
                 ..
             } => {
-                let namespace = &self.namespaces[*namespace_index as usize];
+                let namespace = &self.tir.namespaces[*namespace_index as usize];
                 match namespace {
-                    tir::Namespace::ImportModule(_) => self.lower_expression(member).kind,
-                    tir::Namespace::Enum(_) => self.lower_expression(member).kind,
+                    tir::Namespace::ImportModule(_) => self.lower_expression(func_ctx, member),
+                    tir::Namespace::Enum(_) => self.lower_expression(func_ctx, member),
+                }
+            }
+            tir::ExprKind::ObjectAccess { object, member } => {
+                let object = self.lower_expression(func_ctx, object);
+                match object.kind {
+                    ExprKind::String {
+                        scope_index,
+                        local_index,
+                        ..
+                    } => {
+                        let field_index = match self.interner.resolve(member.inner).unwrap() {
+                            "ptr" => 0,
+                            "len" => 1,
+                            _ => unreachable!(),
+                        };
+
+                        Expression {
+                            kind: ExprKind::LocalTupleGet {
+                                scope_index,
+                                local_index,
+                                field_index,
+                            },
+                            ty: match field_index {
+                                0 => Type::StringPointer,
+                                1 => Type::U32,
+                                _ => unreachable!(),
+                            },
+                        }
+                    }
+                    _ => unreachable!(),
                 }
             }
             tir::ExprKind::IfElse {
@@ -623,46 +727,63 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
                 then_block,
                 else_block,
             } => {
-                let condition = Box::new(self.lower_expression(condition));
-                let then_block = Box::new(self.lower_expression(then_block));
+                let condition = Box::new(self.lower_expression(func_ctx, condition));
+                let then_block = Box::new(self.lower_expression(func_ctx, then_block));
                 let else_block = else_block
                     .as_ref()
-                    .map(|e| Box::new(self.lower_expression(e)));
-                ExprKind::IfElse {
-                    condition,
-                    then_block,
-                    else_block,
+                    .map(|e| Box::new(self.lower_expression(func_ctx, e)));
+                Expression {
+                    kind: ExprKind::IfElse {
+                        condition,
+                        then_block,
+                        else_block,
+                    },
+                    ty: self.lower_type(expr.ty),
                 }
             }
-            tir::ExprKind::Break { scope_index, value } => ExprKind::Break {
-                scope_index: *scope_index,
-                value: value.as_ref().map(|v| Box::new(self.lower_expression(v))),
+            tir::ExprKind::Break { scope_index, value } => Expression {
+                kind: ExprKind::Break {
+                    scope_index: *scope_index,
+                    value: value
+                        .as_ref()
+                        .map(|v| Box::new(self.lower_expression(func_ctx, v))),
+                },
+                ty: self.lower_type(expr.ty),
             },
-            tir::ExprKind::Continue { scope_index } => ExprKind::Continue {
-                scope_index: *scope_index,
+            tir::ExprKind::Continue { scope_index } => Expression {
+                kind: ExprKind::Continue {
+                    scope_index: *scope_index,
+                },
+                ty: Type::Never,
             },
-            tir::ExprKind::Loop { scope_index, block } => ExprKind::Loop {
-                scope_index: *scope_index,
-                block: Box::new(self.lower_expression(block)),
+            tir::ExprKind::Loop { scope_index, block } => Expression {
+                kind: ExprKind::Loop {
+                    scope_index: *scope_index,
+                    block: Box::new(self.lower_expression(func_ctx, block)),
+                },
+                ty: self.lower_type(expr.ty),
             },
             tir::ExprKind::Block {
                 scope_index,
                 expressions,
                 result,
             } => {
+                func_ctx.current_scope_index = *scope_index as usize;
                 let mut lowered_exprs: Vec<Expression> = expressions
                     .iter()
-                    .map(|e| self.lower_expression(e))
+                    .map(|e| self.lower_expression(func_ctx, e))
                     .collect();
 
-                // Add the result expression if present
                 if let Some(result) = result {
-                    lowered_exprs.push(self.lower_expression(result));
+                    lowered_exprs.push(self.lower_expression(func_ctx, result));
                 }
 
-                ExprKind::Block {
-                    scope_index: *scope_index,
-                    expressions: lowered_exprs.into_boxed_slice(),
+                Expression {
+                    kind: ExprKind::Block {
+                        scope_index: *scope_index,
+                        expressions: lowered_exprs.into_boxed_slice(),
+                    },
+                    ty: self.lower_type(expr.ty),
                 }
             }
             tir::ExprKind::LocalDeclaration {
@@ -670,20 +791,23 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
                 local_index,
                 value,
                 ..
-            } => {
-                // Lower local declaration to assignment
-                ExprKind::LocalSet {
+            } => Expression {
+                kind: ExprKind::LocalSet {
                     scope_index: *scope_index,
                     local_index: *local_index,
-                    value: Box::new(self.lower_expression(value)),
-                }
-            }
+                    value: Box::new(self.lower_expression(func_ctx, value)),
+                },
+                ty: self.lower_type(expr.ty),
+            },
             tir::ExprKind::Unary { operator, operand } => {
-                let operand = Box::new(self.lower_expression(operand));
-                match operator.inner {
-                    UnaryOp::InvertSign => ExprKind::Neg { value: operand },
-                    UnaryOp::Not => ExprKind::Eqz { value: operand },
-                    UnaryOp::BitNot => ExprKind::BitNot { value: operand },
+                let operand = Box::new(self.lower_expression(func_ctx, operand));
+                Expression {
+                    kind: match operator.inner {
+                        UnaryOp::InvertSign => ExprKind::Neg { value: operand },
+                        UnaryOp::Not => ExprKind::Eqz { value: operand },
+                        UnaryOp::BitNot => ExprKind::BitNot { value: operand },
+                    },
+                    ty: self.lower_type(expr.ty),
                 }
             }
             tir::ExprKind::Binary {
@@ -693,114 +817,124 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
             } => {
                 use BinaryOp::*;
 
-                match operator.inner {
+                let kind = match operator.inner {
                     // Handle compound assignments by desugaring
                     Assign => {
                         // left = right
                         // This requires left to be an assignable expression
-                        self.lower_assignment(left, right)
+                        self.lower_assignment(func_ctx, left, right)
                     }
                     AddAssign | SubAssign | MulAssign | DivAssign | RemAssign => {
                         // x += y becomes x = x + y
-                        self.lower_compound_assignment(operator.inner, left, right)
+                        self.lower_compound_assignment(func_ctx, operator.inner, left, right)
                     }
                     // Regular binary operations
                     Add => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Add { left, right }
                     }
                     Sub => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Sub { left, right }
                     }
                     Mul => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Mul { left, right }
                     }
                     Div => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Div { left, right }
                     }
                     Rem => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Rem { left, right }
                     }
                     Eq => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Eq { left, right }
                     }
                     NotEq => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::NotEq { left, right }
                     }
                     Less => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Less { left, right }
                     }
                     LessEq => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::LessEq { left, right }
                     }
                     Greater => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Greater { left, right }
                     }
                     GreaterEq => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::GreaterEq { left, right }
                     }
                     And => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::And { left, right }
                     }
                     Or => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::Or { left, right }
                     }
                     BitAnd => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::BitAnd { left, right }
                     }
                     BitOr => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::BitOr { left, right }
                     }
                     BitXor => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::BitXor { left, right }
                     }
                     LeftShift => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::LeftShift { left, right }
                     }
                     RightShift => {
-                        let left = Box::new(self.lower_expression(left));
-                        let right = Box::new(self.lower_expression(right));
+                        let left = Box::new(self.lower_expression(func_ctx, left));
+                        let right = Box::new(self.lower_expression(func_ctx, right));
                         ExprKind::RightShift { left, right }
                     }
+                };
+
+                Expression {
+                    kind,
+                    ty: self.lower_type(expr.ty),
                 }
             }
         }
     }
 
-    fn lower_assignment(&mut self, left: &tir::Expression, right: &tir::Expression) -> ExprKind {
+    fn lower_assignment(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        left: &tir::Expression,
+        right: &tir::Expression,
+    ) -> ExprKind {
         match &left.kind {
             tir::ExprKind::Local {
                 scope_index,
@@ -808,11 +942,11 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
             } => ExprKind::LocalSet {
                 scope_index: *scope_index,
                 local_index: *local_index,
-                value: Box::new(self.lower_expression(right)),
+                value: Box::new(self.lower_expression(func_ctx, right)),
             },
             tir::ExprKind::Global { global_index } => ExprKind::GlobalSet {
                 global_index: *global_index,
-                value: Box::new(self.lower_expression(right)),
+                value: Box::new(self.lower_expression(func_ctx, right)),
             },
             _ => {
                 // This shouldn't happen in well-formed TIR, but handle gracefully
@@ -823,6 +957,7 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
 
     fn lower_compound_assignment(
         &mut self,
+        func_ctx: &mut FunctionContext,
         op: crate::ast::BinaryOp,
         left: &tir::Expression,
         right: &tir::Expression,
@@ -842,24 +977,24 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
         // Create the binary operation: x + y
         let binary_expr_kind = match binary_op {
             Add => ExprKind::Add {
-                left: Box::new(self.lower_expression(left)),
-                right: Box::new(self.lower_expression(right)),
+                left: Box::new(self.lower_expression(func_ctx, left)),
+                right: Box::new(self.lower_expression(func_ctx, right)),
             },
             Sub => ExprKind::Sub {
-                left: Box::new(self.lower_expression(left)),
-                right: Box::new(self.lower_expression(right)),
+                left: Box::new(self.lower_expression(func_ctx, left)),
+                right: Box::new(self.lower_expression(func_ctx, right)),
             },
             Mul => ExprKind::Mul {
-                left: Box::new(self.lower_expression(left)),
-                right: Box::new(self.lower_expression(right)),
+                left: Box::new(self.lower_expression(func_ctx, left)),
+                right: Box::new(self.lower_expression(func_ctx, right)),
             },
             Div => ExprKind::Div {
-                left: Box::new(self.lower_expression(left)),
-                right: Box::new(self.lower_expression(right)),
+                left: Box::new(self.lower_expression(func_ctx, left)),
+                right: Box::new(self.lower_expression(func_ctx, right)),
             },
             Rem => ExprKind::Rem {
-                left: Box::new(self.lower_expression(left)),
-                right: Box::new(self.lower_expression(right)),
+                left: Box::new(self.lower_expression(func_ctx, left)),
+                right: Box::new(self.lower_expression(func_ctx, right)),
             },
             _ => unreachable!(),
         };

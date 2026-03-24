@@ -2056,6 +2056,7 @@ dependencies = [
  "serde",
  "serde_json",
  "string-interner",
+ "wasmprinter",
  "wasmtime",
 ]
 

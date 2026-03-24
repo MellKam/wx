@@ -18,6 +18,7 @@ indoc = "2"
 serde_json = "1.0"
 insta = { version = "1.43", features = ["yaml"] }
 wasmtime = "43"
+wasmprinter = "0.245"
 
 [profile.dev.package]
 insta.opt-level = 3

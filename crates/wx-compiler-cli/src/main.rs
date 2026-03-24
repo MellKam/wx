@@ -96,7 +96,7 @@ fn main() {
     }
 
     let mir = mir::MIR::build(&tir, &interner);
-    let module = codegen::Builder::build(&mir).unwrap();
+    let module = codegen::Builder::build(&mir, &interner).unwrap();
     let bytecode = module.encode();
 
     let parts = filename.split('.').collect::<Vec<&str>>();
