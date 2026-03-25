@@ -1424,6 +1424,7 @@ fn format_type(
         Type::Never => "never".to_string(),
         Type::Unknown => "unknown".to_string(),
         Type::Error => "error".to_string(),
+        Type::String => "string".to_string(),
         Type::Namespace { namespace_index } => {
             let ns = &tir.namespaces[namespace_index as usize];
             let name = match ns {
@@ -1523,7 +1524,9 @@ fn collect_namespace_tokens(
         | ExprKind::Global { .. }
         | ExprKind::Local { .. }
         | ExprKind::Function { .. }
-        | ExprKind::EnumVariant { .. } => {
+        | ExprKind::EnumVariant { .. }
+        | ExprKind::String { .. }
+        | ExprKind::ObjectAccess { .. } => {
             // Terminal expressions, no recursion needed
         }
         ExprKind::LocalDeclaration { value, .. } => {
@@ -1542,6 +1545,7 @@ fn collect_namespace_tokens(
                 collect_namespace_tokens(arg, namespaces, source, tokens);
             }
         }
+
         ExprKind::IfElse {
             condition,
             then_block,

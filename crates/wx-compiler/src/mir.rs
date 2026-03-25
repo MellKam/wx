@@ -42,8 +42,6 @@ pub enum ExprKind {
         value: Box<Expression>,
     },
     String {
-        scope_index: ScopeIndex,
-        local_index: LocalIndex,
         string_index: StringIndex,
     },
     Global {
@@ -228,12 +226,12 @@ pub struct ImportModule {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImportModuleItem {
     Function {
-        name: String,
+        name: SymbolU32,
         func_index: FunctionIndex,
         signature_index: SignatureIndex,
     },
     Global {
-        name: String,
+        name: SymbolU32,
         global_index: GlobalIndex,
     },
 }
@@ -242,11 +240,11 @@ pub enum ImportModuleItem {
 pub enum ExportItem {
     Function {
         func_index: FunctionIndex,
-        name: String,
+        name: SymbolU32,
     },
     Global {
         global_index: GlobalIndex,
-        name: String,
+        name: SymbolU32,
     },
 }
 
@@ -340,30 +338,74 @@ impl TuplePool {
     }
 }
 
+fn build_index_remap<T>(
+    import_count: u32,
+    items: &[T],
+    get_source: fn(&T) -> tir::ItemSource,
+) -> Box<[u32]> {
+    let mut tir_to_mir = vec![0u32; items.len()];
+    let mut next_imported = 0u32;
+    let mut next_defined = import_count;
+
+    for (tir_index, item) in items.iter().enumerate() {
+        tir_to_mir[tir_index] = match get_source(item) {
+            tir::ItemSource::Imported => {
+                let i = next_imported;
+                next_imported += 1;
+                i
+            }
+            tir::ItemSource::Defined => {
+                let i = next_defined;
+                next_defined += 1;
+                i
+            }
+        };
+    }
+
+    tir_to_mir.into_boxed_slice()
+}
+
 impl MIR {
     pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
+        let func_index_remap = build_index_remap(
+            (tir.declared_functions.len() - tir.defined_functions.len()) as u32,
+            &tir.declared_functions,
+            |f| f.source,
+        );
+        let global_index_remap = build_index_remap(
+            (tir.declared_globals.len() - tir.defined_globals.len()) as u32,
+            &tir.declared_globals,
+            |g| g.source,
+        );
+
         let mut builder = Builder {
             interner,
             tir,
             string_pool: StringPool::new(),
             tuple_pool: TuplePool::new(),
+            func_index_remap,
+            global_index_remap,
         };
-
-        let mut functions: Vec<_> = tir
-            .defined_functions
+        let functions = tir
+            .declared_functions
             .iter()
-            .map(|(func_index, func)| (*func_index, builder.lower_function(func)))
+            .enumerate()
+            .filter(|(_, decl)| decl.source == tir::ItemSource::Defined)
+            .map(|(tir_index, _)| {
+                let func = tir.defined_functions.get(&(tir_index as u32)).unwrap();
+                builder.lower_function(func)
+            })
             .collect();
-        functions.sort_by_key(|(k, _)| *k);
-        let functions = functions
-            .into_iter()
-            .map(|(_, func)| func)
-            .collect::<Vec<_>>();
 
         let globals = tir
-            .defined_globals
-            .values()
-            .map(|global| builder.lower_global(global))
+            .declared_globals
+            .iter()
+            .enumerate()
+            .filter(|(_, decl)| decl.source == tir::ItemSource::Defined)
+            .map(|(tir_index, _)| {
+                let global = tir.defined_globals.get(&(tir_index as u32)).unwrap();
+                builder.lower_global(global)
+            })
             .collect();
 
         let signatures = tir
@@ -403,15 +445,16 @@ impl MIR {
                                         [*func_index as usize]
                                         .signature_index;
                                     ImportModuleItem::Function {
-                                        name: interner.resolve(*symbol).unwrap().to_string(),
-                                        func_index: *func_index,
+                                        name: *symbol,
+                                        func_index: builder.func_index_remap[*func_index as usize],
                                         signature_index,
                                     }
                                 }
                                 tir::ImportValue::Global { global_index } => {
                                     ImportModuleItem::Global {
-                                        name: interner.resolve(*symbol).unwrap().to_string(),
-                                        global_index: *global_index,
+                                        name: *symbol,
+                                        global_index: builder.global_index_remap
+                                            [*global_index as usize],
                                     }
                                 }
                             })
@@ -429,32 +472,22 @@ impl MIR {
                         external_name,
                         internal_name,
                     } => ExportItem::Function {
-                        func_index: *func_index,
-                        name: interner
-                            .resolve(
-                                external_name
-                                    .clone()
-                                    .map(|n| n.inner)
-                                    .unwrap_or(internal_name.inner),
-                            )
-                            .unwrap()
-                            .to_string(),
+                        func_index: builder.func_index_remap[*func_index as usize],
+                        name: external_name
+                            .clone()
+                            .map(|n| n.inner)
+                            .unwrap_or(internal_name.inner),
                     },
                     tir::ExportItem::Global {
                         global_index,
                         external_name,
                         internal_name,
                     } => ExportItem::Global {
-                        global_index: *global_index,
-                        name: interner
-                            .resolve(
-                                external_name
-                                    .clone()
-                                    .map(|n| n.inner)
-                                    .unwrap_or(internal_name.inner),
-                            )
-                            .unwrap()
-                            .to_string(),
+                        global_index: builder.global_index_remap[*global_index as usize],
+                        name: external_name
+                            .clone()
+                            .map(|n| n.inner)
+                            .unwrap_or(internal_name.inner),
                     },
                 })
                 .collect(),
@@ -481,6 +514,7 @@ impl StringPool {
         } else {
             let index = self.lookup.len() as StringIndex;
             self.lookup.insert(symbol, index);
+            self.strings.push(symbol);
             index
         }
     }
@@ -495,6 +529,8 @@ struct Builder<'tir, 'interner> {
     tir: &'tir tir::TIR,
     string_pool: StringPool,
     tuple_pool: TuplePool,
+    func_index_remap: Box<[u32]>,
+    global_index_remap: Box<[u32]>,
 }
 
 struct FunctionContext {
@@ -610,7 +646,7 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
             },
             tir::ExprKind::Global { global_index } => Expression {
                 kind: ExprKind::Global {
-                    global_index: *global_index,
+                    global_index: self.global_index_remap[*global_index as usize],
                 },
                 ty: self.lower_type(expr.ty),
             },
@@ -626,26 +662,14 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
             },
             tir::ExprKind::Function { func_index } => Expression {
                 kind: ExprKind::Function {
-                    func_index: *func_index,
+                    func_index: self.func_index_remap[*func_index as usize],
                 },
                 ty: self.lower_type(expr.ty),
             },
             tir::ExprKind::String { symbol } => {
-                let local_index = func_ctx.frame[func_ctx.current_scope_index].locals.len();
-                func_ctx.frame[func_ctx.current_scope_index]
-                    .locals
-                    .push(Local {
-                        mutability: Mutability::Immutable,
-                        ty: Type::Tuple {
-                            tuple_index: TuplePool::STRING_TUPLE_INDEX,
-                        },
-                    });
+                let string_index = self.string_pool.add(*symbol);
                 Expression {
-                    kind: ExprKind::String {
-                        scope_index: func_ctx.current_scope_index as ScopeIndex,
-                        local_index: local_index as LocalIndex,
-                        string_index: self.string_pool.add(*symbol),
-                    },
+                    kind: ExprKind::String { string_index },
                     ty: Type::Tuple {
                         tuple_index: TuplePool::STRING_TUPLE_INDEX,
                     },
@@ -693,34 +717,36 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
                 }
             }
             tir::ExprKind::ObjectAccess { object, member } => {
-                let object = self.lower_expression(func_ctx, object);
-                match object.kind {
-                    ExprKind::String {
-                        scope_index,
-                        local_index,
-                        ..
-                    } => {
-                        let field_index = match self.interner.resolve(member.inner).unwrap() {
-                            "ptr" => 0,
-                            "len" => 1,
-                            _ => unreachable!(),
-                        };
+                todo!();
+                // let object = self.lower_expression(func_ctx, object);
+                // match object.kind {
+                //     ExprKind::String {
+                //         scope_index,
+                //         local_index,
+                //         ..
+                //     } => {
+                //         let field_index = match
+                // self.interner.resolve(member.inner).unwrap() {
+                //             "ptr" => 0,
+                //             "len" => 1,
+                //             _ => unreachable!(),
+                //         };
 
-                        Expression {
-                            kind: ExprKind::LocalTupleGet {
-                                scope_index,
-                                local_index,
-                                field_index,
-                            },
-                            ty: match field_index {
-                                0 => Type::StringPointer,
-                                1 => Type::U32,
-                                _ => unreachable!(),
-                            },
-                        }
-                    }
-                    _ => unreachable!(),
-                }
+                //         Expression {
+                //             kind: ExprKind::LocalTupleGet {
+                //                 scope_index,
+                //                 local_index,
+                //                 field_index,
+                //             },
+                //             ty: match field_index {
+                //                 0 => Type::StringPointer,
+                //                 1 => Type::U32,
+                //                 _ => unreachable!(),
+                //             },
+                //         }
+                //     }
+                //     _ => unreachable!(),
+                // }
             }
             tir::ExprKind::IfElse {
                 condition,
@@ -945,13 +971,10 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
                 value: Box::new(self.lower_expression(func_ctx, right)),
             },
             tir::ExprKind::Global { global_index } => ExprKind::GlobalSet {
-                global_index: *global_index,
+                global_index: self.global_index_remap[*global_index as usize],
                 value: Box::new(self.lower_expression(func_ctx, right)),
             },
-            _ => {
-                // This shouldn't happen in well-formed TIR, but handle gracefully
-                ExprKind::Noop
-            }
+            _ => unreachable!(),
         }
     }
 
@@ -1015,13 +1038,10 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
                 value: Box::new(binary_expr),
             },
             tir::ExprKind::Global { global_index } => ExprKind::GlobalSet {
-                global_index: *global_index,
+                global_index: self.global_index_remap[*global_index as usize],
                 value: Box::new(binary_expr),
             },
-            _ => {
-                // This shouldn't happen in well-formed TIR
-                ExprKind::Noop
-            }
+            _ => unreachable!(),
         }
     }
 }

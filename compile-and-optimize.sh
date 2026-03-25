@@ -39,8 +39,8 @@ fi
 
 echo ""
 echo "=== Results ==="
-ORIGINAL_SIZE=$(stat -c%s "$OUTPUT_WASM")
-OPTIMIZED_SIZE=$(stat -c%s "$OPTIMIZED_WASM")
+ORIGINAL_SIZE=$(wc -c < "$OUTPUT_WASM" | tr -d ' ')
+OPTIMIZED_SIZE=$(wc -c < "$OPTIMIZED_WASM" | tr -d ' ')
 SAVED=$((ORIGINAL_SIZE - OPTIMIZED_SIZE))
 PERCENT=$((100 - OPTIMIZED_SIZE * 100 / ORIGINAL_SIZE))
 

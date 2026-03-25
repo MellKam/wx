@@ -140,7 +140,8 @@ exports:
           end: 68
       func_index: 0
 declared_functions:
-  - signature_index: 0
+  - source: Defined
+    signature_index: 0
     name:
       inner: 1
       span:

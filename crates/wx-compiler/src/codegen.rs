@@ -59,24 +59,41 @@ impl FunctionSignature {
 
 impl From<mir::FunctionSignature> for FunctionSignature {
     fn from(ty: mir::FunctionSignature) -> Self {
-        let param_count = ty.params().len();
-
-        // Filter out Unit return types (functions with no return value in WASM)
-        let param_results: Box<[ValueType]> = ty
-            .items
-            .into_iter()
-            .filter_map(|ty| {
-                if matches!(ty, mir::Type::Unit) {
-                    None
-                } else {
-                    Some(ValueType::try_from(ty).unwrap())
+        let mut param_results = Vec::new();
+        for param in ty.params().iter().copied() {
+            match param {
+                mir::Type::Tuple { .. } => {
+                    param_results.push(ValueType::I32);
+                    param_results.push(ValueType::I32);
                 }
-            })
-            .collect();
+                mir::Type::StringPointer | mir::Type::I32 | mir::Type::U32 => {
+                    param_results.push(ValueType::I32)
+                }
+                mir::Type::I64 | mir::Type::U64 => param_results.push(ValueType::I64),
+                mir::Type::F32 => param_results.push(ValueType::F32),
+                mir::Type::F64 => param_results.push(ValueType::F64),
+                _ => unreachable!("Unsupported parameter type in function signature"),
+            }
+        }
+        let param_count = param_results.len();
+        match ty.result() {
+            mir::Type::Tuple { .. } => {
+                param_results.push(ValueType::I32);
+                param_results.push(ValueType::I32);
+            }
+            mir::Type::StringPointer | mir::Type::I32 | mir::Type::U32 => {
+                param_results.push(ValueType::I32)
+            }
+            mir::Type::I64 | mir::Type::U64 => param_results.push(ValueType::I64),
+            mir::Type::F32 => param_results.push(ValueType::F32),
+            mir::Type::F64 => param_results.push(ValueType::F64),
+            mir::Type::Unit | mir::Type::Never => {}
+            _ => unreachable!("Unsupported result type in function signature"),
+        }
 
         FunctionSignature {
             param_count,
-            param_results,
+            param_results: param_results.into_boxed_slice(),
         }
     }
 }
@@ -237,7 +254,10 @@ pub enum ExportItem {
         global_index: GlobalIndex,
     },
     // Table,
-    // Memory,
+    Memory {
+        name: String,
+        memory_index: u32,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -311,7 +331,7 @@ struct Global {
     value: Expression,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImportDesc {
     Function {
@@ -323,7 +343,7 @@ pub enum ImportDesc {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Import {
     pub module: String,
@@ -370,8 +390,12 @@ impl TryFrom<mir::Type> for ValueType {
             mir::Type::F64 => Ok(ValueType::F64),
             mir::Type::U32 => Ok(ValueType::I32),
             mir::Type::U64 => Ok(ValueType::I64),
+            mir::Type::StringPointer => Ok(ValueType::I32),
             mir::Type::Function { .. } => Ok(ValueType::I32),
-            _ => Err(()),
+            ty => {
+                eprintln!("Unsupported type in codegen: {:?}", ty);
+                Err(())
+            }
         }
     }
 }
@@ -487,6 +511,18 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
             string_pool: StringPool::new(),
         };
 
+        for symbol in mir.strings.iter().copied() {
+            let s = interner.resolve(symbol).unwrap();
+            builder.string_pool.add(s);
+        }
+        let required_pages = if builder.string_pool.bytes.is_empty() {
+            0
+        } else {
+            (builder.string_pool.bytes.len() as u32)
+                .div_ceil(65536)
+                .max(1)
+        };
+
         let mut signatures = HashMap::<FunctionSignature, SignatureIndex>::new();
 
         // Process imports first to build signatures for imported functions
@@ -511,7 +547,7 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
 
                         imports.push(Import {
                             module: import_module.name.clone(),
-                            name: name.clone(),
+                            name: interner.resolve(*name).unwrap().to_string(),
                             desc: ImportDesc::Function {
                                 signature_index: sig_index,
                             },
@@ -525,7 +561,7 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
                         // TODO: Get actual type from the MIR
                         imports.push(Import {
                             module: import_module.name.clone(),
-                            name: name.clone(),
+                            name: interner.resolve(*name).unwrap().to_string(),
                             desc: ImportDesc::Global {
                                 ty: ValueType::I32,
                                 mutability: Mutability::Immutable,
@@ -542,15 +578,23 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
             .iter()
             .map(|item| match item {
                 mir::ExportItem::Global { global_index, name } => ExportItem::Global {
-                    name: name.clone(),
+                    name: interner.resolve(*name).unwrap().to_string(),
                     global_index: GlobalIndex(*global_index),
                 },
                 mir::ExportItem::Function { func_index, name } => ExportItem::Function {
-                    name: name.clone(),
+                    name: interner.resolve(*name).unwrap().to_string(),
                     // MIR func_index already accounts for imports (absolute index in function
                     // space)
                     func_index: FuncIndex(*func_index),
                 },
+            })
+            .chain(if required_pages > 0 {
+                Some(ExportItem::Memory {
+                    memory_index: 0,
+                    name: "memory".to_string(),
+                })
+            } else {
+                None
             })
             .collect();
 
@@ -626,18 +670,6 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
                 expressions: sink.into_boxed_slice(),
             });
         }
-
-        for symbol in mir.strings.iter().copied() {
-            let s = interner.resolve(symbol).unwrap();
-            builder.string_pool.add(s);
-        }
-        let required_pages = if builder.string_pool.bytes.is_empty() {
-            0
-        } else {
-            (builder.string_pool.bytes.len() as u32)
-                .div_ceil(65536)
-                .max(1)
-        };
 
         let globals = GlobalSection {
             globals: mir
@@ -798,20 +830,28 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
             mir::ExprKind::LocalGet {
                 local_index,
                 scope_index,
-            } => Ok(sink.push(Expression::LocalGet {
-                local_index: ctx.get_flat_index(*scope_index, *local_index),
-            })),
+            } => match expr.ty {
+                mir::Type::Tuple { .. } => {
+                    let tuple_start_index = ctx.get_flat_index(*scope_index, *local_index).0;
+                    sink.push(Expression::LocalGet {
+                        local_index: LocalIndex(tuple_start_index),
+                    });
+                    sink.push(Expression::LocalGet {
+                        local_index: LocalIndex(tuple_start_index + 1),
+                    });
+                    return Ok(());
+                }
+                _ => Ok(sink.push(Expression::LocalGet {
+                    local_index: ctx.get_flat_index(*scope_index, *local_index),
+                })),
+            },
             mir::ExprKind::LocalSet {
                 local_index,
                 scope_index,
                 value,
             } => match value.ty {
                 mir::Type::Tuple { .. } => match &value.kind {
-                    mir::ExprKind::String {
-                        scope_index,
-                        local_index,
-                        string_index,
-                    } => {
+                    mir::ExprKind::String { string_index } => {
                         let tuple_start_index = ctx.get_flat_index(*scope_index, *local_index).0;
                         let (offset, len) = self.string_pool.strings[*string_index as usize];
 
@@ -1244,19 +1284,11 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
                 Ok(())
             }
             mir::ExprKind::Noop => Ok(()),
-            mir::ExprKind::String {
-                scope_index,
-                local_index,
-                ..
-            } => {
-                let start_tuple_index = ctx.get_flat_index(*scope_index, *local_index).0;
+            mir::ExprKind::String { string_index, .. } => {
+                let (ptr, len) = self.string_pool.strings[*string_index as usize];
 
-                sink.push(Expression::LocalGet {
-                    local_index: LocalIndex(start_tuple_index),
-                });
-                sink.push(Expression::LocalGet {
-                    local_index: LocalIndex(start_tuple_index + 1),
-                });
+                sink.push(Expression::I32Const { value: ptr as i32 });
+                sink.push(Expression::I32Const { value: len as i32 });
                 Ok(())
             }
             mir::ExprKind::LocalTupleGet {
@@ -1981,8 +2013,8 @@ impl Encode for FunctionSection {
 #[repr(u8)]
 enum ExportKind {
     Function = 0x00,
-    // Table = 0x01,
-    // Memory = 0x02,
+    Table = 0x01,
+    Memory = 0x02,
     Global = 0x03,
 }
 
@@ -1990,18 +2022,22 @@ impl ContextEncode for ExportItem {
     fn encode(&self, sink: &mut Vec<u8>, _module: &WasmModule) {
         match self.clone() {
             ExportItem::Function { name, func_index } => {
-                let name_len = name.len() as u32;
-                name_len.encode(sink);
+                (name.len() as u32).encode(sink);
                 sink.extend_from_slice(name.as_bytes());
                 sink.push(ExportKind::Function as u8);
                 func_index.0.encode(sink);
             }
             ExportItem::Global { name, global_index } => {
-                let name_len = name.len() as u32;
-                name_len.encode(sink);
+                (name.len() as u32).encode(sink);
                 sink.extend_from_slice(name.as_bytes());
                 sink.push(ExportKind::Global as u8);
                 global_index.0.encode(sink);
+            }
+            ExportItem::Memory { name, memory_index } => {
+                (name.len() as u32).encode(sink);
+                sink.extend_from_slice(name.as_bytes());
+                sink.push(ExportKind::Memory as u8);
+                memory_index.encode(sink);
             }
         }
     }
@@ -2303,18 +2339,35 @@ impl WasmModule {
             0 => {}
             _ => self.imports.encode(&mut sink),
         }
-        self.functions.encode(&mut sink);
+        match self.functions.types.len() {
+            0 => {}
+            _ => self.functions.encode(&mut sink),
+        }
         match self.tables.tables.len() {
             0 => {}
             _ => self.tables.encode(&mut sink),
         }
-        self.globals.encode(&mut sink);
-        self.exports.encode(&mut sink, self);
+        match self.memory.memories.len() {
+            0 => {}
+            _ => self.memory.encode(&mut sink),
+        }
+        match self.globals.globals.len() {
+            0 => {}
+            _ => self.globals.encode(&mut sink),
+        }
+        match self.exports.items.len() {
+            0 => {}
+            _ => self.exports.encode(&mut sink, self),
+        }
         match self.elements.segments.len() {
             0 => {}
             _ => self.elements.encode(&mut sink),
         }
         self.code.encode(&mut sink, self);
+        match self.data.segments.len() {
+            0 => {}
+            _ => self.data.encode(&mut sink),
+        }
 
         sink
     }
@@ -2871,30 +2924,55 @@ mod tests {
     #[test]
     fn test_imports() {
         let case = TestCase::new(indoc! {"
-            import \"env\" as env {
-                fn print_i32(value: i32) -> unit;
+            import \"console\" {
+                fn log(value: string) -> unit;
             }
 
             fn main() -> unit {
-                env::print_i32(42);
+                local y = \"Hello World!\";
+                local x = \"Hello World!\";
+                console::log(x);
+                console::log(y);
             }
 
             export { main }
+
+            fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn main() -> unit {
+    local x: f32 = lerp(0.0, 100.0, 0.5); // should be 50.0
+    local y: f64 = 3.14159265358979;
+    local z: f64 = y * y;
+}
+
+export { main }
         "});
 
-        // The compiled module should have the import section
-        // insta::assert_yaml_snapshot!(case.wasm);
+        insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 
-        // Execute the wasm bytecode using wasmtime to verify it works
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
         let mut linker = wasmtime::Linker::new(&engine);
 
-        // Provide the imported print_i32 function
         linker
-            .func_wrap("env", "print_i32", |value: i32| {
-                println!("print_i32 called with: {}", value);
-            })
+            .func_wrap(
+                "console",
+                "log",
+                |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
+                    let memory = match caller.get_export("memory") {
+                        Some(wasmtime::Extern::Memory(mem)) => mem,
+                        _ => panic!("Failed to find memory export"),
+                    };
+                    let data = memory
+                        .data(&caller)
+                        .get(ptr as usize..(ptr + len) as usize)
+                        .expect("Failed to read string from memory");
+                    let message = std::str::from_utf8(data).expect("Invalid UTF-8 string");
+                    println!("console.log: {}", message);
+                },
+            )
             .unwrap();
 
         let mut store = wasmtime::Store::new(&engine, ());
@@ -2903,8 +2981,35 @@ mod tests {
         let main = instance
             .get_typed_func::<(), ()>(&mut store, "main")
             .unwrap();
-
-        // Call main, which should call print_i32(42)
         main.call(&mut store, ()).unwrap();
+    }
+
+    #[test]
+    fn test_lerp() {
+        let case = TestCase::new(indoc! {"
+            fn lerp(a: f32, b: f32, t: f32) -> f32 {
+                a + (b - a) * t
+            }
+
+            fn main() -> f32 {
+                local x: f32 = lerp(0.0, 100.0, 0.5);
+                if x != 50.0 { unreachable } else { x }
+            }
+
+            export { main }
+        "});
+
+        insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+
+        let engine = wasmtime::Engine::default();
+        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+        let mut linker = wasmtime::Linker::new(&engine);
+
+        let mut store = wasmtime::Store::new(&engine, ());
+        let instance = linker.instantiate(&mut store, &module).unwrap();
+        let main = instance
+            .get_typed_func::<(), f32>(&mut store, "main")
+            .unwrap();
+        let result = main.call(&mut store, ()).unwrap();
     }
 }

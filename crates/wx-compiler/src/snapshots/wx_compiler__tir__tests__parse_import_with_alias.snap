@@ -43,13 +43,26 @@ defined_functions:
                 Call:
                   callee:
                     kind:
-                      Function:
-                        func_index: 0
+                      NamespaceAccess:
+                        namespace_index: 0
+                        namespace_span:
+                          start: 97
+                          end: 104
+                        member:
+                          kind:
+                            Function:
+                              func_index: 0
+                          ty:
+                            Function:
+                              signature_index: 0
+                          span:
+                            start: 106
+                            end: 109
                     ty:
                       Function:
                         signature_index: 0
                     span:
-                      start: 106
+                      start: 97
                       end: 109
                   arguments:
                     - kind:
@@ -79,7 +92,7 @@ defined_globals: {}
 namespaces:
   - ImportModule:
       external_name:
-        inner: 1
+        inner: 2
         span:
           start: 7
           end: 16
@@ -102,7 +115,8 @@ exports:
       external_name: ~
       func_index: 1
 declared_functions:
-  - signature_index: 0
+  - source: Imported
+    signature_index: 0
     name:
       inner: 3
       span:
@@ -111,7 +125,8 @@ declared_functions:
     accesses:
       - start: 106
         end: 109
-  - signature_index: 1
+  - source: Defined
+    signature_index: 1
     name:
       inner: 8
       span:

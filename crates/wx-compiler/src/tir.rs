@@ -377,12 +377,12 @@ pub enum ExportItem {
     Function {
         internal_name: Spanned<SymbolU32>,
         external_name: Option<Spanned<SymbolU32>>,
-        func_index: u32,
+        func_index: FunctionIndex,
     },
     Global {
         internal_name: Spanned<SymbolU32>,
         external_name: Option<Spanned<SymbolU32>>,
-        global_index: u32,
+        global_index: GlobalIndex,
     },
 }
 
@@ -402,9 +402,9 @@ pub struct EnumVariant {
     pub value: Box<Expression>,
 }
 
-#[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct DeclaredGlobal {
+    pub source: ItemSource,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<Type>,
     pub mut_span: Option<ast::TextSpan>,
@@ -416,7 +416,7 @@ pub struct DeclaredGlobal {
 pub enum GlobalValue {
     Global { global_index: GlobalIndex },
     Function { func_index: FunctionIndex },
-    Namespace { namespace_index: u32 },
+    Namespace { namespace_index: NamespaceIndex },
     True,
     False,
     Unreachable,
@@ -460,14 +460,33 @@ pub enum SymbolNamespace {
     Value,
 }
 
-pub enum FunctionType {
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
+pub enum ItemSource {
     Defined,
     Imported,
+}
+
+impl PartialOrd for ItemSource {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ItemSource {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self, other) {
+            (ItemSource::Imported, ItemSource::Defined) => std::cmp::Ordering::Less,
+            (ItemSource::Defined, ItemSource::Imported) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        }
+    }
 }
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct DeclaredFunction {
+    pub source: ItemSource,
     pub signature_index: SignatureIndex,
     pub name: ast::Spanned<SymbolU32>,
     pub accesses: Vec<ast::TextSpan>,
@@ -1394,6 +1413,7 @@ impl Builder<'_, '_> {
                     GlobalValue::Function { func_index },
                 );
                 self.declared_functions.push(DeclaredFunction {
+                    source: ItemSource::Defined,
                     signature_index: type_index,
                     name: signature.name.clone(),
                     accesses: Vec::new(),
@@ -1470,6 +1490,7 @@ impl Builder<'_, '_> {
                 );
 
                 self.declared_globals.push(DeclaredGlobal {
+                    source: ItemSource::Defined,
                     name: name.clone(),
                     ty: ast::Spanned {
                         inner: ty,
@@ -1608,6 +1629,7 @@ impl Builder<'_, '_> {
 
                     let func_index = self.declared_functions.len() as u32;
                     self.declared_functions.push(DeclaredFunction {
+                        source: ItemSource::Imported,
                         name: signature.name.clone(),
                         signature_index,
                         accesses: Vec::new(),
@@ -1627,6 +1649,7 @@ impl Builder<'_, '_> {
 
                     let global_index = self.declared_globals.len() as u32;
                     self.declared_globals.push(DeclaredGlobal {
+                        source: ItemSource::Imported,
                         name: name.clone(),
                         ty: ast::Spanned {
                             inner: ty,
@@ -2434,11 +2457,15 @@ impl Builder<'_, '_> {
                 ty: Type::Error,
                 span: expr.span,
             }),
-            ast::Expression::String { symbol } => Ok(Expression {
-                kind: ExprKind::String { symbol: *symbol },
-                ty: Type::String,
-                span: expr.span,
-            }),
+            ast::Expression::String { symbol } => {
+                let unescaped = unescape_string(self.interner.resolve(*symbol).unwrap());
+                let symbol = self.interner.get_or_intern(&unescaped);
+                Ok(Expression {
+                    kind: ExprKind::String { symbol },
+                    ty: Type::String,
+                    span: expr.span,
+                })
+            }
             ast::Expression::Identifier { .. } => {
                 self.build_identifier_expression(func_ctx, expr, access_ctx)
             }
@@ -4827,7 +4854,7 @@ impl Builder<'_, '_> {
 pub struct TIR {
     pub file_id: ast::FileId,
     pub signatures: Vec<FunctionSignature>,
-    pub defined_functions: Vec<Function>,
+    pub defined_functions: HashMap<FunctionIndex, Function>,
     pub defined_globals: HashMap<GlobalIndex, Global>,
     pub namespaces: Vec<Namespace>,
     pub exports: Vec<ExportItem>,

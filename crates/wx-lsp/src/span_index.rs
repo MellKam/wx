@@ -385,6 +385,21 @@ fn index_expression(index: &mut SpanIndex, func_idx: Option<FunctionIndex>, expr
                 });
             }
         }
+        ExprKind::String { .. } => {
+            index.add(SpanInfo {
+                span: expr.span,
+                kind: SymbolKind::Type { ty: Type::String },
+                usage: SymbolUsage::Reference,
+            });
+        }
+        ExprKind::ObjectAccess { object, .. } => {
+            index_expression(index, func_idx, object);
+            index.add(SpanInfo {
+                span: expr.span,
+                kind: SymbolKind::Type { ty: expr.ty },
+                usage: SymbolUsage::Reference,
+            });
+        }
         ExprKind::Global { global_index } => {
             index.add(SpanInfo {
                 span: expr.span,

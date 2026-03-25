@@ -1,0 +1,28 @@
+---
+source: crates/wx-compiler/src/codegen.rs
+assertion_line: 3003
+expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
+---
+(module
+  (type (;0;) (func (param f32 f32 f32) (result f32)))
+  (type (;1;) (func (result f32)))
+  (export "main" (func 1))
+  (func (;0;) (type 0) (param f32 f32 f32) (result f32)
+    local.get 0
+    local.get 1
+    local.get 0
+    f32.sub
+    local.get 2
+    f32.mul
+    f32.add
+  )
+  (func (;1;) (type 1) (result f32)
+    (local f32)
+    f32.const 0x0p+0 (;=0;)
+    f32.const 0x1.9p+6 (;=100;)
+    f32.const 0x1p-1 (;=0.5;)
+    call 0
+    local.set 0
+    local.get 0
+  )
+)
