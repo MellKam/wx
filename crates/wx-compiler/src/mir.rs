@@ -607,6 +607,13 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
     }
 
     fn lower_global(&mut self, global: &tir::Global) -> Global {
+        // Create a dummy context for the global expression.
+        // Constant expressions like literals won't access the local frame.
+        let mut dummy_ctx = FunctionContext {
+            frame: Vec::new(),
+            current_scope_index: 0,
+        };
+
         Global {
             ty: self.lower_type(global.ty.inner),
             mutability: if global.mut_span.is_some() {
@@ -614,8 +621,8 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
             } else {
                 Mutability::Immutable
             },
-            value: todo!(),
-            // value: self.lower_expression(func_ctx, &global.value.inner),
+            // Now you can safely call lower_expression using the dummy context
+            value: self.lower_expression(&mut dummy_ctx, &global.value.inner),
         }
     }
 

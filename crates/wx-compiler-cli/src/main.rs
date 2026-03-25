@@ -15,14 +15,6 @@ fn main() {
                 .required(true)
                 .index(1),
         )
-        // .arg(
-        //     clap::Arg::new("wat")
-        //         .long("wat")
-        //         .required(false)
-        //         .default_value("false")
-        //         .action(clap::ArgAction::SetTrue)
-        //         .help("Output additional WebAssembly Text Format file"),
-        // )
         .author(clap::crate_authors!())
         .version(clap::crate_version!())
         .get_matches();
@@ -64,7 +56,7 @@ fn main() {
         });
 
         for diagnostic in ast.diagnostics.iter() {
-            term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+            term::emit_to_write_style(&mut writer.lock(), &config, &files, diagnostic).unwrap();
         }
 
         if has_errors {
@@ -87,7 +79,7 @@ fn main() {
         });
 
         for diagnostic in tir.diagnostics.iter() {
-            term::emit(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+            term::emit_to_write_style(&mut writer.lock(), &config, &files, diagnostic).unwrap();
         }
 
         if has_errors {

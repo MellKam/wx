@@ -365,7 +365,7 @@ pub struct FunctionParam {
 pub struct Function {
     pub name: ast::Spanned<SymbolU32>,
     pub params: Box<[FunctionParam]>,
-    pub result: ast::Spanned<Type>,
+    pub result_span: Option<ast::TextSpan>,
     pub signature_index: SignatureIndex,
     pub stack: StackFrame,
     pub block: Box<Expression>,
@@ -1265,9 +1265,12 @@ impl Builder<'_, '_> {
     pub fn build_signature(
         &mut self,
         params: &Grouped<Box<[Separated<Spanned<ast::FunctionParam>>]>>,
-        result: &Annotated<Box<Spanned<ast::TypeExpression>>>,
+        result: &Option<Annotated<Box<Spanned<ast::TypeExpression>>>>,
     ) -> FunctionSignature {
-        let result = self.resolve_type(&result.inner.inner).unwrap();
+        let result = match result {
+            Some(result) => self.resolve_type(&result.inner.inner).unwrap(),
+            None => Type::Unit,
+        };
         let params_count = params.inner.len();
         let mut items = Vec::with_capacity(params_count + 1);
         for param in params.inner.iter() {
@@ -1365,7 +1368,7 @@ impl Builder<'_, '_> {
 
     fn define_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match item {
-            ast::Item::FunctionDefinition { signature, .. } => {
+            ast::Item::Function { signature, .. } => {
                 match self
                     .symbol_lookup
                     .get(&(SymbolNamespace::Value, signature.name.inner))
@@ -1420,7 +1423,7 @@ impl Builder<'_, '_> {
                 });
                 Ok(())
             }
-            ast::Item::GlobalDefinition {
+            ast::Item::Global {
                 mut_span,
                 name,
                 type_annotation,
@@ -1671,10 +1674,10 @@ impl Builder<'_, '_> {
 
     fn build_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match item {
-            ast::Item::FunctionDefinition { signature, block } => {
+            ast::Item::Function { signature, block } => {
                 self.build_function_definition(signature, block)
             }
-            ast::Item::GlobalDefinition {
+            ast::Item::Global {
                 name,
                 value,
                 mut_span,
@@ -1994,6 +1997,11 @@ impl Builder<'_, '_> {
             })
             .collect::<Box<[_]>>();
 
+        let result_span = match &signature.result {
+            Some(result) => Some(result.inner.span),
+            None => None,
+        };
+
         let lookup = params
             .iter()
             .enumerate()
@@ -2043,10 +2051,7 @@ impl Builder<'_, '_> {
             func_index,
             Function {
                 params,
-                result: Spanned {
-                    inner: typed_signature.result(),
-                    span: signature.result.inner.span,
-                },
+                result_span,
                 signature_index: func_meta.signature_index,
                 name: signature.name.clone(),
                 stack: ctx.frame,
@@ -4908,14 +4913,14 @@ impl TIR {
         };
 
         for item in ast.items.iter() {
-            match builder.define_item(&item.inner) {
+            match builder.define_item(&item.inner.inner) {
                 Ok(_) => {}
                 Err(_) => continue,
             }
         }
 
         for item in ast.items.iter() {
-            match builder.build_item(&item.inner) {
+            match builder.build_item(&item.inner.inner) {
                 Ok(()) => {}
                 Err(_) => continue,
             }

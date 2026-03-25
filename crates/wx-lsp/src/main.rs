@@ -469,22 +469,6 @@ fn compile_document(uri: Uri, content: String) -> DocumentData {
     let tir = wx_compiler::tir::TIR::build(&ast, &mut interner);
     let span_index = span_index::build_span_index(&tir);
 
-    debug_log!(
-        "Built span index with {} entries:",
-        span_index.entries().len()
-    );
-    for (i, entry) in span_index.entries().iter().enumerate() {
-        debug_log!(
-            "  Entry {}: {:?} {:?} at {}..{} = '{}'",
-            i,
-            entry.usage,
-            entry.kind,
-            entry.span.start,
-            entry.span.end,
-            entry.span.extract_str(&content)
-        );
-    }
-
     DocumentData {
         source: content,
         ast,

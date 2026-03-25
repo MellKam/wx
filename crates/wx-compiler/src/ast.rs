@@ -1323,7 +1323,7 @@ pub struct FunctionSignature {
     pub fn_span: TextSpan,
     pub name: Spanned<SymbolU32>,
     pub params: Grouped<Box<[Separated<Spanned<FunctionParam>>]>>,
-    pub result: Annotated<Box<Spanned<TypeExpression>>>,
+    pub result: Option<Annotated<Box<Spanned<TypeExpression>>>>,
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
@@ -1352,11 +1352,11 @@ pub struct ImportEntry {
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum Item {
-    FunctionDefinition {
+    Function {
         signature: FunctionSignature,
         block: Box<Spanned<Expression>>,
     },
-    GlobalDefinition {
+    Global {
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
         type_annotation: Option<Annotated<Box<Spanned<TypeExpression>>>>,
@@ -1372,11 +1372,22 @@ pub enum Item {
     },
 }
 
+impl Item {
+    pub fn is_block_like(&self) -> bool {
+        match self {
+            Item::Function { .. } => true,
+            Item::Export { .. } => true,
+            Item::Import { .. } => true,
+            Item::Global { .. } => false,
+        }
+    }
+}
+
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct AST {
     pub file_id: FileId,
     pub diagnostics: Vec<Diagnostic<FileId>>,
-    pub items: Vec<Spanned<Item>>,
+    pub items: Vec<Separated<Spanned<Item>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
@@ -1529,7 +1540,7 @@ impl<T> SeparatedGroup<T> {
                 break expected_close_span;
             }
 
-            let item = match self.parse_item_with_recovery(parser) {
+            let item = match self.parse_with_recovery(parser) {
                 Some(item) => item,
                 None => continue,
             };
@@ -1569,7 +1580,6 @@ impl<T> SeparatedGroup<T> {
                 break eof_span;
             }
 
-            // Check if we should emit a missing separator diagnostic
             let should_warn = self
                 .should_warn_missing_separator
                 .map(|f| f(&item.inner))
@@ -1598,7 +1608,7 @@ impl<T> SeparatedGroup<T> {
         })
     }
 
-    fn parse_item_with_recovery(&self, parser: &mut Parser) -> Option<Spanned<T>> {
+    fn parse_with_recovery(&self, parser: &mut Parser) -> Option<Spanned<T>> {
         loop {
             match (self.item_handler)(parser) {
                 Ok(item) => return Some(item),
@@ -1644,6 +1654,11 @@ impl<'input> Parser<'input> {
             if start_token.inner == Token::Eof {
                 break;
             }
+            if start_token.inner == Token::SemiColon {
+                // TODO: report unnecessary semicolon
+                parser.lexer.next();
+                continue;
+            }
 
             let item_handler = match parser.get_item_handler(start_token.clone()) {
                 Ok(handler) => handler,
@@ -1655,7 +1670,23 @@ impl<'input> Parser<'input> {
 
             match item_handler(&mut parser) {
                 Ok(item) => {
-                    parser.ast.items.push(item);
+                    let separator_span = if !item.inner.is_block_like() {
+                        let token = parser.lexer.peek();
+                        match token.inner {
+                            Token::SemiColon => Some(parser.lexer.next().span),
+                            _ => {
+                                // TODO: report missing semicolon
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
+                    parser.ast.items.push(Separated {
+                        inner: item,
+                        separator: separator_span,
+                    });
                 }
                 Err(_) => continue,
             }
@@ -1854,34 +1885,17 @@ impl<'input> Parser<'input> {
             .next_if(Token::Arrow)
             .ok_or(())
             .and_then(|colon| {
-                Ok(Annotated {
+                Ok(Some(Annotated {
                     prefix: colon.span,
                     inner: Box::new(Parser::parse_type_expression(parser)?),
-                })
+                }))
             })
-            .unwrap_or_else(|_| {
-                let params_end = params.close.end_position();
-                parser.ast.diagnostics.push(
-                    MissingReturnTypeDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: params_end,
-                    }
-                    .report(),
-                );
-
-                Annotated {
-                    prefix: params_end,
-                    inner: Box::new(Spanned {
-                        inner: TypeExpression::Error,
-                        span: params_end,
-                    }),
-                }
-            });
+            .unwrap_or_else(|_| None);
 
         let block = Parser::parse_block_expression(parser)?;
         let span = TextSpan::merge(fn_span.span, block.span);
         Ok(Spanned {
-            inner: Item::FunctionDefinition {
+            inner: Item::Function {
                 signature: FunctionSignature {
                     fn_span: fn_span.span,
                     name,
@@ -2457,7 +2471,7 @@ impl<'input> Parser<'input> {
                     }
                 }
             },
-            should_warn_missing_separator: Some(Statement::is_block_like),
+            should_warn_missing_separator: Some(|stmt| !Statement::is_block_like(stmt)),
         }
         .parse(parser)?;
 
@@ -2701,7 +2715,7 @@ impl<'input> Parser<'input> {
 
         let span = TextSpan::merge(global_keyword.span, value.span);
         Ok(Spanned {
-            inner: Item::GlobalDefinition {
+            inner: Item::Global {
                 mut_span,
                 name,
                 type_annotation,
@@ -2849,7 +2863,6 @@ impl<'input> Parser<'input> {
 
                 let declaration = match keyword {
                     Some(Keyword::Fn) => {
-                        // Parse function declaration
                         let fn_span = parser.lexer.next();
                         let name_span = parser.next_expect(Token::Identifier)?.span;
                         let name_symbol = parser.intern_identifier(name_span)?;
@@ -2872,18 +2885,12 @@ impl<'input> Parser<'input> {
                             .next_if(Token::Arrow)
                             .ok_or(())
                             .and_then(|arrow| {
-                                Ok(Annotated {
+                                Ok(Some(Annotated {
                                     prefix: arrow.span,
                                     inner: Box::new(parser.parse_type_expression()?),
-                                })
+                                }))
                             })
-                            .unwrap_or_else(|_| Annotated {
-                                prefix: params.close,
-                                inner: Box::new(Spanned {
-                                    inner: TypeExpression::Error,
-                                    span: params.close,
-                                }),
-                            });
+                            .unwrap_or_else(|_| None);
 
                         ImportDeclaration::Function {
                             signature: FunctionSignature {
@@ -2938,7 +2945,10 @@ impl<'input> Parser<'input> {
                 };
 
                 let end_span = match &declaration {
-                    ImportDeclaration::Function { signature } => signature.result.inner.span,
+                    ImportDeclaration::Function { signature } => match &signature.result {
+                        Some(result) => result.inner.span,
+                        None => signature.params.close,
+                    },
                     ImportDeclaration::Global {
                         type_annotation, ..
                     } => type_annotation.inner.span,
@@ -3022,9 +3032,16 @@ mod tests {
     #[test]
     fn test_parse_import_with_alias() {
         let case = TestCase::new(indoc! {"
-            import \"console\" as console {
-                fn log(ptr: u32, len: u32) -> unit;
+            fn lerp(a: f32, b: f32, t: f32) -> f32 {
+                a + (b - a) * t
             }
+
+            fn main() -> f32 {
+                local x: f32 = lerp(0.0, 100.0, 0.5);
+                if x != 50.0 { unreachable } else { x }
+            }
+
+            export { main }
         "});
         insta::assert_yaml_snapshot!(case.ast);
     }

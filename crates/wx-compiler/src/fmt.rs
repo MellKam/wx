@@ -44,11 +44,11 @@ impl Builder {
                 items.push(Node::HardLine);
             }
 
-            items.push(match &item.inner {
-                Item::FunctionDefinition { signature, block } => {
+            items.push(match &item.inner.inner {
+                Item::Function { signature, block } => {
                     Self::build_function_definition(interner, source, signature, block)
                 }
-                Item::GlobalDefinition {
+                Item::Global {
                     mut_span,
                     name,
                     type_annotation,
@@ -177,11 +177,17 @@ impl Builder {
                                             }
                                         }
 
-                                        entry_nodes.push(Node::Text(") -> ".to_string()));
-                                        entry_nodes.push(Self::build_type_expression(
-                                            interner,
-                                            &signature.result.inner.inner,
-                                        ));
+                                        entry_nodes.push(Node::Text(")".to_string()));
+                                        match &signature.result {
+                                            Some(result) => {
+                                                entry_nodes.push(Node::Text(" -> ".to_string()));
+                                                entry_nodes.push(Self::build_type_expression(
+                                                    interner,
+                                                    &result.inner.inner,
+                                                ));
+                                            }
+                                            None => {}
+                                        }
                                     }
                                     crate::ast::ImportDeclaration::Global {
                                         mut_span,
@@ -280,12 +286,16 @@ impl Builder {
             })));
             items.push(Node::Line);
         }
-        items.push(Node::Text(") -> ".to_string()));
-        items.push(Self::build_type_expression(
-            interner,
-            &signature.result.inner.inner,
-        ));
-        items.push(Node::Text(" ".to_string()));
+
+        items.push(Node::Text(") ".to_string()));
+        match &signature.result {
+            Some(result) => {
+                items.push(Node::Text("-> ".to_string()));
+                items.push(Self::build_type_expression(interner, &result.inner.inner));
+                items.push(Node::Text(" ".to_string()));
+            }
+            None => {}
+        }
         items.push(Self::build_expression(interner, source, block));
 
         Node::Group(Box::new(Node::Concat(items)))
@@ -519,11 +529,17 @@ impl Builder {
 
                 Node::Concat(items)
             }
-            Expression::String { symbol } => {
-                todo!()
+            Expression::String { .. } => {
+                Node::Text(expression.span.extract_str(source).to_string())
             }
             Expression::ObjectAccess { object, member } => {
-                todo!()
+                let mut items = Vec::new();
+                items.push(Self::build_expression(interner, source, object));
+                items.push(Node::Text(".".to_string()));
+                items.push(Node::Text(
+                    interner.resolve(member.inner).unwrap().to_string(),
+                ));
+                Node::Concat(items)
             }
         }
     }
@@ -813,14 +829,18 @@ mod tests {
     #[test]
     fn test_format_import_block() {
         let case = TestCase::new(indoc! {"
-            import \"console\" as c {
-                fn log(ptr: i32, len: i32) -> unit;
-                \"memory\": global mut memory_location: i32;
+            import \"math\" {
+                fn sqrt(x: f64) -> f64;
+                fn pow(base: f64, exponent: f64) -> f64;
+                fn log(x: string);
             }
 
-            fn main() -> i32 {
-                42
+            fn main() {
+                local x = sqrt(2.0);
+                local y = pow(x, 2.0);
             }
+
+            export { main }
         "});
         let output = format(
             &case.ast,

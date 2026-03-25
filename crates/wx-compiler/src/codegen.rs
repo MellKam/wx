@@ -81,7 +81,7 @@ impl From<mir::FunctionSignature> for FunctionSignature {
                 param_results.push(ValueType::I32);
                 param_results.push(ValueType::I32);
             }
-            mir::Type::StringPointer | mir::Type::I32 | mir::Type::U32 => {
+            mir::Type::StringPointer | mir::Type::I32 | mir::Type::U32 | mir::Type::Bool => {
                 param_results.push(ValueType::I32)
             }
             mir::Type::I64 | mir::Type::U64 => param_results.push(ValueType::I64),
@@ -268,12 +268,11 @@ pub struct ExportSection {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionBody {
     locals: Box<[Local]>,
-    expressions: Box<[Expression]>,
+    expressions: Box<[u8]>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct CodeSection {
-    expressions: Box<[Expression]>,
     functions: Box<[FunctionBody]>,
 }
 
@@ -370,12 +369,9 @@ pub struct WasmModule {
     data: DataSection,
 }
 
-pub struct Builder<'mir, 'interner> {
-    expressions: Vec<Expression>,
+pub struct Builder {
     table: Vec<FuncIndex>,
-    mir: &'mir mir::MIR,
     string_pool: StringPool,
-    interner: &'interner ast::StringInterner,
 }
 
 impl TryFrom<mir::Type> for ValueType {
@@ -401,10 +397,11 @@ impl TryFrom<mir::Type> for ValueType {
 }
 
 impl From<mir::Type> for BlockResult {
-    fn from(value: mir::Type) -> Self {
-        ValueType::try_from(value)
-            .map(BlockResult::SingleValue)
-            .unwrap_or(BlockResult::Empty)
+    fn from(ty: mir::Type) -> Self {
+        match ty {
+            mir::Type::Unit | mir::Type::Never => BlockResult::Empty,
+            ty => BlockResult::SingleValue(ValueType::try_from(ty).unwrap()),
+        }
     }
 }
 
@@ -417,14 +414,9 @@ struct FunctionContext<'mir> {
 }
 
 impl FunctionContext<'_> {
-    fn get_flat_index(
-        &self,
-        scope_index: tir::ScopeIndex,
-        local_index: tir::LocalIndex,
-    ) -> LocalIndex {
+    fn get_flat_index(&self, scope_index: tir::ScopeIndex, local_index: tir::LocalIndex) -> u32 {
         let scope_offset = self.scope_offsets[scope_index as usize];
-        let local_offset = self.local_offsets[scope_offset + local_index as usize];
-        LocalIndex(local_offset as u32)
+        self.local_offsets[scope_offset + local_index as usize] as u32
     }
 
     pub fn get_break_depth(&self, target_scope: tir::ScopeIndex) -> Option<u32> {
@@ -498,15 +490,12 @@ impl StringPool {
     }
 }
 
-impl<'mir, 'interner> Builder<'mir, 'interner> {
-    pub fn build<'a>(
+impl Builder {
+    pub fn build<'interner>(
         mir: &mir::MIR,
         interner: &'interner ast::StringInterner,
     ) -> Result<WasmModule, ()> {
         let mut builder = Builder {
-            mir,
-            interner,
-            expressions: Vec::new(),
             table: Vec::new(),
             string_pool: StringPool::new(),
         };
@@ -662,7 +651,7 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
 
             let mut sink = Vec::new();
             for expr in expressions {
-                builder.build_expression(&mut ctx, expr, &mut sink)?;
+                builder.build_expression(&mut ctx, expr, &mut sink);
             }
 
             functions.push(FunctionBody {
@@ -746,7 +735,6 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
             },
             exports: ExportSection { items: exports },
             code: CodeSection {
-                expressions: builder.expressions.into_boxed_slice(),
                 functions: functions.into_boxed_slice(),
             },
         })
@@ -772,78 +760,84 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
         }
     }
 
-    fn build_expression<'wasm>(
+    fn build_expression<'mir>(
         &mut self,
         ctx: &mut FunctionContext<'mir>,
         expr: &mir::Expression,
-        sink: &mut Vec<Expression>,
-    ) -> Result<(), ()> {
+        sink: &mut Vec<u8>,
+    ) {
         match &expr.kind {
+            mir::ExprKind::Int { value } => {
+                match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => {
+                        sink.push(Instruction::I32Const as u8);
+                        (*value as i32).encode(sink);
+                    }
+                    mir::Type::I64 | mir::Type::U64 => {
+                        sink.push(Instruction::I64Const as u8);
+                        value.encode(sink);
+                    }
+                    _ => unreachable!(),
+                };
+            }
+            mir::ExprKind::Float { value } => match expr.ty {
+                mir::Type::F32 => {
+                    sink.push(Instruction::F32Const as u8);
+                    (*value as f32).encode(sink);
+                }
+                mir::Type::F64 => {
+                    sink.push(Instruction::F64Const as u8);
+                    value.encode(sink);
+                }
+                _ => unreachable!(),
+            },
             mir::ExprKind::Function { func_index } => {
                 let table_index = self.table.len() as i32;
                 self.table.push(FuncIndex(*func_index));
-                sink.push(Expression::I32Const { value: table_index });
-                Ok(())
+                sink.push(Instruction::I32Const as u8);
+                table_index.encode(sink);
             }
-            mir::ExprKind::Bool { value } => Ok(sink.push(Expression::I32Const {
-                value: if *value { 1 } else { 0 },
-            })),
+            mir::ExprKind::Bool { value } => {
+                sink.push(Instruction::I32Const as u8);
+                let value: u32 = if *value { 1 } else { 0 };
+                value.encode(sink);
+            }
             mir::ExprKind::Call { callee, arguments } => {
                 for argument in arguments {
-                    self.build_expression(ctx, argument, sink)?;
+                    self.build_expression(ctx, argument, sink);
                 }
 
                 match callee.kind {
-                    mir::ExprKind::Function { func_index } => sink.push(Expression::Call {
-                        function: FuncIndex(func_index),
-                    }),
-                    _ => {
-                        let type_index = match callee.ty {
-                            mir::Type::Function { signature_index } => {
-                                SignatureIndex(signature_index)
-                            }
-                            _ => unreachable!("callee must be a function type"),
-                        };
-                        self.build_expression(ctx, callee, sink)?;
-                        sink.push(Expression::CallIndirect {
-                            table_index: TableIndex(0),
-                            type_index,
-                        });
+                    mir::ExprKind::Function { func_index } => {
+                        sink.push(Instruction::Call as u8);
+                        func_index.encode(sink);
                     }
+                    _ => match callee.ty {
+                        mir::Type::Function { signature_index } => {
+                            self.build_expression(ctx, callee, sink);
+                            sink.push(Instruction::CallIndirect as u8);
+                            signature_index.encode(sink);
+                            (0 as u32).encode(sink);
+                        }
+                        _ => unreachable!("callee must be a function type"),
+                    },
                 };
-                Ok(())
             }
-            mir::ExprKind::Int { value } => Ok(sink.push(match expr.ty {
-                mir::Type::I32 | mir::Type::U32 => Expression::I32Const {
-                    value: *value as i32,
-                },
-                mir::Type::I64 | mir::Type::U64 => Expression::I64Const { value: *value },
-                _ => return Err(()),
-            })),
-            mir::ExprKind::Float { value } => Ok(sink.push(match expr.ty {
-                mir::Type::F32 => Expression::F32Const {
-                    value: *value as f32,
-                },
-                mir::Type::F64 => Expression::F64Const { value: *value },
-                _ => return Err(()),
-            })),
             mir::ExprKind::LocalGet {
                 local_index,
                 scope_index,
             } => match expr.ty {
                 mir::Type::Tuple { .. } => {
-                    let tuple_start_index = ctx.get_flat_index(*scope_index, *local_index).0;
-                    sink.push(Expression::LocalGet {
-                        local_index: LocalIndex(tuple_start_index),
-                    });
-                    sink.push(Expression::LocalGet {
-                        local_index: LocalIndex(tuple_start_index + 1),
-                    });
-                    return Ok(());
+                    let tuple_start_index = ctx.get_flat_index(*scope_index, *local_index);
+                    sink.push(Instruction::LocalGet as u8);
+                    tuple_start_index.encode(sink);
+                    sink.push(Instruction::LocalGet as u8);
+                    (tuple_start_index + 1).encode(sink);
                 }
-                _ => Ok(sink.push(Expression::LocalGet {
-                    local_index: ctx.get_flat_index(*scope_index, *local_index),
-                })),
+                _ => {
+                    sink.push(Instruction::LocalGet as u8);
+                    ctx.get_flat_index(*scope_index, *local_index).encode(sink);
+                }
             },
             mir::ExprKind::LocalSet {
                 local_index,
@@ -852,454 +846,440 @@ impl<'mir, 'interner> Builder<'mir, 'interner> {
             } => match value.ty {
                 mir::Type::Tuple { .. } => match &value.kind {
                     mir::ExprKind::String { string_index } => {
-                        let tuple_start_index = ctx.get_flat_index(*scope_index, *local_index).0;
+                        let tuple_start_index = ctx.get_flat_index(*scope_index, *local_index);
                         let (offset, len) = self.string_pool.strings[*string_index as usize];
 
-                        sink.push(Expression::I32Const {
-                            value: offset as i32,
-                        });
-                        sink.push(Expression::LocalSet {
-                            local_index: LocalIndex(tuple_start_index),
-                        });
-                        sink.push(Expression::I32Const { value: len as i32 });
-                        sink.push(Expression::LocalSet {
-                            local_index: LocalIndex(tuple_start_index + 1),
-                        });
-                        Ok(())
+                        sink.push(Instruction::I32Const as u8);
+                        offset.encode(sink);
+                        sink.push(Instruction::LocalSet as u8);
+                        tuple_start_index.encode(sink);
+
+                        sink.push(Instruction::I32Const as u8);
+                        len.encode(sink);
+                        sink.push(Instruction::LocalSet as u8);
+                        (tuple_start_index + 1).encode(sink);
                     }
                     _ => unreachable!(),
                 },
                 _ => {
-                    self.build_expression(ctx, &value, sink)?;
-                    sink.push(Expression::LocalSet {
-                        local_index: ctx.get_flat_index(*scope_index, *local_index),
-                    });
-                    Ok(())
+                    self.build_expression(ctx, &value, sink);
+                    sink.push(Instruction::LocalSet as u8);
+                    ctx.get_flat_index(*scope_index, *local_index).encode(sink);
                 }
             },
-            mir::ExprKind::Global { global_index } => Ok(sink.push(Expression::GlobalGet {
-                global_index: GlobalIndex(*global_index),
-            })),
+            mir::ExprKind::Global { global_index } => {
+                sink.push(Instruction::GlobalGet as u8);
+                (*global_index).encode(sink);
+            }
             mir::ExprKind::GlobalSet {
                 global_index,
                 value,
             } => {
-                self.build_expression(ctx, value, sink)?;
-                sink.push(Expression::GlobalSet {
-                    global: GlobalIndex(*global_index),
-                });
-                Ok(())
+                self.build_expression(ctx, value, sink);
+                sink.push(Instruction::GlobalSet as u8);
+                (*global_index).encode(sink);
             }
             mir::ExprKind::Return { value } => {
                 match value {
-                    Some(value) => self.build_expression(ctx, value, sink)?,
+                    Some(value) => self.build_expression(ctx, value, sink),
                     None => {}
                 };
-                Ok(sink.push(Expression::Return))
+                sink.push(Instruction::Return as u8);
             }
             mir::ExprKind::Drop { value } => {
-                self.build_expression(ctx, value, sink)?;
-                match value.ty {
-                    mir::Type::Never | mir::Type::Unit => Err(()),
-                    _ => Ok(sink.push(Expression::Drop)),
-                }
+                self.build_expression(ctx, value, sink);
+                sink.push(Instruction::Drop as u8);
             }
             mir::ExprKind::Block {
                 expressions,
                 scope_index,
             } => {
-                let mut body = Vec::new();
-                for expression in expressions {
+                sink.push(Instruction::Block as u8);
+                BlockResult::from(expr.ty).encode(sink);
+                for expr in expressions.iter() {
                     ctx.scope_index = *scope_index;
-                    self.build_expression(ctx, expression, &mut body)?;
+                    self.build_expression(ctx, expr, sink);
                 }
-                Ok(sink.push(Expression::Block {
-                    expressions: body.into_boxed_slice(),
-                    result: match ValueType::try_from(expr.ty) {
-                        Ok(ty) => BlockResult::SingleValue(ty),
-                        _ => BlockResult::Empty,
-                    },
-                }))
+                sink.push(Instruction::End as u8);
             }
             mir::ExprKind::Loop { scope_index, block } => {
+                sink.push(Instruction::Block as u8);
+                BlockResult::from(ctx.scopes[*scope_index as usize].result).encode(sink);
+                // Inner loop
+                sink.push(Instruction::Loop as u8);
+                BlockResult::Empty.encode(sink);
                 let expressions = match &block.kind {
                     mir::ExprKind::Block { expressions, .. } => expressions,
                     _ => unreachable!(),
                 };
-
-                let mut body = Vec::new();
-                for expression in expressions {
+                for expression in expressions.iter() {
                     ctx.scope_index = *scope_index;
-                    self.build_expression(ctx, expression, &mut body)?;
+                    self.build_expression(ctx, expression, sink);
                 }
-                body.push(Expression::Break {
-                    depth: 0, // Loop itself
-                });
-
-                let scope = &ctx.scopes[*scope_index as usize];
-                Ok(sink.push(Expression::Block {
-                    expressions: Box::new([
-                        Expression::Loop {
-                            expressions: body.into_boxed_slice(),
-                            result: BlockResult::Empty,
-                        },
-                        Expression::Unreachable,
-                    ]),
-                    result: match ValueType::try_from(scope.result) {
-                        Ok(ty) => BlockResult::SingleValue(ty),
-                        _ => BlockResult::Empty,
-                    },
-                }))
+                sink.push(Instruction::Br as u8); // Jump back to the beginning of the loop
+                (0 as u32).encode(sink);
+                sink.push(Instruction::End as u8); // end loop
+                sink.push(Instruction::Unreachable as u8);
+                sink.push(Instruction::End as u8); // end block
             }
-            mir::ExprKind::Continue { scope_index } => Ok(sink.push(Expression::Break {
-                depth: ctx.get_continue_depth(*scope_index).unwrap(),
-            })),
+            mir::ExprKind::Continue { scope_index } => {
+                sink.push(Instruction::Br as u8);
+                ctx.get_continue_depth(*scope_index).unwrap().encode(sink);
+            }
             mir::ExprKind::Break { value, scope_index } => {
                 match value {
-                    Some(value) => self.build_expression(ctx, value, sink)?,
+                    Some(value) => self.build_expression(ctx, value, sink),
                     None => {}
                 }
-                Ok(sink.push(Expression::Break {
-                    depth: ctx.get_break_depth(*scope_index).unwrap(),
-                }))
+
+                sink.push(Instruction::Br as u8);
+                ctx.get_break_depth(*scope_index).unwrap().encode(sink);
             }
-            mir::ExprKind::Unreachable => Ok(sink.push(Expression::Unreachable)),
+            mir::ExprKind::Unreachable => {
+                sink.push(Instruction::Unreachable as u8);
+            }
             mir::ExprKind::IfElse {
                 condition,
                 then_block,
                 else_block,
             } => {
-                self.build_expression(ctx, condition, sink)?;
+                self.build_expression(ctx, condition, sink);
+                sink.push(Instruction::If as u8);
+                BlockResult::from(expr.ty).encode(sink);
 
-                let then_branch = {
-                    let mut body = Vec::with_capacity(1);
-                    self.build_expression(ctx, then_block, &mut body)?;
-                    Box::new(body.remove(0))
-                };
-                let else_branch = match else_block {
-                    Some(else_block) => {
-                        let mut body = Vec::with_capacity(1);
-                        self.build_expression(ctx, else_block, &mut body)?;
-                        Some(Box::new(body.remove(0)))
+                match &then_block.kind {
+                    mir::ExprKind::Block {
+                        expressions,
+                        scope_index,
+                    } => {
+                        for expr in expressions.iter() {
+                            ctx.scope_index = *scope_index;
+                            self.build_expression(ctx, expr, sink);
+                        }
                     }
-                    None => None,
-                };
-
-                Ok(sink.push(Expression::IfElse {
-                    result: BlockResult::from(expr.ty),
-                    then_branch,
-                    else_branch,
-                }))
-            }
-            mir::ExprKind::Neg { value } => Ok(match expr.ty {
-                mir::Type::I32 => {
-                    sink.push(Expression::I32Const { value: 0 });
-                    self.build_expression(ctx, value, sink)?;
-                    sink.push(Expression::I32Sub);
+                    _ => unreachable!(),
                 }
-                mir::Type::I64 => {
-                    sink.push(Expression::I64Const { value: 0 });
-                    self.build_expression(ctx, value, sink)?;
-                    sink.push(Expression::I64Sub);
+                match else_block {
+                    Some(else_block) => match &else_block.kind {
+                        mir::ExprKind::Block {
+                            expressions,
+                            scope_index,
+                        } => {
+                            sink.push(Instruction::Else as u8);
+                            for expr in expressions.iter() {
+                                ctx.scope_index = *scope_index;
+                                self.build_expression(ctx, expr, sink);
+                            }
+                        }
+                        _ => unreachable!(),
+                    },
+                    None => {}
                 }
-                mir::Type::F32 => {
-                    self.build_expression(ctx, value, sink)?;
-                    sink.push(Expression::F32Neg);
-                }
-                mir::Type::F64 => {
-                    self.build_expression(ctx, value, sink)?;
-                    sink.push(Expression::F64Neg);
-                }
-                _ => return Err(()),
-            }),
-            mir::ExprKind::Add { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => Expression::I32Add,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Add,
-                    mir::Type::F32 => Expression::F32Add,
-                    mir::Type::F64 => Expression::F64Add,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::Sub { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => Expression::I32Sub,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Sub,
-                    mir::Type::F32 => Expression::F32Sub,
-                    mir::Type::F64 => Expression::F64Sub,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::Mul { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => Expression::I32Mul,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Mul,
-                    mir::Type::F32 => Expression::F32Mul,
-                    mir::Type::F64 => Expression::F64Mul,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::Div { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 => Expression::I32DivS,
-                    mir::Type::U32 => Expression::I32DivU,
-                    mir::Type::I64 => Expression::I64DivS,
-                    mir::Type::U64 => Expression::I64DivU,
-                    mir::Type::F32 => Expression::F32Div,
-                    mir::Type::F64 => Expression::F64Div,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::Rem { left, right } => {
-                match expr.ty {
-                    mir::Type::I32 => {
-                        self.build_expression(ctx, left, sink)?;
-                        self.build_expression(ctx, right, sink)?;
-                        Ok(sink.push(Expression::I32RemS))
-                    }
-                    mir::Type::U32 => {
-                        self.build_expression(ctx, left, sink)?;
-                        self.build_expression(ctx, right, sink)?;
-                        Ok(sink.push(Expression::I32RemU))
-                    }
-                    mir::Type::I64 => {
-                        self.build_expression(ctx, left, sink)?;
-                        self.build_expression(ctx, right, sink)?;
-                        Ok(sink.push(Expression::I64RemS))
-                    }
-                    mir::Type::U64 => {
-                        self.build_expression(ctx, left, sink)?;
-                        self.build_expression(ctx, right, sink)?;
-                        Ok(sink.push(Expression::I64RemU))
-                    }
-                    mir::Type::F32 => {
-                        // left - (trunc(left / right) * right)
-                        self.build_expression(ctx, left, sink)?; // left
-                        self.build_expression(ctx, left, sink)?; // left (for div)
-                        self.build_expression(ctx, right, sink)?; // right (for div)
-                        sink.push(Expression::F32Div); // left / right
-                        sink.push(Expression::F32Trunc); // trunc(left / right)
-                        self.build_expression(ctx, right, sink)?; // right (for mul)
-                        sink.push(Expression::F32Mul); // trunc(left / right) * right
-                        sink.push(Expression::F32Sub); // left - (trunc(left / right) * right)
-                        Ok(())
-                    }
-                    mir::Type::F64 => {
-                        self.build_expression(ctx, left, sink)?;
-                        self.build_expression(ctx, left, sink)?;
-                        self.build_expression(ctx, right, sink)?;
-                        sink.push(Expression::F64Div);
-                        sink.push(Expression::F64Trunc);
-                        self.build_expression(ctx, right, sink)?;
-                        sink.push(Expression::F64Mul);
-                        sink.push(Expression::F64Sub);
-                        Ok(())
-                    }
-                    _ => return Err(()),
-                }
-            }
-            mir::ExprKind::Eq { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match left.ty {
-                    mir::Type::Bool
-                    | mir::Type::I32
-                    | mir::Type::U32
-                    | mir::Type::Function { .. } => Expression::I32Eq,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Eq,
-                    mir::Type::F32 => Expression::F32Eq,
-                    mir::Type::F64 => Expression::F64Eq,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::NotEq { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match left.ty {
-                    mir::Type::Bool
-                    | mir::Type::I32
-                    | mir::Type::U32
-                    | mir::Type::Function { .. } => Expression::I32Ne,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Ne,
-                    mir::Type::F32 => Expression::F32Ne,
-                    mir::Type::F64 => Expression::F64Ne,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::And { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match left.ty {
-                    mir::Type::Bool | mir::Type::I32 | mir::Type::U32 => Expression::I32And,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64And,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::Or { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match left.ty {
-                    mir::Type::Bool | mir::Type::I32 | mir::Type::U32 => Expression::I32Or,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Or,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::BitAnd { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => Expression::I32And,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64And,
-                    _ => return Err(()),
-                }))
-            }
 
-            mir::ExprKind::BitOr { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => Expression::I32Or,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Or,
-                    _ => return Err(()),
-                }))
+                sink.push(Instruction::End as u8);
             }
-
-            mir::ExprKind::BitXor { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => Expression::I32Xor,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Xor,
-                    _ => return Err(()),
-                }))
-            }
-
-            mir::ExprKind::LeftShift { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => Expression::I32Shl,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Shl,
-                    _ => return Err(()),
-                }))
-            }
-
-            mir::ExprKind::RightShift { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match expr.ty {
-                    mir::Type::I32 => Expression::I32ShrS,
-                    mir::Type::U32 => Expression::I32ShrU,
-                    mir::Type::I64 => Expression::I64ShrS,
-                    mir::Type::U64 => Expression::I64ShrU,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::Less { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match left.ty {
-                    mir::Type::I32 => Expression::I32LtS,
-                    mir::Type::U32 => Expression::I32LtU,
-                    mir::Type::I64 => Expression::I64LtS,
-                    mir::Type::U64 => Expression::I64LtU,
-                    mir::Type::F32 => Expression::F32Lt,
-                    mir::Type::F64 => Expression::F64Lt,
-                    _ => return Err(()),
-                }))
-            }
-
-            mir::ExprKind::LessEq { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match left.ty {
-                    mir::Type::I32 => Expression::I32LeS,
-                    mir::Type::U32 => Expression::I32LeU,
-                    mir::Type::I64 => Expression::I64LeS,
-                    mir::Type::U64 => Expression::I64LeU,
-                    mir::Type::F32 => Expression::F32Le,
-                    mir::Type::F64 => Expression::F64Le,
-                    _ => return Err(()),
-                }))
-            }
-
-            mir::ExprKind::Greater { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match left.ty {
-                    mir::Type::I32 => Expression::I32GtS,
-                    mir::Type::U32 => Expression::I32GtU,
-                    mir::Type::I64 => Expression::I64GtS,
-                    mir::Type::U64 => Expression::I64GtU,
-                    mir::Type::F32 => Expression::F32Gt,
-                    mir::Type::F64 => Expression::F64Gt,
-                    _ => return Err(()),
-                }))
-            }
-
-            mir::ExprKind::GreaterEq { left, right } => {
-                self.build_expression(ctx, left, sink)?;
-                self.build_expression(ctx, right, sink)?;
-                Ok(sink.push(match left.ty {
-                    mir::Type::I32 => Expression::I32GeS,
-                    mir::Type::U32 => Expression::I32GeU,
-                    mir::Type::I64 => Expression::I64GeS,
-                    mir::Type::U64 => Expression::I64GeU,
-                    mir::Type::F32 => Expression::F32Ge,
-                    mir::Type::F64 => Expression::F64Ge,
-                    _ => return Err(()),
-                }))
-            }
-            mir::ExprKind::BitNot { value } => {
-                self.build_expression(ctx, value, sink)?;
-                match expr.ty {
-                    mir::Type::I32 | mir::Type::U32 => {
-                        sink.push(Expression::I32Const { value: !0 });
-                        sink.push(Expression::I32Xor);
-                    }
-                    mir::Type::I64 | mir::Type::U64 => {
-                        sink.push(Expression::I64Const { value: !0 });
-                        sink.push(Expression::I64Xor);
-                    }
-                    _ => return Err(()),
-                }
-                Ok(())
-            }
-
-            mir::ExprKind::Eqz { value } => {
-                self.build_expression(ctx, value, sink)?;
-                sink.push(match expr.ty {
-                    mir::Type::Bool | mir::Type::I32 | mir::Type::U32 => Expression::I32Eqz,
-                    mir::Type::I64 | mir::Type::U64 => Expression::I64Eqz,
-                    _ => return Err(()),
-                });
-                Ok(())
-            }
-            mir::ExprKind::Noop => Ok(()),
+            mir::ExprKind::Noop => {}
             mir::ExprKind::String { string_index, .. } => {
                 let (ptr, len) = self.string_pool.strings[*string_index as usize];
 
-                sink.push(Expression::I32Const { value: ptr as i32 });
-                sink.push(Expression::I32Const { value: len as i32 });
-                Ok(())
+                sink.push(Instruction::I32Const as u8);
+                (ptr as i32).encode(sink);
+                sink.push(Instruction::I32Const as u8);
+                (len as i32).encode(sink);
             }
             mir::ExprKind::LocalTupleGet {
                 scope_index,
                 local_index,
                 field_index,
             } => {
-                let local_index = ctx.get_flat_index(*scope_index, *local_index).0 + *field_index;
-                Ok(sink.push(Expression::LocalGet {
-                    local_index: LocalIndex(local_index),
-                }))
+                let local_index = ctx.get_flat_index(*scope_index, *local_index) + *field_index;
+                sink.push(Instruction::LocalGet as u8);
+                local_index.encode(sink);
+            }
+            mir::ExprKind::Neg { value } => match expr.ty {
+                mir::Type::I32 => {
+                    sink.push(Instruction::I32Const as u8);
+                    (0i32).encode(sink);
+                    self.build_expression(ctx, value, sink);
+                    sink.push(Instruction::I32Sub as u8);
+                }
+                mir::Type::I64 => {
+                    sink.push(Instruction::I64Const as u8);
+                    (0i64).encode(sink);
+                    self.build_expression(ctx, value, sink);
+                    sink.push(Instruction::I64Sub as u8);
+                }
+                mir::Type::F32 => {
+                    self.build_expression(ctx, value, sink);
+                    sink.push(Instruction::F32Neg as u8);
+                }
+                mir::Type::F64 => {
+                    self.build_expression(ctx, value, sink);
+                    sink.push(Instruction::F64Neg as u8);
+                }
+                _ => unreachable!(),
+            },
+            mir::ExprKind::Add { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => Instruction::I32Add as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Add as u8,
+                    mir::Type::F32 => Instruction::F32Add as u8,
+                    mir::Type::F64 => Instruction::F64Add as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::Sub { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => Instruction::I32Sub as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Sub as u8,
+                    mir::Type::F32 => Instruction::F32Sub as u8,
+                    mir::Type::F64 => Instruction::F64Sub as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::Mul { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => Instruction::I32Mul as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Mul as u8,
+                    mir::Type::F32 => Instruction::F32Mul as u8,
+                    mir::Type::F64 => Instruction::F64Mul as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::Div { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 => Instruction::I32DivS as u8,
+                    mir::Type::U32 => Instruction::I32DivU as u8,
+                    mir::Type::I64 => Instruction::I64DivS as u8,
+                    mir::Type::U64 => Instruction::I64DivU as u8,
+                    mir::Type::F32 => Instruction::F32Div as u8,
+                    mir::Type::F64 => Instruction::F64Div as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::Rem { left, right } => {
+                match expr.ty {
+                    mir::Type::I32 => {
+                        self.build_expression(ctx, left, sink);
+                        self.build_expression(ctx, right, sink);
+                        sink.push(Instruction::I32RemS as u8);
+                    }
+                    mir::Type::U32 => {
+                        self.build_expression(ctx, left, sink);
+                        self.build_expression(ctx, right, sink);
+                        sink.push(Instruction::I32RemU as u8);
+                    }
+                    mir::Type::I64 => {
+                        self.build_expression(ctx, left, sink);
+                        self.build_expression(ctx, right, sink);
+                        sink.push(Instruction::I64RemS as u8);
+                    }
+                    mir::Type::U64 => {
+                        self.build_expression(ctx, left, sink);
+                        self.build_expression(ctx, right, sink);
+                        sink.push(Instruction::I64RemU as u8);
+                    }
+                    mir::Type::F32 => {
+                        // left - (trunc(left / right) * right)
+                        self.build_expression(ctx, left, sink);
+                        self.build_expression(ctx, left, sink);
+                        self.build_expression(ctx, right, sink);
+                        sink.push(Instruction::F32Div as u8);
+                        sink.push(Instruction::F32Trunc as u8);
+                        self.build_expression(ctx, right, sink);
+                        sink.push(Instruction::F32Mul as u8);
+                        sink.push(Instruction::F32Sub as u8);
+                    }
+                    mir::Type::F64 => {
+                        // left - (trunc(left / right) * right)
+                        self.build_expression(ctx, left, sink);
+                        self.build_expression(ctx, left, sink);
+                        self.build_expression(ctx, right, sink);
+                        sink.push(Instruction::F64Div as u8);
+                        sink.push(Instruction::F64Trunc as u8);
+                        self.build_expression(ctx, right, sink);
+                        sink.push(Instruction::F64Mul as u8);
+                        sink.push(Instruction::F64Sub as u8);
+                    }
+                    _ => {}
+                }
+            }
+            mir::ExprKind::Eq { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match left.ty {
+                    mir::Type::Bool
+                    | mir::Type::I32
+                    | mir::Type::U32
+                    | mir::Type::Function { .. } => Instruction::I32Eq as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Eq as u8,
+                    mir::Type::F32 => Instruction::F32Eq as u8,
+                    mir::Type::F64 => Instruction::F64Eq as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::NotEq { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match left.ty {
+                    mir::Type::Bool
+                    | mir::Type::I32
+                    | mir::Type::U32
+                    | mir::Type::Function { .. } => Instruction::I32Ne as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Ne as u8,
+                    mir::Type::F32 => Instruction::F32Ne as u8,
+                    mir::Type::F64 => Instruction::F64Ne as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::And { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match left.ty {
+                    mir::Type::Bool | mir::Type::I32 | mir::Type::U32 => Instruction::I32And as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64And as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::Or { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match left.ty {
+                    mir::Type::Bool | mir::Type::I32 | mir::Type::U32 => Instruction::I32Or as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Or as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::BitAnd { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => Instruction::I32And as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64And as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::BitOr { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => Instruction::I32Or as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Or as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::BitXor { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => Instruction::I32Xor as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Xor as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::LeftShift { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => Instruction::I32Shl as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Shl as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::RightShift { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match expr.ty {
+                    mir::Type::I32 => Instruction::I32ShrS as u8,
+                    mir::Type::U32 => Instruction::I32ShrU as u8,
+                    mir::Type::I64 => Instruction::I64ShrS as u8,
+                    mir::Type::U64 => Instruction::I64ShrU as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::Less { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match left.ty {
+                    mir::Type::I32 => Instruction::I32LtS as u8,
+                    mir::Type::U32 => Instruction::I32LtU as u8,
+                    mir::Type::I64 => Instruction::I64LtS as u8,
+                    mir::Type::U64 => Instruction::I64LtU as u8,
+                    mir::Type::F32 => Instruction::F32Lt as u8,
+                    mir::Type::F64 => Instruction::F64Lt as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::LessEq { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match left.ty {
+                    mir::Type::I32 => Instruction::I32LeS as u8,
+                    mir::Type::U32 => Instruction::I32LeU as u8,
+                    mir::Type::I64 => Instruction::I64LeS as u8,
+                    mir::Type::U64 => Instruction::I64LeU as u8,
+                    mir::Type::F32 => Instruction::F32Le as u8,
+                    mir::Type::F64 => Instruction::F64Le as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::Greater { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match left.ty {
+                    mir::Type::I32 => Instruction::I32GtS as u8,
+                    mir::Type::U32 => Instruction::I32GtU as u8,
+                    mir::Type::I64 => Instruction::I64GtS as u8,
+                    mir::Type::U64 => Instruction::I64GtU as u8,
+                    mir::Type::F32 => Instruction::F32Gt as u8,
+                    mir::Type::F64 => Instruction::F64Gt as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::GreaterEq { left, right } => {
+                self.build_expression(ctx, left, sink);
+                self.build_expression(ctx, right, sink);
+                sink.push(match left.ty {
+                    mir::Type::I32 => Instruction::I32GeS as u8,
+                    mir::Type::U32 => Instruction::I32GeU as u8,
+                    mir::Type::I64 => Instruction::I64GeS as u8,
+                    mir::Type::U64 => Instruction::I64GeU as u8,
+                    mir::Type::F32 => Instruction::F32Ge as u8,
+                    mir::Type::F64 => Instruction::F64Ge as u8,
+                    _ => unreachable!(),
+                });
+            }
+            mir::ExprKind::BitNot { value } => {
+                self.build_expression(ctx, value, sink);
+                match expr.ty {
+                    mir::Type::I32 | mir::Type::U32 => {
+                        sink.push(Instruction::I32Const as u8);
+                        (!0i32).encode(sink);
+                        sink.push(Instruction::I32Xor as u8);
+                    }
+                    mir::Type::I64 | mir::Type::U64 => {
+                        sink.push(Instruction::I64Const as u8);
+                        (!0i64).encode(sink);
+                        sink.push(Instruction::I64Xor as u8);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            mir::ExprKind::Eqz { value } => {
+                self.build_expression(ctx, value, sink);
+                sink.push(match expr.ty {
+                    mir::Type::Bool | mir::Type::I32 | mir::Type::U32 => Instruction::I32Eqz as u8,
+                    mir::Type::I64 | mir::Type::U64 => Instruction::I64Eqz as u8,
+                    _ => unreachable!(),
+                });
             }
         }
     }
@@ -1595,334 +1575,6 @@ impl Encode for BlockResult {
     }
 }
 
-trait ContextEncode {
-    fn encode(&self, sink: &mut Vec<u8>, module: &WasmModule);
-}
-
-impl ContextEncode for Expression {
-    fn encode(&self, sink: &mut Vec<u8>, module: &WasmModule) {
-        match self {
-            Expression::Nop => {
-                // sink.push(Instruction::Nop as u8);
-            }
-            Expression::LocalGet { local_index: local } => {
-                sink.push(Instruction::LocalGet as u8);
-                local.0.encode(sink);
-            }
-            Expression::LocalSet { local_index: local } => {
-                sink.push(Instruction::LocalSet as u8);
-                local.0.encode(sink);
-            }
-            Expression::GlobalGet {
-                global_index: global,
-            } => {
-                sink.push(Instruction::GlobalGet as u8);
-                global.0.encode(sink);
-            }
-            Expression::GlobalSet { global } => {
-                sink.push(Instruction::GlobalSet as u8);
-                global.0.encode(sink);
-            }
-            Expression::Return => {
-                sink.push(Instruction::Return as u8);
-            }
-            Expression::I32Add => {
-                sink.push(Instruction::I32Add as u8);
-            }
-            Expression::I32Sub => {
-                sink.push(Instruction::I32Sub as u8);
-            }
-            Expression::I32Mul => {
-                sink.push(Instruction::I32Mul as u8);
-            }
-            Expression::Block {
-                expressions,
-                result,
-            } => {
-                sink.push(Instruction::Block as u8);
-                result.encode(sink);
-                for expr in expressions.iter() {
-                    expr.encode(sink, module);
-                }
-                sink.push(Instruction::End as u8);
-            }
-            Expression::Loop {
-                expressions,
-                result,
-            } => {
-                sink.push(Instruction::Loop as u8);
-                result.encode(sink);
-                for expr in expressions.iter() {
-                    expr.encode(sink, module);
-                }
-                sink.push(Instruction::End as u8);
-            }
-            Expression::Unreachable => {
-                sink.push(Instruction::Unreachable as u8);
-            }
-            Expression::Break { depth } => {
-                sink.push(Instruction::Br as u8);
-                depth.encode(sink);
-            }
-            Expression::Call { function } => {
-                sink.push(Instruction::Call as u8);
-                function.0.encode(sink);
-            }
-            Expression::CallIndirect {
-                type_index,
-                table_index,
-            } => {
-                sink.push(Instruction::CallIndirect as u8);
-                type_index.0.encode(sink);
-                table_index.0.encode(sink);
-            }
-            Expression::I32Const { value } => {
-                sink.push(Instruction::I32Const as u8);
-                value.encode(sink);
-            }
-            Expression::F32Const { value } => {
-                sink.push(Instruction::F32Const as u8);
-                value.encode(sink);
-            }
-            Expression::I64Const { value } => {
-                sink.push(Instruction::I64Const as u8);
-                value.encode(sink);
-            }
-            Expression::F64Const { value } => {
-                sink.push(Instruction::F64Const as u8);
-                value.encode(sink);
-            }
-            Expression::I32Eq => {
-                sink.push(Instruction::I32Eq as u8);
-            }
-            Expression::I32Eqz => {
-                sink.push(Instruction::I32Eqz as u8);
-            }
-            Expression::I32Ne => {
-                sink.push(Instruction::I32Ne as u8);
-            }
-            Expression::I32And => {
-                sink.push(Instruction::I32And as u8);
-            }
-            Expression::I32Or => {
-                sink.push(Instruction::I32Or as u8);
-            }
-            Expression::IfElse {
-                result,
-                then_branch,
-                else_branch,
-            } => {
-                sink.push(Instruction::If as u8);
-                result.encode(sink);
-                then_branch.encode(sink, module);
-                match else_branch {
-                    Some(else_branch) => {
-                        sink.push(Instruction::Else as u8);
-                        else_branch.encode(sink, module);
-                    }
-                    None => {}
-                }
-                sink.push(Instruction::End as u8);
-            }
-            Expression::Drop => {
-                sink.push(Instruction::Drop as u8);
-            }
-            Expression::I64Add => {
-                sink.push(Instruction::I64Add as u8);
-            }
-            Expression::I64Sub => {
-                sink.push(Instruction::I64Sub as u8);
-            }
-            Expression::I64Mul => {
-                sink.push(Instruction::I64Mul as u8);
-            }
-            Expression::I64Eq => {
-                sink.push(Instruction::I64Eq as u8);
-            }
-            Expression::I64Eqz => {
-                sink.push(Instruction::I64Eqz as u8);
-            }
-            Expression::I64Ne => {
-                sink.push(Instruction::I64Ne as u8);
-            }
-            Expression::I64And => {
-                sink.push(Instruction::I64And as u8);
-            }
-            Expression::I64Or => {
-                sink.push(Instruction::I64Or as u8);
-            }
-            Expression::I32DivS => {
-                sink.push(Instruction::I32DivS as u8);
-            }
-            Expression::I32GeS => {
-                sink.push(Instruction::I32GeS as u8);
-            }
-            Expression::I32ShrS => {
-                sink.push(Instruction::I32ShrS as u8);
-            }
-            Expression::I32LtS => {
-                sink.push(Instruction::I32LtS as u8);
-            }
-            Expression::I32GtS => {
-                sink.push(Instruction::I32GtS as u8);
-            }
-            Expression::I32LeS => {
-                sink.push(Instruction::I32LeS as u8);
-            }
-            Expression::I32RemS => {
-                sink.push(Instruction::I32RemS as u8);
-            }
-            Expression::I64DivS => {
-                sink.push(Instruction::I64DivS as u8);
-            }
-            Expression::I64GeS => {
-                sink.push(Instruction::I64GeS as u8);
-            }
-            Expression::I64ShrS => {
-                sink.push(Instruction::I64ShrS as u8);
-            }
-            Expression::I64LtS => {
-                sink.push(Instruction::I64LtS as u8);
-            }
-            Expression::I64GtS => {
-                sink.push(Instruction::I64GtS as u8);
-            }
-            Expression::I64LeS => {
-                sink.push(Instruction::I64LeS as u8);
-            }
-            Expression::I64RemS => {
-                sink.push(Instruction::I64RemS as u8);
-            }
-            Expression::I32Xor => {
-                sink.push(Instruction::I32Xor as u8);
-            }
-            Expression::I64Xor => {
-                sink.push(Instruction::I64Xor as u8);
-            }
-            Expression::I32Shl => {
-                sink.push(Instruction::I32Shl as u8);
-            }
-            Expression::I64Shl => {
-                sink.push(Instruction::I64Shl as u8);
-            }
-            Expression::F32Add => {
-                sink.push(Instruction::F32Add as u8);
-            }
-            Expression::F32Sub => {
-                sink.push(Instruction::F32Sub as u8);
-            }
-            Expression::F32Mul => {
-                sink.push(Instruction::F32Mul as u8);
-            }
-            Expression::F64Add => {
-                sink.push(Instruction::F64Add as u8);
-            }
-            Expression::F64Sub => {
-                sink.push(Instruction::F64Sub as u8);
-            }
-            Expression::F64Mul => {
-                sink.push(Instruction::F64Mul as u8);
-            }
-            Expression::F32Eq => {
-                sink.push(Instruction::F32Eq as u8);
-            }
-            Expression::F32Ne => {
-                sink.push(Instruction::F32Ne as u8);
-            }
-            Expression::F64Eq => {
-                sink.push(Instruction::F64Eq as u8);
-            }
-            Expression::F64Ne => {
-                sink.push(Instruction::F64Ne as u8);
-            }
-            Expression::F32Lt => {
-                sink.push(Instruction::F32Lt as u8);
-            }
-            Expression::F32Gt => {
-                sink.push(Instruction::F32Gt as u8);
-            }
-            Expression::F32Le => {
-                sink.push(Instruction::F32Le as u8);
-            }
-            Expression::F32Ge => {
-                sink.push(Instruction::F32Ge as u8);
-            }
-            Expression::F64Lt => {
-                sink.push(Instruction::F64Lt as u8);
-            }
-            Expression::F64Gt => {
-                sink.push(Instruction::F64Gt as u8);
-            }
-            Expression::F64Le => {
-                sink.push(Instruction::F64Le as u8);
-            }
-            Expression::F64Ge => {
-                sink.push(Instruction::F64Ge as u8);
-            }
-            Expression::F32Div => {
-                sink.push(Instruction::F32Div as u8);
-            }
-            Expression::F64Div => {
-                sink.push(Instruction::F64Div as u8);
-            }
-            Expression::F32Neg => {
-                sink.push(Instruction::F32Neg as u8);
-            }
-            Expression::F64Neg => {
-                sink.push(Instruction::F64Neg as u8);
-            }
-            Expression::I32DivU => {
-                sink.push(Instruction::I32DivU as u8);
-            }
-            Expression::I32GeU => {
-                sink.push(Instruction::I32GeU as u8);
-            }
-            Expression::I32ShrU => {
-                sink.push(Instruction::I32ShrU as u8);
-            }
-            Expression::I32LtU => {
-                sink.push(Instruction::I32LtU as u8);
-            }
-            Expression::I32GtU => {
-                sink.push(Instruction::I32GtU as u8);
-            }
-            Expression::I32LeU => {
-                sink.push(Instruction::I32LeU as u8);
-            }
-            Expression::I32RemU => {
-                sink.push(Instruction::I32RemU as u8);
-            }
-            Expression::I64DivU => {
-                sink.push(Instruction::I64DivU as u8);
-            }
-            Expression::I64GeU => {
-                sink.push(Instruction::I64GeU as u8);
-            }
-            Expression::I64ShrU => {
-                sink.push(Instruction::I64ShrU as u8);
-            }
-            Expression::I64LtU => {
-                sink.push(Instruction::I64LtU as u8);
-            }
-            Expression::I64GtU => {
-                sink.push(Instruction::I64GtU as u8);
-            }
-            Expression::I64LeU => {
-                sink.push(Instruction::I64LeU as u8);
-            }
-            Expression::I64RemU => {
-                sink.push(Instruction::I64RemU as u8);
-            }
-            Expression::F32Trunc => {
-                sink.push(Instruction::F32Trunc as u8);
-            }
-            Expression::F64Trunc => {
-                sink.push(Instruction::F64Trunc as u8);
-            }
-        }
-    }
-}
-
 impl Encode for FunctionSignature {
     fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(0x60); // Function type
@@ -2013,13 +1665,13 @@ impl Encode for FunctionSection {
 #[repr(u8)]
 enum ExportKind {
     Function = 0x00,
-    Table = 0x01,
+    _Table = 0x01,
     Memory = 0x02,
     Global = 0x03,
 }
 
-impl ContextEncode for ExportItem {
-    fn encode(&self, sink: &mut Vec<u8>, _module: &WasmModule) {
+impl Encode for ExportItem {
+    fn encode(&self, sink: &mut Vec<u8>) {
         match self.clone() {
             ExportItem::Function { name, func_index } => {
                 (name.len() as u32).encode(sink);
@@ -2043,15 +1695,15 @@ impl ContextEncode for ExportItem {
     }
 }
 
-impl ContextEncode for ExportSection {
-    fn encode(&self, sink: &mut Vec<u8>, module: &WasmModule) {
+impl Encode for ExportSection {
+    fn encode(&self, sink: &mut Vec<u8>) {
         sink.push(SectionId::Export as u8);
 
         let mut section_sink: Vec<u8> = Vec::new();
         let export_count = self.items.len() as u32;
         export_count.encode(&mut section_sink);
         for item in &self.items {
-            item.encode(&mut section_sink, module);
+            item.encode(&mut section_sink);
         }
 
         let section_size = section_sink.len() as u32;
@@ -2133,15 +1785,17 @@ impl FunctionBody {
             group_type.encode(&mut body_content);
         }
 
-        for expr in self.expressions.iter() {
-            expr.encode(&mut body_content, module);
-        }
+        body_content.extend_from_slice(&module.code.functions[func_index.0 as usize].expressions);
         body_content.push(Instruction::End as u8);
 
         let body_size = body_content.len() as u32;
         body_size.encode(sink);
         sink.extend_from_slice(&body_content);
     }
+}
+
+trait ContextEncode {
+    fn encode(&self, sink: &mut Vec<u8>, module: &WasmModule);
 }
 
 impl ContextEncode for CodeSection {
@@ -2357,7 +2011,7 @@ impl WasmModule {
         }
         match self.exports.items.len() {
             0 => {}
-            _ => self.exports.encode(&mut sink, self),
+            _ => self.exports.encode(&mut sink),
         }
         match self.elements.segments.len() {
             0 => {}
@@ -2934,20 +2588,6 @@ mod tests {
                 console::log(x);
                 console::log(y);
             }
-
-            export { main }
-
-            fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
-fn main() -> unit {
-    local x: f32 = lerp(0.0, 100.0, 0.5); // should be 50.0
-    local y: f64 = 3.14159265358979;
-    local z: f64 = y * y;
-}
-
-export { main }
         "});
 
         insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
@@ -3003,7 +2643,7 @@ export { main }
 
         let engine = wasmtime::Engine::default();
         let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut linker = wasmtime::Linker::new(&engine);
+        let linker = wasmtime::Linker::new(&engine);
 
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = linker.instantiate(&mut store, &module).unwrap();
@@ -3011,5 +2651,6 @@ export { main }
             .get_typed_func::<(), f32>(&mut store, "main")
             .unwrap();
         let result = main.call(&mut store, ()).unwrap();
+        assert!(result == 50.0, "Expected main() to return 50.0");
     }
 }
