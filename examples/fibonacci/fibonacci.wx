@@ -1,16 +1,19 @@
+import "console" {
+  fn log(message: string);
+}
+
 fn fibonacci(n: i32) -> i32 {
   if n <= 1 {
     return n
   }
+  console::log("calculating fibonacci");
   fibonacci(n - 1) + fibonacci(n - 2)
 }
 
-fn gewgeaw(mut n: i32) -> i32 {
+fn fibonacci_iterative(mut n: i32) -> i32 {
   if n <= 1 {
     return n
   }
-  
-  local y = "hello world";
   
   local mut a: i32 = 0;
   local mut b: i32 = 1;
@@ -31,73 +34,13 @@ fn gewgeaw(mut n: i32) -> i32 {
   }
 }
 
-global a: i32 = 42
-
-fn log() -> i32 {
-  a
+fn main() {
+  console::log("hello");
 }
 
-fn add(a: i32, b: i32) -> i32 {
-  a + b
-}
-
-fn sub(a: i32, b: i32) -> i32 {
-  a - b
-}
-
-fn apply(mut binop: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
-  _ = fibonacci(10);
-  
-  binop = binop;
-  
-  binop(a, b)
-}
-
-fn main() -> i32 {
-  local a = apply(add, 5, 10);
-  local mut b = apply(sub, 10, 5);
-  
-  a + b
-}
-
-fn pow(base: i32, mut exp: i32) -> i32 {
-  if exp < 0 {
-    return 0;
-  }
-  
-  local mut result: i32 = 1;
-  loop {
-    if exp == 0 {
-      break result;
-    }
-    
-    result *= base;
-    exp -= 1;
-  }
-}
-
-global mut x: f32 = 0.001
-
-fn get() -> f32 {
-  x
-}
-
-fn set(value: f32) -> f32 {
-  x = value;
-  x
-}
-
-fn factorial(n: i32) -> i32 {
-  if n <= 1 {
-    return 1
-  }
-  n * factorial(n - 1)
-}
-
-fn fac_2(n: i32) -> i32 {
-  if n <= 1 {
-    return 1
-  }
-  n * factorial(n - 1)
+export {
+  fibonacci,
+  fibonacci_iterative,
+  main,
 }
 

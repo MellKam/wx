@@ -326,6 +326,7 @@ impl Builder {
 
         items.push(Node::Text(" = ".to_string()));
         items.push(Self::build_expression(interner, source, value));
+        items.push(Node::Text(";".to_string()));
 
         Node::Concat(items)
     }

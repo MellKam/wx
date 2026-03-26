@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+package.repository = "https://github.com/MellKam/wx"
+package.license = "MIT"
 
 [profile.dev.package]
 insta.opt-level = 3

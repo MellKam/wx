@@ -1,4 +1,16 @@
-export global mut x: f32 = 0;
+global mut x: f32 = 0;
 
-export func get(): f32 { x }
-export func set(value: f32): f32 { x = value; x }
+fn get() -> f32 {
+  x
+}
+
+fn set(value: f32) -> f32 {
+  x = value;
+  x
+}
+
+export {
+  get,
+  set
+}
+

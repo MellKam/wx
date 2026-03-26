@@ -1,15 +1,19 @@
-export fn pow(base: i32, mut exp: i32) -> i32 {
+fn pow(base: i32, mut exp: i32) -> i32 {
   if exp < 0 {
-    return 0; 
-  };
+    return 0;
+  }
   
   local mut result: i32 = 1;
   loop {
     if exp == 0 {
-      break result; 
-    };
+      break result;
+    }
     
     result *= base;
     exp -= 1;
   }
+}
+
+export {
+  pow
 }

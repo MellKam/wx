@@ -1,6 +1,6 @@
 {
 	"name": "wx-compiler",
-	"version": "0.0.6",
+	"version": "0.1.0",
 	"files": [
 		"wx-compiler"
 	],
@@ -13,10 +13,10 @@
 		"wx-compiler": "./wx-compiler"
 	},
 	"dependencies": {
-		"wx-compiler-wasm": "0.0.6",
-		"commander": "14.0.0"
+		"wx-compiler-wasm": "0.1.0",
+		"commander": "14.0.3"
 	},
 	"devDependencies": {
-		"@types/node": "24.0.1"
+		"@types/node": "25.5.0"
 	}
 }

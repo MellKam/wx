@@ -13,11 +13,11 @@ pub fn compile(filename: String, source: String) -> Result<Vec<u8>, JsValue> {
         &mut interner,
     );
     if !ast.diagnostics.is_empty() {
-        // return Err(serde_wasm_bindgen::to_value(&ast.diagnostics).unwrap());
+        return Err(serde_wasm_bindgen::to_value(&ast.diagnostics).unwrap());
     }
     let hir = tir::TIR::build(&ast, &mut interner);
     if !hir.diagnostics.is_empty() {
-        // return Err(serde_wasm_bindgen::to_value(&hir.diagnostics).unwrap());
+        return Err(serde_wasm_bindgen::to_value(&hir.diagnostics).unwrap());
     }
     let mir = mir::MIR::build(&hir, &interner);
     let module = codegen::Builder::build(&mir, &interner).unwrap();

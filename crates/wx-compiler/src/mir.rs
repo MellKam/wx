@@ -1,3 +1,6 @@
+/// the role of MIR is to desugar the syntax like x += 1 into x = x + 1 and lower
+/// the concepts like enums into primitive constants, convert labels from symbols
+/// in interner into numeric indices
 use std::collections::HashMap;
 
 use string_interner::symbol::SymbolU32;
@@ -202,10 +205,6 @@ impl std::hash::Hash for Tuple {
     }
 }
 
-// the role of MIR is to desugar the syntax like x += 1 into x = x + 1 and lower
-// the concepts like enums into primitive constants, convert labels from symbols
-// in interner into numeric indices
-
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct MIR {
     pub functions: Vec<Function>,
@@ -379,7 +378,6 @@ impl MIR {
         );
 
         let mut builder = Builder {
-            interner,
             tir,
             string_pool: StringPool::new(),
             tuple_pool: TuplePool::new(),
@@ -518,14 +516,9 @@ impl StringPool {
             index
         }
     }
-
-    fn get(&self, index: StringIndex) -> Option<SymbolU32> {
-        self.strings.get(index as usize).cloned()
-    }
 }
 
-struct Builder<'tir, 'interner> {
-    interner: &'interner ast::StringInterner,
+struct Builder<'tir> {
     tir: &'tir tir::TIR,
     string_pool: StringPool,
     tuple_pool: TuplePool,
@@ -538,7 +531,7 @@ struct FunctionContext {
     current_scope_index: usize,
 }
 
-impl<'tir, 'interner> Builder<'tir, 'interner> {
+impl<'tir> Builder<'tir> {
     fn lower_type(&self, ty: tir::Type) -> Type {
         match ty {
             tir::Type::I32 => Type::I32,
@@ -723,7 +716,7 @@ impl<'tir, 'interner> Builder<'tir, 'interner> {
                     tir::Namespace::Enum(_) => self.lower_expression(func_ctx, member),
                 }
             }
-            tir::ExprKind::ObjectAccess { object, member } => {
+            tir::ExprKind::ObjectAccess { .. } => {
                 todo!();
                 // let object = self.lower_expression(func_ctx, object);
                 // match object.kind {

@@ -44,9 +44,8 @@ async function startServer(serverModule: string) {
 export function activate(context: ExtensionContext) {
 	console.log("WX Language Server extension is activating...");
 
-	const serverModule = context.asAbsolutePath(
-		path.join("..", "target", "debug", "wx-lsp"),
-	);
+	const binaryName = process.platform === "win32" ? "wx-lsp.exe" : "wx-lsp";
+	const serverModule = context.asAbsolutePath(path.join("bin", binaryName));
 	console.log("serverModule:", serverModule);
 
 	// Register restart server command

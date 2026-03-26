@@ -6,9 +6,9 @@ This project is part of my bachelor’s thesis and aims to explore the possibili
 
 The main goal of this language is to simplify writing WASM modules while closely reflecting the underlying WASM specification in a more high-level, approachable way. Ideally, the language should teach you how WASM works but keep the convenience of a high level language.
 
-## How to start?
+## Getting Started
 
-The easiest way is to install the compiler cli from npm. Or checko out the playground here: [wx-lang.deno.dev](https://wx-lang.deno.dev/)
+The easiest way is to install the compiler cli from npm. Or check out the playground here: [wx-lang.deno.dev](https://wx-lang.deno.dev/)
 
 ```bash
 npm install -g wx-compiler
@@ -17,7 +17,7 @@ wx-compiler ./main.wx
 ```
 
 > [!NOTE]
-> You will see this warning after compilation. This is because cli imports wasm modules directly, which is currently not stable in Node.js.
+> You will see this warning after compilation. This is because cli imports wasm modules directly, which is currently [not stable](https://nodejs.org/api/esm.html#wasm-modules) in Node.js.
 >
 > ```
 > (node:37243) ExperimentalWarning: Importing WebAssembly modules is an experimental feature and might change at any time
@@ -28,83 +28,29 @@ You can also access compiler functionality directly with `wx-compiler-wasm` pack
 ```ts
 import { compile } from "wx-compiler-wasm";
 
-const bytecode = compile("main.wx", `export func main() -> i32 { 2 + 2 }`);
+const bytecode: Uint8Array = compile("main.wx", `
+    import "console" {
+        fn log(message: string); 
+    }
+
+    fn main() {
+        console::log("Hello World!");
+    }
+
+    export { main }
+`);
 ```
 
-Alternatively, you can build the compiler from source by going to `wx-compiler-cli` directory and running:
+Alternatively, you can build the compiler from source with the following command:
 
 ```bash
-cargo run -- ../examples/fibonacci.wx
+cargo build --release -p wx-compiler-cli
+./target/release/wx-compiler-cli ./main.wx
 ```
 
-## Syntax
+## Syntax and Semantics
 
-The syntax is inspired by Rust, Zig and Typescript. But I tried to keep the wasm terminology as cloes as possible to the original specification.
-
-### Literals
-
-```
-5 // integer literal
-true // boolean literal
-false // boolean literal
-```
-
-### Binary Operators
-
-| Arithmetic Operator |                |
-| ------------------- | -------------- |
-| `+`                 | Addition       |
-| `-`                 | Subtraction    |
-| `*`                 | Multiplication |
-| `/`                 | Division       |
-| `%`                 | Modulo         |
-
-| Comparison Operator |                       |
-| ------------------- | --------------------- |
-| `==`                | Equality              |
-| `!=`                | Inequality            |
-| `<`                 | Less than             |
-| `<=`                | Less than or equal    |
-| `>`                 | Greater than          |
-| `>=`                | Greater than or equal |
-
-> [!NOTE]
-> Chaining of comparison operators is not allowed, so you cannot write `1 < 2 < 3`. You have to write it as `1 < 2 && 2 < 3`.
-
-| Logical Operator |             |
-| ---------------- | ----------- |
-| `&&`             | Logical AND |
-| `\|\|`           | Logical OR  |
-
-| Arithmetic Assignment |                           |
-| --------------------- | ------------------------- |
-| `+=`                  | Addition assignment       |
-| `-=`                  | Subtraction assignment    |
-| `*=`                  | Multiplication assignment |
-| `/=`                  | Division assignment       |
-| `%=`                  | Modulo assignment         |
-
-| Bitwise Operators |                     |
-| ----------------- | ------------------- |
-| `&`               | Bitwise AND         |
-| `\|`              | Bitwise OR          |
-| `^`               | Bitwise XOR         |
-| `<<`              | Bitwise left shift  |
-| `>>`              | Bitwise right shift |
-
-### Unary Operators
-
-| Unary Operator | Description |
-| -------------- | ----------- |
-| `-`            | Invert sign |
-| `!`            | Logical NOT |
-| `^`            | Bitwise NOT |
-
-```
-2 + 2 // binary expression
-
--5 // unary expression
-```
+The syntax is strongly inspired by Rust. I don't have a goal to create something completely new, but rather a language that is familiar and easy to start with.
 
 ### Types
 
@@ -112,15 +58,20 @@ Currently the language supports the following types:
 
 - `i32` - 32-bit signed integer
 - `i64` - 64-bit signed integer
+- `u32` - 32-bit unsigned integer
+- `u64` - 64-bit unsigned integer
+- `f32` - 32-bit floating point number
+- `f64` - 64-bit floating point number
+- `string` - a "fat-pointer" type that holds a memory offset and a length of the string data in linear memory
 - `bool` - true or false
 - `unit` - empty type, used for functions that don't return a value
-- `never` - type that never returns, used for functions that always panic or loop indefinitely
+- `never` - a type with no values, representing the result of computations that never complete
 
 ### Untyped Literals
 
 When you define an integer literal, it doesn't have a type by itself. Instead, the context of the expression determines the type. So, when you define a variable like this:
 
-```wx
+```rust
 local x = 5; // error: type annotation is required
 local x: i32 = 5; // ok
 local x = 5 as i32; // ok
@@ -132,21 +83,21 @@ local x = 5 as i32; // ok
 
 Local variables are variables that are defined within a function or a block and are not accessible outside of it. They can be either mutable or immutable.
 
-```
+```rust
 local x: i32 = 5; // local immutable variable
 local mut y: i32 = 10; // local mutable variable
 ```
 
 You can't declare a variable without initializing it, so the following is not allowed:
 
-```
+```rust
 local x: i32; // error
 local x: i32 = 0; // ok
 ```
 
 The type annotation is not required in case when the type can be inferred from the initializer value:
 
-```
+```rust
 local x: i32 = 5;
 local y = x; // not required to specify type, it will be inferred as i32
 ```
@@ -157,7 +108,7 @@ Blocks are expressions that group statements together. They are defined using cu
 
 This is basically the same as in Rust. I decided to take this approach because it clearly reflects the nature of stack based executation of WASM, where the last value pushed to the stack is the result of the block.
 
-```wx
+```rust
 local x = {
     local x: i32 = 5;
     x + 2 // this is the result value of the block
@@ -168,7 +119,7 @@ Semicolons are required to separate statements.
 
 Block doesn't necessarily have to return a value. The type of such block will be `unit`.
 
-```wx
+```rust
 local x = {
     local x: i32 = 5;
     x + 2; // this is a statement, not an expression
@@ -182,7 +133,7 @@ There are two types of statements:
 
 Delimited expressions can't return a non empty value, so this means that every value should be consumed or assigned to a variable. If you don't need a value, you can drop it by assigning to `_`;
 
-```wx
+```rust
 _ = foo();
 ```
 
@@ -190,7 +141,7 @@ _ = foo();
 
 If expressions are used to conditionally execute code based on a boolean expression. They can return a value.
 
-```wx
+```rust
 local x: i32 = if 5 > 2 { 5 } else { 2 };
 
 if true { return 5 };
@@ -200,7 +151,7 @@ if true { return 5 };
 
 Currently thre's only one type of loop available, which is just indefinite loop. It can be used to create a loop that runs forever or until a `break` expression is encountered.
 
-```wx
+```rust
 loop {
     // do something
     if some_condition { break } // break out of the loop
@@ -209,7 +160,7 @@ loop {
 
 Loops can return a value. You can do this by speficiying the value after break;
 
-```wx
+```rust
 local i = 0;
 local x = loop {
     if i > 10 { break i } // break out of the loop and return the value of i
@@ -223,7 +174,7 @@ You can also use `continue` expression to skip the current iteration and continu
 
 Labels are markers for blocks, that can be used to break out of nested loops or blocks. They are defined using the `outer:` syntax, where `outer` is the name of the label.
 
-```wx
+```rust
 outer: {
     inner: {
         break :outer
@@ -237,18 +188,24 @@ Labels can be used with plain blocks, loops and if expressions. Only loops don't
 
 Functions are defined using the `func` keyword. They can have parameters and a return type. If the return type is not specified, it defaults to `unit`(no return value).
 
-```wx
-func add(a: i32, b: i32) -> i32 {
+```rust
+fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 ```
 
-To export a function from the module, add an export keyword before the function definition:
+### Export block
 
-```wx
-export func main() -> i32 {
+To export function or a global variable, you can use the `export` block. You can export multiple items in a single block.
+
+```rust
+fn main() -> i32 {
     2 + 2
 }
+
+global PI: f64 = 3.14159265359;
+
+export { main, PI as "PI_CONST" }
 ```
 
 ## Examples
@@ -258,22 +215,21 @@ You can find some examples in the `examples` directory. Here are some of them:
 - [fibonacci.wx](examples/fibonacci.wx) - A simple fibonacci function.
 - [factorial.wx](examples/factorial.wx) - A simple factorial function.
 - [pow.wx](examples/pow.wx) - A simple power function.
+- [func_pointers.wx](examples/func_pointers.wx) - An example of using function pointers.
+- [globals.wx](examples/globals.wx) - An example of using global variables.
 
-The compiler also supports output in WAT format, which is a human-readable format for WASM. You can use the `--wat` flag to output additional WAT file.
-(Currently not supported in wasm version of the compiler)
+## Architecture
 
-```bash
-cargo run -- ./examples/fibonacci.wx --wat
-```
+![Architecture diagram](./web/public/architecture.webp)
 
 ## Plans for the future
 
-- [ ] Global variables
-- [ ] Add support for more types, like `f32`, `f64`, `u32`, `u64`
+- [x] Global variables
+- [x] Add support for more types, like `f32`, `f64`, `u32`, `u64`
 - [ ] Pattern matching
-- [ ] Add support for imports
+- [x] Add support for imports
 - [ ] Memory: Pointers, arrays, slices, structs...
-- [ ] Tooling: LSP, Formatter, Syntax highlighting
+- [x] Tooling: LSP, Formatter, Syntax highlighting
 - [ ] More optimizations, like constant folding etc.
 
 ## Credits

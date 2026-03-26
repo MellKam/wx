@@ -1,10 +1,11 @@
 [package]
 name = "wx-compiler-wasm"
 description = "WASM bindings for wx-compiler"
-version = "0.0.6"
+version = "0.1.0"
 authors = ["Artem Melnyk <melkam464@gmail.com>"]
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/MellKam/wx"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

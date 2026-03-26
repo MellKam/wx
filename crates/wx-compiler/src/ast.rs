@@ -2,8 +2,9 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files;
 use string_interner::symbol::SymbolU32;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct TextSpan {
     pub start: u32,
     pub end: u32,
@@ -49,7 +50,7 @@ impl Into<core::ops::Range<usize>> for TextSpan {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct File {
     pub name: String,
     pub source: String,
@@ -72,8 +73,7 @@ impl File {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct FileId(u32);
 
 pub struct Files {
@@ -102,6 +102,13 @@ impl Files {
         self.files
             .get(file_id.0 as usize)
             .ok_or(files::Error::FileMissing)
+    }
+
+    pub fn update(&mut self, file_id: FileId, source: String) {
+        if let Some(file) = self.files.get_mut(file_id.0 as usize) {
+            file.line_starts = files::line_starts(&source).collect();
+            file.source = source;
+        }
     }
 }
 
@@ -139,7 +146,7 @@ impl<'files> files::Files<'files> for Files {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum Token {
     // Literals
     Int,
@@ -1142,7 +1149,7 @@ impl Clone for Spanned<UnaryOp> {
 /// Used for type annotations (`: i32`) and return types (`-> i32`) where a
 /// special token precedes the actual value. The `separator` field stores the
 /// prefix token's span.
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Annotated<T> {
     pub prefix: TextSpan,
     pub inner: T,
@@ -1154,7 +1161,7 @@ pub struct Annotated<T> {
 /// b, c)`, code blocks `{ stmt; stmt; }`, and array literals `[1, 2, 3]`. The
 /// `open` and `close` fields store the spans of the opening and closing
 /// delimiters respectively.
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Grouped<T> {
     pub open: TextSpan,
     pub inner: T,
@@ -1167,13 +1174,13 @@ pub struct Grouped<T> {
 /// Used for comma-separated lists like function parameters `(a, b, c)` or
 /// statement sequences. The `separator` field holds the token that follows this
 /// item (e.g., `,` or `;`), if present.
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Separated<T> {
     pub inner: T,
     pub separator: Option<TextSpan>,
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum Expression {
     Error,
     /// `1`
@@ -1275,7 +1282,7 @@ impl Expression {
     }
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum TypeExpression {
     Error,
     /// `i32`
@@ -1289,7 +1296,7 @@ pub enum TypeExpression {
     },
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum Statement {
     /// `{expr}`
     Expression(Box<Spanned<Expression>>),
@@ -1311,14 +1318,14 @@ impl Statement {
     }
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionParam {
     pub mut_span: Option<TextSpan>,
     pub name: Spanned<SymbolU32>,
     pub type_annotation: Annotated<Box<Spanned<TypeExpression>>>,
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionSignature {
     pub fn_span: TextSpan,
     pub name: Spanned<SymbolU32>,
@@ -1326,13 +1333,13 @@ pub struct FunctionSignature {
     pub result: Option<Annotated<Box<Spanned<TypeExpression>>>>,
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ExportEntry {
     pub name: Spanned<SymbolU32>,
     pub alias: Option<Spanned<SymbolU32>>,
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImportDeclaration {
     Function {
         signature: FunctionSignature,
@@ -1344,13 +1351,13 @@ pub enum ImportDeclaration {
     },
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ImportEntry {
     pub external_name: Option<Spanned<SymbolU32>>,
     pub declaration: ImportDeclaration,
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum Item {
     Function {
         signature: FunctionSignature,
@@ -1383,7 +1390,7 @@ impl Item {
     }
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct AST {
     pub file_id: FileId,
     pub diagnostics: Vec<Diagnostic<FileId>>,
@@ -2428,12 +2435,29 @@ impl<'input> Parser<'input> {
             },
             _ => unreachable!(),
         };
-        _ = parser.next_expect(Token::Colon)?;
+        let colon_token = parser.next_expect(Token::Colon)?;
 
         let block = parser.parse_expression(BindingPower::Default)?;
         match block.inner {
             Expression::Block { .. } | Expression::IfElse { .. } | Expression::Loop { .. } => {}
-            _ => unreachable!("expected a block expression after label"),
+            _ => {
+                let mut diag = Diagnostic::error()
+                    .with_code(DiagnosticCode::IncompleteExpression.code())
+                    .with_message("expected a block-like expression after a label")
+                    .with_label(Label::primary(parser.ast.file_id, block.span));
+                match &block.inner {
+                    Expression::Identifier { .. } | Expression::Call { .. } => {
+                        diag = diag.with_label(
+                            Label::secondary(parser.ast.file_id, colon_token.span)
+                                .with_message("use `::` here for namespace access"),
+                        );
+                    }
+                    _ => {}
+                }
+
+                parser.ast.diagnostics.push(diag);
+                return Err(());
+            }
         }
 
         let span = TextSpan::merge(label.span, block.span);
@@ -3032,16 +3056,13 @@ mod tests {
     #[test]
     fn test_parse_import_with_alias() {
         let case = TestCase::new(indoc! {"
-            fn lerp(a: f32, b: f32, t: f32) -> f32 {
-                a + (b - a) * t
+            import \"console\" {
+                fn log(message: string);
             }
 
-            fn main() -> f32 {
-                local x: f32 = lerp(0.0, 100.0, 0.5);
-                if x != 50.0 { unreachable } else { x }
+            fn main() {
+                console:log(\"Hello, World!\");
             }
-
-            export { main }
         "});
         insta::assert_yaml_snapshot!(case.ast);
     }

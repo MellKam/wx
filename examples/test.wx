@@ -1,0 +1,11 @@
+import "console" {
+  fn log(message: string);
+}
+
+fn main() {
+  console::log("hello");
+}
+
+export {
+  main
+}

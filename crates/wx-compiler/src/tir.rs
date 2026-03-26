@@ -4,7 +4,7 @@ use std::hash::Hash;
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use string_interner::symbol::SymbolU32;
 
-use crate::ast::{self, Annotated, FileId, Grouped, Separated, Spanned, StringInterner, TextSpan};
+use crate::ast::{self, FileId, Separated, Spanned, TextSpan};
 
 /// Unescape a string literal, removing quotes and handling escape sequences.
 /// Supports basic Rust-like escape sequences: \n, \r, \t, \\, \", \'
@@ -429,23 +429,6 @@ pub enum ImportValue {
     Global { global_index: GlobalIndex },
 }
 
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub struct ImportedFunction {
-    pub external_name: ast::Spanned<SymbolU32>,
-    pub internal_name: ast::Spanned<SymbolU32>,
-    pub signature_index: SignatureIndex,
-}
-
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub struct ImportedGlobal {
-    pub external_name: ast::Spanned<SymbolU32>,
-    pub internal_name: ast::Spanned<SymbolU32>,
-    pub ty: ast::Spanned<Type>,
-    pub mut_span: Option<ast::TextSpan>,
-}
-
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct ImportModule {
     pub external_name: ast::Spanned<SymbolU32>,
@@ -483,12 +466,13 @@ impl Ord for ItemSource {
     }
 }
 
-#[derive(Clone)]
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub struct DeclaredFunction {
     pub source: ItemSource,
     pub signature_index: SignatureIndex,
     pub name: ast::Spanned<SymbolU32>,
+    pub params: Box<[FunctionParam]>,
+    pub result: Option<Spanned<Type>>,
     pub accesses: Vec<ast::TextSpan>,
 }
 
@@ -626,6 +610,8 @@ define_diagnostic_codes! {
         ArgumentCountMismatch => "E1016",
         DuplicateExport => "E1018",
         CannotExportItem => "E1019",
+        NotANamespace => "E1020",
+        UndeclaredType => "E1021",
         CannotMutateImmutable => "W1000",
         UnusedVariable => "W1001",
         UnnecessaryMutability => "W1002",
@@ -638,8 +624,8 @@ struct DuplicateDefinitionDiagnostic<'interner> {
     file_id: FileId,
     name: &'interner str,
     namespace: SymbolNamespace,
-    first_definition: TextSpan,
-    second_definition: TextSpan,
+    first_definition: ast::TextSpan,
+    second_definition: ast::TextSpan,
 }
 
 impl DuplicateDefinitionDiagnostic<'_> {
@@ -661,16 +647,35 @@ impl DuplicateDefinitionDiagnostic<'_> {
                     self.name, namespace
                 )),
             )
-            .with_note(format!(
-                "`{}` must be defined only once in the {} namespace of this module",
-                self.name, namespace
+    }
+}
+
+struct DuplicateParameterDiagnostic<'interner> {
+    file_id: FileId,
+    name: &'interner str,
+    first_definition: ast::TextSpan,
+    second_definition: ast::TextSpan,
+}
+
+impl DuplicateParameterDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::DuplicateDefinition.code())
+            .with_message(format!(
+                "identifier `{}` is bound more than once in this parameter list",
+                self.name
             ))
+            .with_label(Label::primary(self.file_id, self.second_definition))
+            .with_label(
+                Label::secondary(self.file_id, self.first_definition)
+                    .with_message(format!("first use of `{}` as parameter", self.name)),
+            )
     }
 }
 
 struct NonConstantGlobalInitializerDiagnostic {
     file_id: FileId,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl NonConstantGlobalInitializerDiagnostic {
@@ -686,7 +691,7 @@ struct TypeMistmatchDiagnostic {
     file_id: FileId,
     expected_type: Type,
     actual_type: Type,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl TypeMistmatchDiagnostic {
@@ -706,7 +711,7 @@ impl TypeMistmatchDiagnostic {
 
 struct TypeAnnotationRequiredDiagnostic {
     file_id: FileId,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl TypeAnnotationRequiredDiagnostic {
@@ -720,7 +725,7 @@ impl TypeAnnotationRequiredDiagnostic {
 
 struct UnusedVariableDiagnostic {
     file_id: FileId,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl UnusedVariableDiagnostic {
@@ -735,7 +740,7 @@ impl UnusedVariableDiagnostic {
 struct UnusedFunctionDiagnostic {
     file_id: FileId,
     name: String,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl UnusedFunctionDiagnostic {
@@ -750,7 +755,7 @@ impl UnusedFunctionDiagnostic {
 struct UnusedGlobalDiagnostic {
     file_id: FileId,
     name: String,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl UnusedGlobalDiagnostic {
@@ -764,7 +769,7 @@ impl UnusedGlobalDiagnostic {
 
 struct UnnecessaryMutabilityDiagnostic {
     file_id: FileId,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl UnnecessaryMutabilityDiagnostic {
@@ -778,7 +783,7 @@ impl UnnecessaryMutabilityDiagnostic {
 
 struct UnreachableCodeDiagnostic {
     file_id: FileId,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl UnreachableCodeDiagnostic {
@@ -795,7 +800,7 @@ impl UnreachableCodeDiagnostic {
 
 struct UnusedValueDiagnostic {
     file_id: FileId,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl UnusedValueDiagnostic {
@@ -812,7 +817,7 @@ struct IntegerLiteralOutOfRangeDiagnostic {
     file_id: FileId,
     ty: Type,
     value: i64,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl IntegerLiteralOutOfRangeDiagnostic {
@@ -834,7 +839,7 @@ impl IntegerLiteralOutOfRangeDiagnostic {
 struct UnableToCoerceDiagnostic {
     file_id: FileId,
     target_type: Type,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl UnableToCoerceDiagnostic {
@@ -851,7 +856,7 @@ impl UnableToCoerceDiagnostic {
 
 struct IntegerLiteralForFloatTypeDiagnostic {
     file_id: FileId,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl IntegerLiteralForFloatTypeDiagnostic {
@@ -866,7 +871,7 @@ impl IntegerLiteralForFloatTypeDiagnostic {
 
 struct UndeclaredIdentifierDiagnostic {
     file_id: FileId,
-    span: TextSpan,
+    span: ast::TextSpan,
 }
 
 impl UndeclaredIdentifierDiagnostic {
@@ -874,6 +879,20 @@ impl UndeclaredIdentifierDiagnostic {
         Diagnostic::error()
             .with_code(DiagnosticCode::UndeclaredIdentifier.code())
             .with_message("undeclared identifier")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+struct UndeclaredTypeDiagnostic {
+    file_id: FileId,
+    span: ast::TextSpan,
+}
+
+impl UndeclaredTypeDiagnostic {
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::UndeclaredType.code())
+            .with_message("undeclared type")
             .with_label(Label::primary(self.file_id, self.span))
     }
 }
@@ -1133,6 +1152,24 @@ impl CannotExportItemDiagnostic<'_> {
     }
 }
 
+struct NotANamespaceDiagnostic {
+    file_id: FileId,
+    span: TextSpan,
+    ty: Type,
+}
+
+impl NotANamespaceDiagnostic {
+    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::NotANamespace.code())
+            .with_message(format!(
+                "type `{}` is not a namespace",
+                builder.display_type(self.ty)
+            ))
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
 struct ArgumentCountMismatchDiagnostic<'a> {
     file_id: FileId,
     expected_count: usize,
@@ -1229,61 +1266,114 @@ enum BlockState<T> {
 }
 
 impl Builder<'_, '_> {
-    pub fn resolve_type(&mut self, type_expr: &ast::TypeExpression) -> Result<Type, ()> {
-        match &type_expr {
-            ast::TypeExpression::Error => Err(()),
+    pub fn resolve_type(&mut self, type_expr: &Spanned<ast::TypeExpression>) -> Type {
+        match &type_expr.inner {
+            ast::TypeExpression::Error => Type::Error,
             ast::TypeExpression::Identifier { symbol } => {
                 let symbol = *symbol;
                 let text = self.interner.resolve(symbol).unwrap();
                 if let Ok(ty) = Type::try_from(text) {
-                    return Ok(ty);
+                    return ty;
                 }
                 match self.symbol_lookup.get(&(SymbolNamespace::Type, symbol)) {
-                    Some(GlobalValue::Namespace { namespace_index }) => Ok(Type::Namespace {
+                    Some(GlobalValue::Namespace { namespace_index }) => Type::Namespace {
                         namespace_index: *namespace_index,
-                    }),
-                    _ => Err(()),
+                    },
+                    _ => {
+                        self.diagnostics.push(
+                            UndeclaredTypeDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: type_expr.span,
+                            }
+                            .report(),
+                        );
+                        Type::Error
+                    }
                 }
             }
             ast::TypeExpression::Function { params, result } => {
-                let result = self.resolve_type(&result.inner.inner).unwrap();
+                let result = self.resolve_type(&result.inner);
                 let items = params
                     .inner
                     .iter()
-                    .map(|ty| self.resolve_type(&ty.inner.inner).unwrap())
+                    .map(|ty| self.resolve_type(&ty.inner))
                     .chain(Some(result))
                     .collect::<Box<_>>();
                 let signature_index = self.ensure_signature_index(&FunctionSignature {
                     items,
                     params_count: params.inner.len(),
                 });
-                Ok(Type::Function { signature_index })
+                Type::Function { signature_index }
             }
         }
     }
 
-    pub fn build_signature(
+    fn declare_function(
         &mut self,
-        params: &Grouped<Box<[Separated<Spanned<ast::FunctionParam>>]>>,
-        result: &Option<Annotated<Box<Spanned<ast::TypeExpression>>>>,
-    ) -> FunctionSignature {
-        let result = match result {
-            Some(result) => self.resolve_type(&result.inner.inner).unwrap(),
+        signature: &ast::FunctionSignature,
+        source: ItemSource,
+    ) -> FunctionIndex {
+        let mut seen_params: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
+        let params: Box<[FunctionParam]> = signature
+            .params
+            .inner
+            .iter()
+            .map(|param| {
+                let name = &param.inner.inner.name;
+                if let Some(&first_span) = seen_params.get(&name.inner) {
+                    let name_str = self.interner.resolve(name.inner).unwrap();
+                    self.diagnostics.push(
+                        DuplicateParameterDiagnostic {
+                            file_id: self.ast.file_id,
+                            name: name_str,
+                            first_definition: first_span,
+                            second_definition: name.span,
+                        }
+                        .report(),
+                    );
+                } else {
+                    seen_params.insert(name.inner, name.span);
+                }
+                FunctionParam {
+                    name: name.clone(),
+                    ty: Spanned {
+                        inner: self.resolve_type(&param.inner.inner.type_annotation.inner),
+                        span: param.inner.inner.type_annotation.inner.span,
+                    },
+                    mut_span: param.inner.inner.mut_span,
+                }
+            })
+            .collect();
+        let result = signature.result.as_ref().map(|result| Spanned {
+            inner: self.resolve_type(&result.inner),
+            span: result.inner.span,
+        });
+        let result_type = match result.clone() {
+            Some(result) => result.inner,
             None => Type::Unit,
         };
-        let params_count = params.inner.len();
-        let mut items = Vec::with_capacity(params_count + 1);
-        for param in params.inner.iter() {
-            items.push(
-                self.resolve_type(&param.inner.inner.type_annotation.inner.inner)
-                    .unwrap(),
-            );
+        let mut items = Vec::with_capacity(params.len() + 1);
+        for param in params.iter() {
+            items.push(param.ty.inner);
         }
-        items.push(result);
-        FunctionSignature {
+        items.push(result_type);
+        let name = signature.name.clone();
+        let signature = FunctionSignature {
             items: items.into_boxed_slice(),
-            params_count,
-        }
+            params_count: params.len(),
+        };
+        let signature_index = self.ensure_signature_index(&signature);
+
+        let func_index = self.declared_functions.len() as u32;
+        self.declared_functions.push(DeclaredFunction {
+            source,
+            signature_index,
+            name,
+            accesses: Vec::new(),
+            params,
+            result,
+        });
+        func_index
     }
 
     pub fn ensure_signature_index(&mut self, signature: &FunctionSignature) -> SignatureIndex {
@@ -1406,21 +1496,11 @@ impl Builder<'_, '_> {
                     None => {}
                 };
 
-                let name_symbol = signature.name.inner;
-                let ty = self.build_signature(&signature.params, &signature.result);
-                let type_index = self.ensure_signature_index(&ty);
-
-                let func_index = self.declared_functions.len() as u32;
+                let func_index = self.declare_function(signature, ItemSource::Defined);
                 self.symbol_lookup.insert(
-                    (SymbolNamespace::Value, name_symbol),
+                    (SymbolNamespace::Value, signature.name.inner),
                     GlobalValue::Function { func_index },
                 );
-                self.declared_functions.push(DeclaredFunction {
-                    source: ItemSource::Defined,
-                    signature_index: type_index,
-                    name: signature.name.clone(),
-                    accesses: Vec::new(),
-                });
                 Ok(())
             }
             ast::Item::Global {
@@ -1466,13 +1546,7 @@ impl Builder<'_, '_> {
 
                 // Resolve the type
                 let (ty, ty_span) = match type_annotation {
-                    Some(type_ann) => match self.resolve_type(&type_ann.inner.inner) {
-                        Ok(ty) => (ty, type_ann.inner.span),
-                        Err(_) => {
-                            // Type resolution error - still register the global with Error type
-                            (Type::Error, type_ann.inner.span)
-                        }
-                    },
+                    Some(type_ann) => (self.resolve_type(&type_ann.inner), type_ann.inner.span),
                     None => {
                         self.diagnostics.push(
                             TypeAnnotationRequiredDiagnostic {
@@ -1584,7 +1658,7 @@ impl Builder<'_, '_> {
         &mut self,
         external_name: ast::Spanned<SymbolU32>,
         internal_name: Option<ast::Spanned<SymbolU32>>,
-        entries: &Grouped<Box<[Separated<Spanned<ast::ImportEntry>>]>>,
+        entries: &ast::Grouped<Box<[ast::Separated<Spanned<ast::ImportEntry>>]>>,
     ) -> Result<ImportModule, ()> {
         let mut module = ImportModule {
             lookup: HashMap::new(),
@@ -1627,17 +1701,7 @@ impl Builder<'_, '_> {
 
             let import_value = match &entry.inner.inner.declaration {
                 ast::ImportDeclaration::Function { signature } => {
-                    let func_signature = self.build_signature(&signature.params, &signature.result);
-                    let signature_index = self.ensure_signature_index(&func_signature);
-
-                    let func_index = self.declared_functions.len() as u32;
-                    self.declared_functions.push(DeclaredFunction {
-                        source: ItemSource::Imported,
-                        name: signature.name.clone(),
-                        signature_index,
-                        accesses: Vec::new(),
-                    });
-
+                    let func_index = self.declare_function(signature, ItemSource::Imported);
                     ImportValue::Function { func_index }
                 }
                 ast::ImportDeclaration::Global {
@@ -1645,10 +1709,7 @@ impl Builder<'_, '_> {
                     mut_span,
                     type_annotation,
                 } => {
-                    let ty = match self.resolve_type(&type_annotation.inner.inner) {
-                        Ok(ty) => ty,
-                        Err(_) => Type::Error,
-                    };
+                    let ty = self.resolve_type(&type_annotation.inner);
 
                     let global_index = self.declared_globals.len() as u32;
                     self.declared_globals.push(DeclaredGlobal {
@@ -1954,7 +2015,7 @@ impl Builder<'_, '_> {
                 self.build_const_expression(&value.inner, expected_type)
             }
             ast::Expression::Cast { value, ty } => {
-                let cast_type = self.resolve_type(&ty.inner)?;
+                let cast_type = self.resolve_type(&ty);
                 let value_expr = self.build_const_expression(value, cast_type)?;
 
                 Ok(Expression {
@@ -1988,9 +2049,7 @@ impl Builder<'_, '_> {
             .map(|param| FunctionParam {
                 name: param.inner.inner.name.clone(),
                 ty: Spanned {
-                    inner: self
-                        .resolve_type(&param.inner.inner.type_annotation.inner.inner)
-                        .unwrap(),
+                    inner: self.resolve_type(&param.inner.inner.type_annotation.inner),
                     span: param.inner.inner.type_annotation.inner.span,
                 },
                 mut_span: param.inner.inner.mut_span,
@@ -2009,14 +2068,10 @@ impl Builder<'_, '_> {
             .collect();
 
         let func_index = self.resolve_func(signature.name.inner).unwrap();
-        let func_meta = self
-            .declared_functions
-            .get(func_index as usize)
-            .cloned()
-            .unwrap();
+        let signature_index = self.declared_functions[func_index as usize].signature_index;
         let typed_signature = self
             .signatures
-            .get(func_meta.signature_index as usize)
+            .get(signature_index as usize)
             .unwrap()
             .clone();
 
@@ -2052,7 +2107,7 @@ impl Builder<'_, '_> {
             Function {
                 params,
                 result_span,
-                signature_index: func_meta.signature_index,
+                signature_index,
                 name: signature.name.clone(),
                 stack: ctx.frame,
                 block: Box::new(block),
@@ -2521,7 +2576,7 @@ impl Builder<'_, '_> {
         &mut self,
         func_ctx: &mut FunctionContext,
         object_expr: &Spanned<ast::Expression>,
-        member: Spanned<SymbolU32>,
+        _member: Spanned<SymbolU32>,
         access_ctx: AccessContext,
     ) -> Result<Expression, ()> {
         let object = self.build_expression(func_ctx, object_expr, access_ctx)?;
@@ -2538,12 +2593,19 @@ impl Builder<'_, '_> {
         namespace_expr: &Spanned<ast::TypeExpression>,
         member: Spanned<SymbolU32>,
     ) -> Result<Expression, ()> {
-        let namespace_ty = self.resolve_type(&namespace_expr.inner)?;
+        let namespace_ty = self.resolve_type(&namespace_expr);
         let namespace_index = match namespace_ty {
             Type::Namespace { namespace_index } => namespace_index,
+            Type::Error => return Err(()),
             ty => {
-                // TODO: Better error message that includes the actual type
-                todo!("type `{}` is not a namespace", self.display_type(ty))
+                let diag = NotANamespaceDiagnostic {
+                    file_id: self.ast.file_id,
+                    span: namespace_expr.span,
+                    ty,
+                }
+                .report(self);
+                self.diagnostics.push(diag);
+                return Err(());
             }
         };
 
@@ -2876,8 +2938,9 @@ impl Builder<'_, '_> {
             _ => unreachable!(),
         };
 
-        match self.resolve_type(&cast_type.inner) {
-            Ok(cast_type) => {
+        match self.resolve_type(&cast_type) {
+            Type::Error => self.build_expression(ctx, value, access_ctx),
+            cast_type => {
                 let mut value = self.build_expression(
                     ctx,
                     value,
@@ -2910,7 +2973,6 @@ impl Builder<'_, '_> {
 
                 Ok(value)
             }
-            Err(_) => self.build_expression(ctx, value, access_ctx),
         }
     }
 
@@ -4531,7 +4593,7 @@ impl Builder<'_, '_> {
         };
 
         let expected_type = match annotation {
-            Some(annotation) => self.resolve_type(&annotation.inner.inner).ok(),
+            Some(annotation) => Some(self.resolve_type(&annotation.inner)),
             None => None,
         };
         let mut value = self.build_expression(
@@ -4875,7 +4937,7 @@ pub enum Namespace {
 }
 
 impl TIR {
-    pub fn build(ast: &ast::AST, interner: &mut StringInterner) -> TIR {
+    pub fn build(ast: &ast::AST, interner: &mut ast::StringInterner) -> TIR {
         let mut symbol_lookup = HashMap::new();
         symbol_lookup.insert(
             (SymbolNamespace::Value, interner.get_or_intern("_")),
@@ -4951,7 +5013,7 @@ mod tests {
 
     #[allow(unused)]
     struct TestCase {
-        interner: StringInterner,
+        interner: ast::StringInterner,
         files: Files,
         ast: AST,
         tir: TIR,
@@ -4959,7 +5021,7 @@ mod tests {
 
     impl<'case> TestCase {
         fn new(source: &str) -> Self {
-            let mut interner = StringInterner::new();
+            let mut interner = ast::StringInterner::new();
             let mut files = Files::new();
             let file_id = files
                 .add("main.wx".to_string(), source.to_string())

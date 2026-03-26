@@ -4,6 +4,8 @@ async function test(bytecode) {
 	const { fibonacci, fibonacci_iterative } = instance.exports;
 
 	return fibonacci_iterative(24);
+
+	"gewgewgwee fgejw goepwj ";
 }
 
 return test;
