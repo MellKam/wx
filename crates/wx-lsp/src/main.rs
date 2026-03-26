@@ -19,24 +19,23 @@ macro_rules! debug_log {
 }
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionList, CompletionOptions, CompletionParams,
-    CompletionResponse,
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
-    DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InitializeParams, InsertTextFormat, LanguageString,
-    Location, MarkedString, NumberOrString, OneOf, ParameterInformation, ParameterLabel, Position,
-    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, SemanticToken,
-    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
-    SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkDoneProgressOptions, WorkspaceEdit,
+    CompletionResponse, Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity,
+    DiagnosticTag, DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InsertTextFormat,
+    LanguageString, Location, MarkedString, NumberOrString, OneOf, ParameterInformation,
+    ParameterLabel, Position, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams,
+    SemanticToken, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    SignatureHelpParams, SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
 };
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
 
-mod span_index;
+mod symbol_index;
 
-use span_index::SpanIndex;
+use symbol_index::SymbolIndex;
 
 const KEYWORDS: &[(&str, &str)] = &[
     ("fn", "Function declaration"),
@@ -69,7 +68,7 @@ const BUILTIN_TYPES: &[(&str, &str)] = &[
 struct DocumentData {
     ast: wx_compiler::ast::AST,
     tir: Option<wx_compiler::tir::TIR>,
-    span_index: Option<SpanIndex>,
+    symbol_index: Option<SymbolIndex>,
     interner: StringInterner<StringBackend>,
 }
 
@@ -488,18 +487,18 @@ fn compile_document(
         return DocumentData {
             ast,
             tir: None,
-            span_index: None,
+            symbol_index: None,
             interner,
         };
     }
 
     let tir = wx_compiler::tir::TIR::build(&ast, &mut interner);
-    let span_index = span_index::build_span_index(&tir);
+    let span_index = symbol_index::build_span_index(&tir);
 
     DocumentData {
         ast,
         tir: Some(tir),
-        span_index: Some(span_index),
+        symbol_index: Some(span_index),
         interner,
     }
 }
@@ -683,7 +682,7 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
         offset
     );
 
-    let (tir, span_index) = match (&doc.tir, &doc.span_index) {
+    let (tir, span_index) = match (&doc.tir, &doc.symbol_index) {
         (Some(tir), Some(span_index)) => (tir, span_index),
         _ => {
             debug_log!("TIR or span index not available for document");
@@ -699,7 +698,7 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
 
     // Format hover information based on symbol kind
     let hover_text = match &span_info.kind {
-        span_index::SymbolKind::Function { func_idx } => {
+        symbol_index::SymbolKind::Function { func_idx } => {
             let func = &tir.declared_functions[*func_idx as usize];
             let name = doc.interner.resolve(func.name.inner).unwrap();
             let sig = &tir.signatures[func.signature_index as usize];
@@ -719,7 +718,7 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
 
             format!("fn {}({}) -> {}", name, params, return_type)
         }
-        span_index::SymbolKind::LocalVariable {
+        symbol_index::SymbolKind::LocalVariable {
             func_idx,
             scope_idx,
             local_idx,
@@ -733,7 +732,7 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
 
             format!("local {}{}: {}", mut_keyword, name, type_str)
         }
-        span_index::SymbolKind::FunctionParam {
+        symbol_index::SymbolKind::FunctionParam {
             func_idx,
             param_idx,
         } => {
@@ -745,7 +744,7 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
 
             format!("local {}{}: {}", mut_keyword, name, type_str)
         }
-        span_index::SymbolKind::GlobalVariable { global_idx } => {
+        symbol_index::SymbolKind::GlobalVariable { global_idx } => {
             let global = &tir.declared_globals[*global_idx as usize];
             let name = doc.interner.resolve(global.name.inner).unwrap();
             let type_str = format_type(&tir, &doc.interner, global.ty.inner);
@@ -757,8 +756,8 @@ fn handle_hover(state: &ServerState, params: &HoverParams) -> Option<Hover> {
 
             format!("global {}{}: {}", mut_keyword, name, type_str)
         }
-        span_index::SymbolKind::Type { ty } => format_type(&tir, &doc.interner, *ty),
-        span_index::SymbolKind::EnumVariant {
+        symbol_index::SymbolKind::Type { ty } => format_type(&tir, &doc.interner, *ty),
+        symbol_index::SymbolKind::EnumVariant {
             namespace_index,
             variant_idx,
         } => match &tir.namespaces[*namespace_index as usize] {
@@ -804,7 +803,7 @@ fn handle_definition(
         offset
     );
 
-    let span_index = match &doc.span_index {
+    let span_index = match &doc.symbol_index {
         Some(span_index) => span_index,
         _ => {
             debug_log!("Span index not available for document");
@@ -854,7 +853,7 @@ fn handle_references(state: &ServerState, params: &ReferenceParams) -> Option<Ve
         offset
     );
 
-    let span_index = match &doc.span_index {
+    let span_index = match &doc.symbol_index {
         Some(span_index) => span_index,
         _ => {
             debug_log!("Span index not available for document");
@@ -1010,7 +1009,7 @@ fn handle_rename(state: &ServerState, params: &RenameParams) -> Option<Workspace
     }
     let offset = offset.unwrap();
 
-    let span_index = match &doc.span_index {
+    let span_index = match &doc.symbol_index {
         Some(span_index) => span_index,
         _ => {
             debug_log!("Span index not available for document");
@@ -1219,7 +1218,10 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
     if let Some(tir) = &doc.tir {
         if let Some(ns_name) = namespace_prefix_at(source, offset) {
             let items = namespace_member_completions(tir, &doc.interner, ns_name);
-            return Some(CompletionResponse::List(CompletionList { is_incomplete: true, items }));
+            return Some(CompletionResponse::List(CompletionList {
+                is_incomplete: true,
+                items,
+            }));
         }
     }
 
@@ -1251,7 +1253,10 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
         Some(tir) => tir,
         _ => {
             debug_log!("TIR not available for document");
-            return Some(CompletionResponse::List(CompletionList { is_incomplete: true, items }));
+            return Some(CompletionResponse::List(CompletionList {
+                is_incomplete: true,
+                items,
+            }));
         }
     };
 
@@ -1399,7 +1404,10 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
 
     debug_log!("Returning {} completion items", items.len());
 
-    Some(CompletionResponse::List(CompletionList { is_incomplete: true, items }))
+    Some(CompletionResponse::List(CompletionList {
+        is_incomplete: true,
+        items,
+    }))
 }
 
 fn handle_signature_help(

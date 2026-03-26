@@ -1,6 +1,10 @@
 fn factorial(n: i32) -> i32 {
-  if n <= 1 { return 1 };
+  if n <= 1 {
+    return 1
+  }
   n * factorial(n - 1)
 }
 
-export { factorial }
+export {
+  factorial
+}

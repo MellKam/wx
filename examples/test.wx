@@ -3,9 +3,9 @@ import "console" {
 }
 
 fn main() {
-  console::log("hello");
+  console::log("hello world");
 }
 
 export {
-  main
+  main,
 }

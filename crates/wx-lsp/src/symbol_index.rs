@@ -56,14 +56,14 @@ pub struct SpanInfo {
 }
 
 /// Index for efficiently looking up symbols by text position
-pub struct SpanIndex {
+pub struct SymbolIndex {
     /// Sorted by span.start for binary search
     entries: Vec<SpanInfo>,
 }
 
-impl SpanIndex {
+impl SymbolIndex {
     pub fn new() -> Self {
-        SpanIndex {
+        Self {
             entries: Vec::new(),
         }
     }
@@ -82,12 +82,16 @@ impl SpanIndex {
     /// Find the symbol at the given text position
     /// Returns the innermost/smallest span containing the position
     pub fn find_at_position(&self, pos: u32) -> Option<&SpanInfo> {
-        // Find the smallest (most specific) span containing the position
-        // Use <= for the end check to handle cursor positions at symbol boundaries
-        self.entries
+        // Binary search for the last entry where span.start <= pos
+        let upper = self.entries.partition_point(|e| e.span.start <= pos);
+
+        // Only look at entries up to that point, since anything after
+        // has span.start > pos and can't contain pos
+        self.entries[..upper]
             .iter()
-            .filter(|entry| entry.span.start <= pos && pos <= entry.span.end)
-            .min_by_key(|entry| entry.span.end - entry.span.start)
+            .rev() // scan backwards — most specific spans tend to be last
+            .filter(|e| e.span.end >= pos)
+            .min_by_key(|e| e.span.end - e.span.start)
     }
 
     /// Find all references to the same symbol
@@ -203,8 +207,8 @@ impl SpanIndex {
 }
 
 /// Build a SpanIndex from a TIR
-pub fn build_span_index(tir: &TIR) -> SpanIndex {
-    let mut index = SpanIndex::new();
+pub fn build_span_index(tir: &TIR) -> SymbolIndex {
+    let mut index = SymbolIndex::new();
 
     // Index global variables
     for (global_idx, global) in tir.defined_globals.iter() {
@@ -366,8 +370,7 @@ pub fn build_span_index(tir: &TIR) -> SpanIndex {
     index
 }
 
-/// Recursively index all expressions
-fn index_expression(index: &mut SpanIndex, func_idx: Option<FunctionIndex>, expr: &Expression) {
+fn index_expression(index: &mut SymbolIndex, func_idx: Option<FunctionIndex>, expr: &Expression) {
     match &expr.kind {
         ExprKind::Local {
             scope_index,
