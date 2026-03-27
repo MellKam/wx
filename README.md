@@ -220,7 +220,7 @@ You can find some examples in the `examples` directory. Here are some of them:
 
 ## Architecture
 
-![Architecture diagram](./web/public/architecture.webp)
+![Architecture diagram](./web/public/pipeline.webp)
 
 ## Plans for the future
 
