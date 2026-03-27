@@ -1,0 +1,81 @@
+import "console" {
+  fn log(message: string);
+}
+
+fn type_annotation_required() -> i32 {
+  local x = 5;
+  x
+}
+
+fn int_literal_for_float() -> f32 {
+  local x: f32 = 1;
+  x
+}
+
+fn out_of_range() -> i32 {
+  local x: i32 = 9999999999;
+  x
+}
+
+fn type_mismatch() -> i32 {
+  local a: i32 = 1;
+  a == 1
+}
+
+fn undeclared_identifier() -> i32 {
+  undefined_var + 1
+}
+
+fn duplicate() -> i32 {
+  1
+}
+
+fn duplicate() -> i32 {
+  2
+}
+
+fn wrong_arg_count() {
+  console::log("too many", "arguments");
+}
+
+fn get_initial_value() -> i32 {
+  42
+}
+
+global bad_global: i32 = get_initial_value();
+
+fn break_outside_loop() -> i32 {
+  break
+}
+
+fn undeclared_label() -> i32 {
+  loop {
+    break :outer
+  }
+}
+
+fn unused_value() {
+  local a: i32 = 1;
+  local b: i32 = 2;
+  a + b;
+}
+
+fn call_non_function() -> i32 {
+  local f: i32 = 5;
+  f(10)
+}
+
+fn invalid_assignment_target() {
+  local x: i32 = 1;
+  local y: i32 = 2;
+  x + y = 3;
+}
+
+fn exported_fn() -> i32 {
+  0
+}
+
+export {
+  exported_fn,
+  exported_fn,
+}

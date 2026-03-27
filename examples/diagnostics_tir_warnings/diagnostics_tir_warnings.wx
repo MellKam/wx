@@ -1,0 +1,50 @@
+import "console" {
+  fn log(message: string);
+}
+
+fn helper() -> i32 {
+  99
+}
+
+fn unused_variable() -> i32 {
+  local unused: i32 = 10;
+  local result: i32 = 42;
+  result
+}
+
+fn unnecessary_mutability() -> i32 {
+  local mut x: i32 = 5;
+  x * 2
+}
+
+fn mutate_immutable() -> i32 {
+  local value: i32 = 10;
+  
+  value = 20;
+  value
+}
+
+fn unreachable_after_return() -> i32 {
+  return 1;
+  console::log("this line is never reached");
+  2
+}
+
+fn unreachable_after_break() -> i32 {
+  loop {
+    break 0;
+    console::log("never executes");
+  }
+}
+
+fn main() {
+  _ = unused_variable();
+  _ = unnecessary_mutability();
+  _ = mutate_immutable();
+  _ = unreachable_after_return();
+  _ = unreachable_after_break();
+}
+
+export {
+  main,
+}

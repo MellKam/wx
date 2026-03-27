@@ -38,12 +38,6 @@ impl TextSpan {
     }
 }
 
-// impl std::fmt::Display for TextSpan {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         write!(f, "[{start}, {end})", start = self.start, end = self.end)
-//     }
-// }
-
 impl Into<core::ops::Range<usize>> for TextSpan {
     fn into(self) -> core::ops::Range<usize> {
         self.start as usize..self.end as usize
@@ -623,7 +617,7 @@ impl MissingEnumTypeAnnotationDiagnostic {
     }
 }
 
-pub struct Lexer<'a> {
+struct Lexer<'a> {
     chars: std::str::Chars<'a>,
     offset: usize,
     peeked: Option<Spanned<Token>>,
@@ -632,7 +626,7 @@ pub struct Lexer<'a> {
 const EOF: char = '\0';
 
 impl<'a> Lexer<'a> {
-    pub fn new(input: &'a str) -> Lexer<'a> {
+    fn new(input: &'a str) -> Lexer<'a> {
         Lexer {
             chars: input.chars(),
             offset: 0,
@@ -640,7 +634,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn peek(&mut self) -> Spanned<Token> {
+    fn peek(&mut self) -> Spanned<Token> {
         match &self.peeked {
             Some(token) => return token.clone(),
             None => {
@@ -651,7 +645,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn next_if(&mut self, expected: Token) -> Option<Spanned<Token>> {
+    fn next_if(&mut self, expected: Token) -> Option<Spanned<Token>> {
         let peeked = match &self.peeked {
             Some(token) => token.clone(),
             None => {
@@ -668,7 +662,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn next(&mut self) -> Spanned<Token> {
+    fn next(&mut self) -> Spanned<Token> {
         if let Some(token) = self.peeked.take() {
             return token;
         }
@@ -1789,8 +1783,7 @@ impl<'input> Parser<'input> {
         }
     }
 
-    #[inline]
-    fn intern_identifier(&mut self, span: TextSpan) -> Result<SymbolU32, ()> {
+    fn intern_identifier(&mut self, span: TextSpan) -> SymbolU32 {
         let text = span.extract_str(self.source);
         match Keyword::try_from(text) {
             Ok(_) => {
@@ -1801,11 +1794,11 @@ impl<'input> Parser<'input> {
                     }
                     .report(),
                 );
-
-                Err(())
             }
-            Err(_) => Ok(self.interner.get_or_intern(text)),
+            Err(_) => {}
         }
+
+        self.interner.get_or_intern(text)
     }
 
     fn parse_function_param_item(parser: &mut Parser) -> Result<Spanned<FunctionParam>, ()> {
@@ -1816,18 +1809,10 @@ impl<'input> Parser<'input> {
         };
 
         let name_span = parser.next_expect(Token::Identifier)?.span;
-        match Keyword::try_from(name_span.extract_str(parser.source)) {
-            Ok(_) => {
-                parser.ast.diagnostics.push(
-                    ReservedIdentifierDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: name_span,
-                    }
-                    .report(),
-                );
-            }
-            _ => {}
-        }
+        let name = Spanned {
+            inner: parser.intern_identifier(name_span),
+            span: name_span,
+        };
 
         let colon = parser.lexer.next_if(Token::Colon);
         let type_annotation = match colon {
@@ -1859,10 +1844,7 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: FunctionParam {
                 mut_span,
-                name: Spanned {
-                    inner: parser.intern_identifier(name_span)?,
-                    span: name_span,
-                },
+                name,
                 type_annotation,
             },
             span,
@@ -1872,7 +1854,7 @@ impl<'input> Parser<'input> {
     fn parse_function_definition_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let fn_span = parser.lexer.next();
         let name_span = parser.next_expect(Token::Identifier)?.span;
-        let name_symbol = parser.intern_identifier(name_span)?;
+        let name_symbol = parser.intern_identifier(name_span);
         let name = Spanned {
             inner: name_symbol,
             span: name_span,
@@ -1917,33 +1899,16 @@ impl<'input> Parser<'input> {
 
     fn parse_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
         let token = self.peek_expect(Token::Identifier)?;
-        match Keyword::try_from(token.span.extract_str(self.source)) {
-            Ok(Keyword::Fn) => Parser::parse_function_type_expression(self),
-            Ok(_) => {
-                self.ast.diagnostics.push(
-                    ReservedIdentifierDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: token.span,
-                    }
-                    .report(),
-                );
-                Ok(Spanned {
-                    inner: TypeExpression::Identifier {
-                        symbol: self.intern_identifier(token.span)?,
-                    },
-                    span: token.span,
-                })
-            }
-            Err(_) => {
-                let token = self.lexer.next();
-                Ok(Spanned {
-                    inner: TypeExpression::Identifier {
-                        symbol: self.intern_identifier(token.span)?,
-                    },
-                    span: token.span,
-                })
-            }
+        if let Ok(Keyword::Fn) = Keyword::try_from(token.span.extract_str(self.source)) {
+            return Parser::parse_function_type_expression(self);
         }
+        let token = self.lexer.next();
+        Ok(Spanned {
+            inner: TypeExpression::Identifier {
+                symbol: self.intern_identifier(token.span),
+            },
+            span: token.span,
+        })
     }
 
     fn parse_function_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
@@ -2081,7 +2046,7 @@ impl<'input> Parser<'input> {
 
     fn parse_identifier_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
         let token = parser.lexer.next();
-        let symbol = parser.intern_identifier(token.span)?;
+        let symbol = parser.intern_identifier(token.span);
 
         Ok(Spanned {
             inner: Expression::Identifier { symbol },
@@ -2096,7 +2061,7 @@ impl<'input> Parser<'input> {
     ) -> Result<Spanned<Expression>, ()> {
         _ = parser.lexer.next();
         let member_token = parser.next_expect(Token::Identifier)?;
-        let member_symbol = parser.intern_identifier(member_token.span)?;
+        let member_symbol = parser.intern_identifier(member_token.span);
 
         let span = TextSpan::merge(object.span, member_token.span);
         Ok(Spanned {
@@ -2276,7 +2241,7 @@ impl<'input> Parser<'input> {
         let label = match parser.lexer.next_if(Token::Colon) {
             Some(_) => {
                 let label_span = parser.next_expect(Token::Identifier)?.span;
-                let label_symbol = parser.intern_identifier(label_span)?;
+                let label_symbol = parser.intern_identifier(label_span);
 
                 Some(Spanned {
                     inner: label_symbol,
@@ -2306,7 +2271,7 @@ impl<'input> Parser<'input> {
         let label = match parser.lexer.next_if(Token::Colon) {
             Some(_) => {
                 let label_span = parser.next_expect(Token::Identifier)?.span;
-                let label_symbol = parser.intern_identifier(label_span)?;
+                let label_symbol = parser.intern_identifier(label_span);
 
                 Some(Spanned {
                     inner: label_symbol,
@@ -2578,7 +2543,7 @@ impl<'input> Parser<'input> {
 
         // Parse the member identifier
         let member_token = parser.next_expect(Token::Identifier)?;
-        let member_symbol = parser.intern_identifier(member_token.span)?;
+        let member_symbol = parser.intern_identifier(member_token.span);
 
         let span = TextSpan::merge(left.span, member_token.span);
         Ok(Spanned {
@@ -2632,20 +2597,8 @@ impl<'input> Parser<'input> {
         };
 
         let name_span = parser.next_expect(Token::Identifier)?.span;
-        match Keyword::try_from(name_span.extract_str(parser.source)) {
-            Ok(_) => {
-                parser.ast.diagnostics.push(
-                    ReservedIdentifierDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: name_span,
-                    }
-                    .report(),
-                );
-            }
-            _ => {}
-        }
         let name = Spanned {
-            inner: parser.intern_identifier(name_span)?,
+            inner: parser.intern_identifier(name_span),
             span: name_span,
         };
 
@@ -2705,20 +2658,8 @@ impl<'input> Parser<'input> {
         };
 
         let name_span = parser.next_expect(Token::Identifier)?.span;
-        match Keyword::try_from(name_span.extract_str(parser.source)) {
-            Ok(_) => {
-                parser.ast.diagnostics.push(
-                    ReservedIdentifierDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: name_span,
-                    }
-                    .report(),
-                );
-            }
-            _ => {}
-        }
         let name = Spanned {
-            inner: parser.intern_identifier(name_span)?,
+            inner: parser.intern_identifier(name_span),
             span: name_span,
         };
 
@@ -2767,7 +2708,7 @@ impl<'input> Parser<'input> {
             item_handler: |parser: &mut Parser| -> Result<Spanned<ExportEntry>, ()> {
                 // Parse: name or name as "alias"
                 let name_token = parser.next_expect(Token::Identifier)?;
-                let name_symbol = parser.intern_identifier(name_token.span)?;
+                let name_symbol = parser.intern_identifier(name_token.span);
 
                 // Check for optional "as" alias
                 let alias = if let Token::Identifier = parser.lexer.peek().inner {
@@ -2778,7 +2719,7 @@ impl<'input> Parser<'input> {
                         _ = parser.lexer.next(); // consume "as"
 
                         let alias_token = parser.next_expect(Token::String)?;
-                        let alias_symbol = parser.intern_identifier(alias_token.span)?;
+                        let alias_symbol = parser.intern_identifier(alias_token.span);
 
                         Some(Spanned {
                             inner: alias_symbol,
@@ -2824,7 +2765,7 @@ impl<'input> Parser<'input> {
 
         // Parse module string literal (e.g., "console")
         let module_token = parser.next_expect(Token::String)?;
-        let module_symbol = parser.intern_identifier(module_token.span)?;
+        let module_symbol = parser.intern_identifier(module_token.span);
         let module = Spanned {
             inner: module_symbol,
             span: module_token.span,
@@ -2838,7 +2779,7 @@ impl<'input> Parser<'input> {
                 _ = parser.lexer.next(); // consume "as"
 
                 let alias_token = parser.next_expect(Token::Identifier)?;
-                let alias_symbol = parser.intern_identifier(alias_token.span)?;
+                let alias_symbol = parser.intern_identifier(alias_token.span);
 
                 Some(Spanned {
                     inner: alias_symbol,
@@ -2860,7 +2801,7 @@ impl<'input> Parser<'input> {
                 // Check for optional external name: "X": ...
                 let external_name = if let Token::String = parser.lexer.peek().inner {
                     let ext_token = parser.lexer.next();
-                    let ext_symbol = parser.intern_identifier(ext_token.span)?;
+                    let ext_symbol = parser.intern_identifier(ext_token.span);
                     parser.next_expect(Token::Colon)?;
 
                     Some(Spanned {
@@ -2889,7 +2830,7 @@ impl<'input> Parser<'input> {
                     Some(Keyword::Fn) => {
                         let fn_span = parser.lexer.next();
                         let name_span = parser.next_expect(Token::Identifier)?.span;
-                        let name_symbol = parser.intern_identifier(name_span)?;
+                        let name_symbol = parser.intern_identifier(name_span);
                         let name = Spanned {
                             inner: name_symbol,
                             span: name_span,
@@ -2937,7 +2878,7 @@ impl<'input> Parser<'input> {
                             };
 
                         let name_span = parser.next_expect(Token::Identifier)?.span;
-                        let name_symbol = parser.intern_identifier(name_span)?;
+                        let name_symbol = parser.intern_identifier(name_span);
                         let name = Spanned {
                             inner: name_symbol,
                             span: name_span,

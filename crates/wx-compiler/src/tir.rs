@@ -4459,24 +4459,6 @@ impl Builder<'_, '_> {
         )?;
         let signature_index = match callee.ty {
             Type::Function { signature_index } => signature_index,
-            Type::Unknown => {
-                self.diagnostics.push(
-                    TypeAnnotationRequiredDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: ast_callee.span,
-                    }
-                    .report(),
-                );
-
-                return Ok(Expression {
-                    kind: ExprKind::Call {
-                        callee: Box::new(callee),
-                        arguments: Box::new([]),
-                    },
-                    ty: Type::Unknown,
-                    span: expr.span,
-                });
-            }
             ty => {
                 self.diagnostics.push(
                     CannotCallExpressionDiagnostic {
@@ -4492,7 +4474,7 @@ impl Builder<'_, '_> {
                         callee: Box::new(callee),
                         arguments: Box::new([]),
                     },
-                    ty: Type::Unknown,
+                    ty: Type::Error,
                     span: expr.span,
                 });
             }
@@ -4675,7 +4657,9 @@ impl Builder<'_, '_> {
             ExprKind::Binary { .. } => {
                 self.coerce_untyped_binary_expression(expression, target_type)
             }
-            _ => unimplemented!(),
+            // Any other expression kind that ends up here already had an error
+            // reported; propagate failure without emitting a second diagnostic.
+            _ => Err(()),
         }
     }
 

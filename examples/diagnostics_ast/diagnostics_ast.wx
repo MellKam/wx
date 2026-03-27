@@ -1,0 +1,95 @@
+// Demonstrates TIR warning diagnostics in the .wx language.
+// Unlike errors, warnings do not prevent compilation — the program below is
+// structurally valid but triggers every compiler warning.
+
+import "console" {
+  fn log(message: string);
+}
+
+// ─── W1004: UnusedItem ───────────────────────────────────────────────────────
+// `helper` is defined but never called from any exported path.
+fn helper() -> i32 {
+  99
+}
+
+// ─── W1001: UnusedVariable ───────────────────────────────────────────────────
+// `unused` is declared but its value is never read.
+fn unused_variable() -> i32 {
+  local unused: i32 = 10;
+  local result: i32 = 42;
+  result
+}
+
+// ─── W1002: UnnecessaryMutability ────────────────────────────────────────────
+// `x` is declared `mut` but is never reassigned after initialisation.
+fn unnecessary_mutability() -> i32 {
+  local mut x: i32 = 5;
+  x * 2
+}
+
+// ─── W1000: CannotMutateImmutable ────────────────────────────────────────────
+// `value` is not declared `mut`, so the reassignment is rejected.
+fn mutate_immutable() -> i32 {
+  local value: i32 = 10;
+  value = 20;
+  value
+}
+
+// ─── E1002: TypeAnnotationRequired ───────────────────────────────────────────
+// The literal `5` is untyped; the compiler cannot infer the type of `x`
+// without an explicit annotation or `as` cast.
+fn type_annotation_required() -> i32 {
+  local x = 5;
+  x
+}
+
+// ─── E1006: IntegerLiteralForFloatType ────────────────────────────────────────
+// Float variables must be initialised with a float literal (`1.0`), not an
+// integer literal (`1`).
+fn int_literal_for_float() -> f32 {
+  local x: f32 = 1;
+  x
+}
+
+// ─── E1004: IntegerLiteralOutOfRange ─────────────────────────────────────────
+// 9999999999 exceeds the maximum value of i32 (2,147,483,647).
+fn out_of_range() -> i32 {
+  local x: i32 = 9999999999;
+  x
+}
+
+// ─── E1001: TypeMismatch ─────────────────────────────────────────────────────
+// The function is declared to return `i32`, but the body yields a `bool`.
+// At least one operand has a known type so the comparison is valid; the
+// mismatch is between the bool result and the i32 return type.
+fn type_mismatch() -> i32 {
+  local a: i32 = 1;
+  a == 1
+}
+
+// ─── W1003: UnreachableCode ──────────────────────────────────────────────────
+// The `return` on the first line makes everything after it dead code.
+fn unreachable_after_return() -> i32 {
+  return 1;
+  console::log("this line is never reached");
+  2
+}
+
+fn main() {
+  _ = unused_variable();
+  _ = unnecessary_mutability();
+  _ = mutate_immutable();
+  _ = unreachable_after_return();
+  _ = unreachable_after_break();
+}
+
+export {
+  main,
+}
+
+
+// ─── E1007: UndeclaredIdentifier ─────────────────────────────────────────────
+// `undefined_var` has never been declared in this scope.
+fn undeclared_identifier() -> i32 {
+  undefined_var + 1
+}
