@@ -530,7 +530,7 @@ impl Builder {
 
                 Node::Concat(items)
             }
-            Expression::String { .. } => {
+            Expression::String { .. } | Expression::Char { .. } => {
                 Node::Text(expression.span.extract_str(source).to_string())
             }
             Expression::ObjectAccess { object, member } => {

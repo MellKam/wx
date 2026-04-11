@@ -1630,6 +1630,7 @@ fn format_type(
         Type::Unknown => "unknown".to_string(),
         Type::Error => "error".to_string(),
         Type::String => "string".to_string(),
+        Type::Char => "char".to_string(),
         Type::Namespace { namespace_index } => {
             let ns = &tir.namespaces[namespace_index as usize];
             match ns {
@@ -1741,6 +1742,7 @@ fn collect_namespace_tokens(
         | ExprKind::Function { .. }
         | ExprKind::EnumVariant { .. }
         | ExprKind::String { .. }
+        | ExprKind::Char { .. }
         | ExprKind::ObjectAccess { .. } => {
             // Terminal expressions, no recursion needed
         }

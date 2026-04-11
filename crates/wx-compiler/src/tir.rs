@@ -43,6 +43,43 @@ pub fn unescape_string(s: &str) -> String {
     result
 }
 
+/// Parses a char literal (e.g. `'a'`, `'\n'`) and returns the single character
+/// it represents, or `None` if it contains more than one logical character.
+pub enum CharLiteralError {
+    Empty,
+    TooLong,
+}
+
+pub fn parse_char_literal(s: &str) -> Result<char, CharLiteralError> {
+    let content = if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+
+    let mut chars = content.chars();
+    let value = match chars.next() {
+        None => return Err(CharLiteralError::Empty),
+        Some('\\') => match chars.next() {
+            None => return Err(CharLiteralError::Empty),
+            Some('n') => '\n',
+            Some('r') => '\r',
+            Some('t') => '\t',
+            Some('\\') => '\\',
+            Some('\'') => '\'',
+            Some('0') => '\0',
+            Some(c) => c,
+        },
+        Some(c) => c,
+    };
+
+    if chars.next().is_some() {
+        return Err(CharLiteralError::TooLong);
+    }
+
+    Ok(value)
+}
+
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -58,6 +95,7 @@ pub enum Type {
     Unknown,
     Error,
     String,
+    Char,
     Bool,
     Function { signature_index: u32 },
     Namespace { namespace_index: u32 },
@@ -130,6 +168,7 @@ impl TryFrom<&str> for Type {
             "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),
             "string" => Ok(Type::String),
+            "char" => Ok(Type::Char),
             _ => Err(()),
         }
     }
@@ -249,6 +288,9 @@ pub enum ExprKind {
     },
     String {
         symbol: SymbolU32,
+    },
+    Char {
+        value: char,
     },
     ObjectAccess {
         object: Box<Expression>,
@@ -608,6 +650,7 @@ define_diagnostic_codes! {
         ComparisonTypeAnnotationRequired => "E1014",
         NonConstantGlobalInitializer => "E1015",
         ArgumentCountMismatch => "E1016",
+        InvalidLiteral => "E1017",
         DuplicateExport => "E1018",
         CannotExportItem => "E1019",
         NotANamespace => "E1020",
@@ -684,6 +727,35 @@ impl NonConstantGlobalInitializerDiagnostic {
             .with_code(DiagnosticCode::NonConstantGlobalInitializer.code())
             .with_message("global variable initializers can only contain constant expressions")
             .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+struct EmptyCharLiteralDiagnostic {
+    file_id: FileId,
+    span: ast::TextSpan,
+}
+
+impl EmptyCharLiteralDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::InvalidLiteral.code())
+            .with_message("empty character literal")
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+struct CharLiteralTooLongDiagnostic {
+    file_id: FileId,
+    span: ast::TextSpan,
+}
+
+impl CharLiteralTooLongDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::InvalidLiteral.code())
+            .with_message("character literal may only contain one codepoint")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("if you meant to write a string literal, use double quotes: `\"`, `\"`")
     }
 }
 
@@ -1425,6 +1497,7 @@ impl Builder<'_, '_> {
             Type::U32 => "u32".to_string(),
             Type::U64 => "u64".to_string(),
             Type::String => "string".to_string(),
+            Type::Char => "char".to_string(),
             Type::Namespace { namespace_index } => {
                 let ns = &self.namespaces[namespace_index as usize];
                 match ns {
@@ -2525,6 +2598,36 @@ impl Builder<'_, '_> {
                     ty: Type::String,
                     span: expr.span,
                 })
+            }
+            ast::Expression::Char { symbol } => {
+                let raw = self.interner.resolve(*symbol).unwrap();
+                match parse_char_literal(raw) {
+                    Ok(value) => Ok(Expression {
+                        kind: ExprKind::Char { value },
+                        ty: Type::Char,
+                        span: expr.span,
+                    }),
+                    Err(CharLiteralError::Empty) => {
+                        self.diagnostics.push(
+                            EmptyCharLiteralDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                    Err(CharLiteralError::TooLong) => {
+                        self.diagnostics.push(
+                            CharLiteralTooLongDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
             }
             ast::Expression::Identifier { .. } => {
                 self.build_identifier_expression(func_ctx, expr, access_ctx)

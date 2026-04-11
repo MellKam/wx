@@ -511,6 +511,7 @@ fn index_expression(index: &mut SymbolIndex, func_idx: Option<FunctionIndex>, ex
         | ExprKind::Int { .. }
         | ExprKind::Float { .. }
         | ExprKind::Bool { .. }
+        | ExprKind::Char { .. }
         | ExprKind::Continue { .. } => {
             // No symbols to index
         }

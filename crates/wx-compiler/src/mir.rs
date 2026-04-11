@@ -547,6 +547,7 @@ impl<'tir> Builder<'tir> {
                 tuple_index: TuplePool::STRING_TUPLE_INDEX,
             },
             tir::Type::Function { signature_index } => Type::Function { signature_index },
+            tir::Type::Char => Type::U32,
             // TODO: handle enums
             tir::Type::Unknown | tir::Type::Error | tir::Type::Namespace { .. } => {
                 // These shouldn't appear in valid TIR, but handle gracefully
@@ -665,6 +666,10 @@ impl<'tir> Builder<'tir> {
                     func_index: self.func_index_remap[*func_index as usize],
                 },
                 ty: self.lower_type(expr.ty),
+            },
+            tir::ExprKind::Char { value } => Expression {
+                kind: ExprKind::Int { value: *value as i64 },
+                ty: Type::U32,
             },
             tir::ExprKind::String { symbol } => {
                 let string_index = self.string_pool.add(*symbol);
@@ -1092,7 +1097,7 @@ mod tests {
             }
 
             fn main() -> unit {
-                console::log(\"hello world\");
+                console::log(\"hello world\".[0]);
             }
 
             export { main }

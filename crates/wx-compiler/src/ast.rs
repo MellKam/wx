@@ -1262,6 +1262,10 @@ pub enum Expression {
     String {
         symbol: SymbolU32,
     },
+    /// 'a'
+    Char {
+        symbol: SymbolU32,
+    },
 }
 
 impl Expression {
@@ -1966,7 +1970,7 @@ impl<'input> Parser<'input> {
                 Some((Parser::parse_unary_expression, BindingPower::Unary))
             }
             Token::String => Some((Parser::parse_string_expression, BindingPower::Primary)),
-            // TokenKind::Char { .. } => Some((parse_string_expression, BindingPower::Primary)),
+            Token::Char => Some((Parser::parse_char_expression, BindingPower::Primary)),
             _ => None,
         }
     }
@@ -2157,6 +2161,17 @@ impl<'input> Parser<'input> {
 
         Ok(Spanned {
             inner: Expression::String { symbol },
+            span: token.span,
+        })
+    }
+
+    fn parse_char_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
+        let token = parser.lexer.next();
+        let raw = token.span.extract_str(parser.source);
+        let symbol = parser.interner.get_or_intern(raw);
+
+        Ok(Spanned {
+            inner: Expression::Char { symbol },
             span: token.span,
         })
     }
