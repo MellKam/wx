@@ -166,12 +166,12 @@ pub enum Token {
     EqEq,
     Bang,
     BangEq,
-    Less,
-    LessEq,
-    LeftShift,
-    Greater,
-    GreaterEq,
-    RightShift,
+    LeftArrow,
+    LeftArrowEq,
+    DoubleLeftArrow,
+    RightArrow,
+    RightArrowEq,
+    DoubleRightArrow,
     Plus,
     PlusEq,
     Minus,
@@ -183,11 +183,11 @@ pub enum Token {
     Percent,
     PercentEq,
     Amper,
-    AmperAmper,
+    DoubleAmper,
     Vbar,
-    VbarVbar,
+    DoubleVbar,
     Caret,
-    Arrow,
+    MinusRightArrow,
     // Special
     Comment,
     Whitespace,
@@ -219,12 +219,12 @@ impl std::fmt::Display for Token {
             Bang => "!",
             EqEq => "==",
             BangEq => "!=",
-            Less => "<",
-            LessEq => "<=",
-            LeftShift => "<<",
-            Greater => ">",
-            GreaterEq => ">=",
-            RightShift => ">>",
+            LeftArrow => "<",
+            LeftArrowEq => "<=",
+            DoubleLeftArrow => "<<",
+            RightArrow => ">",
+            RightArrowEq => ">=",
+            DoubleRightArrow => ">>",
             Plus => "+",
             PlusEq => "+=",
             Minus => "-",
@@ -236,11 +236,11 @@ impl std::fmt::Display for Token {
             Percent => "%",
             PercentEq => "%=",
             Amper => "&",
-            AmperAmper => "&&",
+            DoubleAmper => "&&",
             Vbar => "|",
-            VbarVbar => "||",
+            DoubleVbar => "||",
             Caret => "^",
-            Arrow => "->",
+            MinusRightArrow => "->",
             Comment => "comment",
             Whitespace => "whitespace",
             Unknown => "unknown token",
@@ -303,7 +303,6 @@ define_diagnostic_codes! {
         ReservedIdentifier => "E0008",
         InvalidItem => "E0009",
         MissingInitializer => "E0010",
-        MissingTypeAnnotation => "E0011",
     }
 }
 
@@ -560,63 +559,6 @@ impl MissingGlobalInitializerDiagnostic {
     }
 }
 
-pub struct MissingReturnTypeDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl MissingReturnTypeDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::MissingTypeAnnotation.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("missing return type annotation")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("expected arrow `->` followed by type"),
-            )
-    }
-}
-
-pub struct MissingParamTypeAnnotationDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl MissingParamTypeAnnotationDiagnostic {
-    const CODE: &'static str = DiagnosticCode::MissingTypeAnnotation.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("missing type annotation for function parameter")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("expected colon `:` followed by type"),
-            )
-    }
-}
-
-pub struct MissingEnumTypeAnnotationDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl MissingEnumTypeAnnotationDiagnostic {
-    const CODE: &'static str = DiagnosticCode::MissingTypeAnnotation.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("missing type annotation for enum")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("expected colon `:` followed by type"),
-            )
-    }
-}
-
 struct Lexer<'a> {
     chars: std::str::Chars<'a>,
     offset: usize,
@@ -723,8 +665,8 @@ impl<'a> Lexer<'a> {
             '<' => self.consume_open_angle(),
             '>' => self.consume_close_angle(),
             '!' => self.consume_and_check('=', Token::BangEq, Token::Bang),
-            '&' => self.consume_and_check('&', Token::AmperAmper, Token::Amper),
-            '|' => self.consume_and_check('|', Token::VbarVbar, Token::Vbar),
+            '&' => self.consume_and_check('&', Token::DoubleAmper, Token::Amper),
+            '|' => self.consume_and_check('|', Token::DoubleVbar, Token::Vbar),
             '"' => self.consume_string(),
 
             // Less Frequent
@@ -760,7 +702,7 @@ impl<'a> Lexer<'a> {
             }
             '>' => {
                 _ = self.chars.next();
-                return Token::Arrow;
+                return Token::MinusRightArrow;
             }
             _ => return Token::Minus,
         }
@@ -771,13 +713,13 @@ impl<'a> Lexer<'a> {
         match peeker.next().unwrap_or(EOF) {
             '=' => {
                 _ = self.chars.next();
-                return Token::LessEq;
+                return Token::LeftArrowEq;
             }
             '<' => {
                 _ = self.chars.next();
-                return Token::LeftShift;
+                return Token::DoubleLeftArrow;
             }
-            _ => return Token::Less,
+            _ => return Token::LeftArrow,
         }
     }
 
@@ -786,13 +728,13 @@ impl<'a> Lexer<'a> {
         match peeker.next().unwrap_or(EOF) {
             '=' => {
                 _ = self.chars.next();
-                return Token::GreaterEq;
+                return Token::RightArrowEq;
             }
             '>' => {
                 _ = self.chars.next();
-                return Token::RightShift;
+                return Token::DoubleRightArrow;
             }
-            _ => return Token::Greater,
+            _ => return Token::RightArrow,
         }
     }
 
@@ -1031,13 +973,13 @@ impl TryFrom<Token> for BinaryOp {
             // Relational
             Token::EqEq => Ok(BinaryOp::Eq),
             Token::BangEq => Ok(BinaryOp::NotEq),
-            Token::Less => Ok(BinaryOp::Less),
-            Token::LessEq => Ok(BinaryOp::LessEq),
-            Token::Greater => Ok(BinaryOp::Greater),
-            Token::GreaterEq => Ok(BinaryOp::GreaterEq),
+            Token::LeftArrow => Ok(BinaryOp::Less),
+            Token::LeftArrowEq => Ok(BinaryOp::LessEq),
+            Token::RightArrow => Ok(BinaryOp::Greater),
+            Token::RightArrowEq => Ok(BinaryOp::GreaterEq),
             // Logical
-            Token::AmperAmper => Ok(BinaryOp::And),
-            Token::VbarVbar => Ok(BinaryOp::Or),
+            Token::DoubleAmper => Ok(BinaryOp::And),
+            Token::DoubleVbar => Ok(BinaryOp::Or),
             // Assignment
             Token::Eq => Ok(BinaryOp::Assign),
             Token::PlusEq => Ok(BinaryOp::AddAssign),
@@ -1049,8 +991,8 @@ impl TryFrom<Token> for BinaryOp {
             Token::Amper => Ok(BinaryOp::BitAnd),
             Token::Vbar => Ok(BinaryOp::BitOr),
             Token::Caret => Ok(BinaryOp::BitXor),
-            Token::LeftShift => Ok(BinaryOp::LeftShift),
-            Token::RightShift => Ok(BinaryOp::RightShift),
+            Token::DoubleLeftArrow => Ok(BinaryOp::LeftShift),
+            Token::DoubleRightArrow => Ok(BinaryOp::RightShift),
             _ => Err(()),
         }
     }
@@ -1135,18 +1077,6 @@ impl Clone for Spanned<UnaryOp> {
             span: self.span,
         }
     }
-}
-
-/// Represents a value prefixed by a token, where the token provides context or
-/// annotation.
-///
-/// Used for type annotations (`: i32`) and return types (`-> i32`) where a
-/// special token precedes the actual value. The `separator` field stores the
-/// prefix token's span.
-#[cfg_attr(test, derive(serde::Serialize))]
-pub struct Annotated<T> {
-    pub prefix: TextSpan,
-    pub inner: T,
 }
 
 /// Represents content enclosed by matching delimiter tokens.
@@ -1281,16 +1211,25 @@ impl Expression {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+pub struct FunctionTypeParam {
+    pub name: Option<Spanned<SymbolU32>>,
+    pub ty: Box<Spanned<TypeExpression>>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ImportFunctionParam {
+    pub name: Option<Spanned<SymbolU32>>,
+    pub ty: Box<Spanned<TypeExpression>>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum TypeExpression {
-    Error,
     /// `i32`
-    Identifier {
-        symbol: SymbolU32,
-    },
+    Identifier { symbol: SymbolU32 },
     /// `fn(i32, i32) -> i32`
     Function {
-        params: Grouped<Box<[Separated<Spanned<TypeExpression>>]>>,
-        result: Annotated<Box<Spanned<TypeExpression>>>,
+        params: Grouped<Box<[Separated<Spanned<FunctionTypeParam>>]>>,
+        result: Option<Box<Spanned<TypeExpression>>>,
     },
 }
 
@@ -1302,7 +1241,7 @@ pub enum Statement {
     LocalDefinition {
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
-        type_annotation: Option<Annotated<Box<Spanned<TypeExpression>>>>,
+        ty: Option<Box<Spanned<TypeExpression>>>,
         value: Box<Spanned<Expression>>,
     },
 }
@@ -1320,7 +1259,7 @@ impl Statement {
 pub struct FunctionParam {
     pub mut_span: Option<TextSpan>,
     pub name: Spanned<SymbolU32>,
-    pub type_annotation: Annotated<Box<Spanned<TypeExpression>>>,
+    pub ty: Option<Box<Spanned<TypeExpression>>>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1328,7 +1267,7 @@ pub struct FunctionSignature {
     pub fn_span: TextSpan,
     pub name: Spanned<SymbolU32>,
     pub params: Grouped<Box<[Separated<Spanned<FunctionParam>>]>>,
-    pub result: Option<Annotated<Box<Spanned<TypeExpression>>>>,
+    pub result: Option<Box<Spanned<TypeExpression>>>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1340,12 +1279,14 @@ pub struct ExportEntry {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImportDeclaration {
     Function {
-        signature: FunctionSignature,
+        name: Spanned<SymbolU32>,
+        params: Grouped<Box<[Separated<Spanned<ImportFunctionParam>>]>>,
+        result: Option<Box<Spanned<TypeExpression>>>,
     },
     Global {
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
-        type_annotation: Annotated<Box<Spanned<TypeExpression>>>,
+        ty: Box<Spanned<TypeExpression>>,
     },
 }
 
@@ -1353,6 +1294,12 @@ pub enum ImportDeclaration {
 pub struct ImportEntry {
     pub external_name: Option<Spanned<SymbolU32>>,
     pub declaration: ImportDeclaration,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct EnumVariant {
+    pub name: Spanned<SymbolU32>,
+    pub value: Option<Box<Spanned<Expression>>>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1364,7 +1311,7 @@ pub enum Item {
     Global {
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
-        type_annotation: Option<Annotated<Box<Spanned<TypeExpression>>>>,
+        ty: Option<Box<Spanned<TypeExpression>>>,
         value: Box<Spanned<Expression>>,
     },
     Export {
@@ -1375,6 +1322,12 @@ pub enum Item {
         alias: Option<Spanned<SymbolU32>>,
         entries: Grouped<Box<[Separated<Spanned<ImportEntry>>]>>,
     },
+    Enum {
+        enum_span: TextSpan,
+        repr: Option<Box<Spanned<TypeExpression>>>,
+        name: Spanned<SymbolU32>,
+        variants: Grouped<Box<[Separated<Spanned<EnumVariant>>]>>,
+    },
 }
 
 impl Item {
@@ -1384,6 +1337,7 @@ impl Item {
             Item::Export { .. } => true,
             Item::Import { .. } => true,
             Item::Global { .. } => false,
+            Item::Enum { .. } => true,
         }
     }
 }
@@ -1747,6 +1701,7 @@ impl<'input> Parser<'input> {
             Some(Keyword::Global) => Ok(Parser::parse_global_definition_item),
             Some(Keyword::Export) => Ok(Parser::parse_export_block),
             Some(Keyword::Import) => Ok(Parser::parse_import_block),
+            Some(Keyword::Enum) => Ok(Parser::parse_enum_item),
             _ => return Err(()),
         }
     }
@@ -1819,38 +1774,23 @@ impl<'input> Parser<'input> {
         };
 
         let colon = parser.lexer.next_if(Token::Colon);
-        let type_annotation = match colon {
-            Some(colon) => Annotated {
-                prefix: colon.span,
-                inner: Box::new(parser.parse_type_expression()?),
-            },
-            None => {
-                let name_end = name_span.end_position();
-                parser.ast.diagnostics.push(
-                    MissingParamTypeAnnotationDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: name_end,
+        let (ty, span) = match colon {
+            Some(colon) => {
+                let token = parser.lexer.peek();
+                match token.inner {
+                    Token::Identifier => {
+                        let ty = parser.parse_type_expression()?;
+                        let span = TextSpan::merge(name_span, ty.span);
+                        (Some(Box::new(ty)), span)
                     }
-                    .report(),
-                );
-
-                Annotated {
-                    prefix: name_end,
-                    inner: Box::new(Spanned {
-                        inner: TypeExpression::Error,
-                        span: name_end,
-                    }),
+                    _ => (None, TextSpan::merge(name_span, colon.span)),
                 }
             }
+            None => (None, name_span),
         };
 
-        let span = TextSpan::merge(name_span, type_annotation.inner.span);
         Ok(Spanned {
-            inner: FunctionParam {
-                mut_span,
-                name,
-                type_annotation,
-            },
+            inner: FunctionParam { mut_span, name, ty },
             span,
         })
     }
@@ -1875,14 +1815,9 @@ impl<'input> Parser<'input> {
 
         let result = parser
             .lexer
-            .next_if(Token::Arrow)
+            .next_if(Token::MinusRightArrow)
             .ok_or(())
-            .and_then(|colon| {
-                Ok(Some(Annotated {
-                    prefix: colon.span,
-                    inner: Box::new(Parser::parse_type_expression(parser)?),
-                }))
-            })
+            .and_then(|_| Ok(Some(Box::new(Parser::parse_type_expression(parser)?))))
             .unwrap_or_else(|_| None);
 
         let block = Parser::parse_block_expression(parser)?;
@@ -1903,9 +1838,11 @@ impl<'input> Parser<'input> {
 
     fn parse_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
         let token = self.peek_expect(Token::Identifier)?;
-        if let Ok(Keyword::Fn) = Keyword::try_from(token.span.extract_str(self.source)) {
-            return Parser::parse_function_type_expression(self);
+        match Keyword::try_from(token.span.extract_str(self.source)) {
+            Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
+            _ => {}
         }
+
         let token = self.lexer.next();
         Ok(Spanned {
             inner: TypeExpression::Identifier {
@@ -1915,28 +1852,66 @@ impl<'input> Parser<'input> {
         })
     }
 
+    fn parse_function_type_param(parser: &mut Parser) -> Result<Spanned<FunctionTypeParam>, ()> {
+        let ty = parser.parse_type_expression()?;
+        let (name, ty) = match ty.inner {
+            TypeExpression::Identifier { symbol } => {
+                if let Some(_) = parser.lexer.next_if(Token::Colon) {
+                    let name_span = ty.span;
+                    let name_symbol = symbol;
+                    let ty = parser.parse_type_expression()?;
+                    (
+                        Some(Spanned {
+                            inner: name_symbol,
+                            span: name_span,
+                        }),
+                        Box::new(ty),
+                    )
+                } else {
+                    (None, Box::new(ty))
+                }
+            }
+            TypeExpression::Function { .. } => (None, Box::new(ty)),
+        };
+
+        let span = TextSpan::merge(name.clone().map(|n| n.span).unwrap_or(ty.span), ty.span);
+        Ok(Spanned {
+            inner: FunctionTypeParam { name, ty },
+            span,
+        })
+    }
+
     fn parse_function_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
         let func_keyword = self.lexer.next();
         let params = SeparatedGroup {
             open_token: Token::OpenParen,
             close_token: Token::CloseParen,
             separator_token: Token::Comma,
-            item_handler: |parser| parser.parse_type_expression(),
+            item_handler: Parser::parse_function_type_param,
             should_warn_missing_separator: None,
         }
         .parse(self)?;
 
-        let arrow_span = self.next_expect(Token::Arrow)?.span;
-        let result = Annotated {
-            prefix: arrow_span,
-            inner: Box::new(Parser::parse_type_expression(self)?),
+        if let Some(_) = self.lexer.next_if(Token::MinusRightArrow) {
+            let result = Box::new(Parser::parse_type_expression(self)?);
+            let span = TextSpan::merge(func_keyword.span, result.span);
+            return Ok(Spanned {
+                inner: TypeExpression::Function {
+                    params,
+                    result: Some(result),
+                },
+                span,
+            });
+        } else {
+            let span = TextSpan::merge(func_keyword.span, params.close);
+            return Ok(Spanned {
+                inner: TypeExpression::Function {
+                    params,
+                    result: None,
+                },
+                span,
+            });
         };
-
-        let span = TextSpan::merge(func_keyword.span, result.inner.span);
-        Ok(Spanned {
-            inner: TypeExpression::Function { params, result },
-            span,
-        })
     }
 
     fn nud_lookup(
@@ -1997,18 +1972,20 @@ impl<'input> Parser<'input> {
             Token::Eq | Token::PlusEq | Token::MinusEq | Token::StarEq | Token::PercentEq => {
                 Some((Parser::parse_binary_expression, BindingPower::Assignment))
             }
-            Token::VbarVbar => Some((Parser::parse_binary_expression, BindingPower::LogicalOr)),
-            Token::AmperAmper => Some((Parser::parse_binary_expression, BindingPower::LogicalAnd)),
+            Token::DoubleVbar => Some((Parser::parse_binary_expression, BindingPower::LogicalOr)),
+            Token::DoubleAmper => Some((Parser::parse_binary_expression, BindingPower::LogicalAnd)),
             Token::Vbar => Some((Parser::parse_binary_expression, BindingPower::BitwiseOr)),
             Token::Caret => Some((Parser::parse_binary_expression, BindingPower::BitwiseXor)),
             Token::Amper => Some((Parser::parse_binary_expression, BindingPower::BitwiseAnd)),
             Token::EqEq
             | Token::BangEq
-            | Token::LessEq
-            | Token::Less
-            | Token::Greater
-            | Token::GreaterEq => Some((Parser::parse_binary_expression, BindingPower::Comparison)),
-            Token::LeftShift | Token::RightShift => {
+            | Token::LeftArrowEq
+            | Token::LeftArrow
+            | Token::RightArrow
+            | Token::RightArrowEq => {
+                Some((Parser::parse_binary_expression, BindingPower::Comparison))
+            }
+            Token::DoubleLeftArrow | Token::DoubleRightArrow => {
                 Some((Parser::parse_binary_expression, BindingPower::BitwiseShift))
             }
             Token::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
@@ -2617,18 +2594,19 @@ impl<'input> Parser<'input> {
             span: name_span,
         };
 
-        let type_annotation = parser
-            .lexer
-            .next_if(Token::Colon)
-            .ok_or(())
-            .and_then(|colon| {
-                let ty = parser.parse_type_expression()?;
-                Ok(Annotated {
-                    prefix: colon.span,
-                    inner: Box::new(ty),
-                })
-            })
-            .ok(); // todo: recover from invalid type
+        let ty = match parser.lexer.next_if(Token::Colon) {
+            Some(_) => {
+                let token = parser.lexer.peek();
+                match token.inner {
+                    Token::Identifier => {
+                        let ty = parser.parse_type_expression()?;
+                        Some(Box::new(ty))
+                    }
+                    _ => None,
+                }
+            }
+            None => None,
+        };
 
         let value = parser
             .lexer
@@ -2654,7 +2632,7 @@ impl<'input> Parser<'input> {
             inner: Statement::LocalDefinition {
                 mut_span,
                 name,
-                type_annotation,
+                ty,
                 value: Box::new(value),
             },
             span,
@@ -2678,18 +2656,13 @@ impl<'input> Parser<'input> {
             span: name_span,
         };
 
-        let type_annotation = match parser.lexer.peek().inner {
+        let ty = match parser.lexer.peek().inner {
             Token::Colon => {
-                let colon_span = parser.lexer.next().span;
                 let type_expr = parser.parse_type_expression()?;
-                Some(Annotated {
-                    prefix: colon_span,
-                    inner: Box::new(type_expr),
-                })
+                Some(Box::new(type_expr))
             }
             _ => None,
         };
-
         let _ = parser.next_expect(Token::Eq)?;
         let value = parser.parse_expression(BindingPower::Default)?;
 
@@ -2698,7 +2671,7 @@ impl<'input> Parser<'input> {
             inner: Item::Global {
                 mut_span,
                 name,
-                type_annotation,
+                ty,
                 value: Box::new(value),
             },
             span,
@@ -2775,10 +2748,211 @@ impl<'input> Parser<'input> {
         })
     }
 
+    fn parse_enum_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let enum_span = parser.lexer.next().span;
+
+        let repr = if let Some(open_arrow) = parser.lexer.next_if(Token::LeftArrow) {
+            let type_expr = parser.parse_type_expression()?;
+            match parser.next_expect(Token::RightArrow) {
+                Ok(_) => {}
+                Err(_) => {
+                    parser.ast.diagnostics.push(
+                        UnclosedDelimiterDiagnostic {
+                            file_id: parser.ast.file_id,
+                            open_span: open_arrow.span,
+                            close_token: Token::RightArrow,
+                            expected_close_span: type_expr.span.end_position(),
+                        }
+                        .report(),
+                    );
+                }
+            };
+            Some(Box::new(type_expr))
+        } else {
+            None
+        };
+
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name_symbol = parser.intern_identifier(name_span);
+
+        let variants = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::Comma,
+            item_handler: |parser: &mut Parser| -> Result<Spanned<EnumVariant>, ()> {
+                let name_token = parser.next_expect(Token::Identifier)?;
+                let name_symbol = parser.intern_identifier(name_token.span);
+
+                let (value, span) = if let Some(_) = parser.lexer.next_if(Token::Eq) {
+                    let expr = parser.parse_expression(BindingPower::Default)?;
+                    let span = TextSpan::merge(name_token.span, expr.span);
+                    (Some(Box::new(expr)), span)
+                } else {
+                    (None, name_token.span)
+                };
+
+                Ok(Spanned {
+                    inner: EnumVariant {
+                        name: Spanned {
+                            inner: name_symbol,
+                            span: name_token.span,
+                        },
+                        value,
+                    },
+                    span,
+                })
+            },
+            should_warn_missing_separator: None,
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(enum_span, variants.close);
+
+        Ok(Spanned {
+            inner: Item::Enum {
+                enum_span,
+                repr,
+                name: Spanned {
+                    inner: name_symbol,
+                    span: name_span,
+                },
+                variants,
+            },
+            span,
+        })
+    }
+
+    fn parse_import_function_param(
+        parser: &mut Parser,
+    ) -> Result<Spanned<ImportFunctionParam>, ()> {
+        let first = parser.parse_type_expression()?;
+        let (name, ty) = match first.inner {
+            TypeExpression::Identifier { symbol } => {
+                if parser.lexer.next_if(Token::Colon).is_some() {
+                    let ty = parser.parse_type_expression()?;
+                    (Some(Spanned { inner: symbol, span: first.span }), Box::new(ty))
+                } else {
+                    (None, Box::new(first))
+                }
+            }
+            _ => (None, Box::new(first)),
+        };
+        let span = TextSpan::merge(name.as_ref().map(|n| n.span).unwrap_or(ty.span), ty.span);
+        Ok(Spanned {
+            inner: ImportFunctionParam { name, ty },
+            span,
+        })
+    }
+
+    fn parse_function_import_declaration(&mut self) -> Result<Spanned<ImportDeclaration>, ()> {
+        let fn_span = self.lexer.next();
+        let name_span = self.next_expect(Token::Identifier)?.span;
+        let name_symbol = self.intern_identifier(name_span);
+        let name = Spanned {
+            inner: name_symbol,
+            span: name_span,
+        };
+
+        let params = SeparatedGroup {
+            open_token: Token::OpenParen,
+            close_token: Token::CloseParen,
+            separator_token: Token::Comma,
+            item_handler: Parser::parse_import_function_param,
+            should_warn_missing_separator: None,
+        }
+        .parse(self)?;
+
+        let result = self
+            .lexer
+            .next_if(Token::MinusRightArrow)
+            .ok_or(())
+            .and_then(|_| Ok(Some(Box::new(self.parse_type_expression()?))))
+            .unwrap_or_else(|_| None);
+
+        let span = TextSpan::merge(
+            fn_span.span,
+            result.as_ref().map(|r| r.span).unwrap_or(params.close),
+        );
+        Ok(Spanned {
+            inner: ImportDeclaration::Function {
+                name,
+                params,
+                result,
+            },
+            span,
+        })
+    }
+
+    fn parse_global_import_declaration(&mut self) -> Result<Spanned<ImportDeclaration>, ()> {
+        let keyword_span = self.lexer.next().span;
+        let token = self.lexer.peek();
+        let mut_span = match Keyword::try_from(token.span.extract_str(self.source)) {
+            Ok(Keyword::Mut) => Some(self.lexer.next().span),
+            _ => None,
+        };
+
+        let name_span = self.next_expect(Token::Identifier)?.span;
+        let name_symbol = self.intern_identifier(name_span);
+        let name = Spanned {
+            inner: name_symbol,
+            span: name_span,
+        };
+
+        let _ = self.next_expect(Token::Colon)?;
+        let type_expr = self.parse_type_expression()?;
+        let span = TextSpan::merge(keyword_span, type_expr.span);
+
+        Ok(Spanned {
+            inner: ImportDeclaration::Global {
+                mut_span,
+                name,
+                ty: Box::new(type_expr),
+            },
+            span,
+        })
+    }
+
+    fn parse_import_entry(parser: &mut Parser) -> Result<Spanned<ImportEntry>, ()> {
+        let token = parser.lexer.peek();
+        let keyword = match token.inner {
+            Token::Identifier => Keyword::try_from(token.span.extract_str(parser.source)).ok(),
+            _ => None,
+        };
+        match keyword {
+            Some(Keyword::Fn) => parser
+                .parse_function_import_declaration()
+                .map(|decl| Spanned {
+                    inner: ImportEntry {
+                        external_name: None,
+                        declaration: decl.inner,
+                    },
+                    span: decl.span,
+                }),
+            Some(Keyword::Global) => parser
+                .parse_global_import_declaration()
+                .map(|decl| Spanned {
+                    inner: ImportEntry {
+                        external_name: None,
+                        declaration: decl.inner,
+                    },
+                    span: decl.span,
+                }),
+            _ => {
+                parser.ast.diagnostics.push(
+                    InvalidItemDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
+    }
+
     fn parse_import_block(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let import_keyword = parser.lexer.next();
 
-        // Parse module string literal (e.g., "console")
         let module_token = parser.next_expect(Token::String)?;
         let module_symbol = parser.intern_identifier(module_token.span);
         let module = Spanned {
@@ -2786,7 +2960,6 @@ impl<'input> Parser<'input> {
             span: module_token.span,
         };
 
-        // Parse optional "as" alias
         let alias = if let Token::Identifier = parser.lexer.peek().inner {
             let potential_as = parser.lexer.peek();
             if let Ok(Keyword::As) = Keyword::try_from(potential_as.span.extract_str(parser.source))
@@ -2807,143 +2980,11 @@ impl<'input> Parser<'input> {
             None
         };
 
-        // Parse import entries
         let entries = SeparatedGroup {
             open_token: Token::OpenBrace,
             close_token: Token::CloseBrace,
             separator_token: Token::SemiColon,
-            item_handler: |parser: &mut Parser| -> Result<Spanned<ImportEntry>, ()> {
-                // Check for optional external name: "X": ...
-                let external_name = if let Token::String = parser.lexer.peek().inner {
-                    let ext_token = parser.lexer.next();
-                    let ext_symbol = parser.intern_identifier(ext_token.span);
-                    parser.next_expect(Token::Colon)?;
-
-                    Some(Spanned {
-                        inner: ext_symbol,
-                        span: ext_token.span,
-                    })
-                } else {
-                    None
-                };
-
-                let start_span = external_name
-                    .as_ref()
-                    .map(|e| e.span)
-                    .unwrap_or_else(|| parser.lexer.peek().span);
-
-                // Parse declaration kind
-                let token = parser.lexer.peek();
-                let keyword = match token.inner {
-                    Token::Identifier => {
-                        Keyword::try_from(token.span.extract_str(parser.source)).ok()
-                    }
-                    _ => None,
-                };
-
-                let declaration = match keyword {
-                    Some(Keyword::Fn) => {
-                        let fn_span = parser.lexer.next();
-                        let name_span = parser.next_expect(Token::Identifier)?.span;
-                        let name_symbol = parser.intern_identifier(name_span);
-                        let name = Spanned {
-                            inner: name_symbol,
-                            span: name_span,
-                        };
-
-                        let params = SeparatedGroup {
-                            open_token: Token::OpenParen,
-                            close_token: Token::CloseParen,
-                            separator_token: Token::Comma,
-                            item_handler: Parser::parse_function_param_item,
-                            should_warn_missing_separator: None,
-                        }
-                        .parse(parser)?;
-
-                        let result = parser
-                            .lexer
-                            .next_if(Token::Arrow)
-                            .ok_or(())
-                            .and_then(|arrow| {
-                                Ok(Some(Annotated {
-                                    prefix: arrow.span,
-                                    inner: Box::new(parser.parse_type_expression()?),
-                                }))
-                            })
-                            .unwrap_or_else(|_| None);
-
-                        ImportDeclaration::Function {
-                            signature: FunctionSignature {
-                                fn_span: fn_span.span,
-                                name,
-                                params,
-                                result,
-                            },
-                        }
-                    }
-                    Some(Keyword::Global) => {
-                        // Parse global declaration
-                        let _ = parser.lexer.next(); // consume "global"
-
-                        let token = parser.lexer.peek();
-                        let mut_span =
-                            match Keyword::try_from(token.span.extract_str(parser.source)) {
-                                Ok(Keyword::Mut) => Some(parser.lexer.next().span),
-                                _ => None,
-                            };
-
-                        let name_span = parser.next_expect(Token::Identifier)?.span;
-                        let name_symbol = parser.intern_identifier(name_span);
-                        let name = Spanned {
-                            inner: name_symbol,
-                            span: name_span,
-                        };
-
-                        let colon_span = parser.next_expect(Token::Colon)?.span;
-                        let type_expr = parser.parse_type_expression()?;
-
-                        ImportDeclaration::Global {
-                            mut_span,
-                            name,
-                            type_annotation: Annotated {
-                                prefix: colon_span,
-                                inner: Box::new(type_expr),
-                            },
-                        }
-                    }
-                    _ => {
-                        parser.ast.diagnostics.push(
-                            UnexpectedTokenDiagnostic {
-                                file_id: parser.ast.file_id,
-                                received: token,
-                                expected: Token::Identifier,
-                            }
-                            .report(),
-                        );
-                        return Err(());
-                    }
-                };
-
-                let end_span = match &declaration {
-                    ImportDeclaration::Function { signature } => match &signature.result {
-                        Some(result) => result.inner.span,
-                        None => signature.params.close,
-                    },
-                    ImportDeclaration::Global {
-                        type_annotation, ..
-                    } => type_annotation.inner.span,
-                };
-
-                let span = TextSpan::merge(start_span, end_span);
-
-                Ok(Spanned {
-                    inner: ImportEntry {
-                        external_name,
-                        declaration,
-                    },
-                    span,
-                })
-            },
+            item_handler: Parser::parse_import_entry,
             should_warn_missing_separator: None,
         }
         .parse(parser)?;
@@ -3012,12 +3053,10 @@ mod tests {
     #[test]
     fn test_parse_import_with_alias() {
         let case = TestCase::new(indoc! {"
-            import \"console\" {
-                fn log(message: string);
-            }
-
-            fn main() {
-                console:log(\"Hello, World!\");
+            enum<u8> Color {
+                Red = 1,
+                Green = 2,
+                Blue = 3,
             }
         "});
         insta::assert_yaml_snapshot!(case.ast);

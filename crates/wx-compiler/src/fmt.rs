@@ -51,7 +51,7 @@ impl Builder {
                 Item::Global {
                     mut_span,
                     name,
-                    type_annotation,
+                    ty: type_annotation,
                     value,
                 } => Self::build_global_definition(
                     interner,
@@ -144,57 +144,46 @@ impl Builder {
 
                                 // Declaration
                                 match &entry.inner.inner.declaration {
-                                    crate::ast::ImportDeclaration::Function { signature } => {
-                                        // Format function signature
+                                    crate::ast::ImportDeclaration::Function {
+                                        name,
+                                        params,
+                                        result,
+                                    } => {
                                         entry_nodes.push(Node::Text("fn ".to_string()));
-                                        let fn_name =
-                                            interner.resolve(signature.name.inner).unwrap();
+                                        let fn_name = interner.resolve(name.inner).unwrap();
                                         entry_nodes.push(Node::Text(format!("{}(", fn_name)));
 
-                                        // Parameters
-                                        for (i, param) in signature.params.inner.iter().enumerate()
-                                        {
-                                            let param_name = interner
-                                                .resolve(param.inner.inner.name.inner)
-                                                .unwrap();
-                                            let mut_prefix = if param.inner.inner.mut_span.is_some()
-                                            {
-                                                "mut "
-                                            } else {
-                                                ""
-                                            };
-                                            entry_nodes.push(Node::Text(format!(
-                                                "{}{}: ",
-                                                mut_prefix, param_name
-                                            )));
+                                        for (i, param) in params.inner.iter().enumerate() {
+                                            if let Some(name) = &param.inner.inner.name {
+                                                entry_nodes.push(Node::Text(format!(
+                                                    "{}: ",
+                                                    interner.resolve(name.inner).unwrap()
+                                                )));
+                                            }
                                             entry_nodes.push(Self::build_type_expression(
                                                 interner,
-                                                &param.inner.inner.type_annotation.inner.inner,
+                                                &param.inner.inner.ty.inner,
                                             ));
 
-                                            if i + 1 < signature.params.inner.len() {
+                                            if i + 1 < params.inner.len() {
                                                 entry_nodes.push(Node::Text(", ".to_string()));
                                             }
                                         }
 
                                         entry_nodes.push(Node::Text(")".to_string()));
-                                        match &signature.result {
-                                            Some(result) => {
-                                                entry_nodes.push(Node::Text(" -> ".to_string()));
-                                                entry_nodes.push(Self::build_type_expression(
-                                                    interner,
-                                                    &result.inner.inner,
-                                                ));
-                                            }
-                                            None => {}
+                                        if let Some(result) = result {
+                                            entry_nodes.push(Node::Text(" -> ".to_string()));
+                                            entry_nodes.push(Self::build_type_expression(
+                                                interner,
+                                                &result.inner,
+                                            ));
                                         }
                                     }
                                     crate::ast::ImportDeclaration::Global {
                                         mut_span,
                                         name,
-                                        type_annotation,
+                                        ty,
                                     } => {
-                                        // Format global declaration
                                         let mut_prefix =
                                             if mut_span.is_some() { "mut " } else { "" };
                                         let global_name = interner.resolve(name.inner).unwrap();
@@ -202,10 +191,8 @@ impl Builder {
                                             "global {}{}: ",
                                             mut_prefix, global_name
                                         )));
-                                        entry_nodes.push(Self::build_type_expression(
-                                            interner,
-                                            &type_annotation.inner.inner,
-                                        ));
+                                        entry_nodes
+                                            .push(Self::build_type_expression(interner, &ty.inner));
                                     }
                                 }
 
@@ -235,6 +222,7 @@ impl Builder {
                     items.push(Node::Text("}".to_string()));
                     Node::Concat(items)
                 }
+                Item::Enum { .. } => todo!("fmt for enum items"),
             });
         }
 
@@ -260,7 +248,7 @@ impl Builder {
 
                 for (index, param) in signature.params.inner.iter().enumerate() {
                     items.push(Node::Text(format!(
-                        "{}{}: ",
+                        "{}{}",
                         match param.inner.inner.mut_span {
                             Some(_) => "mut ",
                             None => "",
@@ -270,10 +258,10 @@ impl Builder {
                             .unwrap()
                             .to_string()
                     )));
-                    items.push(Self::build_type_expression(
-                        interner,
-                        &param.inner.inner.type_annotation.inner.inner,
-                    ));
+                    if let Some(ty) = &param.inner.inner.ty {
+                        items.push(Node::Text(": ".to_string()));
+                        items.push(Self::build_type_expression(interner, &ty.inner));
+                    }
                     if index + 1 < signature.params.inner.len() {
                         items.push(Node::Text(",".to_string()));
                         items.push(Node::SoftLine);
@@ -288,13 +276,10 @@ impl Builder {
         }
 
         items.push(Node::Text(") ".to_string()));
-        match &signature.result {
-            Some(result) => {
-                items.push(Node::Text("-> ".to_string()));
-                items.push(Self::build_type_expression(interner, &result.inner.inner));
-                items.push(Node::Text(" ".to_string()));
-            }
-            None => {}
+        if let Some(result) = &signature.result {
+            items.push(Node::Text("-> ".to_string()));
+            items.push(Self::build_type_expression(interner, &result.inner));
+            items.push(Node::Text(" ".to_string()));
         }
         items.push(Self::build_expression(interner, source, block));
 
@@ -306,7 +291,7 @@ impl Builder {
         source: &str,
         mut_span: Option<TextSpan>,
         name: &Spanned<SymbolU32>,
-        type_annotation: &Option<Annotated<Box<Spanned<TypeExpression>>>>,
+        type_annotation: &Option<Box<Spanned<TypeExpression>>>,
         value: &Box<Spanned<Expression>>,
     ) -> Node {
         let mut items = Vec::new();
@@ -318,10 +303,7 @@ impl Builder {
 
         if let Some(annotation) = type_annotation {
             items.push(Node::Text(": ".to_string()));
-            items.push(Self::build_type_expression(
-                interner,
-                &annotation.inner.inner,
-            ));
+            items.push(Self::build_type_expression(interner, &annotation.inner));
         }
 
         items.push(Node::Text(" = ".to_string()));
@@ -553,7 +535,7 @@ impl Builder {
             Statement::LocalDefinition {
                 mut_span,
                 name,
-                type_annotation,
+                ty: type_annotation,
                 value,
             } => {
                 let mut items = Vec::new();
@@ -565,15 +547,9 @@ impl Builder {
                     },
                     interner.resolve(name.inner).unwrap()
                 )));
-                match type_annotation {
-                    Some(annotation) => {
-                        items.push(Node::Text(": ".to_string()));
-                        items.push(Self::build_type_expression(
-                            interner,
-                            &annotation.inner.inner,
-                        ));
-                    }
-                    None => {}
+                if let Some(annotation) = type_annotation {
+                    items.push(Node::Text(": ".to_string()));
+                    items.push(Self::build_type_expression(interner, &annotation.inner));
                 }
                 items.push(Node::Text(" = ".to_string()));
 
@@ -606,8 +582,16 @@ impl Builder {
                         param_items.push(Node::Line);
 
                         for (index, param) in params.inner.iter().enumerate() {
-                            param_items
-                                .push(Self::build_type_expression(interner, &param.inner.inner));
+                            if let Some(name) = &param.inner.inner.name {
+                                param_items.push(Node::Text(format!(
+                                    "{}: ",
+                                    interner.resolve(name.inner).unwrap()
+                                )));
+                            }
+                            param_items.push(Self::build_type_expression(
+                                interner,
+                                &param.inner.inner.ty.inner,
+                            ));
                             if index + 1 < params.inner.len() {
                                 param_items.push(Node::Text(",".to_string()));
                                 param_items.push(Node::SoftLine);
@@ -621,12 +605,14 @@ impl Builder {
                     items.push(Node::Line);
                 }
 
-                items.push(Node::Text(") -> ".to_string()));
-                items.push(Self::build_type_expression(interner, &result.inner.inner));
+                items.push(Node::Text(")".to_string()));
+                if let Some(result) = result {
+                    items.push(Node::Text(" -> ".to_string()));
+                    items.push(Self::build_type_expression(interner, &result.inner));
+                }
 
                 Node::Group(Box::new(Node::Concat(items)))
             }
-            TypeExpression::Error => unreachable!(),
         }
     }
 }
@@ -831,7 +817,7 @@ mod tests {
     fn test_format_import_block() {
         let case = TestCase::new(indoc! {"
             import \"math\" {
-                fn sqrt(x: f64) -> f64;
+                fn sqrt(f64) -> f64;
                 fn pow(base: f64, exponent: f64) -> f64;
                 fn log(x: string);
             }

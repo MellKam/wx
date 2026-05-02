@@ -1,26 +1,31 @@
 ---
 source: crates/wx-compiler/src/ast.rs
-assertion_line: 3067
+assertion_line: 3114
 expression: case.ast
 ---
 file_id: 0
 diagnostics:
   - severity: Error
-    code: E0006
-    message: expected a block-like expression after a label
+    code: E0009
+    message: invalid item
     labels:
       - style: Primary
         file_id: 0
         range:
-          start: 75
-          end: 95
+          start: 51
+          end: 102
         message: ""
-      - style: Secondary
+    notes: []
+  - severity: Error
+    code: E0009
+    message: invalid item
+    labels:
+      - style: Primary
         file_id: 0
         range:
-          start: 74
-          end: 75
-        message: "use `::` here for namespace access"
+          start: 166
+          end: 201
+        message: ""
     notes: []
 items:
   - inner:
@@ -60,7 +65,7 @@ items:
                                   inner:
                                     mut_span: ~
                                     name:
-                                      inner: 4
+                                      inner: 3
                                       span:
                                         start: 30
                                         end: 37
@@ -71,7 +76,7 @@ items:
                                       inner:
                                         inner:
                                           Identifier:
-                                            symbol: 3
+                                            symbol: 4
                                         span:
                                           start: 39
                                           end: 45
@@ -98,40 +103,406 @@ items:
     separator: ~
   - inner:
       inner:
+        Enum:
+          enum_span:
+            start: 104
+            end: 108
+          repr:
+            open:
+              start: 108
+              end: 109
+            inner:
+              inner:
+                Identifier:
+                  symbol: 5
+              span:
+                start: 109
+                end: 111
+            close:
+              start: 111
+              end: 112
+          name:
+            inner: 6
+            span:
+              start: 113
+              end: 118
+          variants:
+            open:
+              start: 119
+              end: 120
+            inner:
+              - inner:
+                  inner:
+                    name:
+                      inner: 7
+                      span:
+                        start: 125
+                        end: 128
+                    value:
+                      prefix:
+                        start: 129
+                        end: 130
+                      inner:
+                        inner:
+                          Int:
+                            value: 1
+                        span:
+                          start: 131
+                          end: 132
+                  span:
+                    start: 125
+                    end: 132
+                separator:
+                  start: 132
+                  end: 133
+              - inner:
+                  inner:
+                    name:
+                      inner: 8
+                      span:
+                        start: 138
+                        end: 143
+                    value:
+                      prefix:
+                        start: 144
+                        end: 145
+                      inner:
+                        inner:
+                          Int:
+                            value: 2
+                        span:
+                          start: 146
+                          end: 147
+                  span:
+                    start: 138
+                    end: 147
+                separator:
+                  start: 147
+                  end: 148
+              - inner:
+                  inner:
+                    name:
+                      inner: 9
+                      span:
+                        start: 153
+                        end: 157
+                    value:
+                      prefix:
+                        start: 158
+                        end: 159
+                      inner:
+                        inner:
+                          Int:
+                            value: 3
+                        span:
+                          start: 160
+                          end: 161
+                  span:
+                    start: 153
+                    end: 161
+                separator:
+                  start: 161
+                  end: 162
+            close:
+              start: 163
+              end: 164
+      span:
+        start: 104
+        end: 164
+    separator: ~
+  - inner:
+      inner:
         Function:
           signature:
             fn_span:
-              start: 51
-              end: 53
+              start: 203
+              end: 205
             name:
-              inner: 5
+              inner: 10
               span:
-                start: 54
-                end: 58
+                start: 206
+                end: 210
             params:
               open:
-                start: 58
-                end: 59
+                start: 210
+                end: 211
               inner: []
               close:
-                start: 59
-                end: 60
+                start: 211
+                end: 212
             result: ~
           block:
             inner:
               Block:
                 statements:
                   open:
-                    start: 61
-                    end: 62
-                  inner: []
+                    start: 213
+                    end: 214
+                  inner:
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Call:
+                                callee:
+                                  inner:
+                                    ObjectAccess:
+                                      object:
+                                        inner:
+                                          Identifier:
+                                            symbol: 11
+                                        span:
+                                          start: 219
+                                          end: 222
+                                      member:
+                                        inner: 12
+                                        span:
+                                          start: 223
+                                          end: 227
+                                  span:
+                                    start: 219
+                                    end: 227
+                                arguments:
+                                  open:
+                                    start: 227
+                                    end: 228
+                                  inner: []
+                                  close:
+                                    start: 228
+                                    end: 229
+                            span:
+                              start: 219
+                              end: 229
+                        span:
+                          start: 219
+                          end: 229
+                      separator:
+                        start: 229
+                        end: 230
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Call:
+                                callee:
+                                  inner:
+                                    ObjectAccess:
+                                      object:
+                                        inner:
+                                          Identifier:
+                                            symbol: 11
+                                        span:
+                                          start: 235
+                                          end: 238
+                                      member:
+                                        inner: 13
+                                        span:
+                                          start: 239
+                                          end: 243
+                                  span:
+                                    start: 235
+                                    end: 243
+                                arguments:
+                                  open:
+                                    start: 243
+                                    end: 244
+                                  inner:
+                                    - inner:
+                                        inner:
+                                          Int:
+                                            value: 1
+                                        span:
+                                          start: 244
+                                          end: 245
+                                      separator: ~
+                                  close:
+                                    start: 245
+                                    end: 246
+                            span:
+                              start: 235
+                              end: 246
+                        span:
+                          start: 235
+                          end: 246
+                      separator:
+                        start: 246
+                        end: 247
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Call:
+                                callee:
+                                  inner:
+                                    ObjectAccess:
+                                      object:
+                                        inner:
+                                          Identifier:
+                                            symbol: 11
+                                        span:
+                                          start: 252
+                                          end: 255
+                                      member:
+                                        inner: 14
+                                        span:
+                                          start: 256
+                                          end: 260
+                                  span:
+                                    start: 252
+                                    end: 260
+                                arguments:
+                                  open:
+                                    start: 260
+                                    end: 261
+                                  inner:
+                                    - inner:
+                                        inner:
+                                          Int:
+                                            value: 0
+                                        span:
+                                          start: 261
+                                          end: 262
+                                      separator:
+                                        start: 262
+                                        end: 263
+                                    - inner:
+                                        inner:
+                                          Int:
+                                            value: 0
+                                        span:
+                                          start: 264
+                                          end: 265
+                                      separator:
+                                        start: 265
+                                        end: 266
+                                    - inner:
+                                        inner:
+                                          Int:
+                                            value: 10
+                                        span:
+                                          start: 267
+                                          end: 269
+                                      separator: ~
+                                  close:
+                                    start: 269
+                                    end: 270
+                            span:
+                              start: 252
+                              end: 270
+                        span:
+                          start: 252
+                          end: 270
+                      separator:
+                        start: 270
+                        end: 271
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Call:
+                                callee:
+                                  inner:
+                                    ObjectAccess:
+                                      object:
+                                        inner:
+                                          Identifier:
+                                            symbol: 11
+                                        span:
+                                          start: 276
+                                          end: 279
+                                      member:
+                                        inner: 15
+                                        span:
+                                          start: 280
+                                          end: 284
+                                  span:
+                                    start: 276
+                                    end: 284
+                                arguments:
+                                  open:
+                                    start: 284
+                                    end: 285
+                                  inner:
+                                    - inner:
+                                        inner:
+                                          Int:
+                                            value: 0
+                                        span:
+                                          start: 285
+                                          end: 286
+                                      separator:
+                                        start: 286
+                                        end: 287
+                                    - inner:
+                                        inner:
+                                          Int:
+                                            value: 10
+                                        span:
+                                          start: 288
+                                          end: 290
+                                      separator:
+                                        start: 290
+                                        end: 291
+                                    - inner:
+                                        inner:
+                                          Int:
+                                            value: 10
+                                        span:
+                                          start: 292
+                                          end: 294
+                                      separator: ~
+                                  close:
+                                    start: 294
+                                    end: 295
+                            span:
+                              start: 276
+                              end: 295
+                        span:
+                          start: 276
+                          end: 295
+                      separator:
+                        start: 295
+                        end: 296
                   close:
-                    start: 97
-                    end: 98
+                    start: 297
+                    end: 298
             span:
-              start: 61
-              end: 98
+              start: 213
+              end: 298
       span:
-        start: 51
-        end: 98
+        start: 203
+        end: 298
+    separator: ~
+  - inner:
+      inner:
+        Export:
+          entries:
+            open:
+              start: 307
+              end: 308
+            inner:
+              - inner:
+                  inner:
+                    name:
+                      inner: 11
+                      span:
+                        start: 313
+                        end: 316
+                    alias:
+                      inner: 16
+                      span:
+                        start: 320
+                        end: 328
+                  span:
+                    start: 313
+                    end: 328
+                separator:
+                  start: 328
+                  end: 329
+            close:
+              start: 330
+              end: 331
+      span:
+        start: 300
+        end: 331
     separator: ~

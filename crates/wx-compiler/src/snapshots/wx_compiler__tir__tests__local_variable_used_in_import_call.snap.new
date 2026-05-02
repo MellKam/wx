@@ -1,0 +1,202 @@
+---
+source: crates/wx-compiler/src/tir.rs
+assertion_line: 5343
+expression: case.tir
+---
+file_id: 0
+signatures:
+  - items:
+      - Error
+      - Error
+      - Unit
+    params_count: 2
+  - items:
+      - Unit
+    params_count: 0
+defined_functions:
+  1:
+    name:
+      inner: 6
+      span:
+        start: 55
+        end: 59
+    params: []
+    result_span:
+      start: 65
+      end: 69
+    signature_index: 1
+    stack:
+      scopes:
+        - kind: Block
+          label: ~
+          parent: ~
+          locals:
+            - name:
+                inner: 7
+                span:
+                  start: 82
+                  end: 83
+              ty: I32
+              mut_span: ~
+              accesses:
+                - span:
+                    start: 111
+                    end: 112
+                  kind: Read
+          inferred_type: Unit
+          expected_type: Unit
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                LocalDeclaration:
+                  name:
+                    inner: 7
+                    span:
+                      start: 82
+                      end: 83
+                  scope_index: 0
+                  local_index: 0
+                  value:
+                    kind:
+                      Int:
+                        value: 5
+                    ty: I32
+                    span:
+                      start: 91
+                      end: 92
+              ty: Unit
+              span:
+                start: 76
+                end: 92
+          result: ~
+      ty: Unit
+      span:
+        start: 70
+        end: 119
+defined_globals: {}
+namespaces:
+  - ImportModule:
+      external_name:
+        inner: 9
+        span:
+          start: 7
+          end: 16
+      internal_name: ~
+      lookup:
+        2:
+          Function:
+            func_index: 0
+exports:
+  - Function:
+      internal_name:
+        inner: 6
+        span:
+          start: 130
+          end: 134
+      external_name: ~
+      func_index: 1
+declared_functions:
+  - source: Imported
+    signature_index: 0
+    name:
+      inner: 2
+      span:
+        start: 26
+        end: 29
+    params:
+      - name: ~
+        ty:
+          inner: Error
+          span:
+            start: 30
+            end: 33
+      - name: ~
+        ty:
+          inner: Error
+          span:
+            start: 35
+            end: 38
+    result:
+      inner: Unit
+      span:
+        start: 43
+        end: 47
+    accesses:
+      - start: 107
+        end: 110
+  - source: Defined
+    signature_index: 1
+    name:
+      inner: 6
+      span:
+        start: 55
+        end: 59
+    params: []
+    result:
+      inner: Unit
+      span:
+        start: 65
+        end: 69
+    accesses:
+      - start: 130
+        end: 134
+declared_globals: []
+diagnostics:
+  - severity: Warning
+    code: W1005
+    message: imported function parameter has no name
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 30
+          end: 33
+        message: "give this parameter a name: `name: type`"
+    notes: []
+  - severity: Error
+    code: E1021
+    message: undeclared type
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 30
+          end: 33
+        message: ""
+    notes: []
+  - severity: Warning
+    code: W1005
+    message: imported function parameter has no name
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 35
+          end: 38
+        message: "give this parameter a name: `name: type`"
+    notes: []
+  - severity: Error
+    code: E1021
+    message: undeclared type
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 35
+          end: 38
+        message: ""
+    notes: []
+  - severity: Error
+    code: E1005
+    message: "unable to coerce to type `error`"
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 114
+          end: 115
+        message: ""
+    notes: []

@@ -136,7 +136,7 @@ impl Type {
         match (self, other) {
             (a, b) if a == b => true,
             (Type::Never, _) => true,
-            (Type::Error, _) => true,
+            (Type::Error, _) | (_, Type::Error) => true,
             (Type::Unknown, _) => false,
             _ => false,
         }
@@ -396,6 +396,13 @@ impl StackFrame {
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
+pub struct DeclaredFunctionParam {
+    pub name: Option<ast::Spanned<SymbolU32>>,
+    pub ty: ast::Spanned<Type>,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionParam {
     pub mut_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
@@ -513,7 +520,7 @@ pub struct DeclaredFunction {
     pub source: ItemSource,
     pub signature_index: SignatureIndex,
     pub name: ast::Spanned<SymbolU32>,
-    pub params: Box<[FunctionParam]>,
+    pub params: Box<[DeclaredFunctionParam]>,
     pub result: Option<Spanned<Type>>,
     pub accesses: Vec<ast::TextSpan>,
 }
@@ -660,6 +667,7 @@ define_diagnostic_codes! {
         UnnecessaryMutability => "W1002",
         UnreachableCode => "W1003",
         UnusedItem => "W1004",
+        MissingImportParamName => "W1005",
     }
 }
 
@@ -712,6 +720,23 @@ impl DuplicateParameterDiagnostic<'_> {
             .with_label(
                 Label::secondary(self.file_id, self.first_definition)
                     .with_message(format!("first use of `{}` as parameter", self.name)),
+            )
+    }
+}
+
+struct MissingImportParamNameDiagnostic {
+    file_id: FileId,
+    span: ast::TextSpan,
+}
+
+impl MissingImportParamNameDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::warning()
+            .with_code(DiagnosticCode::MissingImportParamName.code())
+            .with_message("imported function parameter has no name")
+            .with_label(
+                Label::primary(self.file_id, self.span)
+                    .with_message("give this parameter a name: `name: type`"),
             )
     }
 }
@@ -1340,7 +1365,6 @@ enum BlockState<T> {
 impl Builder<'_, '_> {
     pub fn resolve_type(&mut self, type_expr: &Spanned<ast::TypeExpression>) -> Type {
         match &type_expr.inner {
-            ast::TypeExpression::Error => Type::Error,
             ast::TypeExpression::Identifier { symbol } => {
                 let symbol = *symbol;
                 let text = self.interner.resolve(symbol).unwrap();
@@ -1364,11 +1388,14 @@ impl Builder<'_, '_> {
                 }
             }
             ast::TypeExpression::Function { params, result } => {
-                let result = self.resolve_type(&result.inner);
+                let result = match result {
+                    Some(result) => self.resolve_type(result),
+                    None => Type::Unit,
+                };
                 let items = params
                     .inner
                     .iter()
-                    .map(|ty| self.resolve_type(&ty.inner))
+                    .map(|ty| self.resolve_type(&ty.inner.inner.ty))
                     .chain(Some(result))
                     .collect::<Box<_>>();
                 let signature_index = self.ensure_signature_index(&FunctionSignature {
@@ -1382,54 +1409,19 @@ impl Builder<'_, '_> {
 
     fn declare_function(
         &mut self,
-        signature: &ast::FunctionSignature,
+        name: ast::Spanned<SymbolU32>,
+        params: Box<[DeclaredFunctionParam]>,
+        result: Option<Spanned<Type>>,
         source: ItemSource,
     ) -> FunctionIndex {
-        let mut seen_params: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
-        let params: Box<[FunctionParam]> = signature
-            .params
-            .inner
-            .iter()
-            .map(|param| {
-                let name = &param.inner.inner.name;
-                if let Some(&first_span) = seen_params.get(&name.inner) {
-                    let name_str = self.interner.resolve(name.inner).unwrap();
-                    self.diagnostics.push(
-                        DuplicateParameterDiagnostic {
-                            file_id: self.ast.file_id,
-                            name: name_str,
-                            first_definition: first_span,
-                            second_definition: name.span,
-                        }
-                        .report(),
-                    );
-                } else {
-                    seen_params.insert(name.inner, name.span);
-                }
-                FunctionParam {
-                    name: name.clone(),
-                    ty: Spanned {
-                        inner: self.resolve_type(&param.inner.inner.type_annotation.inner),
-                        span: param.inner.inner.type_annotation.inner.span,
-                    },
-                    mut_span: param.inner.inner.mut_span,
-                }
-            })
-            .collect();
-        let result = signature.result.as_ref().map(|result| Spanned {
-            inner: self.resolve_type(&result.inner),
-            span: result.inner.span,
-        });
-        let result_type = match result.clone() {
-            Some(result) => result.inner,
-            None => Type::Unit,
-        };
         let mut items = Vec::with_capacity(params.len() + 1);
         for param in params.iter() {
             items.push(param.ty.inner);
         }
-        items.push(result_type);
-        let name = signature.name.clone();
+        items.push(match result.clone() {
+            Some(result) => result.inner,
+            None => Type::Unit,
+        });
         let signature = FunctionSignature {
             items: items.into_boxed_slice(),
             params_count: params.len(),
@@ -1569,7 +1561,53 @@ impl Builder<'_, '_> {
                     None => {}
                 };
 
-                let func_index = self.declare_function(signature, ItemSource::Defined);
+                let mut seen_params: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
+                let params: Box<[DeclaredFunctionParam]> = signature
+                    .params
+                    .inner
+                    .iter()
+                    .map(|param| {
+                        let name = &param.inner.inner.name;
+                        if let Some(&first_span) = seen_params.get(&name.inner) {
+                            let name_str = self.interner.resolve(name.inner).unwrap();
+                            self.diagnostics.push(
+                                DuplicateParameterDiagnostic {
+                                    file_id: self.ast.file_id,
+                                    name: name_str,
+                                    first_definition: first_span,
+                                    second_definition: name.span,
+                                }
+                                .report(),
+                            );
+                        } else {
+                            seen_params.insert(name.inner, name.span);
+                        }
+                        DeclaredFunctionParam {
+                            name: Some(name.clone()),
+                            ty: match &param.inner.inner.ty {
+                                Some(ty) => Spanned {
+                                    inner: self.resolve_type(&ty),
+                                    span: ty.span,
+                                },
+                                None => Spanned {
+                                    inner: Type::Error,
+                                    span: param.inner.inner.name.span,
+                                },
+                            },
+                        }
+                    })
+                    .collect();
+                let result = signature.result.as_ref().map(|result| Spanned {
+                    inner: self.resolve_type(result),
+                    span: result.span,
+                });
+
+                let func_index = self.declare_function(
+                    signature.name.clone(),
+                    params,
+                    result,
+                    ItemSource::Defined,
+                );
                 self.symbol_lookup.insert(
                     (SymbolNamespace::Value, signature.name.inner),
                     GlobalValue::Function { func_index },
@@ -1579,7 +1617,7 @@ impl Builder<'_, '_> {
             ast::Item::Global {
                 mut_span,
                 name,
-                type_annotation,
+                ty: type_annotation,
                 ..
             } => {
                 match self
@@ -1619,7 +1657,7 @@ impl Builder<'_, '_> {
 
                 // Resolve the type
                 let (ty, ty_span) = match type_annotation {
-                    Some(type_ann) => (self.resolve_type(&type_ann.inner), type_ann.inner.span),
+                    Some(ty) => (self.resolve_type(&ty), ty.span),
                     None => {
                         self.diagnostics.push(
                             TypeAnnotationRequiredDiagnostic {
@@ -1724,6 +1762,10 @@ impl Builder<'_, '_> {
 
                 Ok(())
             }
+            ast::Item::Enum { .. } => {
+                // TODO: lower enum items in TIR
+                Ok(())
+            }
         }
     }
 
@@ -1741,7 +1783,7 @@ impl Builder<'_, '_> {
 
         for entry in &entries.inner {
             let entry_name_symbol = match &entry.inner.inner.declaration {
-                ast::ImportDeclaration::Function { signature } => signature.name.inner,
+                ast::ImportDeclaration::Function { name, .. } => name.inner,
                 ast::ImportDeclaration::Global { name, .. } => name.inner,
             };
 
@@ -1773,25 +1815,73 @@ impl Builder<'_, '_> {
             };
 
             let import_value = match &entry.inner.inner.declaration {
-                ast::ImportDeclaration::Function { signature } => {
-                    let func_index = self.declare_function(signature, ItemSource::Imported);
+                ast::ImportDeclaration::Function {
+                    name,
+                    params,
+                    result,
+                } => {
+                    let mut seen_params: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
+                    let params: Box<[DeclaredFunctionParam]> = params
+                        .inner
+                        .iter()
+                        .map(|param| {
+                            let param_name = match param.inner.inner.name.clone() {
+                                Some(name) => Some(name),
+                                None => {
+                                    self.diagnostics.push(
+                                        MissingImportParamNameDiagnostic {
+                                            file_id: self.ast.file_id,
+                                            span: param.inner.inner.ty.span,
+                                        }
+                                        .report(),
+                                    );
+                                    None
+                                }
+                            };
+                            if let Some(explicit_name) = &param.inner.inner.name {
+                                if let Some(&first_span) = seen_params.get(&explicit_name.inner) {
+                                    let name_str =
+                                        self.interner.resolve(explicit_name.inner).unwrap();
+                                    self.diagnostics.push(
+                                        DuplicateParameterDiagnostic {
+                                            file_id: self.ast.file_id,
+                                            name: name_str,
+                                            first_definition: first_span,
+                                            second_definition: explicit_name.span,
+                                        }
+                                        .report(),
+                                    );
+                                } else {
+                                    seen_params.insert(explicit_name.inner, explicit_name.span);
+                                }
+                            }
+                            DeclaredFunctionParam {
+                                name: param_name,
+                                ty: Spanned {
+                                    inner: self.resolve_type(&param.inner.inner.ty),
+                                    span: param.inner.inner.ty.span,
+                                },
+                            }
+                        })
+                        .collect();
+                    let result = result.as_ref().map(|result| Spanned {
+                        inner: self.resolve_type(result),
+                        span: result.span,
+                    });
+                    let func_index =
+                        self.declare_function(name.clone(), params, result, ItemSource::Imported);
                     ImportValue::Function { func_index }
                 }
-                ast::ImportDeclaration::Global {
-                    name,
-                    mut_span,
-                    type_annotation,
-                } => {
-                    let ty = self.resolve_type(&type_annotation.inner);
-
+                ast::ImportDeclaration::Global { name, mut_span, ty } => {
+                    let ty = ast::Spanned {
+                        inner: self.resolve_type(&ty),
+                        span: ty.span,
+                    };
                     let global_index = self.declared_globals.len() as u32;
                     self.declared_globals.push(DeclaredGlobal {
                         source: ItemSource::Imported,
                         name: name.clone(),
-                        ty: ast::Spanned {
-                            inner: ty,
-                            span: type_annotation.inner.span,
-                        },
+                        ty,
                         mut_span: *mut_span,
                         accesses: Vec::new(),
                     });
@@ -2005,6 +2095,10 @@ impl Builder<'_, '_> {
                 // nothing to do here
                 Ok(())
             }
+            ast::Item::Enum { .. } => {
+                // TODO: lower enum items in TIR
+                Ok(())
+            }
         }
     }
 
@@ -2115,30 +2209,43 @@ impl Builder<'_, '_> {
         signature: &ast::FunctionSignature,
         block: &Spanned<ast::Expression>,
     ) -> Result<(), ()> {
+        let lookup = signature
+            .params
+            .inner
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                (
+                    (0 as ScopeIndex, param.inner.inner.name.inner),
+                    index as LocalIndex,
+                )
+            })
+            .collect();
+
         let params = signature
             .params
             .inner
             .iter()
             .map(|param| FunctionParam {
-                name: param.inner.inner.name.clone(),
-                ty: Spanned {
-                    inner: self.resolve_type(&param.inner.inner.type_annotation.inner),
-                    span: param.inner.inner.type_annotation.inner.span,
-                },
                 mut_span: param.inner.inner.mut_span,
+                name: param.inner.inner.name.clone(),
+                ty: match &param.inner.inner.ty {
+                    Some(ty) => Spanned {
+                        inner: self.resolve_type(&ty),
+                        span: ty.span,
+                    },
+                    None => Spanned {
+                        inner: Type::Error,
+                        span: param.inner.inner.name.span,
+                    },
+                },
             })
             .collect::<Box<[_]>>();
 
         let result_span = match &signature.result {
-            Some(result) => Some(result.inner.span),
+            Some(result) => Some(result.span),
             None => None,
         };
-
-        let lookup = params
-            .iter()
-            .enumerate()
-            .map(|(index, param)| ((0 as ScopeIndex, param.name.inner), index as LocalIndex))
-            .collect();
 
         let func_index = self.resolve_func(signature.name.inner).unwrap();
         let signature_index = self.declared_functions[func_index as usize].signature_index;
@@ -4666,19 +4773,19 @@ impl Builder<'_, '_> {
         ctx: &mut FunctionContext,
         stmt: &Separated<Spanned<ast::Statement>>,
     ) -> Result<Expression, ()> {
-        let (mut_span, name, annotation, value) = match &stmt.inner.inner {
+        let (mut_span, name, ty, value) = match &stmt.inner.inner {
             ast::Statement::LocalDefinition {
                 mut_span,
                 name,
-                type_annotation,
+                ty,
                 value,
                 ..
-            } => (mut_span.clone(), name.clone(), type_annotation, value),
+            } => (mut_span.clone(), name.clone(), ty, value),
             _ => unreachable!(),
         };
 
-        let expected_type = match annotation {
-            Some(annotation) => Some(self.resolve_type(&annotation.inner)),
+        let expected_type = match ty {
+            Some(ty) => Some(self.resolve_type(ty)),
             None => None,
         };
         let mut value = self.build_expression(
@@ -5223,7 +5330,7 @@ mod tests {
     fn test_local_variable_used_in_import_call() {
         let case = TestCase::new(indoc! {"
             import \"console\" {
-                fn log(ptr: i32, len: i32) -> unit;
+                fn log(foo, bar) -> unit;
             }
 
             fn main() -> unit {
