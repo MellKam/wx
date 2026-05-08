@@ -99,6 +99,7 @@ pub enum Type {
     Bool,
     Function { signature_index: u32 },
     Namespace { namespace_index: u32 },
+    BuiltinMethod(BuiltinMethod),
 }
 
 impl Clone for ast::Spanned<Type> {
@@ -208,6 +209,13 @@ pub type NamespaceIndex = u32;
 pub type GlobalIndex = u32;
 pub type SignatureIndex = u32;
 pub type EnumVariantIndex = u32;
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum BuiltinMethod {
+    StringLen,
+}
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1518,6 +1526,9 @@ impl Builder<'_, '_> {
 
                 format!("fn({}) -> {}", params, self.display_type(func.result()))
             }
+            Type::BuiltinMethod(method) => match method {
+                BuiltinMethod::StringLen => "string::len".to_string(),
+            },
         }
     }
 
@@ -1766,6 +1777,7 @@ impl Builder<'_, '_> {
                 // TODO: lower enum items in TIR
                 Ok(())
             }
+            ast::Item::Impl { .. } => Ok(()),
         }
     }
 
@@ -2099,6 +2111,7 @@ impl Builder<'_, '_> {
                 // TODO: lower enum items in TIR
                 Ok(())
             }
+            ast::Item::Impl { .. } => Ok(()),
         }
     }
 
@@ -2755,6 +2768,9 @@ impl Builder<'_, '_> {
             ast::Expression::ObjectAccess { object, member } => {
                 self.build_object_access_expression(func_ctx, object, member.clone(), access_ctx)
             }
+            ast::Expression::TupleFieldAccess { .. } => {
+                todo!("tuple field access in TIR")
+            }
             ast::Expression::Return { .. } => self.build_return_expression(func_ctx, expr),
             ast::Expression::Block { .. } => func_ctx.enter_block(
                 BlockScope {
@@ -2792,7 +2808,20 @@ impl Builder<'_, '_> {
         let object = self.build_expression(func_ctx, object_expr, access_ctx)?;
         match object.ty {
             Type::String => {
-                todo!("string member access is not implemented yet")
+                let method_name = self.interner.resolve(_member.inner).unwrap_or("");
+                let method = match method_name {
+                    "len" => BuiltinMethod::StringLen,
+                    _ => todo!("unknown string method: {method_name}"),
+                };
+                let span = ast::TextSpan::merge(object_expr.span, _member.span);
+                Ok(Expression {
+                    kind: ExprKind::ObjectAccess {
+                        object: Box::new(object),
+                        member: _member,
+                    },
+                    ty: Type::BuiltinMethod(method),
+                    span,
+                })
             }
             _ => todo!(),
         }
@@ -4669,6 +4698,31 @@ impl Builder<'_, '_> {
         )?;
         let signature_index = match callee.ty {
             Type::Function { signature_index } => signature_index,
+            Type::BuiltinMethod(method) => {
+                if !ast_arguments.inner.is_empty() {
+                    self.diagnostics.push(
+                        ArgumentCountMismatchDiagnostic {
+                            file_id: self.ast.file_id,
+                            expected_count: 0,
+                            actual_count: ast_arguments.inner.len(),
+                            param_types: &[],
+                            call_span: expr.span,
+                        }
+                        .report(&self),
+                    );
+                }
+                let result_type = match method {
+                    BuiltinMethod::StringLen => Type::U32,
+                };
+                return Ok(Expression {
+                    kind: ExprKind::Call {
+                        callee: Box::new(callee),
+                        arguments: Box::new([]),
+                    },
+                    ty: result_type,
+                    span: expr.span,
+                });
+            }
             ty => {
                 self.diagnostics.push(
                     CannotCallExpressionDiagnostic {
@@ -5330,12 +5384,12 @@ mod tests {
     fn test_local_variable_used_in_import_call() {
         let case = TestCase::new(indoc! {"
             import \"console\" {
-                fn log(foo, bar) -> unit;
+                fn log(ptr: u32, len: u32);
             }
 
-            fn main() -> unit {
-                local x: i32 = 5;
-                console::log(x, 4);
+            fn main() {
+                local length = \"test\".len();
+                console::log(0, length);
             }
 
             export { main }

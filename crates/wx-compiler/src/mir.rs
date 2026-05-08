@@ -1,6 +1,6 @@
-/// the role of MIR is to desugar the syntax like x += 1 into x = x + 1 and lower
-/// the concepts like enums into primitive constants, convert labels from symbols
-/// in interner into numeric indices
+/// the role of MIR is to desugar the syntax like x += 1 into x = x + 1 and
+/// lower the concepts like enums into primitive constants, convert labels from
+/// symbols in interner into numeric indices
 use std::collections::HashMap;
 
 use string_interner::symbol::SymbolU32;
@@ -16,6 +16,7 @@ pub type TupleIndex = u32;
 pub type StringIndex = u32;
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Debug)]
 pub enum ExprKind {
     Noop,
     Bool {
@@ -186,6 +187,7 @@ pub enum Type {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Debug)]
 pub struct Expression {
     pub kind: ExprKind,
     pub ty: Type,
@@ -379,6 +381,7 @@ impl MIR {
 
         let mut builder = Builder {
             tir,
+            interner,
             string_pool: StringPool::new(),
             tuple_pool: TuplePool::new(),
             func_index_remap,
@@ -510,7 +513,7 @@ impl StringPool {
         if let Some(&index) = self.lookup.get(&symbol) {
             index
         } else {
-            let index = self.lookup.len() as StringIndex;
+            let index = self.strings.len() as StringIndex;
             self.lookup.insert(symbol, index);
             self.strings.push(symbol);
             index
@@ -520,6 +523,7 @@ impl StringPool {
 
 struct Builder<'tir> {
     tir: &'tir tir::TIR,
+    interner: &'tir ast::StringInterner,
     string_pool: StringPool,
     tuple_pool: TuplePool,
     func_index_remap: Box<[u32]>,
@@ -553,6 +557,9 @@ impl<'tir> Builder<'tir> {
                 // These shouldn't appear in valid TIR, but handle gracefully
                 Type::I32
             }
+            tir::Type::BuiltinMethod(_) => unreachable!(
+                "BuiltinMethod type is only on ObjectAccess nodes inside Call, never lowered directly"
+            ),
         }
     }
 
@@ -668,7 +675,9 @@ impl<'tir> Builder<'tir> {
                 ty: self.lower_type(expr.ty),
             },
             tir::ExprKind::Char { value } => Expression {
-                kind: ExprKind::Int { value: *value as i64 },
+                kind: ExprKind::Int {
+                    value: *value as i64,
+                },
                 ty: Type::U32,
             },
             tir::ExprKind::String { symbol } => {
@@ -699,6 +708,37 @@ impl<'tir> Builder<'tir> {
                 _ => unreachable!(),
             },
             tir::ExprKind::Call { callee, arguments } => {
+                if let tir::Type::BuiltinMethod(method) = callee.ty {
+                    let tir::ExprKind::ObjectAccess { object, .. } = &callee.kind else {
+                        unreachable!()
+                    };
+                    let lowered = self.lower_expression(func_ctx, object);
+                    return match method {
+                        tir::BuiltinMethod::StringLen => match lowered.kind {
+                            ExprKind::LocalGet {
+                                scope_index,
+                                local_index,
+                            } => Expression {
+                                kind: ExprKind::LocalTupleGet {
+                                    scope_index,
+                                    local_index,
+                                    field_index: 1,
+                                },
+                                ty: Type::U32,
+                            },
+                            ExprKind::String { string_index } => {
+                                let symbol = self.string_pool.strings[string_index as usize];
+                                let len = self.interner.resolve(symbol).unwrap().len() as i64;
+                                Expression {
+                                    kind: ExprKind::Int { value: len },
+                                    ty: Type::U32,
+                                }
+                            }
+                            x => todo!("string len on non-local receiver {:?}", x),
+                        },
+                    };
+                }
+
                 let callee = Box::new(self.lower_expression(func_ctx, callee));
                 let arguments = arguments
                     .iter()
@@ -721,38 +761,10 @@ impl<'tir> Builder<'tir> {
                     tir::Namespace::Enum(_) => self.lower_expression(func_ctx, member),
                 }
             }
-            tir::ExprKind::ObjectAccess { .. } => {
-                todo!();
-                // let object = self.lower_expression(func_ctx, object);
-                // match object.kind {
-                //     ExprKind::String {
-                //         scope_index,
-                //         local_index,
-                //         ..
-                //     } => {
-                //         let field_index = match
-                // self.interner.resolve(member.inner).unwrap() {
-                //             "ptr" => 0,
-                //             "len" => 1,
-                //             _ => unreachable!(),
-                //         };
-
-                //         Expression {
-                //             kind: ExprKind::LocalTupleGet {
-                //                 scope_index,
-                //                 local_index,
-                //                 field_index,
-                //             },
-                //             ty: match field_index {
-                //                 0 => Type::StringPointer,
-                //                 1 => Type::U32,
-                //                 _ => unreachable!(),
-                //             },
-                //         }
-                //     }
-                //     _ => unreachable!(),
-                // }
-            }
+            tir::ExprKind::ObjectAccess { .. } => unreachable!(
+                "ObjectAccess only appears as callee of a Call with BuiltinMethod type, \
+                 handled in the Call arm"
+            ),
             tir::ExprKind::IfElse {
                 condition,
                 then_block,
@@ -1093,11 +1105,13 @@ mod tests {
     fn test_parse_simple_addition() {
         let case = TestCase::new(indoc! {"
             import \"console\" {
-                fn log(ptr: i32, len: i32) -> unit;
+                fn log(ptr: u32, len: u32);
             }
 
-            fn main() -> unit {
-                console::log(\"hello world\".[0]);
+            fn main() {
+                local str = \"test\";
+                local length = str.len();
+                console::log(0, length);
             }
 
             export { main }

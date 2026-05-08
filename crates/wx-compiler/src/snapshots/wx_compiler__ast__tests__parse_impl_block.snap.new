@@ -1,0 +1,108 @@
+---
+source: crates/wx-compiler/src/ast.rs
+assertion_line: 3176
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Impl:
+          target:
+            inner:
+              Identifier:
+                symbol: 1
+            span:
+              start: 5
+              end: 11
+          methods:
+            open:
+              start: 12
+              end: 13
+            inner:
+              - inner:
+                  inner:
+                    signature:
+                      name:
+                        inner: 2
+                        span:
+                          start: 21
+                          end: 24
+                      params:
+                        open:
+                          start: 24
+                          end: 25
+                        inner:
+                          - inner:
+                              inner:
+                                mut_span: ~
+                                name:
+                                  inner: 3
+                                  span:
+                                    start: 25
+                                    end: 29
+                                ty: ~
+                              span:
+                                start: 25
+                                end: 29
+                            separator: ~
+                        close:
+                          start: 29
+                          end: 30
+                      result:
+                        inner:
+                          Identifier:
+                            symbol: 4
+                        span:
+                          start: 34
+                          end: 37
+                    block:
+                      inner:
+                        Block:
+                          statements:
+                            open:
+                              start: 38
+                              end: 39
+                            inner:
+                              - inner:
+                                  inner:
+                                    Expression:
+                                      inner:
+                                        TupleFieldAccess:
+                                          object:
+                                            inner:
+                                              Identifier:
+                                                symbol: 3
+                                            span:
+                                              start: 48
+                                              end: 52
+                                          field:
+                                            inner: 0
+                                            span:
+                                              start: 53
+                                              end: 54
+                                      span:
+                                        start: 48
+                                        end: 54
+                                  span:
+                                    start: 48
+                                    end: 54
+                                separator: ~
+                            close:
+                              start: 59
+                              end: 60
+                      span:
+                        start: 38
+                        end: 60
+                  span:
+                    start: 18
+                    end: 60
+                separator: ~
+            close:
+              start: 61
+              end: 62
+      span:
+        start: 0
+        end: 62
+    separator: ~

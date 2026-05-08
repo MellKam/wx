@@ -1,0 +1,5 @@
+impl string {
+  fn len(self) -> usize {
+    self.1
+  }
+}

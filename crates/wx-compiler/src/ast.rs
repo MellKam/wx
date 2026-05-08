@@ -1154,6 +1154,10 @@ pub enum Expression {
         object: Box<Spanned<Expression>>,
         member: Spanned<SymbolU32>,
     },
+    TupleFieldAccess {
+        object: Box<Spanned<Expression>>,
+        field: Spanned<u32>,
+    },
     /// `return {expr}`
     Return {
         value: Option<Box<Spanned<Expression>>>,
@@ -1263,8 +1267,19 @@ pub struct FunctionParam {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+pub struct ImplMethod {
+    pub signature: FunctionSignature,
+    pub block: Box<Spanned<Expression>>,
+}
+
+impl ImplMethod {
+    pub fn is_block_like(&self) -> bool {
+        true
+    }
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionSignature {
-    pub fn_span: TextSpan,
     pub name: Spanned<SymbolU32>,
     pub params: Grouped<Box<[Separated<Spanned<FunctionParam>>]>>,
     pub result: Option<Box<Spanned<TypeExpression>>>,
@@ -1323,10 +1338,13 @@ pub enum Item {
         entries: Grouped<Box<[Separated<Spanned<ImportEntry>>]>>,
     },
     Enum {
-        enum_span: TextSpan,
         repr: Option<Box<Spanned<TypeExpression>>>,
         name: Spanned<SymbolU32>,
         variants: Grouped<Box<[Separated<Spanned<EnumVariant>>]>>,
+    },
+    Impl {
+        target: Box<Spanned<TypeExpression>>,
+        methods: Grouped<Box<[Separated<Spanned<ImplMethod>>]>>,
     },
 }
 
@@ -1338,6 +1356,7 @@ impl Item {
             Item::Import { .. } => true,
             Item::Global { .. } => false,
             Item::Enum { .. } => true,
+            Item::Impl { .. } => true,
         }
     }
 }
@@ -1423,6 +1442,7 @@ pub enum Keyword {
     Else,
     As,
     Unreachable,
+    Impl,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1445,6 +1465,7 @@ impl TryFrom<&str> for Keyword {
             "continue" => Ok(Keyword::Continue),
             "as" => Ok(Keyword::As),
             "unreachable" => Ok(Keyword::Unreachable),
+            "impl" => Ok(Keyword::Impl),
             _ => Err(()),
         }
     }
@@ -1702,6 +1723,7 @@ impl<'input> Parser<'input> {
             Some(Keyword::Export) => Ok(Parser::parse_export_block),
             Some(Keyword::Import) => Ok(Parser::parse_import_block),
             Some(Keyword::Enum) => Ok(Parser::parse_enum_item),
+            Some(Keyword::Impl) => Ok(Parser::parse_impl_item),
             _ => return Err(()),
         }
     }
@@ -1825,7 +1847,6 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: Item::Function {
                 signature: FunctionSignature {
-                    fn_span: fn_span.span,
                     name,
                     params,
                     result,
@@ -2040,21 +2061,52 @@ impl<'input> Parser<'input> {
         object: Spanned<Expression>,
         _: BindingPower,
     ) -> Result<Spanned<Expression>, ()> {
-        _ = parser.lexer.next();
-        let member_token = parser.next_expect(Token::Identifier)?;
-        let member_symbol = parser.intern_identifier(member_token.span);
-
-        let span = TextSpan::merge(object.span, member_token.span);
-        Ok(Spanned {
-            inner: Expression::ObjectAccess {
-                object: Box::new(object),
-                member: Spanned {
-                    inner: member_symbol,
-                    span: member_token.span,
-                },
-            },
-            span,
-        })
+        _ = parser.lexer.next(); // consume the dot
+        let token = parser.lexer.next();
+        let span = TextSpan::merge(object.span, token.span);
+        match token.inner {
+            Token::Identifier => {
+                let member_symbol = parser.intern_identifier(token.span);
+                Ok(Spanned {
+                    inner: Expression::ObjectAccess {
+                        object: Box::new(object),
+                        member: Spanned {
+                            inner: member_symbol,
+                            span: token.span,
+                        },
+                    },
+                    span,
+                })
+            }
+            Token::Int => {
+                let index = token
+                    .span
+                    .extract_str(parser.source)
+                    .parse::<u32>()
+                    .unwrap();
+                Ok(Spanned {
+                    inner: Expression::TupleFieldAccess {
+                        object: Box::new(object),
+                        field: Spanned {
+                            inner: index,
+                            span: token.span,
+                        },
+                    },
+                    span,
+                })
+            }
+            _ => {
+                parser.ast.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: parser.ast.file_id,
+                        received: token,
+                        expected: Token::Identifier,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
     }
 
     fn parse_binary_expression(
@@ -2753,20 +2805,17 @@ impl<'input> Parser<'input> {
 
         let repr = if let Some(open_arrow) = parser.lexer.next_if(Token::LeftArrow) {
             let type_expr = parser.parse_type_expression()?;
-            match parser.next_expect(Token::RightArrow) {
-                Ok(_) => {}
-                Err(_) => {
-                    parser.ast.diagnostics.push(
-                        UnclosedDelimiterDiagnostic {
-                            file_id: parser.ast.file_id,
-                            open_span: open_arrow.span,
-                            close_token: Token::RightArrow,
-                            expected_close_span: type_expr.span.end_position(),
-                        }
-                        .report(),
-                    );
-                }
-            };
+            if parser.lexer.next_if(Token::RightArrow).is_none() {
+                parser.ast.diagnostics.push(
+                    UnclosedDelimiterDiagnostic {
+                        file_id: parser.ast.file_id,
+                        open_span: open_arrow.span,
+                        close_token: Token::RightArrow,
+                        expected_close_span: type_expr.span.end_position(),
+                    }
+                    .report(),
+                );
+            }
             Some(Box::new(type_expr))
         } else {
             None
@@ -2810,7 +2859,6 @@ impl<'input> Parser<'input> {
 
         Ok(Spanned {
             inner: Item::Enum {
-                enum_span,
                 repr,
                 name: Spanned {
                     inner: name_symbol,
@@ -2818,6 +2866,76 @@ impl<'input> Parser<'input> {
                 },
                 variants,
             },
+            span,
+        })
+    }
+
+    fn parse_impl_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let impl_span = parser.lexer.next().span;
+        let target = Box::new(parser.parse_type_expression()?);
+
+        let methods = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::SemiColon,
+            item_handler: |parser: &mut Parser| -> Result<Spanned<ImplMethod>, ()> {
+                let fn_token = parser.next_expect(Token::Identifier)?;
+                let fn_span = fn_token.span;
+                match Keyword::try_from(fn_span.extract_str(parser.source)) {
+                    Ok(Keyword::Fn) => {}
+                    _ => {
+                        // todo: make separate diagnostic for invalid impl item
+                        parser.ast.diagnostics.push(
+                            UnexpectedTokenDiagnostic {
+                                file_id: parser.ast.file_id,
+                                received: fn_token,
+                                expected: Token::Identifier,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
+                }
+                let name_span = parser.next_expect(Token::Identifier)?.span;
+                let name_symbol = parser.intern_identifier(name_span);
+                let params = SeparatedGroup {
+                    open_token: Token::OpenParen,
+                    close_token: Token::CloseParen,
+                    separator_token: Token::Comma,
+                    item_handler: Parser::parse_function_param_item,
+                    should_warn_missing_separator: None,
+                }
+                .parse(parser)?;
+                let result = parser
+                    .lexer
+                    .next_if(Token::MinusRightArrow)
+                    .ok_or(())
+                    .and_then(|_| Ok(Some(Box::new(Parser::parse_type_expression(parser)?))))
+                    .unwrap_or_else(|_| None);
+                let block = Parser::parse_block_expression(parser)?;
+                let method_span = TextSpan::merge(fn_span, block.span);
+                Ok(Spanned {
+                    inner: ImplMethod {
+                        signature: FunctionSignature {
+                            name: Spanned {
+                                inner: name_symbol,
+                                span: name_span,
+                            },
+                            params,
+                            result,
+                        },
+                        block: Box::new(block),
+                    },
+                    span: method_span,
+                })
+            },
+            should_warn_missing_separator: Some(|method: &ImplMethod| !method.is_block_like()),
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(impl_span, methods.close);
+        Ok(Spanned {
+            inner: Item::Impl { target, methods },
             span,
         })
     }
@@ -2830,7 +2948,13 @@ impl<'input> Parser<'input> {
             TypeExpression::Identifier { symbol } => {
                 if parser.lexer.next_if(Token::Colon).is_some() {
                     let ty = parser.parse_type_expression()?;
-                    (Some(Spanned { inner: symbol, span: first.span }), Box::new(ty))
+                    (
+                        Some(Spanned {
+                            inner: symbol,
+                            span: first.span,
+                        }),
+                        Box::new(ty),
+                    )
                 } else {
                     (None, Box::new(first))
                 }
@@ -3051,12 +3175,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_import_with_alias() {
+    fn test_parse_impl_block() {
         let case = TestCase::new(indoc! {"
-            enum<u8> Color {
-                Red = 1,
-                Green = 2,
-                Blue = 3,
+            impl string {
+                fn len(self) -> u32 {
+                    self.0
+                }
             }
         "});
         insta::assert_yaml_snapshot!(case.ast);

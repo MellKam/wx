@@ -223,6 +223,7 @@ impl Builder {
                     Node::Concat(items)
                 }
                 Item::Enum { .. } => todo!("fmt for enum items"),
+                Item::Impl { .. } => todo!("fmt for impl items"),
             });
         }
 
@@ -524,6 +525,10 @@ impl Builder {
                 ));
                 Node::Concat(items)
             }
+            Expression::TupleFieldAccess { object, field } => Node::Concat(vec![
+                Self::build_expression(interner, source, object),
+                Node::Text(format!(".{}", field.inner)),
+            ]),
         }
     }
 
