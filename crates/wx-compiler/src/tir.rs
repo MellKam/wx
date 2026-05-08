@@ -99,7 +99,6 @@ pub enum Type {
     Bool,
     Function { signature_index: u32 },
     Namespace { namespace_index: u32 },
-    BuiltinMethod(BuiltinMethod),
 }
 
 impl Clone for ast::Spanned<Type> {
@@ -210,13 +209,6 @@ pub type GlobalIndex = u32;
 pub type SignatureIndex = u32;
 pub type EnumVariantIndex = u32;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub enum BuiltinMethod {
-    StringLen,
-}
-
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ExprKind {
@@ -267,6 +259,11 @@ pub enum ExprKind {
     Call {
         callee: Box<Expression>,
         arguments: Box<[Expression]>,
+    },
+    MethodCall {
+        object: Box<Expression>,
+        arguments: Box<[Expression]>,
+        func_index: FunctionIndex,
     },
     Block {
         scope_index: ScopeIndex,
@@ -505,6 +502,12 @@ pub enum SymbolNamespace {
 pub enum ItemSource {
     Defined,
     Imported,
+}
+
+#[derive(Clone, Copy)]
+pub enum ImplEntry {
+    Method(FunctionIndex),
+    AssociatedFn(FunctionIndex),
 }
 
 impl PartialOrd for ItemSource {
@@ -1277,10 +1280,10 @@ impl NotANamespaceDiagnostic {
 
 struct ArgumentCountMismatchDiagnostic<'a> {
     file_id: FileId,
-    expected_count: usize,
     actual_count: usize,
-    param_types: &'a [Type],
+    params: &'a [Type],
     call_span: TextSpan,
+    is_method: bool,
 }
 
 impl ArgumentCountMismatchDiagnostic<'_> {
@@ -1288,9 +1291,10 @@ impl ArgumentCountMismatchDiagnostic<'_> {
         let mut diagnostic = Diagnostic::error()
             .with_code(DiagnosticCode::ArgumentCountMismatch.code())
             .with_message(format!(
-                "this function takes {} {} but {} {} supplied",
-                self.expected_count,
-                if self.expected_count == 1 {
+                "this {} takes {} {} but {} {} supplied",
+                if self.is_method { "method" } else { "function" },
+                self.params.len(),
+                if self.params.len() == 1 {
                     "argument"
                 } else {
                     "arguments"
@@ -1304,10 +1308,10 @@ impl ArgumentCountMismatchDiagnostic<'_> {
             ))
             .with_label(Label::primary(self.file_id, self.call_span));
 
-        if self.actual_count < self.expected_count {
+        if self.actual_count < self.params.len() {
             // Missing arguments
-            let missing_count = self.expected_count - self.actual_count;
-            let missing_types: Vec<String> = self.param_types[self.actual_count..]
+            let missing_count = self.params.len() - self.actual_count;
+            let missing_types: Vec<String> = self.params[self.actual_count..]
                 .iter()
                 .map(|ty| builder.display_type(*ty))
                 .collect();
@@ -1328,7 +1332,7 @@ impl ArgumentCountMismatchDiagnostic<'_> {
             }
         } else {
             // Extra arguments
-            let extra_count = self.actual_count - self.expected_count;
+            let extra_count = self.actual_count - self.params.len();
             if extra_count == 1 {
                 diagnostic =
                     diagnostic.with_note(format!("unexpected argument #{}", self.actual_count));
@@ -1363,6 +1367,7 @@ struct Builder<'ast, 'interner> {
     signatures: Vec<FunctionSignature>,
     signature_index_lookup: HashMap<FunctionSignature, SignatureIndex>,
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), GlobalValue>,
+    impl_members: HashMap<Type, HashMap<SymbolU32, ImplEntry>>,
 }
 
 enum BlockState<T> {
@@ -1526,9 +1531,6 @@ impl Builder<'_, '_> {
 
                 format!("fn({}) -> {}", params, self.display_type(func.result()))
             }
-            Type::BuiltinMethod(method) => match method {
-                BuiltinMethod::StringLen => "string::len".to_string(),
-            },
         }
     }
 
@@ -1626,10 +1628,7 @@ impl Builder<'_, '_> {
                 Ok(())
             }
             ast::Item::Global {
-                mut_span,
-                name,
-                ty: type_annotation,
-                ..
+                mut_span, name, ty, ..
             } => {
                 match self
                     .symbol_lookup
@@ -1666,8 +1665,7 @@ impl Builder<'_, '_> {
                     None => {}
                 };
 
-                // Resolve the type
-                let (ty, ty_span) = match type_annotation {
+                let (ty, ty_span) = match ty {
                     Some(ty) => (self.resolve_type(&ty), ty.span),
                     None => {
                         self.diagnostics.push(
@@ -1777,7 +1775,60 @@ impl Builder<'_, '_> {
                 // TODO: lower enum items in TIR
                 Ok(())
             }
-            ast::Item::Impl { .. } => Ok(()),
+            ast::Item::Impl { target, methods } => {
+                let self_type = self.resolve_type(target);
+                for method in methods.inner.iter() {
+                    let sig = &method.inner.inner.signature;
+                    let self_symbol = self.interner.get_or_intern("self");
+                    let params = sig
+                        .params
+                        .inner
+                        .iter()
+                        .map(|p| {
+                            let is_self = p.inner.inner.name.inner == self_symbol;
+                            DeclaredFunctionParam {
+                                name: Some(p.inner.inner.name.clone()),
+                                ty: match &p.inner.inner.ty {
+                                    Some(ty) => Spanned {
+                                        inner: self.resolve_type(ty),
+                                        span: ty.span,
+                                    },
+                                    None => Spanned {
+                                        inner: if is_self { self_type } else { Type::Error },
+                                        span: p.inner.inner.name.span,
+                                    },
+                                },
+                            }
+                        })
+                        .collect();
+                    let result = sig.result.as_ref().map(|r| Spanned {
+                        inner: self.resolve_type(r),
+                        span: r.span,
+                    });
+                    let func_index = self.declare_function(
+                        sig.name.clone(),
+                        params,
+                        result,
+                        ItemSource::Defined,
+                    );
+                    let is_method = sig
+                        .params
+                        .inner
+                        .first()
+                        .map(|p| p.inner.inner.name.inner == self_symbol)
+                        .unwrap_or(false);
+                    let entry = if is_method {
+                        ImplEntry::Method(func_index)
+                    } else {
+                        ImplEntry::AssociatedFn(func_index)
+                    };
+                    self.impl_members
+                        .entry(self_type)
+                        .or_default()
+                        .insert(sig.name.inner, entry);
+                }
+                Ok(())
+            }
         }
     }
 
@@ -1911,7 +1962,8 @@ impl Builder<'_, '_> {
     fn build_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match item {
             ast::Item::Function { signature, block } => {
-                self.build_function_definition(signature, block)
+                let func_index = self.resolve_func(signature.name.inner).unwrap();
+                self.build_function_definition(signature, block, func_index)
             }
             ast::Item::Global {
                 name,
@@ -2111,7 +2163,25 @@ impl Builder<'_, '_> {
                 // TODO: lower enum items in TIR
                 Ok(())
             }
-            ast::Item::Impl { .. } => Ok(()),
+            ast::Item::Impl { target, methods } => {
+                let target_type = self.resolve_type(target);
+                for method in methods.inner.iter() {
+                    let func_index = match self
+                        .impl_members
+                        .get(&target_type)
+                        .and_then(|m| m.get(&method.inner.inner.signature.name.inner))
+                    {
+                        Some(ImplEntry::Method(i) | ImplEntry::AssociatedFn(i)) => *i,
+                        None => continue,
+                    };
+                    self.build_function_definition(
+                        &method.inner.inner.signature,
+                        &method.inner.inner.block,
+                        func_index,
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 
@@ -2221,6 +2291,7 @@ impl Builder<'_, '_> {
         &mut self,
         signature: &ast::FunctionSignature,
         block: &Spanned<ast::Expression>,
+        func_index: FunctionIndex,
     ) -> Result<(), ()> {
         let lookup = signature
             .params
@@ -2235,38 +2306,24 @@ impl Builder<'_, '_> {
             })
             .collect();
 
-        let params = signature
+        let params: Box<[FunctionParam]> = signature
             .params
             .inner
             .iter()
-            .map(|param| FunctionParam {
-                mut_span: param.inner.inner.mut_span,
-                name: param.inner.inner.name.clone(),
-                ty: match &param.inner.inner.ty {
-                    Some(ty) => Spanned {
-                        inner: self.resolve_type(&ty),
-                        span: ty.span,
-                    },
-                    None => Spanned {
-                        inner: Type::Error,
-                        span: param.inner.inner.name.span,
-                    },
-                },
+            .zip(self.declared_functions[func_index as usize].params.iter())
+            .map(|(ast_param, declared_param)| FunctionParam {
+                mut_span: ast_param.inner.inner.mut_span,
+                name: ast_param.inner.inner.name.clone(),
+                ty: declared_param.ty.clone(),
             })
-            .collect::<Box<[_]>>();
+            .collect();
 
         let result_span = match &signature.result {
             Some(result) => Some(result.span),
             None => None,
         };
-
-        let func_index = self.resolve_func(signature.name.inner).unwrap();
         let signature_index = self.declared_functions[func_index as usize].signature_index;
-        let typed_signature = self
-            .signatures
-            .get(signature_index as usize)
-            .unwrap()
-            .clone();
+        let type_signature = self.signatures[signature_index as usize].clone();
 
         let root_scope = BlockScope {
             parent: None,
@@ -2282,7 +2339,7 @@ impl Builder<'_, '_> {
                 })
                 .collect(),
             inferred_type: None,
-            expected_type: Some(typed_signature.result()),
+            expected_type: Some(type_signature.result()),
         };
 
         let mut ctx = FunctionContext {
@@ -2802,29 +2859,44 @@ impl Builder<'_, '_> {
         &mut self,
         func_ctx: &mut FunctionContext,
         object_expr: &Spanned<ast::Expression>,
-        _member: Spanned<SymbolU32>,
+        member: Spanned<SymbolU32>,
         access_ctx: AccessContext,
     ) -> Result<Expression, ()> {
         let object = self.build_expression(func_ctx, object_expr, access_ctx)?;
-        match object.ty {
-            Type::String => {
-                let method_name = self.interner.resolve(_member.inner).unwrap_or("");
-                let method = match method_name {
-                    "len" => BuiltinMethod::StringLen,
-                    _ => todo!("unknown string method: {method_name}"),
+        let entry = self
+            .impl_members
+            .get(&object.ty)
+            .and_then(|members| members.get(&member.inner));
+        match entry {
+            Some(ImplEntry::Method(func_index)) => {
+                let func_index = *func_index;
+                let func = &mut self.declared_functions[func_index as usize];
+                func.accesses.push(member.span);
+                let ty = Type::Function {
+                    signature_index: func.signature_index,
                 };
-                let span = ast::TextSpan::merge(object_expr.span, _member.span);
-                Ok(Expression {
+                return Ok(Expression {
                     kind: ExprKind::ObjectAccess {
                         object: Box::new(object),
-                        member: _member,
+                        member: member.clone(),
                     },
-                    ty: Type::BuiltinMethod(method),
-                    span,
-                })
+                    ty,
+                    span: ast::TextSpan::merge(object_expr.span, member.span),
+                });
             }
-            _ => todo!(),
+            Some(ImplEntry::AssociatedFn(_)) => {
+                // TODO: emit "this is an associated function, use Type::name() syntax" diagnostic
+            }
+            None => {}
         }
+        self.diagnostics.push(
+            UndeclaredIdentifierDiagnostic {
+                file_id: self.ast.file_id,
+                span: member.span,
+            }
+            .report(),
+        );
+        Err(())
     }
 
     fn build_namespace_access_expression(
@@ -4678,87 +4750,18 @@ impl Builder<'_, '_> {
         }
     }
 
-    fn build_call_expression(
+    fn build_call_arguments(
         &mut self,
         ctx: &mut FunctionContext,
-        expr: &Spanned<ast::Expression>,
-    ) -> Result<Expression, ()> {
-        let (ast_callee, ast_arguments) = match &expr.inner {
-            ast::Expression::Call { callee, arguments } => (callee, arguments),
-            _ => unreachable!(),
-        };
-
-        let callee = self.build_expression(
-            ctx,
-            ast_callee,
-            AccessContext {
-                expected_type: None,
-                access_kind: AccessKind::Read,
-            },
-        )?;
-        let signature_index = match callee.ty {
-            Type::Function { signature_index } => signature_index,
-            Type::BuiltinMethod(method) => {
-                if !ast_arguments.inner.is_empty() {
-                    self.diagnostics.push(
-                        ArgumentCountMismatchDiagnostic {
-                            file_id: self.ast.file_id,
-                            expected_count: 0,
-                            actual_count: ast_arguments.inner.len(),
-                            param_types: &[],
-                            call_span: expr.span,
-                        }
-                        .report(&self),
-                    );
-                }
-                let result_type = match method {
-                    BuiltinMethod::StringLen => Type::U32,
-                };
-                return Ok(Expression {
-                    kind: ExprKind::Call {
-                        callee: Box::new(callee),
-                        arguments: Box::new([]),
-                    },
-                    ty: result_type,
-                    span: expr.span,
-                });
-            }
-            ty => {
-                self.diagnostics.push(
-                    CannotCallExpressionDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: ast_callee.span,
-                        ty,
-                    }
-                    .report(&self),
-                );
-
-                return Ok(Expression {
-                    kind: ExprKind::Call {
-                        callee: Box::new(callee),
-                        arguments: Box::new([]),
-                    },
-                    ty: Type::Error,
-                    span: expr.span,
-                });
-            }
-        };
-
-        let func_type = self
-            .signatures
-            .get(signature_index as usize)
-            .unwrap()
-            .clone();
-
-        let expected_count = func_type.params().len();
-        let actual_count = ast_arguments.inner.len();
-
-        let arguments: Box<_> = ast_arguments
+        arguments: &ast::Grouped<Box<[Separated<Spanned<ast::Expression>>]>>,
+        params: &[Type],
+    ) -> Result<Box<[Expression]>, ()> {
+        arguments
             .inner
             .iter()
             .enumerate()
             .map(|(index, argument)| {
-                let expected_type = func_type.params().get(index).copied();
+                let expected_type = params.get(index).copied();
 
                 let mut argument = self.build_expression(
                     ctx,
@@ -4769,7 +4772,6 @@ impl Builder<'_, '_> {
                     },
                 )?;
 
-                // Only do type checking if we have a valid parameter at this index
                 if let Some(expected_type) = expected_type {
                     match argument.ty {
                         Type::Unknown => {
@@ -4792,34 +4794,122 @@ impl Builder<'_, '_> {
 
                 Ok(argument)
             })
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Box<_>, _>>()
+    }
 
-        // Check argument count mismatch
-        if actual_count != expected_count {
-            self.diagnostics.push(
-                ArgumentCountMismatchDiagnostic {
-                    file_id: self.ast.file_id,
-                    expected_count,
-                    actual_count,
-                    param_types: func_type.params(),
-                    call_span: callee.span,
-                }
-                .report(&self),
-            );
-        }
+    fn build_call_expression(
+        &mut self,
+        ctx: &mut FunctionContext,
+        expr: &Spanned<ast::Expression>,
+    ) -> Result<Expression, ()> {
+        let (ast_callee, arguments) = match &expr.inner {
+            ast::Expression::Call { callee, arguments } => (callee, arguments),
+            _ => unreachable!(),
+        };
 
-        Ok(Expression {
-            kind: ExprKind::Call {
-                callee: Box::new(callee),
-                arguments,
+        let callee = self.build_expression(
+            ctx,
+            ast_callee,
+            AccessContext {
+                expected_type: None,
+                access_kind: AccessKind::Read,
             },
-            ty: self
-                .signatures
-                .get(signature_index as usize)
-                .unwrap()
-                .result(),
-            span: expr.span,
-        })
+        )?;
+        let signature_index = match callee.ty {
+            Type::Function { signature_index } => signature_index,
+            ty => {
+                self.diagnostics.push(
+                    CannotCallExpressionDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: ast_callee.span,
+                        ty,
+                    }
+                    .report(&self),
+                );
+
+                return Ok(Expression {
+                    kind: ExprKind::Call {
+                        callee: Box::new(callee),
+                        arguments: Box::new([]),
+                    },
+                    ty: Type::Error,
+                    span: expr.span,
+                });
+            }
+        };
+
+        let signature = self
+            .signatures
+            .get(signature_index as usize)
+            .unwrap()
+            .clone();
+        match callee.kind {
+            ExprKind::ObjectAccess { member, object } => {
+                match self
+                    .impl_members
+                    .get(&object.ty)
+                    .and_then(|m| m.get(&member.inner))
+                    .copied()
+                {
+                    Some(ImplEntry::Method(func_index)) => {
+                        let params = &signature.items[1..signature.params_count];
+                        if arguments.inner.len() != params.len() {
+                            self.diagnostics.push(
+                                ArgumentCountMismatchDiagnostic {
+                                    file_id: self.ast.file_id,
+                                    actual_count: arguments.inner.len(),
+                                    params,
+                                    call_span: callee.span,
+                                    is_method: true,
+                                }
+                                .report(&self),
+                            );
+                        }
+
+                        let arguments = self.build_call_arguments(ctx, arguments, params)?;
+
+                        Ok(Expression {
+                            kind: ExprKind::MethodCall {
+                                object,
+                                arguments,
+                                func_index,
+                            },
+                            ty: signature.result(),
+                            span: expr.span,
+                        })
+                    }
+                    _ => todo!(
+                        "report error for calling unknown member or associated function as method"
+                    ),
+                }
+            }
+            _ => {
+                let params = signature.params();
+                if arguments.inner.len() != params.len() {
+                    self.diagnostics.push(
+                        ArgumentCountMismatchDiagnostic {
+                            file_id: self.ast.file_id,
+                            actual_count: arguments.inner.len(),
+                            params,
+                            call_span: callee.span,
+                            is_method: false,
+                        }
+                        .report(&self),
+                    );
+                }
+
+                let arguments = self.build_call_arguments(ctx, arguments, params)?;
+
+                Ok(Expression {
+                    kind: ExprKind::Call {
+                        callee: Box::new(callee),
+                        arguments,
+                    },
+                    ty: signature.result(),
+                    span: expr.span,
+                })
+            }
+        }
     }
 
     fn build_local_definition_statement(
@@ -5220,6 +5310,7 @@ impl TIR {
             signature_index_lookup: HashMap::new(),
             signatures: Vec::new(),
             symbol_lookup,
+            impl_members: HashMap::new(),
         };
 
         for item in ast.items.iter() {
@@ -5390,6 +5481,29 @@ mod tests {
             fn main() {
                 local length = \"test\".len();
                 console::log(0, length);
+            }
+
+            export { main }
+        "});
+        insta::assert_yaml_snapshot!(case.tir);
+    }
+
+    #[test]
+    fn test_impl_block() {
+        let case = TestCase::new(indoc! {"
+            struct string {
+                pub ptr: u32,
+                pub len: u32,
+            }
+
+            impl string {
+                fn len(self) -> u32 {
+                    self.len
+                }
+            }
+
+            fn main() -> u32 {
+                \"abc\".len()
             }
 
             export { main }

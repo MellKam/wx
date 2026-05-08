@@ -381,7 +381,6 @@ impl MIR {
 
         let mut builder = Builder {
             tir,
-            interner,
             string_pool: StringPool::new(),
             tuple_pool: TuplePool::new(),
             func_index_remap,
@@ -523,7 +522,6 @@ impl StringPool {
 
 struct Builder<'tir> {
     tir: &'tir tir::TIR,
-    interner: &'tir ast::StringInterner,
     string_pool: StringPool,
     tuple_pool: TuplePool,
     func_index_remap: Box<[u32]>,
@@ -557,9 +555,6 @@ impl<'tir> Builder<'tir> {
                 // These shouldn't appear in valid TIR, but handle gracefully
                 Type::I32
             }
-            tir::Type::BuiltinMethod(_) => unreachable!(
-                "BuiltinMethod type is only on ObjectAccess nodes inside Call, never lowered directly"
-            ),
         }
     }
 
@@ -708,41 +703,35 @@ impl<'tir> Builder<'tir> {
                 _ => unreachable!(),
             },
             tir::ExprKind::Call { callee, arguments } => {
-                if let tir::Type::BuiltinMethod(method) = callee.ty {
-                    let tir::ExprKind::ObjectAccess { object, .. } = &callee.kind else {
-                        unreachable!()
-                    };
-                    let lowered = self.lower_expression(func_ctx, object);
-                    return match method {
-                        tir::BuiltinMethod::StringLen => match lowered.kind {
-                            ExprKind::LocalGet {
-                                scope_index,
-                                local_index,
-                            } => Expression {
-                                kind: ExprKind::LocalTupleGet {
-                                    scope_index,
-                                    local_index,
-                                    field_index: 1,
-                                },
-                                ty: Type::U32,
-                            },
-                            ExprKind::String { string_index } => {
-                                let symbol = self.string_pool.strings[string_index as usize];
-                                let len = self.interner.resolve(symbol).unwrap().len() as i64;
-                                Expression {
-                                    kind: ExprKind::Int { value: len },
-                                    ty: Type::U32,
-                                }
-                            }
-                            x => todo!("string len on non-local receiver {:?}", x),
-                        },
-                    };
-                }
-
                 let callee = Box::new(self.lower_expression(func_ctx, callee));
                 let arguments = arguments
                     .iter()
                     .map(|arg| self.lower_expression(func_ctx, arg))
+                    .collect();
+
+                Expression {
+                    kind: ExprKind::Call { callee, arguments },
+                    ty: self.lower_type(expr.ty),
+                }
+            }
+            tir::ExprKind::MethodCall {
+                object,
+                arguments,
+                func_index,
+            } => {
+                let callee = Box::new(Expression {
+                    kind: ExprKind::Function {
+                        func_index: self.func_index_remap[*func_index as usize],
+                    },
+                    ty: self.lower_type(expr.ty),
+                });
+                let object = Box::new(self.lower_expression(func_ctx, object));
+                let arguments: Box<_> = std::iter::once(*object)
+                    .chain(
+                        arguments
+                            .iter()
+                            .map(|arg| self.lower_expression(func_ctx, arg)),
+                    )
                     .collect();
 
                 Expression {
@@ -762,8 +751,7 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::ObjectAccess { .. } => unreachable!(
-                "ObjectAccess only appears as callee of a Call with BuiltinMethod type, \
-                 handled in the Call arm"
+                "ObjectAccess expressions should have been desugared into MethodCall or NamespaceAccess in TIR"
             ),
             tir::ExprKind::IfElse {
                 condition,

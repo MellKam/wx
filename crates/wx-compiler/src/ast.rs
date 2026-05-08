@@ -303,6 +303,8 @@ define_diagnostic_codes! {
         ReservedIdentifier => "E0008",
         InvalidItem => "E0009",
         MissingInitializer => "E0010",
+        SelfInNonAssociatedFunction => "E0011",
+        SelfNotFirstParam => "E0012",
     }
 }
 
@@ -487,6 +489,40 @@ impl ReservedIdentifierDiagnostic {
             .with_code(DiagnosticCode::ReservedIdentifier.code())
             .with_message("cannot use keyword as identifier")
             .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+pub struct SelfInNonAssociatedFunctionDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl SelfInNonAssociatedFunctionDiagnostic {
+    pub const CODE: &'static str = DiagnosticCode::SelfInNonAssociatedFunction.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("`self` parameter is only allowed in associated functions")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("associated functions are those in `impl` blocks")
+    }
+}
+
+pub struct SelfNotFirstParamDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl SelfNotFirstParamDiagnostic {
+    pub const CODE: &'static str = DiagnosticCode::SelfNotFirstParam.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("unexpected `self` parameter in function")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("`self` must be the first parameter of an associated function")
     }
 }
 
@@ -1443,6 +1479,7 @@ pub enum Keyword {
     As,
     Unreachable,
     Impl,
+    SelfKw,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1466,6 +1503,7 @@ impl TryFrom<&str> for Keyword {
             "as" => Ok(Keyword::As),
             "unreachable" => Ok(Keyword::Unreachable),
             "impl" => Ok(Keyword::Impl),
+            "self" => Ok(Keyword::SelfKw),
             _ => Err(()),
         }
     }
@@ -1790,8 +1828,22 @@ impl<'input> Parser<'input> {
         };
 
         let name_span = parser.next_expect(Token::Identifier)?.span;
+        let text = name_span.extract_str(parser.source);
+        match Keyword::try_from(text) {
+            Ok(Keyword::SelfKw) | Err(_) => {}
+            Ok(_) => {
+                parser.ast.diagnostics.push(
+                    ReservedIdentifierDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: name_span,
+                    }
+                    .report(),
+                );
+            }
+        }
+
         let name = Spanned {
-            inner: parser.intern_identifier(name_span),
+            inner: parser.interner.get_or_intern(text),
             span: name_span,
         };
 
@@ -1834,6 +1886,19 @@ impl<'input> Parser<'input> {
             should_warn_missing_separator: None,
         }
         .parse(parser)?;
+
+        let self_symbol = parser.interner.get_or_intern("self");
+        for param in params.inner.iter() {
+            if param.inner.inner.name.inner == self_symbol {
+                parser.ast.diagnostics.push(
+                    SelfInNonAssociatedFunctionDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: param.inner.inner.name.span,
+                    }
+                    .report(),
+                );
+            }
+        }
 
         let result = parser
             .lexer
@@ -2048,7 +2113,20 @@ impl<'input> Parser<'input> {
 
     fn parse_identifier_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
         let token = parser.lexer.next();
-        let symbol = parser.intern_identifier(token.span);
+        let text = token.span.extract_str(parser.source);
+        match Keyword::try_from(text) {
+            Ok(Keyword::SelfKw) | Err(_) => {}
+            Ok(_) => {
+                parser.ast.diagnostics.push(
+                    ReservedIdentifierDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    }
+                    .report(),
+                );
+            }
+        }
+        let symbol = parser.interner.get_or_intern(text);
 
         Ok(Spanned {
             inner: Expression::Identifier { symbol },
@@ -2906,6 +2984,20 @@ impl<'input> Parser<'input> {
                     should_warn_missing_separator: None,
                 }
                 .parse(parser)?;
+
+                let self_symbol = parser.interner.get_or_intern("self");
+                for param in params.inner.iter().skip(1) {
+                    if param.inner.inner.name.inner == self_symbol {
+                        parser.ast.diagnostics.push(
+                            SelfNotFirstParamDiagnostic {
+                                file_id: parser.ast.file_id,
+                                span: param.inner.inner.name.span,
+                            }
+                            .report(),
+                        );
+                    }
+                }
+
                 let result = parser
                     .lexer
                     .next_if(Token::MinusRightArrow)
@@ -3178,7 +3270,7 @@ mod tests {
     fn test_parse_impl_block() {
         let case = TestCase::new(indoc! {"
             impl string {
-                fn len(self) -> u32 {
+                fn len(b, self) -> u32 {
                     self.0
                 }
             }

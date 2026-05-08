@@ -1,10 +1,22 @@
 ---
 source: crates/wx-compiler/src/ast.rs
-assertion_line: 3176
+assertion_line: 3278
 expression: case.ast
 ---
 file_id: 0
-diagnostics: []
+diagnostics:
+  - severity: Error
+    code: E0012
+    message: "unexpected `self` parameter in function"
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 28
+          end: 32
+        message: ""
+    notes:
+      - "`self` must be the first parameter of an associated function"
 items:
   - inner:
       inner:
@@ -41,29 +53,44 @@ items:
                                   inner: 3
                                   span:
                                     start: 25
-                                    end: 29
+                                    end: 26
                                 ty: ~
                               span:
                                 start: 25
-                                end: 29
+                                end: 26
+                            separator:
+                              start: 26
+                              end: 27
+                          - inner:
+                              inner:
+                                mut_span: ~
+                                name:
+                                  inner: 4
+                                  span:
+                                    start: 28
+                                    end: 32
+                                ty: ~
+                              span:
+                                start: 28
+                                end: 32
                             separator: ~
                         close:
-                          start: 29
-                          end: 30
+                          start: 32
+                          end: 33
                       result:
                         inner:
                           Identifier:
-                            symbol: 4
+                            symbol: 5
                         span:
-                          start: 34
-                          end: 37
+                          start: 37
+                          end: 40
                     block:
                       inner:
                         Block:
                           statements:
                             open:
-                              start: 38
-                              end: 39
+                              start: 41
+                              end: 42
                             inner:
                               - inner:
                                   inner:
@@ -73,36 +100,36 @@ items:
                                           object:
                                             inner:
                                               Identifier:
-                                                symbol: 3
+                                                symbol: 4
                                             span:
-                                              start: 48
-                                              end: 52
+                                              start: 51
+                                              end: 55
                                           field:
                                             inner: 0
                                             span:
-                                              start: 53
-                                              end: 54
+                                              start: 56
+                                              end: 57
                                       span:
-                                        start: 48
-                                        end: 54
+                                        start: 51
+                                        end: 57
                                   span:
-                                    start: 48
-                                    end: 54
+                                    start: 51
+                                    end: 57
                                 separator: ~
                             close:
-                              start: 59
-                              end: 60
+                              start: 62
+                              end: 63
                       span:
-                        start: 38
-                        end: 60
+                        start: 41
+                        end: 63
                   span:
                     start: 18
-                    end: 60
+                    end: 63
                 separator: ~
             close:
-              start: 61
-              end: 62
+              start: 64
+              end: 65
       span:
         start: 0
-        end: 62
+        end: 65
     separator: ~
