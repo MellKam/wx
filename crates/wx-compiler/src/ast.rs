@@ -1271,6 +1271,22 @@ pub enum TypeExpression {
         params: Grouped<Box<[Separated<Spanned<FunctionTypeParam>>]>>,
         result: Option<Box<Spanned<TypeExpression>>>,
     },
+    /// `*mut u8`
+    Pointer {
+        mutability: Option<TextSpan>,
+        inner: Box<Spanned<TypeExpression>>,
+    },
+    /// `[]mut u8`
+    Slice {
+        mutability: Option<TextSpan>,
+        inner: Box<Spanned<TypeExpression>>,
+    },
+    /// `[5]mut u8`
+    Array {
+        size: Spanned<usize>,
+        mutability: Option<TextSpan>,
+        inner: Box<Spanned<TypeExpression>>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1382,17 +1398,32 @@ pub enum Item {
         target: Box<Spanned<TypeExpression>>,
         methods: Grouped<Box<[Separated<Spanned<ImplMethod>>]>>,
     },
+    Struct {
+        name: Spanned<SymbolU32>,
+        fields: Grouped<Box<[Separated<Spanned<StructField>>]>>,
+    },
+    Memory {
+        name: Spanned<SymbolU32>,
+    },
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct StructField {
+    pub pub_span: Option<TextSpan>,
+    pub name: Spanned<SymbolU32>,
+    pub ty: Box<Spanned<TypeExpression>>,
 }
 
 impl Item {
     pub fn is_block_like(&self) -> bool {
         match self {
+            Item::Global { .. } | Item::Memory { .. } => false,
             Item::Function { .. } => true,
             Item::Export { .. } => true,
             Item::Import { .. } => true,
-            Item::Global { .. } => false,
             Item::Enum { .. } => true,
             Item::Impl { .. } => true,
+            Item::Struct { .. } => true,
         }
     }
 }
@@ -1480,6 +1511,9 @@ pub enum Keyword {
     Unreachable,
     Impl,
     SelfKw,
+    Struct,
+    Pub,
+    Memory,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1504,6 +1538,9 @@ impl TryFrom<&str> for Keyword {
             "unreachable" => Ok(Keyword::Unreachable),
             "impl" => Ok(Keyword::Impl),
             "self" => Ok(Keyword::SelfKw),
+            "struct" => Ok(Keyword::Struct),
+            "pub" => Ok(Keyword::Pub),
+            "memory" => Ok(Keyword::Memory),
             _ => Err(()),
         }
     }
@@ -1762,6 +1799,8 @@ impl<'input> Parser<'input> {
             Some(Keyword::Import) => Ok(Parser::parse_import_block),
             Some(Keyword::Enum) => Ok(Parser::parse_enum_item),
             Some(Keyword::Impl) => Ok(Parser::parse_impl_item),
+            Some(Keyword::Struct) => Ok(Parser::parse_struct_item),
+            Some(Keyword::Memory) => Ok(Parser::parse_memory_item),
             _ => return Err(()),
         }
     }
@@ -1922,20 +1961,125 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
-        let token = self.peek_expect(Token::Identifier)?;
-        match Keyword::try_from(token.span.extract_str(self.source)) {
-            Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
-            _ => {}
+    fn parse_mut_span(&mut self) -> Option<TextSpan> {
+        let token = self.lexer.peek();
+        match token.inner {
+            Token::Identifier
+                if matches!(
+                    Keyword::try_from(token.span.extract_str(self.source)),
+                    Ok(Keyword::Mut)
+                ) =>
+            {
+                Some(self.lexer.next().span)
+            }
+            _ => None,
         }
+    }
 
-        let token = self.lexer.next();
-        Ok(Spanned {
-            inner: TypeExpression::Identifier {
-                symbol: self.intern_identifier(token.span),
-            },
-            span: token.span,
-        })
+    fn parse_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
+        let token = self.lexer.peek();
+        match token.inner {
+            Token::Star => {
+                let star_span = self.lexer.next().span;
+                let mutability = self.parse_mut_span();
+                let inner = self.parse_type_expression()?;
+                let span = TextSpan::merge(star_span, inner.span);
+                Ok(Spanned {
+                    inner: TypeExpression::Pointer {
+                        mutability,
+                        inner: Box::new(inner),
+                    },
+                    span,
+                })
+            }
+            Token::OpenBracket => {
+                let open_span = self.lexer.next().span;
+                let next = self.lexer.peek();
+                match next.inner {
+                    Token::CloseBracket => {
+                        let _close = self.lexer.next();
+                        let mutability = self.parse_mut_span();
+                        let inner = self.parse_type_expression()?;
+                        let span = TextSpan::merge(open_span, inner.span);
+                        Ok(Spanned {
+                            inner: TypeExpression::Slice {
+                                mutability,
+                                inner: Box::new(inner),
+                            },
+                            span,
+                        })
+                    }
+                    Token::Int => {
+                        let size_token = self.lexer.next();
+                        let size_value = size_token
+                            .span
+                            .extract_str(self.source)
+                            .parse::<usize>()
+                            .map_err(|_| {
+                                self.ast.diagnostics.push(
+                                    InvalidIntegerLiteralDiagnostic {
+                                        file_id: self.ast.file_id,
+                                        span: size_token.span,
+                                    }
+                                    .report(),
+                                );
+                            })?;
+                        let size = Spanned {
+                            inner: size_value,
+                            span: size_token.span,
+                        };
+                        self.next_expect(Token::CloseBracket)?;
+                        let mutability = self.parse_mut_span();
+                        let inner = self.parse_type_expression()?;
+                        let span = TextSpan::merge(open_span, inner.span);
+                        Ok(Spanned {
+                            inner: TypeExpression::Array {
+                                size,
+                                mutability,
+                                inner: Box::new(inner),
+                            },
+                            span,
+                        })
+                    }
+                    _ => {
+                        self.ast.diagnostics.push(
+                            UnexpectedTokenDiagnostic {
+                                file_id: self.ast.file_id,
+                                received: next,
+                                expected: Token::CloseBracket,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
+            }
+            Token::Identifier => {
+                match Keyword::try_from(token.span.extract_str(self.source)) {
+                    Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
+                    _ => {}
+                }
+                let token = self.lexer.next();
+                Ok(Spanned {
+                    inner: TypeExpression::Identifier {
+                        symbol: self.intern_identifier(token.span),
+                    },
+                    span: token.span,
+                })
+            }
+            _ => {
+                let token = self.lexer.next();
+                self.ast.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: self.ast.file_id,
+                        received: token,
+                        expected: Token::Identifier,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
     }
 
     fn parse_function_type_param(parser: &mut Parser) -> Result<Spanned<FunctionTypeParam>, ()> {
@@ -1957,7 +2101,7 @@ impl<'input> Parser<'input> {
                     (None, Box::new(ty))
                 }
             }
-            TypeExpression::Function { .. } => (None, Box::new(ty)),
+            _ => (None, Box::new(ty)),
         };
 
         let span = TextSpan::merge(name.clone().map(|n| n.span).unwrap_or(ty.span), ty.span);
@@ -3032,6 +3176,76 @@ impl<'input> Parser<'input> {
         })
     }
 
+    fn parse_struct_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let struct_span = parser.lexer.next().span;
+
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name_symbol = parser.intern_identifier(name_span);
+
+        let fields = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::Comma,
+            item_handler: |parser: &mut Parser| -> Result<Spanned<StructField>, ()> {
+                let peek = parser.lexer.peek();
+                let pub_span = match Keyword::try_from(peek.span.extract_str(parser.source)) {
+                    Ok(Keyword::Pub) => Some(parser.lexer.next().span),
+                    _ => None,
+                };
+
+                let name_token = parser.next_expect(Token::Identifier)?;
+                let name_symbol = parser.intern_identifier(name_token.span);
+
+                parser.next_expect(Token::Colon)?;
+
+                let ty = parser.parse_type_expression()?;
+                let span = TextSpan::merge(pub_span.unwrap_or(name_token.span), ty.span);
+
+                Ok(Spanned {
+                    inner: StructField {
+                        pub_span,
+                        name: Spanned {
+                            inner: name_symbol,
+                            span: name_token.span,
+                        },
+                        ty: Box::new(ty),
+                    },
+                    span,
+                })
+            },
+            should_warn_missing_separator: None,
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(struct_span, fields.close);
+        Ok(Spanned {
+            inner: Item::Struct {
+                name: Spanned {
+                    inner: name_symbol,
+                    span: name_span,
+                },
+                fields,
+            },
+            span,
+        })
+    }
+
+    fn parse_memory_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let memory_span = parser.lexer.next().span;
+
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name = Spanned {
+            inner: parser.intern_identifier(name_span),
+            span: name_span,
+        };
+
+        let span = TextSpan::merge(memory_span, name_span);
+        Ok(Spanned {
+            inner: Item::Memory { name },
+            span,
+        })
+    }
+
     fn parse_import_function_param(
         parser: &mut Parser,
     ) -> Result<Spanned<ImportFunctionParam>, ()> {
@@ -3269,10 +3483,121 @@ mod tests {
     #[test]
     fn test_parse_impl_block() {
         let case = TestCase::new(indoc! {"
+            struct string {
+                bytes: []u8,
+            }
+
             impl string {
-                fn len(b, self) -> u32 {
-                    self.0
+                fn from_bytes(bytes: []u8) -> string {
+                    string { bytes }
                 }
+            }
+
+            struct char {
+                code: u32,
+            }
+
+            impl char {
+                fn to_ascii_uppercase(self) -> char {
+                    if self.code >= 97 && self.code <= 122 {
+                        char { code: self.code ^ 32 }
+                    } else {
+                        self
+                    }
+                }
+            }
+
+            struct ArenaAllocator {
+                base: []mut u8, // 16 bytes
+                offset: usize, // 8 bytes
+            }
+
+            struct Layout {
+                size: usize, // 8 bytes
+                align: usize, // 8 bytes
+            }
+
+            trait Allocator {
+                fn alloc<T>(&mut self, layout: Layout) -> Result<*mut T, ()>;
+            }
+
+            impl Allocator for ArenaAllocator {
+                fn alloc<T>(&mut self, layout: Layout) -> Result<*mut T, ()> {
+                    ...
+                }
+
+                fn from_buffer(buffer: []mut u8) -> ArenaAllocator {
+                    ArenaAllocator {
+                        base: buffer,
+                        offset: 0,
+                    }
+                }
+            }
+
+            struct Vec3 {
+                x: f32,
+                y: f32,
+                z: f32,
+            }
+
+            struct Memory {
+                index: u32,
+            }
+
+            declare Memory {
+                const BASE: usize;
+
+                fn size() -> usize;
+                fn grow(pages: usize) -> Result<(), ()>;
+                fn as_bytes() -> []mut u8;
+            }
+
+            impl Allocator for Memory {
+                fn alloc<T>(self, layout: Layout) -> Result<*mut T, ()> {
+                    
+                }
+            }
+
+            fn main() {
+                local x = 'a'.to_ascii_uppercase();
+                local some_bytes: [3]u8 = [123, 34, 104] in MEM;
+                local tuple: (u8, u8, u8) = (123, 34, 104);
+
+                local arena = ArenaAllocator::from_buffer(
+                    MEM.as_bytes()[..1024]
+                );
+                local ptr = arena.alloc(Layout { 
+                    size: size_of::<Vec3>(),
+                    align: align_of::<Vec3>()
+                }).unwrap();
+                ptr.* = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+
+                local vec = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+                    .in(&mut arena)
+                    .unwrap();
+
+
+
+                arena.alloc(\"hello\");
+                arena.alloc((1, 2, 3));
+                let vec3 = arena.alloc(Vec3 { x: 1.0, y: 2.0, z: 3.0 }).unwrap();
+
+
+
+
+                
+
+                let matrix: [3][3]i32 = {
+                    { 1, 2, 3 },
+                    { 4, 5, 6 },
+                    { 7, 8, 9 },
+                };
+                let matrix: [3][3]i32 = [
+                    [1, 2, 3],
+                    [4, 5, 6],
+                    [7, 8, 9],
+                ];
+                local s: string = string::from_bytes(some_bytes[..]);
             }
         "});
         insta::assert_yaml_snapshot!(case.ast);

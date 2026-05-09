@@ -82,7 +82,7 @@ pub fn parse_char_literal(s: &str) -> Result<char, CharLiteralError> {
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     I32,
     I64,
@@ -97,17 +97,28 @@ pub enum Type {
     String,
     Char,
     Bool,
-    Function { signature_index: u32 },
-    Namespace { namespace_index: u32 },
-}
-
-impl Clone for ast::Spanned<Type> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
+    Pointer {
+        to: Box<Type>,
+        mutable: bool,
+    },
+    Array {
+        of: Box<Type>,
+        size: u32,
+        mutable: bool,
+    },
+    Slice {
+        of: Box<Type>,
+        mutable: bool,
+    },
+    Struct {
+        struct_index: u32,
+    },
+    Function {
+        signature_index: u32,
+    },
+    Namespace {
+        namespace_index: u32,
+    },
 }
 
 impl Type {
@@ -132,7 +143,7 @@ impl Type {
         }
     }
 
-    pub fn coercible_to(self, other: Type) -> bool {
+    pub fn coercible_to(&self, other: &Type) -> bool {
         match (self, other) {
             (a, b) if a == b => true,
             (Type::Never, _) => true,
@@ -187,14 +198,14 @@ impl FunctionSignature {
         &self.items[..self.params_count]
     }
 
-    pub fn result(&self) -> Type {
-        self.items[self.params_count]
+    pub fn result(&self) -> &Type {
+        &self.items[self.params_count]
     }
 }
 
 impl std::hash::Hash for FunctionSignature {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        for item in self.items.iter().copied() {
+        for item in self.items.iter() {
             item.hash(state);
         }
         self.params_count.hash(state);
@@ -1353,6 +1364,17 @@ pub struct Global {
     pub value: Box<ast::Spanned<Expression>>,
 }
 
+pub struct StructField {
+    pub name: ast::Spanned<SymbolU32>,
+    pub ty: ast::Spanned<Type>,
+}
+
+pub struct Struct {
+    pub name: ast::Spanned<SymbolU32>,
+    pub fields: Box<[StructField]>,
+    pub lookup: HashMap<SymbolU32, usize>,
+}
+
 struct Builder<'ast, 'interner> {
     ast: &'ast ast::AST,
     interner: &'interner mut ast::StringInterner,
@@ -1368,6 +1390,7 @@ struct Builder<'ast, 'interner> {
     signature_index_lookup: HashMap<FunctionSignature, SignatureIndex>,
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), GlobalValue>,
     impl_members: HashMap<Type, HashMap<SymbolU32, ImplEntry>>,
+    structs: Vec<Struct>,
 }
 
 enum BlockState<T> {
@@ -1429,9 +1452,9 @@ impl Builder<'_, '_> {
     ) -> FunctionIndex {
         let mut items = Vec::with_capacity(params.len() + 1);
         for param in params.iter() {
-            items.push(param.ty.inner);
+            items.push(param.ty.inner.clone());
         }
-        items.push(match result.clone() {
+        items.push(match result {
             Some(result) => result.inner,
             None => Type::Unit,
         });
@@ -1488,7 +1511,7 @@ impl Builder<'_, '_> {
         }
     }
 
-    pub fn display_type(&self, ty: Type) -> String {
+    pub fn display_type(&self, ty: &Type) -> String {
         match ty {
             Type::Unknown => "unknown".to_string(),
             Type::Error => "error".to_string(),
@@ -1503,8 +1526,23 @@ impl Builder<'_, '_> {
             Type::U64 => "u64".to_string(),
             Type::String => "string".to_string(),
             Type::Char => "char".to_string(),
+            Type::Pointer { to, mutable } => {
+                let mutability = if *mutable { "mut " } else { "" };
+                format!("*{}{}", mutability, self.display_type(to))
+            }
+            Type::Slice { of, mutable } => {
+                let mutability = if *mutable { "mut " } else { "" };
+                format!("[]{}{}", mutability, self.display_type(of))
+            }
+            Type::Array { of, size, mutable } => {
+                let mutability = if *mutable { "mut " } else { "" };
+                format!("[{}]{}{}]", size, mutability, self.display_type(of))
+            }
+            Type::Struct { struct_index } => {
+                todo!()
+            }
             Type::Namespace { namespace_index } => {
-                let ns = &self.namespaces[namespace_index as usize];
+                let ns = &self.namespaces[*namespace_index as usize];
                 match ns {
                     Namespace::ImportModule(module) => {
                         let name = module
@@ -1521,11 +1559,11 @@ impl Builder<'_, '_> {
                 }
             }
             Type::Function { signature_index } => {
-                let func = &self.signatures[signature_index as usize];
+                let func = &self.signatures[*signature_index as usize];
                 let params = func
                     .params()
                     .iter()
-                    .map(|param| self.display_type(*param))
+                    .map(|param| self.display_type(param))
                     .collect::<Box<[_]>>()
                     .join(", ");
 
@@ -5311,6 +5349,7 @@ impl TIR {
             signatures: Vec::new(),
             symbol_lookup,
             impl_members: HashMap::new(),
+            structs: Vec::new(),
         };
 
         for item in ast.items.iter() {
@@ -5490,10 +5529,21 @@ mod tests {
 
     #[test]
     fn test_impl_block() {
+        let x: char = 'a'.to_ascii_uppercase();
         let case = TestCase::new(indoc! {"
             struct string {
                 pub ptr: u32,
                 pub len: u32,
+            }
+
+            struct char {
+                value: u32
+            }
+
+            impl char {
+                fn to_ascii_uppercase(self) -> char {
+                    char { value: self.value ^ 32 }
+                }
             }
 
             impl string {

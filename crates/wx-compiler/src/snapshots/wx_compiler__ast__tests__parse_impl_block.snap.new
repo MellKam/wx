@@ -1,135 +1,70 @@
 ---
 source: crates/wx-compiler/src/ast.rs
-assertion_line: 3278
+assertion_line: 3474
 expression: case.ast
 ---
 file_id: 0
-diagnostics:
-  - severity: Error
-    code: E0012
-    message: "unexpected `self` parameter in function"
-    labels:
-      - style: Primary
-        file_id: 0
-        range:
-          start: 28
-          end: 32
-        message: ""
-    notes:
-      - "`self` must be the first parameter of an associated function"
+diagnostics: []
 items:
   - inner:
       inner:
-        Impl:
-          target:
-            inner:
-              Identifier:
-                symbol: 1
+        Struct:
+          name:
+            inner: 1
             span:
-              start: 5
-              end: 11
-          methods:
-            open:
-              start: 12
+              start: 7
               end: 13
+          fields:
+            open:
+              start: 14
+              end: 15
             inner:
               - inner:
                   inner:
-                    signature:
-                      name:
-                        inner: 2
-                        span:
-                          start: 21
-                          end: 24
-                      params:
-                        open:
-                          start: 24
-                          end: 25
-                        inner:
-                          - inner:
-                              inner:
-                                mut_span: ~
-                                name:
-                                  inner: 3
-                                  span:
-                                    start: 25
-                                    end: 26
-                                ty: ~
-                              span:
-                                start: 25
-                                end: 26
-                            separator:
-                              start: 26
-                              end: 27
-                          - inner:
-                              inner:
-                                mut_span: ~
-                                name:
-                                  inner: 4
-                                  span:
-                                    start: 28
-                                    end: 32
-                                ty: ~
-                              span:
-                                start: 28
-                                end: 32
-                            separator: ~
-                        close:
-                          start: 32
-                          end: 33
-                      result:
-                        inner:
-                          Identifier:
-                            symbol: 5
-                        span:
-                          start: 37
-                          end: 40
-                    block:
-                      inner:
-                        Block:
-                          statements:
-                            open:
-                              start: 41
-                              end: 42
-                            inner:
-                              - inner:
-                                  inner:
-                                    Expression:
-                                      inner:
-                                        TupleFieldAccess:
-                                          object:
-                                            inner:
-                                              Identifier:
-                                                symbol: 4
-                                            span:
-                                              start: 51
-                                              end: 55
-                                          field:
-                                            inner: 0
-                                            span:
-                                              start: 56
-                                              end: 57
-                                      span:
-                                        start: 51
-                                        end: 57
-                                  span:
-                                    start: 51
-                                    end: 57
-                                separator: ~
-                            close:
-                              start: 62
-                              end: 63
+                    pub_span: ~
+                    name:
+                      inner: 2
                       span:
-                        start: 41
-                        end: 63
+                        start: 20
+                        end: 25
+                    ty:
+                      inner:
+                        Slice:
+                          mutability: ~
+                          inner:
+                            inner:
+                              Array:
+                                size:
+                                  inner: 5
+                                  span:
+                                    start: 30
+                                    end: 31
+                                mutability:
+                                  start: 32
+                                  end: 35
+                                inner:
+                                  inner:
+                                    Identifier:
+                                      symbol: 3
+                                  span:
+                                    start: 36
+                                    end: 38
+                            span:
+                              start: 29
+                              end: 38
+                      span:
+                        start: 27
+                        end: 38
                   span:
-                    start: 18
-                    end: 63
-                separator: ~
+                    start: 20
+                    end: 38
+                separator:
+                  start: 38
+                  end: 39
             close:
-              start: 64
-              end: 65
+              start: 40
+              end: 41
       span:
         start: 0
-        end: 65
+        end: 41
     separator: ~

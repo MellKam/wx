@@ -222,8 +222,58 @@ impl Builder {
                     items.push(Node::Text("}".to_string()));
                     Node::Concat(items)
                 }
+                Item::Memory { name } => Node::Text(format!(
+                    "memory {}",
+                    interner.resolve(name.inner).unwrap()
+                )),
                 Item::Enum { .. } => todo!("fmt for enum items"),
                 Item::Impl { .. } => todo!("fmt for impl items"),
+                Item::Struct { name, fields } => {
+                    let mut items = Vec::new();
+                    items.push(Node::Text(format!(
+                        "struct {} {{",
+                        interner.resolve(name.inner).unwrap()
+                    )));
+
+                    if !fields.inner.is_empty() {
+                        let field_items = fields
+                            .inner
+                            .iter()
+                            .enumerate()
+                            .flat_map(|(index, field)| {
+                                let mut nodes = Vec::new();
+
+                                if field.inner.inner.pub_span.is_some() {
+                                    nodes.push(Node::Text("pub ".to_string()));
+                                }
+                                let field_name =
+                                    interner.resolve(field.inner.inner.name.inner).unwrap();
+                                nodes.push(Node::Text(format!("{}: ", field_name)));
+                                nodes.push(Self::build_type_expression(
+                                    interner,
+                                    &field.inner.inner.ty.inner,
+                                ));
+                                if index + 1 < fields.inner.len() {
+                                    nodes.push(Node::Text(",".to_string()));
+                                } else {
+                                    nodes.push(Node::IfBreak(",".to_string()));
+                                }
+
+                                vec![Node::Concat(nodes), Node::SoftLine]
+                            })
+                            .collect::<Vec<_>>();
+
+                        items.push(Node::Indent(Box::new(Node::Concat(
+                            std::iter::once(Node::Line)
+                                .chain(field_items)
+                                .collect::<Vec<_>>(),
+                        ))));
+                        items.push(Node::Line);
+                    }
+
+                    items.push(Node::Text("}".to_string()));
+                    Node::Group(Box::new(Node::Concat(items)))
+                }
             });
         }
 
@@ -617,6 +667,30 @@ impl Builder {
                 }
 
                 Node::Group(Box::new(Node::Concat(items)))
+            }
+            TypeExpression::Pointer { mutability, inner } => {
+                let mut items = vec![Node::Text("*".to_string())];
+                if mutability.is_some() {
+                    items.push(Node::Text("mut ".to_string()));
+                }
+                items.push(Self::build_type_expression(interner, &inner.inner));
+                Node::Concat(items)
+            }
+            TypeExpression::Slice { mutability, inner } => {
+                let mut items = vec![Node::Text("[]".to_string())];
+                if mutability.is_some() {
+                    items.push(Node::Text("mut ".to_string()));
+                }
+                items.push(Self::build_type_expression(interner, &inner.inner));
+                Node::Concat(items)
+            }
+            TypeExpression::Array { size, mutability, inner } => {
+                let mut items = vec![Node::Text(format!("[{}]", size.inner))];
+                if mutability.is_some() {
+                    items.push(Node::Text("mut ".to_string()));
+                }
+                items.push(Self::build_type_expression(interner, &inner.inner));
+                Node::Concat(items)
             }
         }
     }
