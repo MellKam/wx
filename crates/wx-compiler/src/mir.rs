@@ -40,6 +40,15 @@ pub enum ExprKind {
         local_index: LocalIndex,
         field_index: u32,
     },
+    /// Get a field from an arbitrary struct/tuple expression.
+    TupleFieldGet {
+        object: Box<Expression>,
+        field_index: u32,
+    },
+    /// Construct a struct/tuple value from its fields (in declaration order).
+    StructCreate {
+        fields: Box<[Expression]>,
+    },
     LocalSet {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
@@ -334,6 +343,7 @@ impl TuplePool {
         }
     }
 
+    #[allow(dead_code)]
     fn get(&self, index: TupleIndex) -> Option<&Tuple> {
         self.tuples.get(index as usize)
     }
@@ -344,7 +354,16 @@ fn build_index_remap<T>(
     items: &[T],
     get_source: fn(&T) -> tir::ItemSource,
 ) -> Box<[u32]> {
-    let mut tir_to_mir = vec![0u32; items.len()];
+    build_index_remap_filtered(import_count, items, get_source, |_| true)
+}
+
+fn build_index_remap_filtered<T>(
+    import_count: u32,
+    items: &[T],
+    get_source: fn(&T) -> tir::ItemSource,
+    is_live: impl Fn(usize) -> bool,
+) -> Box<[u32]> {
+    let mut tir_to_mir = vec![u32::MAX; items.len()];
     let mut next_imported = 0u32;
     let mut next_defined = import_count;
 
@@ -355,23 +374,38 @@ fn build_index_remap<T>(
                 next_imported += 1;
                 i
             }
-            tir::ItemSource::Defined => {
+            tir::ItemSource::Defined if is_live(tir_index) => {
                 let i = next_defined;
                 next_defined += 1;
                 i
             }
+            // Dead defined items get no MIR slot; sentinel value is never accessed.
+            tir::ItemSource::Defined => u32::MAX,
         };
     }
 
     tir_to_mir.into_boxed_slice()
 }
 
+/// A function is live if it has at least one access recorded in TIR.
+/// TIR pushes an access whenever a function is called, referenced, or exported,
+/// so `accesses.is_empty()` reliably identifies dead code.
+fn is_function_live(decl: &tir::DeclaredFunction) -> bool {
+    !decl.accesses.is_empty()
+}
+
 impl MIR {
     pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
-        let func_index_remap = build_index_remap(
-            (tir.declared_functions.len() - tir.defined_functions.len()) as u32,
+        let import_count = tir
+            .declared_functions
+            .iter()
+            .filter(|f| f.source == tir::ItemSource::Imported)
+            .count() as u32;
+        let func_index_remap = build_index_remap_filtered(
+            import_count,
             &tir.declared_functions,
             |f| f.source,
+            |tir_index| is_function_live(&tir.declared_functions[tir_index]),
         );
         let global_index_remap = build_index_remap(
             (tir.declared_globals.len() - tir.defined_globals.len()) as u32,
@@ -379,21 +413,48 @@ impl MIR {
             |g| g.source,
         );
 
+        // Signatures live in the type pool as Type::Function variants.
+        // Build the remap first so lower_function/lower_type_index can use it.
+        let sig_type_indices: Vec<u32> = {
+            let mut entries: Vec<u32> = tir
+                .type_pool
+                .iter()
+                .enumerate()
+                .filter(|(_, ty)| matches!(ty, tir::Type::Function { .. }))
+                .map(|(i, _)| i as u32)
+                .collect();
+            entries.sort_unstable();
+            entries
+        };
+        let sig_index_remap: HashMap<u32, u32> = sig_type_indices
+            .iter()
+            .enumerate()
+            .map(|(pos, &type_idx)| (type_idx, pos as u32))
+            .collect();
+
         let mut builder = Builder {
             tir,
             string_pool: StringPool::new(),
             tuple_pool: TuplePool::new(),
             func_index_remap,
             global_index_remap,
+            sig_index_remap,
         };
+
+        // Only lower functions whose body was successfully built (body compilation
+        // can fail if TIR encountered errors, leaving them in declared_functions
+        // Only lower live functions (dead code elimination via TIR access tracking).
+        // Also skip functions whose body failed to compile (present in
+        // declared_functions as Defined but absent from defined_functions).
         let functions = tir
             .declared_functions
             .iter()
             .enumerate()
-            .filter(|(_, decl)| decl.source == tir::ItemSource::Defined)
-            .map(|(tir_index, _)| {
-                let func = tir.defined_functions.get(&(tir_index as u32)).unwrap();
-                builder.lower_function(func)
+            .filter(|(_, decl)| decl.source == tir::ItemSource::Defined && is_function_live(decl))
+            .filter_map(|(tir_index, _)| {
+                tir.defined_functions
+                    .get(&(tir_index as u32))
+                    .map(|func| builder.lower_function(func))
             })
             .collect();
 
@@ -408,16 +469,23 @@ impl MIR {
             })
             .collect();
 
-        let signatures = tir
-            .signatures
+        let signatures = sig_type_indices
             .iter()
-            .map(|signature| FunctionSignature {
-                items: signature
-                    .items
-                    .iter()
-                    .map(|&ty| builder.lower_type(ty))
-                    .collect(),
-                params_count: signature.params_count,
+            .map(|&type_idx| match tir.type_pool[type_idx as usize].clone() {
+                tir::Type::Function {
+                    items,
+                    params_count,
+                } => {
+                    let lowered_items = items
+                        .iter()
+                        .map(|&idx| builder.lower_type_index(idx))
+                        .collect();
+                    FunctionSignature {
+                        items: lowered_items,
+                        params_count,
+                    }
+                }
+                _ => unreachable!(),
             })
             .collect();
 
@@ -526,6 +594,8 @@ struct Builder<'tir> {
     tuple_pool: TuplePool,
     func_index_remap: Box<[u32]>,
     global_index_remap: Box<[u32]>,
+    /// Maps a TypeIndex (of a Function type in the type pool) to its MIR SignatureIndex.
+    sig_index_remap: HashMap<u32, u32>,
 }
 
 struct FunctionContext {
@@ -534,8 +604,10 @@ struct FunctionContext {
 }
 
 impl<'tir> Builder<'tir> {
-    fn lower_type(&self, ty: tir::Type) -> Type {
-        match ty {
+    /// Lower a `TypeIndex` (index into `tir.type_pool`) to a MIR `Type`.
+    /// This is the primary entry point; all call sites should use this.
+    fn lower_type_index(&mut self, type_idx: tir::TypeIndex) -> Type {
+        match self.tir.type_pool[type_idx as usize].clone() {
             tir::Type::I32 => Type::I32,
             tir::Type::I64 => Type::I64,
             tir::Type::F32 => Type::F32,
@@ -545,16 +617,39 @@ impl<'tir> Builder<'tir> {
             tir::Type::Unit => Type::Unit,
             tir::Type::Never => Type::Never,
             tir::Type::Bool => Type::Bool,
-            tir::Type::String => Type::Tuple {
-                tuple_index: TuplePool::STRING_TUPLE_INDEX,
-            },
-            tir::Type::Function { signature_index } => Type::Function { signature_index },
-            tir::Type::Char => Type::U32,
-            // TODO: handle enums
-            tir::Type::Unknown | tir::Type::Error | tir::Type::Namespace { .. } => {
-                // These shouldn't appear in valid TIR, but handle gracefully
-                Type::I32
+            tir::Type::Struct { struct_index } => {
+                if struct_index == tir::BUILTIN_CHAR_STRUCT {
+                    Type::U32
+                } else {
+                    let field_type_indices: Box<[tir::TypeIndex]> = self.tir.structs
+                        [struct_index as usize]
+                        .fields
+                        .iter()
+                        .map(|f| f.ty.inner)
+                        .collect();
+                    let fields: Box<[Type]> = field_type_indices
+                        .iter()
+                        .map(|&idx| self.lower_type_index(idx))
+                        .collect();
+                    let tuple = Tuple { fields };
+                    let tuple_index = self.tuple_pool.add(tuple);
+                    Type::Tuple { tuple_index }
+                }
             }
+            tir::Type::Function { .. } => {
+                let sig_idx = self.sig_index_remap[&type_idx];
+                Type::Function {
+                    signature_index: sig_idx,
+                }
+            }
+            // Types not yet supported in MIR — map to I32 as a placeholder
+            tir::Type::Unknown
+            | tir::Type::Error
+            | tir::Type::Namespace { .. }
+            | tir::Type::Pointer { .. }
+            | tir::Type::Array { .. }
+            | tir::Type::Slice { .. }
+            | tir::Type::Tuple { .. } => Type::I32,
         }
     }
 
@@ -563,7 +658,28 @@ impl<'tir> Builder<'tir> {
             .stack
             .scopes
             .iter()
-            .map(|scope| self.lower_block_scope(scope))
+            .map(|scope| {
+                let local_type_indices: Box<[(tir::TypeIndex, Option<ast::TextSpan>)]> =
+                    scope.locals.iter().map(|l| (l.ty, l.mut_span)).collect();
+                let result_type_idx = scope.inferred_type.unwrap_or(tir::UNIT_IDX);
+                let locals = local_type_indices
+                    .iter()
+                    .map(|&(ty_idx, mut_span)| Local {
+                        ty: self.lower_type_index(ty_idx),
+                        mutability: if mut_span.is_some() {
+                            Mutability::Mutable
+                        } else {
+                            Mutability::Immutable
+                        },
+                    })
+                    .collect();
+                BlockScope {
+                    kind: scope.kind,
+                    parent: scope.parent,
+                    locals,
+                    result: self.lower_type_index(result_type_idx),
+                }
+            })
             .collect();
 
         let mut ctx = FunctionContext {
@@ -574,50 +690,25 @@ impl<'tir> Builder<'tir> {
         let block = self.lower_expression(&mut ctx, &func.block);
 
         Function {
-            signature_index: func.signature_index,
+            signature_index: self.sig_index_remap[&func.signature_index],
             scopes: ctx.frame,
             block,
         }
     }
 
-    fn lower_block_scope(&self, scope: &tir::BlockScope) -> BlockScope {
-        let locals = scope
-            .locals
-            .iter()
-            .map(|local| Local {
-                ty: self.lower_type(local.ty),
-                mutability: if local.mut_span.is_some() {
-                    Mutability::Mutable
-                } else {
-                    Mutability::Immutable
-                },
-            })
-            .collect();
-
-        BlockScope {
-            kind: scope.kind,
-            parent: scope.parent,
-            locals,
-            result: self.lower_type(scope.inferred_type.unwrap_or(tir::Type::Unit)),
-        }
-    }
-
     fn lower_global(&mut self, global: &tir::Global) -> Global {
-        // Create a dummy context for the global expression.
-        // Constant expressions like literals won't access the local frame.
         let mut dummy_ctx = FunctionContext {
             frame: Vec::new(),
             current_scope_index: 0,
         };
 
         Global {
-            ty: self.lower_type(global.ty.inner),
+            ty: self.lower_type_index(global.ty.inner),
             mutability: if global.mut_span.is_some() {
                 Mutability::Mutable
             } else {
                 Mutability::Immutable
             },
-            // Now you can safely call lower_expression using the dummy context
             value: self.lower_expression(&mut dummy_ctx, &global.value.inner),
         }
     }
@@ -637,11 +728,11 @@ impl<'tir> Builder<'tir> {
             },
             tir::ExprKind::Int { value } => Expression {
                 kind: ExprKind::Int { value: *value },
-                ty: self.lower_type(expr.ty),
+                ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Float { value } => Expression {
                 kind: ExprKind::Float { value: *value },
-                ty: self.lower_type(expr.ty),
+                ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Bool { value } => Expression {
                 kind: ExprKind::Bool { value: *value },
@@ -651,7 +742,7 @@ impl<'tir> Builder<'tir> {
                 kind: ExprKind::Global {
                     global_index: self.global_index_remap[*global_index as usize],
                 },
-                ty: self.lower_type(expr.ty),
+                ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Local {
                 scope_index,
@@ -661,13 +752,13 @@ impl<'tir> Builder<'tir> {
                     scope_index: *scope_index,
                     local_index: *local_index,
                 },
-                ty: self.lower_type(expr.ty),
+                ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Function { func_index } => Expression {
                 kind: ExprKind::Function {
                     func_index: self.func_index_remap[*func_index as usize],
                 },
-                ty: self.lower_type(expr.ty),
+                ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Char { value } => Expression {
                 kind: ExprKind::Int {
@@ -711,7 +802,7 @@ impl<'tir> Builder<'tir> {
 
                 Expression {
                     kind: ExprKind::Call { callee, arguments },
-                    ty: self.lower_type(expr.ty),
+                    ty: self.lower_type_index(expr.ty),
                 }
             }
             tir::ExprKind::MethodCall {
@@ -723,7 +814,7 @@ impl<'tir> Builder<'tir> {
                     kind: ExprKind::Function {
                         func_index: self.func_index_remap[*func_index as usize],
                     },
-                    ty: self.lower_type(expr.ty),
+                    ty: self.lower_type_index(expr.ty),
                 });
                 let object = Box::new(self.lower_expression(func_ctx, object));
                 let arguments: Box<_> = std::iter::once(*object)
@@ -736,23 +827,105 @@ impl<'tir> Builder<'tir> {
 
                 Expression {
                     kind: ExprKind::Call { callee, arguments },
-                    ty: self.lower_type(expr.ty),
+                    ty: self.lower_type_index(expr.ty),
                 }
             }
-            tir::ExprKind::NamespaceAccess {
-                namespace_index,
-                member,
-                ..
-            } => {
-                let namespace = &self.tir.namespaces[*namespace_index as usize];
-                match namespace {
-                    tir::Namespace::ImportModule(_) => self.lower_expression(func_ctx, member),
-                    tir::Namespace::Enum(_) => self.lower_expression(func_ctx, member),
+            tir::ExprKind::NamespaceAccess { ty, member, .. } => {
+                match &self.tir.type_pool[ty.inner as usize] {
+                    tir::Type::Namespace { namespace_index } => {
+                        let namespace_index = *namespace_index;
+                        match &self.tir.namespaces[namespace_index as usize] {
+                            tir::Namespace::Enum(enum_) => {
+                                let variant_index = *enum_
+                                    .lookup
+                                    .get(&member.inner)
+                                    .expect("unknown enum variant");
+                                let variant = &enum_.variants[variant_index as usize];
+                                self.lower_expression(func_ctx, &variant.value)
+                            }
+                            tir::Namespace::ImportModule(module) => {
+                                match module
+                                    .lookup
+                                    .get(&member.inner)
+                                    .expect("unknown import member")
+                                {
+                                    tir::ImportValue::Function { func_index } => Expression {
+                                        kind: ExprKind::Function {
+                                            func_index: self.func_index_remap[*func_index as usize],
+                                        },
+                                        ty: self.lower_type_index(expr.ty),
+                                    },
+                                    tir::ImportValue::Global { global_index } => Expression {
+                                        kind: ExprKind::Global {
+                                            global_index: *global_index,
+                                        },
+                                        ty: self.lower_type_index(expr.ty),
+                                    },
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        let entry = self
+                            .tir
+                            .impl_members
+                            .get(&ty.inner)
+                            .and_then(|m| m.get(&member.inner))
+                            .expect("unresolved impl member in MIR lowering");
+                        match entry {
+                            tir::ImplEntry::AssociatedConst { value, .. } => Expression {
+                                kind: ExprKind::Int { value: *value },
+                                ty: self.lower_type_index(expr.ty),
+                            },
+                            _ => todo!("non-const impl member in namespace access"),
+                        }
+                    }
                 }
             }
-            tir::ExprKind::ObjectAccess { .. } => unreachable!(
-                "ObjectAccess expressions should have been desugared into MethodCall or NamespaceAccess in TIR"
-            ),
+            tir::ExprKind::ObjectAccess { object, member } => {
+                // Resolve the field index from the struct type.
+                let struct_index = match &self.tir.type_pool[object.ty as usize] {
+                    tir::Type::Struct { struct_index } => *struct_index,
+                    _ => unreachable!("ObjectAccess on non-struct type"),
+                };
+                let field_index =
+                    self.tir.structs[struct_index as usize].lookup[&member.inner] as u32;
+
+                // Prefer LocalTupleGet when the object is a plain local — cheaper.
+                match &object.kind {
+                    tir::ExprKind::Local {
+                        scope_index,
+                        local_index,
+                    } => Expression {
+                        kind: ExprKind::LocalTupleGet {
+                            scope_index: *scope_index,
+                            local_index: *local_index,
+                            field_index,
+                        },
+                        ty: self.lower_type_index(expr.ty),
+                    },
+                    _ => {
+                        let object = Box::new(self.lower_expression(func_ctx, object));
+                        Expression {
+                            kind: ExprKind::TupleFieldGet {
+                                object,
+                                field_index,
+                            },
+                            ty: self.lower_type_index(expr.ty),
+                        }
+                    }
+                }
+            }
+            tir::ExprKind::StructInit { fields, .. } => {
+                let mir_fields: Box<[Expression]> = fields
+                    .iter()
+                    .map(|f| self.lower_expression(func_ctx, f))
+                    .collect();
+                Expression {
+                    kind: ExprKind::StructCreate { fields: mir_fields },
+                    ty: self.lower_type_index(expr.ty),
+                }
+            }
             tir::ExprKind::IfElse {
                 condition,
                 then_block,
@@ -769,7 +942,7 @@ impl<'tir> Builder<'tir> {
                         then_block,
                         else_block,
                     },
-                    ty: self.lower_type(expr.ty),
+                    ty: self.lower_type_index(expr.ty),
                 }
             }
             tir::ExprKind::Break { scope_index, value } => Expression {
@@ -779,7 +952,7 @@ impl<'tir> Builder<'tir> {
                         .as_ref()
                         .map(|v| Box::new(self.lower_expression(func_ctx, v))),
                 },
-                ty: self.lower_type(expr.ty),
+                ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Continue { scope_index } => Expression {
                 kind: ExprKind::Continue {
@@ -792,7 +965,7 @@ impl<'tir> Builder<'tir> {
                     scope_index: *scope_index,
                     block: Box::new(self.lower_expression(func_ctx, block)),
                 },
-                ty: self.lower_type(expr.ty),
+                ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Block {
                 scope_index,
@@ -814,7 +987,7 @@ impl<'tir> Builder<'tir> {
                         scope_index: *scope_index,
                         expressions: lowered_exprs.into_boxed_slice(),
                     },
-                    ty: self.lower_type(expr.ty),
+                    ty: self.lower_type_index(expr.ty),
                 }
             }
             tir::ExprKind::LocalDeclaration {
@@ -828,7 +1001,7 @@ impl<'tir> Builder<'tir> {
                     local_index: *local_index,
                     value: Box::new(self.lower_expression(func_ctx, value)),
                 },
-                ty: self.lower_type(expr.ty),
+                ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Unary { operator, operand } => {
                 let operand = Box::new(self.lower_expression(func_ctx, operand));
@@ -838,7 +1011,7 @@ impl<'tir> Builder<'tir> {
                         UnaryOp::Not => ExprKind::Eqz { value: operand },
                         UnaryOp::BitNot => ExprKind::BitNot { value: operand },
                     },
-                    ty: self.lower_type(expr.ty),
+                    ty: self.lower_type_index(expr.ty),
                 }
             }
             tir::ExprKind::Binary {
@@ -954,7 +1127,7 @@ impl<'tir> Builder<'tir> {
 
                 Expression {
                     kind,
-                    ty: self.lower_type(expr.ty),
+                    ty: self.lower_type_index(expr.ty),
                 }
             }
         }
@@ -1029,7 +1202,7 @@ impl<'tir> Builder<'tir> {
 
         let binary_expr = Expression {
             kind: binary_expr_kind,
-            ty: self.lower_type(left.ty),
+            ty: self.lower_type_index(left.ty),
         };
 
         // Now assign the result back to left: x = (x + y)
@@ -1071,12 +1244,23 @@ mod tests {
         fn new(source: &str) -> Self {
             let mut interner = ast::StringInterner::new();
             let mut files = ast::Files::new();
+
+            let std_source = include_str!("../../../std.wx");
+            let std_file_id = files
+                .add("std.wx".to_string(), std_source.to_string())
+                .unwrap();
+            let std_ast = ast::Parser::parse(
+                std_file_id,
+                &files.get(std_file_id).unwrap().source,
+                &mut interner,
+            );
+
             let file_id = files
                 .add("main.wx".to_string(), source.to_string())
                 .unwrap();
             let ast =
                 ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-            let tir = tir::TIR::build(&ast, &mut interner);
+            let tir = tir::TIR::build(&[&std_ast, &ast], &mut interner);
             let mir = MIR::build(&tir, &interner);
 
             TestCase {
@@ -1090,7 +1274,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_simple_addition() {
+    fn test_string_field_access_lowered_to_local_tuple_get() {
         let case = TestCase::new(indoc! {"
             import \"console\" {
                 fn log(ptr: u32, len: u32);
@@ -1103,6 +1287,99 @@ mod tests {
             }
 
             export { main }
+        "});
+        insta::assert_yaml_snapshot!(case.mir);
+    }
+
+    #[test]
+    fn test_char_lowered_to_u32() {
+        // char fields should appear as U32 in MIR locals and expressions
+        let case = TestCase::new(indoc! {"
+            fn identity(c: char) -> char {
+                c
+            }
+
+            export { identity }
+        "});
+        insta::assert_yaml_snapshot!(case.mir);
+    }
+
+    #[test]
+    fn test_struct_field_access_lowered_to_local_tuple_get() {
+        // ObjectAccess on a local struct → LocalTupleGet
+        let case = TestCase::new(indoc! {"
+            struct Point {
+                x: u32,
+                y: u32,
+            }
+
+            fn get_x(p: Point) -> u32 {
+                p.x
+            }
+
+            export { get_x }
+        "});
+        insta::assert_yaml_snapshot!(case.mir);
+    }
+
+    #[test]
+    fn test_struct_init_lowered_to_struct_create() {
+        // StructInit → StructCreate in MIR
+        let case = TestCase::new(indoc! {"
+            struct Point {
+                x: u32,
+                y: u32,
+            }
+
+            fn make_point(x: u32, y: u32) -> Point {
+                Point::{ x: x, y: y }
+            }
+
+            export { make_point }
+        "});
+        insta::assert_yaml_snapshot!(case.mir);
+    }
+
+    #[test]
+    fn test_struct_method_call() {
+        // Method calls on structs should stay as Call with the function remapped
+        let case = TestCase::new(indoc! {"
+            fn to_upper(c: char) -> char {
+                c.to_ascii_uppercase()
+            }
+
+            export { to_upper }
+        "});
+        insta::assert_yaml_snapshot!(case.mir);
+    }
+
+    #[test]
+    fn test_global_struct_type() {
+        // A global of struct type should be lowered to a Tuple type
+        let case = TestCase::new(indoc! {"
+            struct Vec2 {
+                x: u32,
+                y: u32,
+            }
+
+            fn get_origin() -> Vec2 {
+                Vec2::{ x: 0, y: 0 }
+            }
+
+            export { get_origin }
+        "});
+        insta::assert_yaml_snapshot!(case.mir);
+    }
+
+    #[test]
+    fn test_size_associated_const() {
+        // SIZE/ALIGN associated consts (built-in impl) should be lowered to Int in MIR
+        let case = TestCase::new(indoc! {"
+            fn get_u32_size() -> u32 {
+                u32::SIZE
+            }
+
+            export { get_u32_size }
         "});
         insta::assert_yaml_snapshot!(case.mir);
     }

@@ -1,0 +1,137 @@
+---
+source: crates/wx-compiler/src/ast.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 7
+            params:
+              open:
+                start: 7
+                end: 8
+              inner: []
+              close:
+                start: 8
+                end: 9
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 10
+                    end: 11
+                  inner:
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 3
+                              span:
+                                start: 22
+                                end: 23
+                            ty: ~
+                            value:
+                              inner:
+                                StructInit:
+                                  name:
+                                    inner: 4
+                                    span:
+                                      start: 26
+                                      end: 30
+                                  fields:
+                                    open:
+                                      start: 32
+                                      end: 33
+                                    inner:
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 5
+                                              span:
+                                                start: 34
+                                                end: 35
+                                            value:
+                                              inner:
+                                                Int:
+                                                  value: 1
+                                              span:
+                                                start: 37
+                                                end: 38
+                                          span:
+                                            start: 34
+                                            end: 38
+                                        separator:
+                                          start: 38
+                                          end: 39
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 6
+                                              span:
+                                                start: 40
+                                                end: 41
+                                            value:
+                                              inner:
+                                                Int:
+                                                  value: 2
+                                              span:
+                                                start: 43
+                                                end: 44
+                                          span:
+                                            start: 40
+                                            end: 44
+                                        separator:
+                                          start: 44
+                                          end: 45
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 7
+                                              span:
+                                                start: 46
+                                                end: 47
+                                            value:
+                                              inner:
+                                                Int:
+                                                  value: 3
+                                              span:
+                                                start: 49
+                                                end: 50
+                                          span:
+                                            start: 46
+                                            end: 50
+                                        separator:
+                                          start: 50
+                                          end: 51
+                                    close:
+                                      start: 52
+                                      end: 53
+                              span:
+                                start: 26
+                                end: 53
+                        span:
+                          start: 16
+                          end: 53
+                      separator: ~
+                  close:
+                    start: 54
+                    end: 55
+            span:
+              start: 10
+              end: 55
+      span:
+        start: 0
+        end: 55
+    separator: ~

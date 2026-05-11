@@ -1,0 +1,58 @@
+---
+source: crates/wx-compiler/src/mir.rs
+expression: case.mir
+---
+functions:
+  - signature_index: 1
+    scopes:
+      - kind: Block
+        parent: ~
+        locals: []
+        result:
+          Tuple:
+            tuple_index: 1
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                StructCreate:
+                  fields:
+                    - kind:
+                        Int:
+                          value: 0
+                      ty: U32
+                    - kind:
+                        Int:
+                          value: 0
+                      ty: U32
+              ty:
+                Tuple:
+                  tuple_index: 1
+      ty:
+        Tuple:
+          tuple_index: 1
+signatures:
+  - items:
+      - U32
+      - U32
+    params_count: 1
+  - items:
+      - Tuple:
+          tuple_index: 1
+    params_count: 0
+globals: []
+exports:
+  - Function:
+      func_index: 0
+      name: 12
+imports: []
+tuples:
+  - fields:
+      - StringPointer
+      - U32
+  - fields:
+      - U32
+      - U32
+strings: []

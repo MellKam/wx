@@ -1,0 +1,93 @@
+---
+source: crates/wx-compiler/src/ast.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 7
+            params:
+              open:
+                start: 7
+                end: 8
+              inner: []
+              close:
+                start: 8
+                end: 9
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 10
+                    end: 11
+                  inner:
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Label:
+                                label:
+                                  inner: 3
+                                  span:
+                                    start: 16
+                                    end: 18
+                                block:
+                                  inner:
+                                    Block:
+                                      statements:
+                                        open:
+                                          start: 20
+                                          end: 21
+                                        inner:
+                                          - inner:
+                                              inner:
+                                                Expression:
+                                                  inner:
+                                                    Break:
+                                                      label:
+                                                        inner: 3
+                                                        span:
+                                                          start: 37
+                                                          end: 39
+                                                      value: ~
+                                                  span:
+                                                    start: 30
+                                                    end: 39
+                                              span:
+                                                start: 30
+                                                end: 39
+                                            separator: ~
+                                        close:
+                                          start: 44
+                                          end: 45
+                                  span:
+                                    start: 20
+                                    end: 45
+                            span:
+                              start: 16
+                              end: 45
+                        span:
+                          start: 16
+                          end: 45
+                      separator: ~
+                  close:
+                    start: 46
+                    end: 47
+            span:
+              start: 10
+              end: 47
+      span:
+        start: 0
+        end: 47
+    separator: ~

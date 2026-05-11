@@ -1,0 +1,476 @@
+---
+source: crates/wx-compiler/src/tir.rs
+assertion_line: 6741
+expression: case.tir
+---
+file_id: 1
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - I32
+  - I64
+  - F32
+  - F64
+  - U32
+  - U64
+  - Bool
+  - Struct:
+      struct_index: 0
+  - Struct:
+      struct_index: 1
+  - Function:
+      items:
+        - 12
+        - 12
+      params_count: 1
+  - Struct:
+      struct_index: 2
+  - Function:
+      items:
+        - 14
+      params_count: 0
+defined_functions:
+  0:
+    name:
+      inner: 7
+      span:
+        start: 103
+        end: 121
+    params:
+      - mut_span: ~
+        name:
+          inner: 8
+          span:
+            start: 122
+            end: 126
+        ty:
+          inner: 12
+          span:
+            start: 122
+            end: 126
+    result_span:
+      start: 131
+      end: 135
+    signature_index: 13
+    stack:
+      scopes:
+        - kind: Block
+          label: ~
+          parent: ~
+          locals:
+            - name:
+                inner: 8
+                span:
+                  start: 122
+                  end: 126
+              ty: 12
+              mut_span: ~
+              accesses:
+                - span:
+                    start: 145
+                    end: 149
+                  kind: Read
+                - span:
+                    start: 165
+                    end: 169
+                  kind: Read
+                - span:
+                    start: 206
+                    end: 210
+                  kind: Read
+                - span:
+                    start: 243
+                    end: 247
+                  kind: Read
+          inferred_type: 12
+          expected_type: 12
+        - kind: Block
+          label: ~
+          parent: 0
+          locals: []
+          inferred_type: 12
+          expected_type: 12
+        - kind: Block
+          label: ~
+          parent: 0
+          locals: []
+          inferred_type: 12
+          expected_type: 12
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions: []
+          result:
+            kind:
+              IfElse:
+                condition:
+                  kind:
+                    Binary:
+                      operator:
+                        inner: And
+                        span:
+                          start: 162
+                          end: 164
+                      left:
+                        kind:
+                          Binary:
+                            operator:
+                              inner: GreaterEq
+                              span:
+                                start: 156
+                                end: 158
+                            left:
+                              kind:
+                                ObjectAccess:
+                                  object:
+                                    kind:
+                                      Local:
+                                        scope_index: 0
+                                        local_index: 0
+                                    ty: 12
+                                    span:
+                                      start: 145
+                                      end: 149
+                                  member:
+                                    inner: 6
+                                    span:
+                                      start: 150
+                                      end: 155
+                              ty: 8
+                              span:
+                                start: 145
+                                end: 155
+                            right:
+                              kind:
+                                Int:
+                                  value: 97
+                              ty: 8
+                              span:
+                                start: 159
+                                end: 161
+                        ty: 10
+                        span:
+                          start: 145
+                          end: 161
+                      right:
+                        kind:
+                          Binary:
+                            operator:
+                              inner: LessEq
+                              span:
+                                start: 176
+                                end: 178
+                            left:
+                              kind:
+                                ObjectAccess:
+                                  object:
+                                    kind:
+                                      Local:
+                                        scope_index: 0
+                                        local_index: 0
+                                    ty: 12
+                                    span:
+                                      start: 165
+                                      end: 169
+                                  member:
+                                    inner: 6
+                                    span:
+                                      start: 170
+                                      end: 175
+                              ty: 8
+                              span:
+                                start: 165
+                                end: 175
+                            right:
+                              kind:
+                                Int:
+                                  value: 122
+                              ty: 8
+                              span:
+                                start: 179
+                                end: 182
+                        ty: 10
+                        span:
+                          start: 165
+                          end: 182
+                  ty: 10
+                  span:
+                    start: 145
+                    end: 182
+                then_block:
+                  kind:
+                    Block:
+                      scope_index: 1
+                      expressions: []
+                      result:
+                        kind:
+                          StructInit:
+                            struct_index: 1
+                            fields:
+                              - kind:
+                                  Binary:
+                                    operator:
+                                      inner: Sub
+                                      span:
+                                        start: 217
+                                        end: 218
+                                    left:
+                                      kind:
+                                        ObjectAccess:
+                                          object:
+                                            kind:
+                                              Local:
+                                                scope_index: 0
+                                                local_index: 0
+                                            ty: 12
+                                            span:
+                                              start: 206
+                                              end: 210
+                                          member:
+                                            inner: 6
+                                            span:
+                                              start: 211
+                                              end: 216
+                                      ty: 8
+                                      span:
+                                        start: 206
+                                        end: 216
+                                    right:
+                                      kind:
+                                        Int:
+                                          value: 32
+                                      ty: 8
+                                      span:
+                                        start: 219
+                                        end: 221
+                                ty: 8
+                                span:
+                                  start: 206
+                                  end: 221
+                        ty: 12
+                        span:
+                          start: 191
+                          end: 223
+                  ty: 12
+                  span:
+                    start: 183
+                    end: 229
+                else_block:
+                  kind:
+                    Block:
+                      scope_index: 2
+                      expressions: []
+                      result:
+                        kind:
+                          Local:
+                            scope_index: 0
+                            local_index: 0
+                        ty: 12
+                        span:
+                          start: 243
+                          end: 247
+                  ty: 12
+                  span:
+                    start: 235
+                    end: 253
+            ty: 12
+            span:
+              start: 142
+              end: 253
+      ty: 12
+      span:
+        start: 136
+        end: 257
+  1:
+    name:
+      inner: 13
+      span:
+        start: 53
+        end: 57
+    params: []
+    result_span:
+      start: 63
+      end: 68
+    signature_index: 15
+    stack:
+      scopes:
+        - kind: Block
+          label: ~
+          parent: ~
+          locals: []
+          inferred_type: 14
+          expected_type: 14
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions: []
+          result:
+            kind:
+              StructInit:
+                struct_index: 2
+                fields:
+                  - kind:
+                      Int:
+                        value: 1
+                    ty: 4
+                    span:
+                      start: 87
+                      end: 88
+                  - kind:
+                      Int:
+                        value: 2
+                    ty: 4
+                    span:
+                      start: 93
+                      end: 94
+            ty: 14
+            span:
+              start: 75
+              end: 96
+      ty: 14
+      span:
+        start: 69
+        end: 98
+defined_globals: {}
+namespaces: []
+exports:
+  - Function:
+      internal_name:
+        inner: 13
+        span:
+          start: 109
+          end: 113
+      external_name: ~
+      func_index: 1
+declared_functions:
+  - source: Defined
+    signature_index: 13
+    name:
+      inner: 7
+      span:
+        start: 103
+        end: 121
+    params:
+      - name:
+          inner: 8
+          span:
+            start: 122
+            end: 126
+        ty:
+          inner: 12
+          span:
+            start: 122
+            end: 126
+    result:
+      inner: 12
+      span:
+        start: 131
+        end: 135
+    accesses: []
+    pub_span:
+      start: 100
+      end: 102
+  - source: Defined
+    signature_index: 15
+    name:
+      inner: 13
+      span:
+        start: 53
+        end: 57
+    params: []
+    result:
+      inner: 14
+      span:
+        start: 63
+        end: 68
+    accesses:
+      - start: 109
+        end: 113
+    pub_span: ~
+declared_globals: []
+diagnostics: []
+structs:
+  - name:
+      inner: 1
+      span:
+        start: 11
+        end: 17
+    fields:
+      - name:
+          inner: 2
+          span:
+            start: 22
+            end: 25
+        ty:
+          inner: 8
+          span:
+            start: 27
+            end: 30
+      - name:
+          inner: 4
+          span:
+            start: 34
+            end: 37
+        ty:
+          inner: 8
+          span:
+            start: 39
+            end: 42
+    lookup:
+      2: 0
+      4: 1
+  - name:
+      inner: 5
+      span:
+        start: 58
+        end: 62
+    fields:
+      - name:
+          inner: 6
+          span:
+            start: 67
+            end: 72
+        ty:
+          inner: 8
+          span:
+            start: 74
+            end: 77
+    lookup:
+      6: 0
+  - name:
+      inner: 9
+      span:
+        start: 7
+        end: 12
+    fields:
+      - name:
+          inner: 10
+          span:
+            start: 23
+            end: 24
+        ty:
+          inner: 4
+          span:
+            start: 26
+            end: 29
+      - name:
+          inner: 12
+          span:
+            start: 39
+            end: 40
+        ty:
+          inner: 4
+          span:
+            start: 42
+            end: 45
+    lookup:
+      10: 0
+      12: 1
+impl_members:
+  12:
+    7:
+      Method: 0

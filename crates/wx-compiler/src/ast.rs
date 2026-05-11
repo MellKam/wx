@@ -1342,6 +1342,7 @@ pub struct FunctionParam {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImplItem {
     Method {
+        pub_span: Option<TextSpan>,
         signature: FunctionSignature,
         block: Box<Spanned<Expression>>,
     },
@@ -1403,6 +1404,7 @@ pub struct EnumVariant {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum Item {
     Function {
+        pub_span: Option<TextSpan>,
         signature: FunctionSignature,
         block: Box<Spanned<Expression>>,
     },
@@ -1430,6 +1432,7 @@ pub enum Item {
         items: Grouped<Box<[Separated<Spanned<ImplItem>>]>>,
     },
     Struct {
+        pub_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
         fields: Grouped<Box<[Separated<Spanned<StructField>>]>>,
     },
@@ -1840,6 +1843,7 @@ impl<'input> Parser<'input> {
             Some(Keyword::Struct) => Ok(Parser::parse_struct_item),
             Some(Keyword::Memory) => Ok(Parser::parse_memory_item),
             Some(Keyword::Const) => Ok(Parser::parse_const_item),
+            Some(Keyword::Pub) => Ok(Parser::parse_pub_item),
             _ => return Err(()),
         }
     }
@@ -1989,6 +1993,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(fn_span.span, block.span);
         Ok(Spanned {
             inner: Item::Function {
+                pub_span: None,
                 signature: FunctionSignature {
                     name,
                     params,
@@ -3247,6 +3252,26 @@ impl<'input> Parser<'input> {
                     _ => None,
                 };
 
+                let pub_span = if matches!(keyword, Some(Keyword::Pub)) {
+                    parser.lexer.next();
+                    let next = parser.lexer.peek();
+                    Some(next.span) // will be consumed below by Keyword::Fn branch
+                } else {
+                    None
+                };
+
+                let keyword = if pub_span.is_some() {
+                    match parser.lexer.peek().inner {
+                        Token::Identifier => Keyword::try_from(
+                            parser.lexer.peek().span.extract_str(parser.source),
+                        )
+                        .ok(),
+                        _ => None,
+                    }
+                } else {
+                    keyword
+                };
+
                 match keyword {
                     Some(Keyword::Const) => {
                         let const_span = parser.lexer.next().span;
@@ -3312,6 +3337,7 @@ impl<'input> Parser<'input> {
                         let method_span = TextSpan::merge(fn_span, block.span);
                         Ok(Spanned {
                             inner: ImplItem::Method {
+                                pub_span,
                                 signature: FunctionSignature {
                                     name: Spanned {
                                         inner: name_symbol,
@@ -3394,6 +3420,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(struct_span, fields.close);
         Ok(Spanned {
             inner: Item::Struct {
+                pub_span: None,
                 name: Spanned {
                     inner: name_symbol,
                     span: name_span,
@@ -3402,6 +3429,41 @@ impl<'input> Parser<'input> {
             },
             span,
         })
+    }
+
+    fn parse_pub_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let pub_span = parser.lexer.next().span; // consume `pub`
+        let next = parser.lexer.peek();
+        let keyword = match next.inner {
+            Token::Identifier => Keyword::try_from(next.span.extract_str(parser.source)).ok(),
+            _ => None,
+        };
+        match keyword {
+            Some(Keyword::Fn) => {
+                let mut item = Parser::parse_function_definition_item(parser)?;
+                if let Item::Function { pub_span: ref mut ps, .. } = item.inner {
+                    *ps = Some(pub_span);
+                }
+                Ok(item)
+            }
+            Some(Keyword::Struct) => {
+                let mut item = Parser::parse_struct_item(parser)?;
+                if let Item::Struct { pub_span: ref mut ps, .. } = item.inner {
+                    *ps = Some(pub_span);
+                }
+                Ok(item)
+            }
+            _ => {
+                parser.ast.diagnostics.push(
+                    InvalidItemDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: pub_span,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
     }
 
     fn parse_memory_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
@@ -3681,6 +3743,60 @@ mod tests {
                 }
             }
 
+            local list: *[u8] = [1, 2, 3];
+
+            *u8 // just a pointer to a single u8
+            *mut u8 // mutable pointer to a single u8
+            []u8 // slice of u8
+            []mut u8 // mutable slice of u8
+            [10]u8 // but this uses slice-like syntax for fixed-size array, which is not a pointer but just a 10 bytes
+            
+            local x: ref[]u8
+
+            ref<*mut vec3>
+            ref<[](own*mut vec3)>
+
+
+            ref[]Vec3
+            &[Vec3]
+
+            type string<'a> = ref'a[]u8;
+
+            struct StringBuilder<'a> {
+                alloc: ref'a*Allocator,
+                buffer: ref'a[]mut u8,
+                length: usize,
+                capacity: usize,
+            }
+
+            impl<'a> StringBuilder<'a> {
+                fn in(alloc: Allocator) -> Self {
+                    StringBuilder {
+                        buffer: ref'a[]mut u8,
+                        length: 0,
+                    }
+                }
+            } 
+
+            impl<'a> Drop for StringBuilder<'a> {
+                fn drop(self) {
+                    self.alloc.dealloc(self.buffer);
+                }
+            }
+
+            fn main() {
+                local alloc = ArenaAllocator::from_buffer(MEM.as_bytes()[..1024]);
+                local builder = StringBuilder::in(alloc);
+            }
+
+            StringBuilder<'a>
+
+            [][]u8
+
+            u8[10][10]
+
+            []u8
+
             struct ArenaAllocator {
                 base: []mut u8, // 16 bytes
                 offset: usize, // 8 bytes
@@ -3758,6 +3874,10 @@ mod tests {
 
                 local x: []mut u8 = [1, 2, 3];
                 x[0] = 42;
+
+                &x[0]
+
+                *const [u8]
 
                 local arena = ArenaAllocator::from_buffer(
                     MEM.as_bytes()[..1024]

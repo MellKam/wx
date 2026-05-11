@@ -6,6 +6,63 @@ use string_interner::symbol::SymbolU32;
 
 use crate::ast::{self, FileId, Separated, Spanned, TextSpan};
 
+/// Serializes a HashMap with keys sorted for deterministic snapshot output.
+#[cfg(test)]
+fn serialize_sorted_map<K, V, S>(map: &HashMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    K: Ord + serde::Serialize,
+    V: serde::Serialize,
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut pairs: Vec<_> = map.iter().collect();
+    pairs.sort_by_key(|(k, _)| *k);
+    let mut ser = serializer.serialize_map(Some(pairs.len()))?;
+    for (k, v) in pairs {
+        ser.serialize_entry(k, v)?;
+    }
+    ser.end()
+}
+
+/// Serializes a `HashMap<K, HashMap<K2, V>>` with both levels of keys sorted.
+#[cfg(test)]
+fn serialize_sorted_nested_map<K, K2, V, S>(
+    map: &HashMap<K, HashMap<K2, V>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    K: Ord + serde::Serialize,
+    K2: Ord + serde::Serialize,
+    V: serde::Serialize,
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut outer: Vec<_> = map.iter().collect();
+    outer.sort_by_key(|(k, _)| *k);
+    let mut ser = serializer.serialize_map(Some(outer.len()))?;
+    for (k, inner_map) in outer {
+        let mut inner: Vec<_> = inner_map.iter().collect();
+        inner.sort_by_key(|(k2, _)| *k2);
+        ser.serialize_entry(k, &SortedMapRef(&inner))?;
+    }
+    ser.end()
+}
+
+#[cfg(test)]
+struct SortedMapRef<'a, K, V>(&'a Vec<(&'a K, &'a V)>);
+
+#[cfg(test)]
+impl<K: serde::Serialize, V: serde::Serialize> serde::Serialize for SortedMapRef<'_, K, V> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut ser = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in self.0 {
+            ser.serialize_entry(k, v)?;
+        }
+        ser.end()
+    }
+}
+
 /// Unescape a string literal, removing quotes and handling escape sequences.
 /// Supports basic Rust-like escape sequences: \n, \r, \t, \\, \", \'
 pub fn unescape_string(s: &str) -> String {
@@ -284,9 +341,8 @@ pub enum ExprKind {
         block: Box<Expression>,
     },
     NamespaceAccess {
-        namespace_index: NamespaceIndex,
-        namespace_span: ast::TextSpan,
-        member: Box<Expression>,
+        ty: ast::Spanned<TypeIndex>,
+        member: ast::Spanned<SymbolU32>,
     },
     String {
         symbol: SymbolU32,
@@ -447,6 +503,7 @@ pub struct Enum {
     pub name: ast::Spanned<SymbolU32>,
     pub ty: TypeIndex,
     pub variants: Box<[EnumVariant]>,
+    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
 }
 
@@ -489,6 +546,7 @@ pub enum ImportValue {
 pub struct ImportModule {
     pub external_name: ast::Spanned<SymbolU32>,
     pub internal_name: Option<ast::Spanned<SymbolU32>>,
+    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, ImportValue>,
 }
 
@@ -506,10 +564,21 @@ pub enum ItemSource {
     Imported,
 }
 
+/// Classifies a source file for diagnostic purposes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    /// A library file (e.g. stdlib). Unused-item warnings are suppressed.
+    Library,
+    /// A user module. Unused-item warnings are emitted normally.
+    Module,
+}
+
 #[derive(Clone, Copy)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImplEntry {
     Method(FunctionIndex),
     AssociatedFn(FunctionIndex),
+    AssociatedConst { ty: TypeIndex, value: i64 },
 }
 
 impl PartialOrd for ItemSource {
@@ -536,6 +605,8 @@ pub struct DeclaredFunction {
     pub params: Box<[DeclaredFunctionParam]>,
     pub result: Option<Spanned<TypeIndex>>,
     pub accesses: Vec<ast::TextSpan>,
+    /// Set when the function was declared `pub fn`; suppresses the unused-item warning.
+    pub pub_span: Option<ast::TextSpan>,
 }
 
 pub struct FunctionContext {
@@ -1372,6 +1443,7 @@ pub struct StructField {
 pub struct Struct {
     pub name: ast::Spanned<SymbolU32>,
     pub fields: Box<[StructField]>,
+    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, usize>,
 }
 
@@ -1498,8 +1570,8 @@ impl MissingStructFieldsDiagnostic<'_> {
     }
 }
 
-struct Builder<'ast, 'interner> {
-    ast: &'ast ast::AST,
+struct Builder<'interner> {
+    file_id: ast::FileId,
     interner: &'interner mut ast::StringInterner,
 
     defined_functions: HashMap<FunctionIndex, Function>,
@@ -1513,6 +1585,7 @@ struct Builder<'ast, 'interner> {
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), GlobalValue>,
     impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
     structs: Vec<Struct>,
+    ptr_size: PointerSize,
 }
 
 enum BlockState<T> {
@@ -1520,7 +1593,7 @@ enum BlockState<T> {
     Incomplete(T),
 }
 
-impl Builder<'_, '_> {
+impl Builder<'_> {
     pub fn resolve_type(&mut self, type_expr: &Spanned<ast::TypeExpression>) -> TypeIndex {
         match &type_expr.inner {
             ast::TypeExpression::Identifier { symbol } => {
@@ -1543,7 +1616,7 @@ impl Builder<'_, '_> {
                     _ => {
                         self.diagnostics.push(
                             UndeclaredTypeDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: type_expr.span,
                             }
                             .report(),
@@ -1631,6 +1704,7 @@ impl Builder<'_, '_> {
             signature_index,
             name,
             accesses: Vec::new(),
+            pub_span: None,
             params,
             result,
         });
@@ -1755,7 +1829,7 @@ impl Builder<'_, '_> {
 
                         self.diagnostics.push(
                             DuplicateDefinitionDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 name,
                                 namespace: SymbolNamespace::Value,
                                 first_definition: first_definition_span,
@@ -1782,7 +1856,7 @@ impl Builder<'_, '_> {
                             let name_str = self.interner.resolve(name.inner).unwrap();
                             self.diagnostics.push(
                                 DuplicateParameterDiagnostic {
-                                    file_id: self.ast.file_id,
+                                    file_id: self.file_id,
                                     name: name_str,
                                     first_definition: first_span,
                                     second_definition: name.span,
@@ -1848,7 +1922,7 @@ impl Builder<'_, '_> {
 
                         self.diagnostics.push(
                             DuplicateDefinitionDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 name: name_str,
                                 namespace: SymbolNamespace::Value,
                                 first_definition: first_definition_span,
@@ -1867,7 +1941,7 @@ impl Builder<'_, '_> {
                     None => {
                         self.diagnostics.push(
                             TypeAnnotationRequiredDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: name.span,
                             }
                             .report(),
@@ -1945,7 +2019,7 @@ impl Builder<'_, '_> {
 
                     self.diagnostics.push(
                         DuplicateDefinitionDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             name: name_str,
                             namespace: SymbolNamespace::Value,
                             first_definition: first_definition_span,
@@ -1976,7 +2050,7 @@ impl Builder<'_, '_> {
                 // TODO: lower const items in TIR
                 Ok(())
             }
-            ast::Item::Struct { name, fields } => {
+            ast::Item::Struct { pub_span: _, name, fields } => {
                 // Check for duplicate struct name in the type namespace
                 if let Some(existing) = self
                     .symbol_lookup
@@ -1992,7 +2066,7 @@ impl Builder<'_, '_> {
                     };
                     self.diagnostics.push(
                         DuplicateDefinitionDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             name: name_str,
                             namespace: SymbolNamespace::Type,
                             first_definition: first_span,
@@ -2031,7 +2105,7 @@ impl Builder<'_, '_> {
                     if let Some(&first_span) = seen_fields.get(&field_name_sym) {
                         self.diagnostics.push(
                             DuplicateStructFieldDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 name: &field_name,
                                 first_span,
                                 second_span: field.name.span,
@@ -2048,7 +2122,7 @@ impl Builder<'_, '_> {
                     if field_ty == self.type_pool.intern(Type::Struct { struct_index }) {
                         self.diagnostics.push(
                             RecursiveStructTypeDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 struct_name: &struct_name,
                                 field_span: field.name.span,
                             }
@@ -2070,6 +2144,32 @@ impl Builder<'_, '_> {
                     });
                 }
 
+                // Reorder fields for optimal memory layout: sort by alignment
+                // descending so larger-aligned fields come first, minimising
+                // padding. Uses a stable sort so equal-alignment fields keep
+                // their declaration order.
+                let mut pairs: Vec<(u32, StructField)> = tir_fields
+                    .into_iter()
+                    .map(|field| {
+                        let align = compute_layout(
+                            self.type_pool.as_slice(),
+                            &self.structs,
+                            field.ty.inner,
+                            self.ptr_size,
+                        )
+                        .align;
+                        (align, field)
+                    })
+                    .collect();
+                pairs.sort_by(|a, b| b.0.cmp(&a.0));
+                lookup = pairs
+                    .iter()
+                    .enumerate()
+                    .map(|(phys, (_, f))| (f.name.inner, phys))
+                    .collect();
+                let tir_fields: Vec<StructField> =
+                    pairs.into_iter().map(|(_, f)| f).collect();
+
                 // Patch the reserved slot with real fields
                 self.structs[struct_index as usize].fields = tir_fields.into_boxed_slice();
                 self.structs[struct_index as usize].lookup = lookup;
@@ -2082,58 +2182,75 @@ impl Builder<'_, '_> {
             }
             ast::Item::Impl { target, items } => {
                 let self_type = self.resolve_type(target);
+                let self_symbol = self.interner.get_or_intern("self");
                 for item in items.inner.iter() {
-                    let sig = match &item.inner.inner {
-                        ast::ImplItem::Method { signature, .. } => signature,
-                        ast::ImplItem::Const { .. } => continue,
-                    };
-                    let self_symbol = self.interner.get_or_intern("self");
-                    let params = sig
-                        .params
-                        .inner
-                        .iter()
-                        .map(|p| {
-                            let is_self = p.inner.inner.name.inner == self_symbol;
-                            DeclaredFunctionParam {
-                                name: Some(p.inner.inner.name.clone()),
-                                ty: match &p.inner.inner.ty {
-                                    Some(ty) => Spanned {
-                                        inner: self.resolve_type(ty),
-                                        span: ty.span,
-                                    },
-                                    None => Spanned {
-                                        inner: if is_self { self_type } else { ERROR_IDX },
-                                        span: p.inner.inner.name.span,
-                                    },
+                    match &item.inner.inner {
+                        ast::ImplItem::Const { name, ty, value } => {
+                            let resolved_ty = match ty {
+                                Some(ty_expr) => self.resolve_type(ty_expr),
+                                None => UNKNOWN_IDX,
+                            };
+                            let const_value = match self.eval_impl_const_int(value, resolved_ty) {
+                                Ok(v) => v,
+                                Err(()) => continue,
+                            };
+                            self.impl_members.entry(self_type).or_default().insert(
+                                name.inner,
+                                ImplEntry::AssociatedConst {
+                                    ty: resolved_ty,
+                                    value: const_value,
                                 },
-                            }
-                        })
-                        .collect();
-                    let result = sig.result.as_ref().map(|r| Spanned {
-                        inner: self.resolve_type(r),
-                        span: r.span,
-                    });
-                    let func_index = self.declare_function(
-                        sig.name.clone(),
-                        params,
-                        result,
-                        ItemSource::Defined,
-                    );
-                    let is_method = sig
-                        .params
-                        .inner
-                        .first()
-                        .map(|p| p.inner.inner.name.inner == self_symbol)
-                        .unwrap_or(false);
-                    let entry = if is_method {
-                        ImplEntry::Method(func_index)
-                    } else {
-                        ImplEntry::AssociatedFn(func_index)
-                    };
-                    self.impl_members
-                        .entry(self_type)
-                        .or_default()
-                        .insert(sig.name.inner, entry);
+                            );
+                        }
+                        ast::ImplItem::Method { signature: sig, .. } => {
+                            let params = sig
+                                .params
+                                .inner
+                                .iter()
+                                .map(|p| {
+                                    let is_self = p.inner.inner.name.inner == self_symbol;
+                                    DeclaredFunctionParam {
+                                        name: Some(p.inner.inner.name.clone()),
+                                        ty: match &p.inner.inner.ty {
+                                            Some(ty) => Spanned {
+                                                inner: self.resolve_type(ty),
+                                                span: ty.span,
+                                            },
+                                            None => Spanned {
+                                                inner: if is_self { self_type } else { ERROR_IDX },
+                                                span: p.inner.inner.name.span,
+                                            },
+                                        },
+                                    }
+                                })
+                                .collect();
+                            let result = sig.result.as_ref().map(|r| Spanned {
+                                inner: self.resolve_type(r),
+                                span: r.span,
+                            });
+                            let func_index = self.declare_function(
+                                sig.name.clone(),
+                                params,
+                                result,
+                                ItemSource::Defined,
+                            );
+                            let is_method = sig
+                                .params
+                                .inner
+                                .first()
+                                .map(|p| p.inner.inner.name.inner == self_symbol)
+                                .unwrap_or(false);
+                            let entry = if is_method {
+                                ImplEntry::Method(func_index)
+                            } else {
+                                ImplEntry::AssociatedFn(func_index)
+                            };
+                            self.impl_members
+                                .entry(self_type)
+                                .or_default()
+                                .insert(sig.name.inner, entry);
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -2172,7 +2289,7 @@ impl Builder<'_, '_> {
                     let name_str = self.interner.resolve(entry_name_symbol).unwrap();
                     self.diagnostics.push(
                         DuplicateDefinitionDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             name: name_str,
                             namespace: SymbolNamespace::Value,
                             first_definition: existing_span,
@@ -2201,7 +2318,7 @@ impl Builder<'_, '_> {
                                 None => {
                                     self.diagnostics.push(
                                         MissingImportParamNameDiagnostic {
-                                            file_id: self.ast.file_id,
+                                            file_id: self.file_id,
                                             span: param.inner.inner.ty.span,
                                         }
                                         .report(),
@@ -2215,7 +2332,7 @@ impl Builder<'_, '_> {
                                         self.interner.resolve(explicit_name.inner).unwrap();
                                     self.diagnostics.push(
                                         DuplicateParameterDiagnostic {
-                                            file_id: self.ast.file_id,
+                                            file_id: self.file_id,
                                             name: name_str,
                                             first_definition: first_span,
                                             second_definition: explicit_name.span,
@@ -2269,8 +2386,11 @@ impl Builder<'_, '_> {
 
     fn build_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match item {
-            ast::Item::Function { signature, block } => {
+            ast::Item::Function { pub_span, signature, block } => {
                 let func_index = self.resolve_func(signature.name.inner).unwrap();
+                if let Some(span) = pub_span {
+                    self.declared_functions[func_index as usize].pub_span = Some(*span);
+                }
                 self.build_function_definition(signature, block, func_index)
             }
             ast::Item::Global {
@@ -2291,7 +2411,7 @@ impl Builder<'_, '_> {
                     _ if value_expr.ty == UNKNOWN_IDX => {
                         self.diagnostics.push(
                             TypeAnnotationRequiredDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: value.span,
                             }
                             .report(),
@@ -2301,7 +2421,7 @@ impl Builder<'_, '_> {
                     ty if !self.type_pool.coercible_to(ty, global_type_idx) => {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 expected_type: global_type_idx,
                                 actual_type: ty,
                                 span: value.span,
@@ -2345,7 +2465,7 @@ impl Builder<'_, '_> {
                         None => {
                             self.diagnostics.push(
                                 UndeclaredIdentifierDiagnostic {
-                                    file_id: self.ast.file_id,
+                                    file_id: self.file_id,
                                     span: internal_name.span,
                                 }
                                 .report(),
@@ -2393,7 +2513,7 @@ impl Builder<'_, '_> {
                         _ => {
                             self.diagnostics.push(
                                 CannotExportItemDiagnostic {
-                                    file_id: self.ast.file_id,
+                                    file_id: self.file_id,
                                     name: self.interner.resolve(internal_name.inner).unwrap(),
                                     span: internal_name.span,
                                 }
@@ -2448,7 +2568,7 @@ impl Builder<'_, '_> {
 
                             self.diagnostics.push(
                                 DuplicateExportDiagnostic {
-                                    file_id: self.ast.file_id,
+                                    file_id: self.file_id,
                                     name,
                                     first_export: first_export_span,
                                     second_export: export_span,
@@ -2489,8 +2609,8 @@ impl Builder<'_, '_> {
             ast::Item::Impl { target, items } => {
                 let target_type = self.resolve_type(target);
                 for item in items.inner.iter() {
-                    let (sig, block) = match &item.inner.inner {
-                        ast::ImplItem::Method { signature, block } => (signature, block),
+                    let (sig, block, pub_span) = match &item.inner.inner {
+                        ast::ImplItem::Method { pub_span, signature, block } => (signature, block, pub_span),
                         ast::ImplItem::Const { .. } => continue,
                     };
                     let func_index = match self
@@ -2499,11 +2619,94 @@ impl Builder<'_, '_> {
                         .and_then(|m| m.get(&sig.name.inner))
                     {
                         Some(ImplEntry::Method(i) | ImplEntry::AssociatedFn(i)) => *i,
+                        Some(ImplEntry::AssociatedConst { .. }) => continue,
                         None => continue,
                     };
+                    if let Some(span) = pub_span {
+                        self.declared_functions[func_index as usize].pub_span = Some(*span);
+                    }
                     self.build_function_definition(sig, block, func_index)?;
                 }
                 Ok(())
+            }
+        }
+    }
+
+    /// Evaluates a constant expression that must produce an integer value.
+    /// Only integer types (I32, I64, U32, U64) are supported; other types
+    /// cause a `todo!` panic. Non-constant expressions emit a diagnostic.
+    fn eval_impl_const_int(
+        &mut self,
+        expr: &ast::Spanned<ast::Expression>,
+        ty: TypeIndex,
+    ) -> Result<i64, ()> {
+        match ty {
+            I32_IDX | I64_IDX | U32_IDX | U64_IDX | UNKNOWN_IDX => {}
+            _ => todo!("associated constants are only supported for integer types"),
+        }
+        self.eval_const_int_expr(expr)
+    }
+
+    fn eval_const_int_expr(&mut self, expr: &ast::Spanned<ast::Expression>) -> Result<i64, ()> {
+        match &expr.inner {
+            ast::Expression::Int { value } => Ok(*value),
+            ast::Expression::Grouping { value } => self.eval_const_int_expr(value),
+            ast::Expression::Unary { operator, operand } => {
+                let v = self.eval_const_int_expr(operand)?;
+                match operator.inner {
+                    ast::UnaryOp::InvertSign => Ok(v.wrapping_neg()),
+                    ast::UnaryOp::BitNot => Ok(!v),
+                    ast::UnaryOp::Not => {
+                        self.diagnostics.push(
+                            NonConstantGlobalInitializerDiagnostic {
+                                file_id: self.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
+            }
+            ast::Expression::Binary {
+                left,
+                right,
+                operator,
+            } => {
+                let l = self.eval_const_int_expr(left)?;
+                let r = self.eval_const_int_expr(right)?;
+                match operator.inner {
+                    ast::BinaryOp::Add => Ok(l.wrapping_add(r)),
+                    ast::BinaryOp::Sub => Ok(l.wrapping_sub(r)),
+                    ast::BinaryOp::Mul => Ok(l.wrapping_mul(r)),
+                    ast::BinaryOp::Div => Ok(l.wrapping_div(r)),
+                    ast::BinaryOp::Rem => Ok(l.wrapping_rem(r)),
+                    ast::BinaryOp::BitAnd => Ok(l & r),
+                    ast::BinaryOp::BitOr => Ok(l | r),
+                    ast::BinaryOp::BitXor => Ok(l ^ r),
+                    ast::BinaryOp::LeftShift => Ok(l.wrapping_shl(r as u32)),
+                    ast::BinaryOp::RightShift => Ok(l.wrapping_shr(r as u32)),
+                    _ => {
+                        self.diagnostics.push(
+                            NonConstantGlobalInitializerDiagnostic {
+                                file_id: self.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
+            }
+            _ => {
+                self.diagnostics.push(
+                    NonConstantGlobalInitializerDiagnostic {
+                        file_id: self.file_id,
+                        span: expr.span,
+                    }
+                    .report(),
+                );
+                Err(())
             }
         }
     }
@@ -2540,7 +2743,7 @@ impl Builder<'_, '_> {
                     _ => {
                         self.diagnostics.push(
                             NonConstantGlobalInitializerDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: expr.span,
                             }
                             .report(),
@@ -2600,7 +2803,7 @@ impl Builder<'_, '_> {
             _ => {
                 self.diagnostics.push(
                     NonConstantGlobalInitializerDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: expr.span,
                     }
                     .report(),
@@ -2716,7 +2919,7 @@ impl Builder<'_, '_> {
                 if result.is_some() || expressions.len() < statements.len() {
                     self.diagnostics.push(
                         UnreachableCodeDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: TextSpan::merge(
                                 match statements.get(expressions.len()) {
                                     Some(stmt) => stmt.inner.span,
@@ -2790,7 +2993,7 @@ impl Builder<'_, '_> {
                     {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 expected_type,
                                 actual_type: inferred_type,
                                 span: block.span,
@@ -2820,7 +3023,7 @@ impl Builder<'_, '_> {
             if local.accesses.is_empty() && local.ty != ERROR_IDX {
                 self.diagnostics.push(
                     UnusedVariableDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: local.name.span,
                     }
                     .report(),
@@ -2835,7 +3038,7 @@ impl Builder<'_, '_> {
                 {
                     self.diagnostics.push(
                         UnnecessaryMutabilityDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: mut_span,
                         }
                         .report(),
@@ -2848,14 +3051,12 @@ impl Builder<'_, '_> {
 
     fn report_unused_items(&mut self) {
         for (func_index, func) in self.defined_functions.iter() {
-            if self.declared_functions[*func_index as usize]
-                .accesses
-                .is_empty()
-            {
+            let decl = &self.declared_functions[*func_index as usize];
+            if decl.accesses.is_empty() && decl.pub_span.is_none() {
                 let name = self.interner.resolve(func.name.inner).unwrap().to_string();
                 self.diagnostics.push(
                     UnusedFunctionDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         name,
                         span: func.name.span,
                     }
@@ -2876,7 +3077,7 @@ impl Builder<'_, '_> {
                     .to_string();
                 self.diagnostics.push(
                     UnusedGlobalDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         name,
                         span: global.name.span,
                     }
@@ -2960,7 +3161,7 @@ impl Builder<'_, '_> {
                 None => {
                     self.diagnostics.push(
                         TypeAnnotationRequiredDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: value.span,
                         }
                         .report(),
@@ -2974,7 +3175,7 @@ impl Builder<'_, '_> {
             Some(inferred_type) if !self.type_pool.coercible_to(result_type, inferred_type) => {
                 self.diagnostics.push(
                     TypeMistmatchDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         expected_type: inferred_type,
                         actual_type: result_type,
                         span: value.span,
@@ -2988,7 +3189,7 @@ impl Builder<'_, '_> {
                 Some(expected_type) if !self.type_pool.coercible_to(result_type, expected_type) => {
                     self.diagnostics.push(
                         TypeMistmatchDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             expected_type,
                             actual_type: result_type,
                             span: value.span,
@@ -3048,7 +3249,7 @@ impl Builder<'_, '_> {
         } else if value.ty == UNKNOWN_IDX {
             self.diagnostics.push(
                 TypeAnnotationRequiredDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     span: value.span,
                 }
                 .report(),
@@ -3057,7 +3258,7 @@ impl Builder<'_, '_> {
         }
         self.diagnostics.push(
             UnusedValueDiagnostic {
-                file_id: self.ast.file_id,
+                file_id: self.file_id,
                 span: value.span,
             }
             .report(),
@@ -3112,7 +3313,7 @@ impl Builder<'_, '_> {
                     Err(CharLiteralError::Empty) => {
                         self.diagnostics.push(
                             EmptyCharLiteralDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: expr.span,
                             }
                             .report(),
@@ -3122,7 +3323,7 @@ impl Builder<'_, '_> {
                     Err(CharLiteralError::TooLong) => {
                         self.diagnostics.push(
                             CharLiteralTooLongDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: expr.span,
                             }
                             .report(),
@@ -3217,16 +3418,84 @@ impl Builder<'_, '_> {
                 // TODO: emit "this is an associated function, use Type::name()
                 // syntax" diagnostic
             }
+            Some(ImplEntry::AssociatedConst { ty, value }) => {
+                // For now, we only support associated constants for enums, so we can directly
+                // resolve the value here without needing to create a separate expression kind for it
+                return Ok(Expression {
+                    kind: ExprKind::Int { value: *value },
+                    ty: *ty,
+                    span: ast::TextSpan::merge(object_expr.span, member.span),
+                });
+            }
             None => {}
         }
+
+        // Check struct fields
+        if let Type::Struct { struct_index } = *self.type_pool.get(object.ty) {
+            if let Some(&field_index) = self.structs[struct_index as usize].lookup.get(&member.inner) {
+                let field_ty = self.structs[struct_index as usize].fields[field_index].ty.inner;
+                return Ok(Expression {
+                    kind: ExprKind::ObjectAccess {
+                        object: Box::new(object),
+                        member: member.clone(),
+                    },
+                    ty: field_ty,
+                    span: ast::TextSpan::merge(object_expr.span, member.span),
+                });
+            }
+        }
+
         self.diagnostics.push(
             UndeclaredIdentifierDiagnostic {
-                file_id: self.ast.file_id,
+                file_id: self.file_id,
                 span: member.span,
             }
             .report(),
         );
         Err(())
+    }
+
+    /// Ensures built-in constants (`SIZE`, `ALIGN`) are present for `ty` and
+    /// returns a reference to its impl-member map. This is the single entry
+    /// point for all impl-member lookups; never access `impl_members` directly
+    /// for namespace-style resolution.
+    fn ensure_impl_members(&mut self, ty: TypeIndex) -> &HashMap<SymbolU32, ImplEntry> {
+        let size_sym = self.interner.get_or_intern("SIZE");
+        let already_seeded = self
+            .impl_members
+            .get(&ty)
+            .map_or(false, |m| m.contains_key(&size_sym));
+        if !already_seeded {
+            let is_sized = !matches!(
+                self.type_pool.get(ty),
+                Type::Error | Type::Unknown | Type::Namespace { .. } | Type::Function { .. }
+            );
+            if is_sized {
+                let align_sym = self.interner.get_or_intern("ALIGN");
+                let layout =
+                    compute_layout(self.type_pool.as_slice(), &self.structs, ty, self.ptr_size);
+                let result_ty = match self.ptr_size {
+                    PointerSize::P32 => U32_IDX,
+                    PointerSize::P64 => U64_IDX,
+                };
+                let members = self.impl_members.entry(ty).or_default();
+                members.insert(
+                    size_sym,
+                    ImplEntry::AssociatedConst {
+                        ty: result_ty,
+                        value: layout.size as i64,
+                    },
+                );
+                members.insert(
+                    align_sym,
+                    ImplEntry::AssociatedConst {
+                        ty: result_ty,
+                        value: layout.align as i64,
+                    },
+                );
+            }
+        }
+        self.impl_members.entry(ty).or_default()
     }
 
     fn build_namespace_access_expression(
@@ -3235,39 +3504,61 @@ impl Builder<'_, '_> {
         member: Spanned<SymbolU32>,
     ) -> Result<Expression, ()> {
         let namespace_ty = self.resolve_type(&namespace_expr);
-        let namespace_index = if namespace_ty == ERROR_IDX {
+        if namespace_ty == ERROR_IDX {
             return Err(());
-        } else {
-            match self.type_pool.get(namespace_ty) {
-                Type::Namespace { namespace_index } => *namespace_index,
-                _ => {
-                    let diag = NotANamespaceDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: namespace_expr.span,
-                        ty: namespace_ty,
-                    }
-                    .report(self);
-                    self.diagnostics.push(diag);
-                    return Err(());
+        }
+
+        let full_span = ast::TextSpan::merge(namespace_expr.span, member.span);
+
+        let entry = self
+            .ensure_impl_members(namespace_ty)
+            .get(&member.inner)
+            .copied();
+        if let Some(entry) = entry {
+            match entry {
+                ImplEntry::AssociatedConst { ty, value: _ } => {
+                    return Ok(Expression {
+                        kind: ExprKind::NamespaceAccess {
+                            ty: ast::Spanned {
+                                inner: namespace_ty,
+                                span: namespace_expr.span,
+                            },
+                            member: member.clone(),
+                        },
+                        ty,
+                        span: full_span,
+                    });
                 }
+                ImplEntry::AssociatedFn(_) | ImplEntry::Method(_) => {
+                    // TODO: emit a diagnostic — use Type::fn() call syntax
+                }
+            }
+        }
+
+        let namespace_index = match self.type_pool.get(namespace_ty) {
+            Type::Namespace { namespace_index } => *namespace_index,
+            _ => {
+                let diag = NotANamespaceDiagnostic {
+                    file_id: self.file_id,
+                    span: namespace_expr.span,
+                    ty: namespace_ty,
+                }
+                .report(self);
+                self.diagnostics.push(diag);
+                return Err(());
             }
         };
 
         let namespace = &self.namespaces[namespace_index as usize];
         match namespace {
             Namespace::Enum(enum_) => match enum_.lookup.get(&member.inner) {
-                Some(variant_index) => Ok(Expression {
+                Some(_variant_index) => Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
-                        namespace_index,
-                        namespace_span: namespace_expr.span,
-                        member: Box::new(Expression {
-                            kind: ExprKind::EnumVariant {
-                                namespace_index,
-                                variant_index: *variant_index,
-                            },
-                            ty: enum_.ty,
-                            span: member.span,
-                        }),
+                        ty: ast::Spanned {
+                            inner: namespace_ty,
+                            span: namespace_expr.span,
+                        },
+                        member: member.clone(),
                     },
                     ty: enum_.ty,
                     span: ast::TextSpan::merge(namespace_expr.span, member.span),
@@ -3275,7 +3566,7 @@ impl Builder<'_, '_> {
                 _ => {
                     self.diagnostics.push(
                         UndeclaredIdentifierDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: member.span,
                         }
                         .report(),
@@ -3290,15 +3581,11 @@ impl Builder<'_, '_> {
                     let ty = func.signature_index;
                     Ok(Expression {
                         kind: ExprKind::NamespaceAccess {
-                            namespace_index,
-                            namespace_span: namespace_expr.span,
-                            member: Box::new(Expression {
-                                kind: ExprKind::Function {
-                                    func_index: *func_index,
-                                },
-                                ty,
-                                span: member.span,
-                            }),
+                            ty: ast::Spanned {
+                                inner: namespace_ty,
+                                span: namespace_expr.span,
+                            },
+                            member: member.clone(),
                         },
                         ty,
                         span: ast::TextSpan::merge(namespace_expr.span, member.span),
@@ -3307,27 +3594,23 @@ impl Builder<'_, '_> {
                 Some(ImportValue::Global { global_index }) => {
                     let global = &mut self.declared_globals[*global_index as usize];
                     global.accesses.push(member.span);
-
+                    let ty = global.ty.inner;
                     Ok(Expression {
                         kind: ExprKind::NamespaceAccess {
-                            namespace_index,
-                            namespace_span: namespace_expr.span,
-                            member: Box::new(Expression {
-                                kind: ExprKind::Global {
-                                    global_index: *global_index,
-                                },
-                                ty: global.ty.inner,
-                                span: member.span,
-                            }),
+                            ty: ast::Spanned {
+                                inner: namespace_ty,
+                                span: namespace_expr.span,
+                            },
+                            member: member.clone(),
                         },
-                        ty: global.ty.inner,
+                        ty,
                         span: ast::TextSpan::merge(namespace_expr.span, member.span),
                     })
                 }
                 None => {
                     self.diagnostics.push(
                         UndeclaredIdentifierDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: member.span,
                         }
                         .report(),
@@ -3414,7 +3697,7 @@ impl Builder<'_, '_> {
                     {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 expected_type,
                                 actual_type: inferred_type,
                                 span: expr.span,
@@ -3455,7 +3738,7 @@ impl Builder<'_, '_> {
                 None => {
                     self.diagnostics.push(
                         UndeclaredLabelDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: label.span,
                         }
                         .report(),
@@ -3539,7 +3822,7 @@ impl Builder<'_, '_> {
                     Err(_) => {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 expected_type: then_block.ty,
                                 actual_type: else_block.ty,
                                 span: ast_else_block.span,
@@ -3607,7 +3890,7 @@ impl Builder<'_, '_> {
         } else if value.ty != cast_type {
             self.diagnostics.push(
                 TypeMistmatchDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     expected_type: cast_type,
                     actual_type: value.ty,
                     span: value.span,
@@ -3636,7 +3919,7 @@ impl Builder<'_, '_> {
                 None => {
                     self.diagnostics.push(
                         UndeclaredLabelDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: label.span,
                         }
                         .report(),
@@ -3656,7 +3939,7 @@ impl Builder<'_, '_> {
                 None => {
                     self.diagnostics.push(
                         BreakOutsideOfLoopDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: expr.span,
                         }
                         .report(),
@@ -3717,7 +4000,7 @@ impl Builder<'_, '_> {
                         if !self.type_pool.coercible_to(UNIT_IDX, inferred) {
                             self.diagnostics.push(
                                 TypeMistmatchDiagnostic {
-                                    file_id: self.ast.file_id,
+                                    file_id: self.file_id,
                                     expected_type: inferred,
                                     actual_type: UNIT_IDX,
                                     span: expr.span,
@@ -3821,7 +4104,7 @@ impl Builder<'_, '_> {
                 GlobalValue::Struct { .. } => {
                     self.diagnostics.push(
                         UndeclaredIdentifierDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: expr.span,
                         }
                         .report(),
@@ -3836,7 +4119,7 @@ impl Builder<'_, '_> {
             None => {
                 self.diagnostics.push(
                     UndeclaredIdentifierDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: expr.span,
                     }
                     .report(),
@@ -3953,7 +4236,7 @@ impl Builder<'_, '_> {
                     let ty = operand.ty;
                     self.diagnostics.push(
                         UnaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             operator: operator.clone(),
                             operand: Spanned {
                                 inner: ty,
@@ -4003,7 +4286,7 @@ impl Builder<'_, '_> {
         } else if left.ty == UNKNOWN_IDX {
             self.diagnostics.push(
                 TypeAnnotationRequiredDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     span: left.span,
                 }
                 .report(),
@@ -4011,7 +4294,7 @@ impl Builder<'_, '_> {
         } else if left.ty != BOOL_IDX {
             self.diagnostics.push(
                 TypeMistmatchDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     expected_type: BOOL_IDX,
                     actual_type: left.ty,
                     span: left.span,
@@ -4032,7 +4315,7 @@ impl Builder<'_, '_> {
         } else if right.ty == UNKNOWN_IDX {
             self.diagnostics.push(
                 TypeAnnotationRequiredDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     span: right.span,
                 }
                 .report(),
@@ -4040,7 +4323,7 @@ impl Builder<'_, '_> {
         } else if right.ty != BOOL_IDX {
             self.diagnostics.push(
                 TypeMistmatchDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     expected_type: BOOL_IDX,
                     actual_type: right.ty,
                     span: right.span,
@@ -4109,7 +4392,7 @@ impl Builder<'_, '_> {
                     if !self.type_pool.get(expected_type).is_integer() {
                         self.diagnostics.push(
                             BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 operator: operator.clone(),
                                 operand: Spanned {
                                     inner: expected_type,
@@ -4133,7 +4416,7 @@ impl Builder<'_, '_> {
                 None => {
                     self.diagnostics.push(
                         TypeAnnotationRequiredDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: expr.span,
                         }
                         .report(),
@@ -4145,7 +4428,7 @@ impl Builder<'_, '_> {
                 if !self.type_pool.get(right_type).is_integer() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             operator: operator.clone(),
                             operand: Spanned {
                                 inner: right_type,
@@ -4171,7 +4454,7 @@ impl Builder<'_, '_> {
                 if !self.type_pool.get(left_type).is_integer() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             operator: operator.clone(),
                             operand: Spanned {
                                 inner: left_type,
@@ -4209,7 +4492,7 @@ impl Builder<'_, '_> {
             (left_type, right_type) => {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         left_type: Spanned {
                             inner: left_type,
                             span: left.span,
@@ -4282,7 +4565,7 @@ impl Builder<'_, '_> {
             (l, r) if l == UNKNOWN_IDX && r == UNKNOWN_IDX => {
                 self.diagnostics.push(
                     ComparisonTypeAnnotationRequiredDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         left: left.span,
                         right: right.span,
                     }
@@ -4364,7 +4647,7 @@ impl Builder<'_, '_> {
             (left_type, right_type) => {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         left_type: Spanned {
                             inner: left_type,
                             span: left.span,
@@ -4423,7 +4706,7 @@ impl Builder<'_, '_> {
                     None => {
                         self.diagnostics.push(
                             UndeclaredIdentifierDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: left.span,
                             }
                             .report(),
@@ -4435,7 +4718,7 @@ impl Builder<'_, '_> {
                     None => {
                         self.diagnostics.push(
                             CannotMutateImmutableDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: expr.span,
                             }
                             .report(),
@@ -4459,7 +4742,7 @@ impl Builder<'_, '_> {
                 } else if !self.type_pool.coercible_to(right.ty, local_type) {
                     self.diagnostics.push(
                         BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             left_type: Spanned {
                                 inner: local_type,
                                 span: left.span,
@@ -4490,7 +4773,7 @@ impl Builder<'_, '_> {
                     None => {
                         self.diagnostics.push(
                             CannotMutateImmutableDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: expr.span,
                             }
                             .report(),
@@ -4513,7 +4796,7 @@ impl Builder<'_, '_> {
                 } else if !self.type_pool.coercible_to(right.ty, global_type) {
                     self.diagnostics.push(
                         BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             left_type: Spanned {
                                 inner: global_type,
                                 span: left.span,
@@ -4550,7 +4833,7 @@ impl Builder<'_, '_> {
                 if right.ty == UNKNOWN_IDX {
                     self.diagnostics.push(
                         TypeAnnotationRequiredDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: right.span,
                         }
                         .report(),
@@ -4576,7 +4859,7 @@ impl Builder<'_, '_> {
             _ => {
                 self.diagnostics.push(
                     InvalidAssignmentTargetDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: left.span,
                     }
                     .report(),
@@ -4623,7 +4906,7 @@ impl Builder<'_, '_> {
                     None => {
                         self.diagnostics.push(
                             UndeclaredIdentifierDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 span: left.span,
                             }
                             .report(),
@@ -4654,7 +4937,7 @@ impl Builder<'_, '_> {
                 if !self.type_pool.get(local.ty).is_primitive() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             operator,
                             operand: Spanned {
                                 inner: local.ty,
@@ -4669,7 +4952,7 @@ impl Builder<'_, '_> {
                 if local.mut_span == None {
                     self.diagnostics.push(
                         CannotMutateImmutableDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: expr.span,
                         }
                         .report(),
@@ -4690,7 +4973,7 @@ impl Builder<'_, '_> {
                 } else if !self.type_pool.coercible_to(right.ty, local_type) {
                     self.diagnostics.push(
                         BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             left_type: Spanned {
                                 inner: local_type,
                                 span: left.span,
@@ -4724,7 +5007,7 @@ impl Builder<'_, '_> {
                 if !self.type_pool.get(global.ty.inner).is_primitive() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             operator,
                             operand: Spanned {
                                 inner: global.ty.inner,
@@ -4740,7 +5023,7 @@ impl Builder<'_, '_> {
                 if global.mut_span == None {
                     self.diagnostics.push(
                         CannotMutateImmutableDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: expr.span,
                         }
                         .report(),
@@ -4761,7 +5044,7 @@ impl Builder<'_, '_> {
                 } else if !self.type_pool.coercible_to(right.ty, global_type) {
                     self.diagnostics.push(
                         BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             left_type: Spanned {
                                 inner: global_type,
                                 span: left.span,
@@ -4789,7 +5072,7 @@ impl Builder<'_, '_> {
             _ => {
                 self.diagnostics.push(
                     InvalidAssignmentTargetDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: left.span,
                     }
                     .report(),
@@ -4838,7 +5121,7 @@ impl Builder<'_, '_> {
                         {
                             self.diagnostics.push(
                                 TypeMistmatchDiagnostic {
-                                    file_id: self.ast.file_id,
+                                    file_id: self.file_id,
                                     expected_type,
                                     actual_type: inferred_type,
                                     span: value.span,
@@ -4875,7 +5158,7 @@ impl Builder<'_, '_> {
                     {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 expected_type,
                                 actual_type: inferred_type,
                                 span: expr.span,
@@ -4947,7 +5230,7 @@ impl Builder<'_, '_> {
                 None => {
                     self.diagnostics.push(
                         TypeAnnotationRequiredDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             span: expr.span,
                         }
                         .report(),
@@ -4959,7 +5242,7 @@ impl Builder<'_, '_> {
                 if !self.type_pool.get(ty).is_primitive() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             operator: operator.clone(),
                             operand: Spanned {
                                 inner: ty,
@@ -5008,7 +5291,7 @@ impl Builder<'_, '_> {
             (l, _) if l == NEVER_IDX => {
                 self.diagnostics.push(
                     UnreachableCodeDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: right.span,
                     }
                     .report(),
@@ -5019,7 +5302,7 @@ impl Builder<'_, '_> {
             (_, r) if r == NEVER_IDX => {
                 self.diagnostics.push(
                     UnreachableCodeDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: operator.span,
                     }
                     .report(),
@@ -5043,7 +5326,7 @@ impl Builder<'_, '_> {
             (left_type, right_type) => {
                 self.diagnostics.push(
                     BinaryExpressionMistmatchDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         left_type: Spanned {
                             inner: left_type,
                             span: left.span,
@@ -5100,7 +5383,7 @@ impl Builder<'_, '_> {
                     } else if !self.type_pool.coercible_to(argument.ty, expected_type) {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
+                                file_id: self.file_id,
                                 expected_type,
                                 actual_type: argument.ty,
                                 span: argument.span,
@@ -5138,7 +5421,7 @@ impl Builder<'_, '_> {
             _ => {
                 self.diagnostics.push(
                     CannotCallExpressionDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: ast_callee.span,
                         ty: callee.ty,
                     }
@@ -5171,7 +5454,7 @@ impl Builder<'_, '_> {
                         if arguments.len() != params.len() {
                             self.diagnostics.push(
                                 ArgumentCountMismatchDiagnostic {
-                                    file_id: self.ast.file_id,
+                                    file_id: self.file_id,
                                     actual_count: arguments.len(),
                                     params,
                                     call_span: callee.span,
@@ -5203,7 +5486,7 @@ impl Builder<'_, '_> {
                 if arguments.len() != params.len() {
                     self.diagnostics.push(
                         ArgumentCountMismatchDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             actual_count: arguments.len(),
                             params,
                             call_span: callee.span,
@@ -5260,7 +5543,7 @@ impl Builder<'_, '_> {
             (v, None) if v == UNKNOWN_IDX => {
                 self.diagnostics.push(
                     TypeAnnotationRequiredDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: name.span,
                     }
                     .report(),
@@ -5280,7 +5563,7 @@ impl Builder<'_, '_> {
                 } else {
                     self.diagnostics.push(
                         TypeMistmatchDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             expected_type,
                             actual_type,
                             span: value.span,
@@ -5343,7 +5626,7 @@ impl Builder<'_, '_> {
             if value > i32::MAX as i64 || value < i32::MIN as i64 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         ty: I32_IDX,
                         value,
                         span: expr.span,
@@ -5357,7 +5640,7 @@ impl Builder<'_, '_> {
             if value > i64::MAX || value < i64::MIN {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         ty: I64_IDX,
                         value,
                         span: expr.span,
@@ -5371,7 +5654,7 @@ impl Builder<'_, '_> {
             if value > u32::MAX as i64 || value < 0 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         ty: U32_IDX,
                         value,
                         span: expr.span,
@@ -5387,7 +5670,7 @@ impl Builder<'_, '_> {
             if value < 0 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         ty: U64_IDX,
                         value,
                         span: expr.span,
@@ -5400,7 +5683,7 @@ impl Builder<'_, '_> {
         } else if target_idx == F32_IDX || target_idx == F64_IDX {
             self.diagnostics.push(
                 IntegerLiteralForFloatTypeDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     span: expr.span,
                 }
                 .report(),
@@ -5409,7 +5692,7 @@ impl Builder<'_, '_> {
         } else {
             self.diagnostics.push(
                 UnableToCoerceDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     target_type: target_idx,
                     span: expr.span,
                 }
@@ -5435,7 +5718,7 @@ impl Builder<'_, '_> {
         } else {
             self.diagnostics.push(
                 UnableToCoerceDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     target_type: target_idx,
                     span: expr.span,
                 }
@@ -5461,7 +5744,7 @@ impl Builder<'_, '_> {
                 if !is_valid {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             target_type: target_idx,
                             span: expr.span,
                         }
@@ -5496,7 +5779,7 @@ impl Builder<'_, '_> {
                 if !self.type_pool.get(target_idx).is_primitive() {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             target_type: target_idx,
                             span: expr.span,
                         }
@@ -5513,7 +5796,7 @@ impl Builder<'_, '_> {
                 if !is_integer {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             target_type: target_idx,
                             span: expr.span,
                         }
@@ -5553,7 +5836,7 @@ impl Builder<'_, '_> {
             Some(_) => {
                 self.diagnostics.push(
                     NotAStructTypeDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         name: self.interner.resolve(name.inner).unwrap().to_string(),
                         span: name.span,
                     }
@@ -5564,7 +5847,7 @@ impl Builder<'_, '_> {
             None => {
                 self.diagnostics.push(
                     UndeclaredIdentifierDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         span: name.span,
                     }
                     .report(),
@@ -5599,7 +5882,7 @@ impl Builder<'_, '_> {
                 None => {
                     self.diagnostics.push(
                         UnknownStructFieldDiagnostic {
-                            file_id: self.ast.file_id,
+                            file_id: self.file_id,
                             struct_name: &struct_name,
                             field_name,
                             field_span: field.name.span,
@@ -5613,7 +5896,7 @@ impl Builder<'_, '_> {
             if let Some(first_span) = first_mention[field_index] {
                 self.diagnostics.push(
                     DuplicateStructFieldInitDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         field_name: &field_name,
                         first_span,
                         second_span: field.name.span,
@@ -5661,7 +5944,7 @@ impl Builder<'_, '_> {
             } else if !self.type_pool.coercible_to(field_expr.ty, expected_ty) {
                 self.diagnostics.push(
                     TypeMistmatchDiagnostic {
-                        file_id: self.ast.file_id,
+                        file_id: self.file_id,
                         expected_type: expected_ty,
                         actual_type: field_expr.ty,
                         span: field_expr.span,
@@ -5689,7 +5972,7 @@ impl Builder<'_, '_> {
         if !missing.is_empty() {
             self.diagnostics.push(
                 MissingStructFieldsDiagnostic {
-                    file_id: self.ast.file_id,
+                    file_id: self.file_id,
                     struct_name: &struct_name,
                     missing_fields: missing,
                     init_span,
@@ -5779,6 +6062,10 @@ impl TypePool {
         &self.pool[idx as usize]
     }
 
+    pub fn as_slice(&self) -> &[Type] {
+        &self.pool
+    }
+
     /// Returns `true` if a value of type `a` can be coerced to type `b`.
     pub fn coercible_to(&self, a: TypeIndex, b: TypeIndex) -> bool {
         a == b || a == NEVER_IDX || a == ERROR_IDX || b == ERROR_IDX
@@ -5828,7 +6115,9 @@ impl TypePool {
 pub struct TIR {
     pub file_id: ast::FileId,
     pub type_pool: Vec<Type>,
+    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
     pub defined_functions: HashMap<FunctionIndex, Function>,
+    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
     pub defined_globals: HashMap<GlobalIndex, Global>,
     pub namespaces: Vec<Namespace>,
     pub exports: Vec<ExportItem>,
@@ -5836,6 +6125,40 @@ pub struct TIR {
     pub declared_globals: Vec<DeclaredGlobal>,
     pub diagnostics: Vec<Diagnostic<FileId>>,
     pub structs: Vec<Struct>,
+    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_nested_map"))]
+    pub impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
+}
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub enum PointerSize {
+    /// 32-bit addressing.
+    P32 = 4,
+    /// 64-bit addressing.
+    P64 = 8,
+}
+
+/// Memory layout of a type: size in bytes and required alignment in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layout {
+    pub size: u32,
+    pub align: u32,
+}
+
+impl Layout {
+    pub const ZERO: Layout = Layout { size: 0, align: 1 };
+
+    fn ptr(ptr_size: PointerSize) -> Layout {
+        let n = ptr_size as u32;
+        Layout { size: n, align: n }
+    }
+
+    fn pad_to_align(self) -> Self {
+        Layout {
+            size: (self.size + self.align - 1) & !(self.align - 1),
+            align: self.align,
+        }
+    }
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -5844,8 +6167,115 @@ pub enum Namespace {
     ImportModule(ImportModule),
 }
 
+/// Compute the memory layout (size and alignment) of a type.
+///
+/// Struct fields are laid out in declaration order with C-style alignment
+/// padding, and the struct's total size is rounded up to its own alignment.
+///
+/// Panics on `Error`, `Unknown`, `Namespace`, or `Function` — these have no
+/// runtime representation.
+pub fn compute_layout(
+    types: &[Type],
+    structs: &[Struct],
+    idx: TypeIndex,
+    ptr_size: PointerSize,
+) -> Layout {
+    match &types[idx as usize] {
+        Type::Unit | Type::Never => Layout::ZERO,
+        Type::I32 | Type::U32 | Type::F32 => Layout { size: 4, align: 4 },
+        Type::Bool => Layout { size: 1, align: 1 },
+        Type::I64 | Type::U64 | Type::F64 => Layout { size: 8, align: 8 },
+        Type::Pointer { .. } => Layout::ptr(ptr_size),
+        // Slice is a fat pointer: (data_ptr, length)
+        Type::Slice { .. } => {
+            let p = ptr_size as u32;
+            Layout {
+                size: p * 2,
+                align: p,
+            }
+        }
+        Type::Array { of, size, .. } => {
+            let elem = compute_layout(types, structs, *of, ptr_size).pad_to_align();
+            Layout {
+                size: elem.size * size,
+                align: elem.align,
+            }
+        }
+        Type::Tuple { elements } => {
+            let indices: Box<[TypeIndex]> = elements.clone();
+            compute_aggregate_layout(types, structs, &indices, ptr_size)
+        }
+        Type::Struct { struct_index } => {
+            let si = *struct_index;
+            if si == BUILTIN_STRING_STRUCT {
+                let p = ptr_size as u32;
+                return Layout {
+                    size: p * 2,
+                    align: p,
+                };
+            }
+            if si == BUILTIN_CHAR_STRUCT {
+                return Layout { size: 4, align: 4 };
+            }
+            let field_types: Box<[TypeIndex]> = structs[si as usize]
+                .fields
+                .iter()
+                .map(|f| f.ty.inner)
+                .collect();
+            compute_aggregate_layout(types, structs, &field_types, ptr_size)
+        }
+        Type::Function { .. } => Layout::ptr(ptr_size),
+        Type::Error | Type::Unknown | Type::Namespace { .. } => {
+            panic!("compute_layout called on non-value type")
+        }
+    }
+}
+
+/// C-style aggregate layout for a sequence of field types.
+pub fn compute_aggregate_layout(
+    types: &[Type],
+    structs: &[Struct],
+    fields: &[TypeIndex],
+    ptr_size: PointerSize,
+) -> Layout {
+    let mut size: u32 = 0;
+    let mut align: u32 = 1;
+    for &field_idx in fields {
+        let field = compute_layout(types, structs, field_idx, ptr_size);
+        size = (size + field.align - 1) & !(field.align - 1);
+        size += field.size;
+        align = align.max(field.align);
+    }
+    size = (size + align - 1) & !(align - 1);
+    Layout { size, align }
+}
+
 impl TIR {
-    pub fn build(ast: &ast::AST, interner: &mut ast::StringInterner) -> TIR {
+    /// Compute the memory layout (size and alignment) of the type at `idx`.
+    pub fn layout_of(&self, idx: TypeIndex, ptr_size: PointerSize) -> Layout {
+        compute_layout(&self.type_pool, &self.structs, idx, ptr_size)
+    }
+
+    /// Size of the type in bytes.
+    pub fn size_of(&self, idx: TypeIndex, ptr_size: PointerSize) -> u32 {
+        self.layout_of(idx, ptr_size).size
+    }
+
+    /// Required alignment of the type in bytes.
+    pub fn align_of(&self, idx: TypeIndex, ptr_size: PointerSize) -> u32 {
+        self.layout_of(idx, ptr_size).align
+    }
+
+    /// Build TIR from one or more ASTs processed in order.
+    ///
+    /// Pass stdlib ASTs before user ASTs. All items from every AST go through
+    /// the define pass first, then the build pass, so forward references across
+    /// files work as expected.
+    ///
+    /// `TIR::file_id` is set to the last AST's file ID (the primary user file).
+    pub fn build(asts: &[&ast::AST], interner: &mut ast::StringInterner) -> TIR {
+        assert!(!asts.is_empty(), "TIR::build requires at least one AST");
+
         let mut symbol_lookup = HashMap::new();
         symbol_lookup.insert(
             (SymbolNamespace::Value, interner.get_or_intern("_")),
@@ -5867,10 +6297,8 @@ impl TIR {
             GlobalValue::Unreachable,
         );
 
-        let string_sym = interner.get_or_intern("string");
-        let char_sym = interner.get_or_intern("char");
         let mut builder = Builder {
-            ast,
+            file_id: asts[0].file_id,
             interner,
             defined_globals: HashMap::new(),
             exports: HashMap::new(),
@@ -5882,46 +6310,43 @@ impl TIR {
             type_pool: TypePool::new(),
             symbol_lookup,
             impl_members: HashMap::new(),
-            structs: vec![
-                // BUILTIN_STRING_STRUCT = 0
-                Struct {
-                    name: ast::Spanned {
-                        inner: string_sym,
-                        span: ast::TextSpan::new(0, 0),
-                    },
-                    fields: Box::new([]),
-                    lookup: HashMap::new(),
-                },
-                // BUILTIN_CHAR_STRUCT = 1
-                Struct {
-                    name: ast::Spanned {
-                        inner: char_sym,
-                        span: ast::TextSpan::new(0, 0),
-                    },
-                    fields: Box::new([]),
-                    lookup: HashMap::new(),
-                },
-            ],
+            ptr_size: PointerSize::P32,
+            structs: Vec::new(),
         };
 
-        for item in ast.items.iter() {
-            match builder.define_item(&item.inner.inner) {
-                Ok(_) => {}
-                Err(_) => continue,
+        for ast in asts.iter() {
+            builder.file_id = ast.file_id;
+            for item in ast.items.iter() {
+                let _ = builder.define_item(&item.inner.inner);
             }
         }
 
-        for item in ast.items.iter() {
-            match builder.build_item(&item.inner.inner) {
-                Ok(()) => {}
-                Err(_) => continue,
+        // Validate that stdlib defined the built-in types at the expected indices.
+        assert_eq!(
+            builder.structs.get(BUILTIN_STRING_STRUCT as usize).map(|s| s.name.inner),
+            Some(builder.interner.get_or_intern("string")),
+            "stdlib must define `string` as the first struct (BUILTIN_STRING_STRUCT = {})",
+            BUILTIN_STRING_STRUCT,
+        );
+        assert_eq!(
+            builder.structs.get(BUILTIN_CHAR_STRUCT as usize).map(|s| s.name.inner),
+            Some(builder.interner.get_or_intern("char")),
+            "stdlib must define `char` as the second struct (BUILTIN_CHAR_STRUCT = {})",
+            BUILTIN_CHAR_STRUCT,
+        );
+
+        for ast in asts.iter() {
+            builder.file_id = ast.file_id;
+            for item in ast.items.iter() {
+                let _ = builder.build_item(&item.inner.inner);
             }
         }
 
         builder.report_unused_items();
 
+        let primary_file_id = asts.last().unwrap().file_id;
         TIR {
-            file_id: ast.file_id,
+            file_id: primary_file_id,
             type_pool: builder.type_pool.pool,
             defined_functions: builder.defined_functions,
             defined_globals: builder.defined_globals,
@@ -5931,6 +6356,7 @@ impl TIR {
             declared_globals: builder.declared_globals,
             diagnostics: builder.diagnostics,
             structs: builder.structs,
+            impl_members: builder.impl_members,
         }
     }
 }
@@ -5954,13 +6380,23 @@ mod tests {
         fn new(source: &str) -> Self {
             let mut interner = ast::StringInterner::new();
             let mut files = Files::new();
+
+            let stdlib_id = files
+                .add(crate::STDLIB_FILENAME.to_string(), crate::STDLIB_SOURCE.to_string())
+                .unwrap();
+            let stdlib_ast = ast::Parser::parse(
+                stdlib_id,
+                &files.get(stdlib_id).unwrap().source,
+                &mut interner,
+            );
+
             let file_id = files
                 .add("main.wx".to_string(), source.to_string())
                 .unwrap();
             let ast =
                 ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
 
-            let tir = TIR::build(&ast, &mut interner);
+            let tir = TIR::build(&[&stdlib_ast, &ast], &mut interner);
 
             TestCase {
                 interner,
@@ -6534,4 +6970,182 @@ mod tests {
         "});
         insta::assert_yaml_snapshot!(case.tir);
     }
+
+    // ── Multi-file / stdlib integration tests ────────────────────────────────
+
+    /// `string` and `char` defined in std.wx must be available in user code.
+    #[test]
+    fn test_stdlib_types_available() {
+        let case = TestCase::new(indoc! {"
+            fn make_char(v: u32) -> char {
+                char::{ value: v }
+            }
+
+            export { make_char }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Field access on a stdlib struct type should resolve correctly.
+    #[test]
+    fn test_stdlib_struct_field_access() {
+        let case = TestCase::new(indoc! {"
+            fn char_value(c: char) -> u32 {
+                c.value
+            }
+
+            export { char_value }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// `pub fn` methods defined in std.wx must be callable from user code
+    /// without producing unused-function warnings.
+    #[test]
+    fn test_stdlib_method_callable() {
+        let case = TestCase::new(indoc! {"
+            fn uppercase(c: char) -> char {
+                c.to_ascii_uppercase()
+            }
+
+            export { uppercase }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// `u32::SIZE` and `u32::ALIGN` are auto-generated associated constants.
+    #[test]
+    fn test_size_align_constants() {
+        let case = TestCase::new(indoc! {"
+            fn sizes() -> u32 {
+                u32::SIZE
+            }
+
+            fn aligns() -> u32 {
+                u32::ALIGN
+            }
+
+            export { sizes, aligns }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        // u32 is 4 bytes, aligned to 4
+        let size_sym = case.interner.get("SIZE").unwrap();
+        let align_sym = case.interner.get("ALIGN").unwrap();
+        let u32_idx = crate::tir::U32_IDX;
+        let members = case.tir.impl_members.get(&u32_idx).unwrap();
+        assert!(matches!(members[&size_sym], ImplEntry::AssociatedConst { value: 4, .. }));
+        assert!(matches!(members[&align_sym], ImplEntry::AssociatedConst { value: 4, .. }));
+    }
+
+    /// `pub fn` on a user-defined function suppresses the unused warning.
+    #[test]
+    fn test_pub_fn_no_unused_warning() {
+        let case = TestCase::new(indoc! {"
+            pub fn helper() -> i32 {
+                42
+            }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "expected no diagnostics for pub fn, got: {:?}",
+            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Struct fields are reordered for optimal memory layout.
+    /// `struct Mixed { a: bool, b: i64, c: u32, d: f64 }` declared in that order
+    /// has C-layout size 28B; after reordering (i64, f64, u32, bool) it is 24B.
+    #[test]
+    fn test_struct_field_reorder_reduces_size() {
+        let case = TestCase::new(indoc! {"
+            struct Mixed {
+                a: bool,
+                b: i64,
+                c: u32,
+                d: f64,
+            }
+
+            fn dummy(m: Mixed) -> Mixed { m }
+            export { dummy }
+        "});
+        assert!(case.tir.diagnostics.is_empty());
+
+        let mixed_sym = case.interner.get("Mixed").unwrap();
+        let mixed_ti = case.tir.type_pool.iter().position(|t| {
+            if let crate::tir::Type::Struct { struct_index } = t {
+                case.tir.structs[*struct_index as usize].name.inner == mixed_sym
+            } else {
+                false
+            }
+        }).unwrap() as u32;
+
+        let layout = case.tir.layout_of(mixed_ti, crate::tir::PointerSize::P32);
+        // Optimal order: i64(8), f64(8), u32(4), bool(1) + 3B padding = 24B
+        assert_eq!(layout.size, 24, "expected 24B after reordering, got {}", layout.size);
+        assert_eq!(layout.align, 8);
+
+        // Verify physical field order in the struct
+        let struct_index = case.tir.type_pool.iter().find_map(|t| {
+            if let crate::tir::Type::Struct { struct_index } = t {
+                if case.tir.structs[*struct_index as usize].name.inner == mixed_sym {
+                    Some(*struct_index)
+                } else { None }
+            } else { None }
+        }).unwrap();
+        let s = &case.tir.structs[struct_index as usize];
+        let field_names: Vec<&str> = s.fields.iter()
+            .map(|f| case.interner.resolve(f.name.inner).unwrap())
+            .collect();
+        // Largest alignment (8B: i64, f64) first, then 4B (u32), then 1B (bool)
+        assert_eq!(field_names, vec!["b", "d", "c", "a"]);
+    }
+
+    /// A non-pub function that is never called should still produce a warning.
+    #[test]
+    fn test_non_pub_fn_unused_warning() {
+        let case = TestCase::new(indoc! {"
+            fn unused() -> i32 {
+                42
+            }
+        "});
+        assert!(
+            case.tir.diagnostics.iter().any(|d| d.message == "function `unused` is never used"),
+            "expected unused-function diagnostic"
+        );
+    }
+
+    /// User-defined struct with `pub struct` should not warn as unused.
+    #[test]
+    fn test_pub_struct_no_unused_warning() {
+        // Structs don't currently emit unused warnings; this test just
+        // verifies that `pub struct` parses and compiles without error.
+        let case = TestCase::new(indoc! {"
+            pub struct Point {
+                pub x: i32,
+                pub y: i32,
+            }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
 }

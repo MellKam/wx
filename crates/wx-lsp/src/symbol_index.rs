@@ -30,7 +30,7 @@ pub enum SymbolKind {
         param_idx: u32,
     },
     Type {
-        ty: Type,
+        ty: TypeIndex,
     },
 }
 

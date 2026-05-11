@@ -45,7 +45,7 @@ impl Builder {
             }
 
             items.push(match &item.inner.inner {
-                Item::Function { signature, block } => {
+                Item::Function { signature, block, .. } => {
                     Self::build_function_definition(interner, source, signature, block)
                 }
                 Item::Global {
@@ -228,7 +228,7 @@ impl Builder {
                 Item::Enum { .. } => todo!("fmt for enum items"),
                 Item::Impl { .. } => todo!("fmt for impl items"),
                 Item::Const { .. } => todo!("fmt for const items"),
-                Item::Struct { name, fields } => {
+                Item::Struct { name, fields, .. } => {
                     let mut items = Vec::new();
                     items.push(Node::Text(format!(
                         "struct {} {{",

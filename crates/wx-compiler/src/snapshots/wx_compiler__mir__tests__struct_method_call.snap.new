@@ -1,0 +1,147 @@
+---
+source: crates/wx-compiler/src/mir.rs
+assertion_line: 1360
+expression: case.mir
+---
+functions:
+  - signature_index: 0
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: U32
+      - kind: Block
+        parent: 0
+        locals: []
+        result: U32
+      - kind: Block
+        parent: 0
+        locals: []
+        result: U32
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                IfElse:
+                  condition:
+                    kind:
+                      And:
+                        left:
+                          kind:
+                            GreaterEq:
+                              left:
+                                kind:
+                                  LocalTupleGet:
+                                    scope_index: 0
+                                    local_index: 0
+                                    field_index: 0
+                                ty: U32
+                              right:
+                                kind:
+                                  Int:
+                                    value: 97
+                                ty: U32
+                          ty: Bool
+                        right:
+                          kind:
+                            LessEq:
+                              left:
+                                kind:
+                                  LocalTupleGet:
+                                    scope_index: 0
+                                    local_index: 0
+                                    field_index: 0
+                                ty: U32
+                              right:
+                                kind:
+                                  Int:
+                                    value: 122
+                                ty: U32
+                          ty: Bool
+                    ty: Bool
+                  then_block:
+                    kind:
+                      Block:
+                        scope_index: 1
+                        expressions:
+                          - kind:
+                              StructCreate:
+                                fields:
+                                  - kind:
+                                      Sub:
+                                        left:
+                                          kind:
+                                            LocalTupleGet:
+                                              scope_index: 0
+                                              local_index: 0
+                                              field_index: 0
+                                          ty: U32
+                                        right:
+                                          kind:
+                                            Int:
+                                              value: 32
+                                          ty: U32
+                                    ty: U32
+                            ty: U32
+                    ty: U32
+                  else_block:
+                    kind:
+                      Block:
+                        scope_index: 2
+                        expressions:
+                          - kind:
+                              LocalGet:
+                                scope_index: 0
+                                local_index: 0
+                            ty: U32
+                    ty: U32
+              ty: U32
+      ty: U32
+  - signature_index: 0
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: U32
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Call:
+                  callee:
+                    kind:
+                      Function:
+                        func_index: 0
+                    ty: U32
+                  arguments:
+                    - kind:
+                        LocalGet:
+                          scope_index: 0
+                          local_index: 0
+                      ty: U32
+              ty: U32
+      ty: U32
+signatures:
+  - items:
+      - U32
+      - U32
+    params_count: 1
+globals: []
+exports:
+  - Function:
+      func_index: 1
+      name: 12
+imports: []
+tuples:
+  - fields:
+      - StringPointer
+      - U32
+strings: []

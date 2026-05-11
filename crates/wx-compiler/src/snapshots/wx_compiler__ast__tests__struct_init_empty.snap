@@ -1,0 +1,77 @@
+---
+source: crates/wx-compiler/src/ast.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 7
+            params:
+              open:
+                start: 7
+                end: 8
+              inner: []
+              close:
+                start: 8
+                end: 9
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 10
+                    end: 11
+                  inner:
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 3
+                              span:
+                                start: 22
+                                end: 23
+                            ty: ~
+                            value:
+                              inner:
+                                StructInit:
+                                  name:
+                                    inner: 4
+                                    span:
+                                      start: 26
+                                      end: 30
+                                  fields:
+                                    open:
+                                      start: 32
+                                      end: 33
+                                    inner: []
+                                    close:
+                                      start: 33
+                                      end: 34
+                              span:
+                                start: 26
+                                end: 34
+                        span:
+                          start: 16
+                          end: 34
+                      separator: ~
+                  close:
+                    start: 35
+                    end: 36
+            span:
+              start: 10
+              end: 36
+      span:
+        start: 0
+        end: 36
+    separator: ~

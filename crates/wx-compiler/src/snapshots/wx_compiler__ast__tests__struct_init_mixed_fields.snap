@@ -1,0 +1,161 @@
+---
+source: crates/wx-compiler/src/ast.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics:
+  - severity: Warning
+    code: E0003
+    message: missing separator
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 27
+          end: 27
+        message: "consider adding `;` here"
+    notes: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 7
+            params:
+              open:
+                start: 7
+                end: 8
+              inner: []
+              close:
+                start: 8
+                end: 9
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 10
+                    end: 11
+                  inner:
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 3
+                              span:
+                                start: 22
+                                end: 23
+                            ty: ~
+                            value:
+                              inner:
+                                Int:
+                                  value: 0
+                              span:
+                                start: 26
+                                end: 27
+                        span:
+                          start: 16
+                          end: 27
+                      separator: ~
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 4
+                              span:
+                                start: 38
+                                end: 39
+                            ty: ~
+                            value:
+                              inner:
+                                StructInit:
+                                  name:
+                                    inner: 5
+                                    span:
+                                      start: 42
+                                      end: 46
+                                  fields:
+                                    open:
+                                      start: 48
+                                      end: 49
+                                    inner:
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 6
+                                              span:
+                                                start: 50
+                                                end: 51
+                                            value:
+                                              inner:
+                                                Int:
+                                                  value: 1
+                                              span:
+                                                start: 53
+                                                end: 54
+                                          span:
+                                            start: 50
+                                            end: 54
+                                        separator:
+                                          start: 54
+                                          end: 55
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 7
+                                              span:
+                                                start: 56
+                                                end: 57
+                                            value:
+                                              inner:
+                                                Int:
+                                                  value: 2
+                                              span:
+                                                start: 59
+                                                end: 60
+                                          span:
+                                            start: 56
+                                            end: 60
+                                        separator:
+                                          start: 60
+                                          end: 61
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 3
+                                              span:
+                                                start: 62
+                                                end: 63
+                                            value: ~
+                                          span:
+                                            start: 62
+                                            end: 63
+                                        separator: ~
+                                    close:
+                                      start: 64
+                                      end: 65
+                              span:
+                                start: 42
+                                end: 65
+                        span:
+                          start: 32
+                          end: 65
+                      separator: ~
+                  close:
+                    start: 66
+                    end: 67
+            span:
+              start: 10
+              end: 67
+      span:
+        start: 0
+        end: 67
+    separator: ~

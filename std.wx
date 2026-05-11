@@ -1,5 +1,18 @@
-impl string {
-  fn len(self) -> usize {
-    self.1
+pub struct string {
+  ptr: u32,
+  len: u32,
+}
+
+pub struct char {
+  value: u32,
+}
+
+impl char {
+  pub fn to_ascii_uppercase(self) -> char {
+    if self.value >= 97 && self.value <= 122 {
+      char::{ value: self.value - 32 }
+    } else {
+      self
+    }
   }
 }

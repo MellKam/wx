@@ -34,9 +34,18 @@ fn main() {
     let filename = file_path.split('/').last().unwrap().to_string();
 
     let mut files = ast::Files::new();
-    let main_file = files.add(filename.clone(), file_content).unwrap();
-
     let mut interner = StringInterner::new();
+
+    let stdlib_id = files
+        .add(wx_compiler::STDLIB_FILENAME.to_string(), wx_compiler::STDLIB_SOURCE.to_string())
+        .unwrap();
+    let stdlib_ast = ast::Parser::parse(
+        stdlib_id,
+        &files.get(stdlib_id).unwrap().source,
+        &mut interner,
+    );
+
+    let main_file = files.add(filename.clone(), file_content).unwrap();
     let ast = ast::Parser::parse(
         main_file,
         &files.get(main_file).unwrap().source,
@@ -64,7 +73,7 @@ fn main() {
         }
     }
 
-    let tir = tir::TIR::build(&ast, &mut interner);
+    let tir = tir::TIR::build(&[&stdlib_ast, &ast], &mut interner);
 
     if !tir.diagnostics.is_empty() {
         let writer = StandardStream::stderr(ColorChoice::Always);
