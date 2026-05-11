@@ -1153,7 +1153,7 @@ pub enum Expression {
     },
     /// `({expr})`
     Grouping {
-        value: Grouped<Box<Spanned<Expression>>>,
+        value: Box<Spanned<Expression>>,
     },
     /// `x`
     Identifier {
@@ -1175,10 +1175,10 @@ pub enum Expression {
         operator: Spanned<BinaryOp>,
         right: Box<Spanned<Expression>>,
     },
-    /// `{expr}()`
+    /// `{expr}::<...>(...)`
     Call {
         callee: Box<Spanned<Expression>>,
-        arguments: Grouped<Box<[Separated<Spanned<Expression>>]>>,
+        arguments: Box<[Separated<Spanned<Expression>>]>,
     },
     /// `{expr}::{expr}`
     NamespaceAccess {
@@ -1236,6 +1236,22 @@ pub enum Expression {
     Char {
         symbol: SymbolU32,
     },
+    /// `Ident { field: expr, field }`
+    StructInit {
+        name: Spanned<SymbolU32>,
+        fields: Grouped<Box<[Separated<Spanned<StructInitField>>]>>,
+    },
+    /// `(a, b, c)` or `()`
+    Tuple {
+        elements: Box<[Spanned<Expression>]>,
+    },
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct StructInitField {
+    pub name: Spanned<SymbolU32>,
+    /// `None` means shorthand: `{ field }` is equivalent to `{ field: field }`
+    pub value: Option<Box<Spanned<Expression>>>,
 }
 
 impl Expression {
@@ -1244,7 +1260,8 @@ impl Expression {
             Expression::Block { .. }
             | Expression::IfElse { .. }
             | Expression::Loop { .. }
-            | Expression::Label { .. } => true,
+            | Expression::Label { .. }
+            | Expression::StructInit { .. } => true,
             _ => false,
         }
     }
@@ -1287,6 +1304,10 @@ pub enum TypeExpression {
         mutability: Option<TextSpan>,
         inner: Box<Spanned<TypeExpression>>,
     },
+    /// `(T, U, V)` or `()`
+    Tuple {
+        elements: Box<[Spanned<TypeExpression>]>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1319,14 +1340,24 @@ pub struct FunctionParam {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
-pub struct ImplMethod {
-    pub signature: FunctionSignature,
-    pub block: Box<Spanned<Expression>>,
+pub enum ImplItem {
+    Method {
+        signature: FunctionSignature,
+        block: Box<Spanned<Expression>>,
+    },
+    Const {
+        name: Spanned<SymbolU32>,
+        ty: Option<Box<Spanned<TypeExpression>>>,
+        value: Box<Spanned<Expression>>,
+    },
 }
 
-impl ImplMethod {
+impl ImplItem {
     pub fn is_block_like(&self) -> bool {
-        true
+        match self {
+            ImplItem::Method { .. } => true,
+            ImplItem::Const { .. } => false,
+        }
     }
 }
 
@@ -1396,7 +1427,7 @@ pub enum Item {
     },
     Impl {
         target: Box<Spanned<TypeExpression>>,
-        methods: Grouped<Box<[Separated<Spanned<ImplMethod>>]>>,
+        items: Grouped<Box<[Separated<Spanned<ImplItem>>]>>,
     },
     Struct {
         name: Spanned<SymbolU32>,
@@ -1404,6 +1435,11 @@ pub enum Item {
     },
     Memory {
         name: Spanned<SymbolU32>,
+    },
+    Const {
+        name: Spanned<SymbolU32>,
+        ty: Option<Box<Spanned<TypeExpression>>>,
+        value: Box<Spanned<Expression>>,
     },
 }
 
@@ -1417,7 +1453,7 @@ pub struct StructField {
 impl Item {
     pub fn is_block_like(&self) -> bool {
         match self {
-            Item::Global { .. } | Item::Memory { .. } => false,
+            Item::Global { .. } | Item::Memory { .. } | Item::Const { .. } => false,
             Item::Function { .. } => true,
             Item::Export { .. } => true,
             Item::Import { .. } => true,
@@ -1514,6 +1550,7 @@ pub enum Keyword {
     Struct,
     Pub,
     Memory,
+    Const,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1541,6 +1578,7 @@ impl TryFrom<&str> for Keyword {
             "struct" => Ok(Keyword::Struct),
             "pub" => Ok(Keyword::Pub),
             "memory" => Ok(Keyword::Memory),
+            "const" => Ok(Keyword::Const),
             _ => Err(()),
         }
     }
@@ -1801,6 +1839,7 @@ impl<'input> Parser<'input> {
             Some(Keyword::Impl) => Ok(Parser::parse_impl_item),
             Some(Keyword::Struct) => Ok(Parser::parse_struct_item),
             Some(Keyword::Memory) => Ok(Parser::parse_memory_item),
+            Some(Keyword::Const) => Ok(Parser::parse_const_item),
             _ => return Err(()),
         }
     }
@@ -1992,68 +2031,7 @@ impl<'input> Parser<'input> {
                     span,
                 })
             }
-            Token::OpenBracket => {
-                let open_span = self.lexer.next().span;
-                let next = self.lexer.peek();
-                match next.inner {
-                    Token::CloseBracket => {
-                        let _close = self.lexer.next();
-                        let mutability = self.parse_mut_span();
-                        let inner = self.parse_type_expression()?;
-                        let span = TextSpan::merge(open_span, inner.span);
-                        Ok(Spanned {
-                            inner: TypeExpression::Slice {
-                                mutability,
-                                inner: Box::new(inner),
-                            },
-                            span,
-                        })
-                    }
-                    Token::Int => {
-                        let size_token = self.lexer.next();
-                        let size_value = size_token
-                            .span
-                            .extract_str(self.source)
-                            .parse::<usize>()
-                            .map_err(|_| {
-                                self.ast.diagnostics.push(
-                                    InvalidIntegerLiteralDiagnostic {
-                                        file_id: self.ast.file_id,
-                                        span: size_token.span,
-                                    }
-                                    .report(),
-                                );
-                            })?;
-                        let size = Spanned {
-                            inner: size_value,
-                            span: size_token.span,
-                        };
-                        self.next_expect(Token::CloseBracket)?;
-                        let mutability = self.parse_mut_span();
-                        let inner = self.parse_type_expression()?;
-                        let span = TextSpan::merge(open_span, inner.span);
-                        Ok(Spanned {
-                            inner: TypeExpression::Array {
-                                size,
-                                mutability,
-                                inner: Box::new(inner),
-                            },
-                            span,
-                        })
-                    }
-                    _ => {
-                        self.ast.diagnostics.push(
-                            UnexpectedTokenDiagnostic {
-                                file_id: self.ast.file_id,
-                                received: next,
-                                expected: Token::CloseBracket,
-                            }
-                            .report(),
-                        );
-                        Err(())
-                    }
-                }
-            }
+            Token::OpenBracket => self.parse_slice_or_array_type_expression(),
             Token::Identifier => {
                 match Keyword::try_from(token.span.extract_str(self.source)) {
                     Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
@@ -2067,6 +2045,7 @@ impl<'input> Parser<'input> {
                     span: token.span,
                 })
             }
+            Token::OpenParen => self.parse_tuple_or_paren_type_expression(),
             _ => {
                 let token = self.lexer.next();
                 self.ast.diagnostics.push(
@@ -2080,6 +2059,99 @@ impl<'input> Parser<'input> {
                 Err(())
             }
         }
+    }
+
+    fn parse_slice_or_array_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
+        let open_span = self.lexer.next().span;
+        let next = self.lexer.peek();
+        match next.inner {
+            Token::CloseBracket => {
+                let _close = self.lexer.next();
+                let mutability = self.parse_mut_span();
+                let inner = self.parse_type_expression()?;
+                let span = TextSpan::merge(open_span, inner.span);
+                Ok(Spanned {
+                    inner: TypeExpression::Slice {
+                        mutability,
+                        inner: Box::new(inner),
+                    },
+                    span,
+                })
+            }
+            Token::Int => {
+                let size_token = self.lexer.next();
+                let size_value = size_token
+                    .span
+                    .extract_str(self.source)
+                    .parse::<usize>()
+                    .map_err(|_| {
+                        self.ast.diagnostics.push(
+                            InvalidIntegerLiteralDiagnostic {
+                                file_id: self.ast.file_id,
+                                span: size_token.span,
+                            }
+                            .report(),
+                        );
+                    })?;
+                let size = Spanned {
+                    inner: size_value,
+                    span: size_token.span,
+                };
+                self.next_expect(Token::CloseBracket)?;
+                let mutability = self.parse_mut_span();
+                let inner = self.parse_type_expression()?;
+                let span = TextSpan::merge(open_span, inner.span);
+                Ok(Spanned {
+                    inner: TypeExpression::Array {
+                        size,
+                        mutability,
+                        inner: Box::new(inner),
+                    },
+                    span,
+                })
+            }
+            _ => {
+                self.ast.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: self.ast.file_id,
+                        received: next,
+                        expected: Token::CloseBracket,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
+    }
+
+    fn parse_tuple_or_paren_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
+        let grouped = SeparatedGroup {
+            open_token: Token::OpenParen,
+            close_token: Token::CloseParen,
+            separator_token: Token::Comma,
+            item_handler: |parser| parser.parse_type_expression(),
+            should_warn_missing_separator: None,
+        }
+        .parse(self)?;
+
+        let span = TextSpan::merge(grouped.open, grouped.close);
+        let mut elements = Vec::from(grouped.inner);
+
+        // (T) with no trailing comma — parenthesized type, unwrap
+        if elements.len() == 1 && elements[0].separator.is_none() {
+            let single = elements.remove(0);
+            return Ok(Spanned {
+                inner: single.inner.inner,
+                span,
+            });
+        }
+
+        // () or (T,) or (T, U, ...) — tuple type
+        let types: Box<[Spanned<TypeExpression>]> = elements.into_iter().map(|s| s.inner).collect();
+        Ok(Spanned {
+            inner: TypeExpression::Tuple { elements: types },
+            span,
+        })
     }
 
     fn parse_function_type_param(parser: &mut Parser) -> Result<Spanned<FunctionTypeParam>, ()> {
@@ -2275,6 +2347,49 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: Expression::Identifier { symbol },
             span: token.span,
+        })
+    }
+
+    fn parse_struct_init_expression(
+        parser: &mut Parser,
+        name: Spanned<SymbolU32>,
+    ) -> Result<Spanned<Expression>, ()> {
+        let fields = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::Comma,
+            item_handler: |parser: &mut Parser| -> Result<Spanned<StructInitField>, ()> {
+                let name_token = parser.next_expect(Token::Identifier)?;
+                let name_symbol = parser.intern_identifier(name_token.span);
+
+                let (value, span) = if parser.lexer.next_if(Token::Colon).is_some() {
+                    let expr = parser.parse_expression(BindingPower::Default)?;
+                    let span = TextSpan::merge(name_token.span, expr.span);
+                    (Some(Box::new(expr)), span)
+                } else {
+                    // Shorthand: `{ field }` — value is the local with the same name
+                    (None, name_token.span)
+                };
+
+                Ok(Spanned {
+                    inner: StructInitField {
+                        name: Spanned {
+                            inner: name_symbol,
+                            span: name_token.span,
+                        },
+                        value,
+                    },
+                    span,
+                })
+            },
+            should_warn_missing_separator: None,
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(name.span, fields.close);
+        Ok(Spanned {
+            inner: Expression::StructInit { name, fields },
+            span,
         })
     }
 
@@ -2558,48 +2673,35 @@ impl<'input> Parser<'input> {
     }
 
     fn parse_grouping_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
-        let open = parser.lexer.next().span;
-        let value = parser.parse_expression(BindingPower::Default)?;
-
-        match parser.lexer.peek().inner {
-            Token::CloseParen => {
-                let close = parser.lexer.next().span;
-
-                Ok(Spanned {
-                    inner: Expression::Grouping {
-                        value: Grouped {
-                            open,
-                            inner: Box::new(value),
-                            close,
-                        },
-                    },
-                    span: TextSpan::merge(open, close),
-                })
-            }
-            _ => {
-                parser.ast.diagnostics.push(
-                    UnclosedDelimiterDiagnostic {
-                        file_id: parser.ast.file_id,
-                        open_span: open,
-                        close_token: Token::CloseParen,
-                        expected_close_span: value.span.end_position(),
-                    }
-                    .report(),
-                );
-
-                let span = TextSpan::merge(open, value.span);
-                Ok(Spanned {
-                    inner: Expression::Grouping {
-                        value: Grouped {
-                            open,
-                            inner: Box::new(value),
-                            close: open.end_position(),
-                        },
-                    },
-                    span,
-                })
-            }
+        let grouped = SeparatedGroup {
+            open_token: Token::OpenParen,
+            close_token: Token::CloseParen,
+            separator_token: Token::Comma,
+            item_handler: |parser| parser.parse_expression(BindingPower::Default),
+            should_warn_missing_separator: None,
         }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(grouped.open, grouped.close);
+        let mut elements = Vec::from(grouped.inner);
+
+        // (expr) with no trailing comma — grouping, not a tuple
+        if elements.len() == 1 && elements[0].separator.is_none() {
+            let single = elements.remove(0);
+            return Ok(Spanned {
+                inner: Expression::Grouping {
+                    value: Box::new(single.inner),
+                },
+                span,
+            });
+        }
+
+        // () or (expr,) or (a, b, ...) — tuple
+        let exprs: Box<[Spanned<Expression>]> = elements.into_iter().map(|s| s.inner).collect();
+        Ok(Spanned {
+            inner: Expression::Tuple { elements: exprs },
+            span,
+        })
     }
 
     fn parse_cast_expression(
@@ -2789,9 +2891,8 @@ impl<'input> Parser<'input> {
         left: Spanned<Expression>,
         _: BindingPower,
     ) -> Result<Spanned<Expression>, ()> {
-        // Convert the left expression to a type expression
-        let namespace = match left.inner {
-            Expression::Identifier { symbol } => TypeExpression::Identifier { symbol },
+        let symbol = match left.inner {
+            Expression::Identifier { symbol } => symbol,
             _ => {
                 parser.ast.diagnostics.push(
                     InvalidNamespaceDiagnostic {
@@ -2807,7 +2908,16 @@ impl<'input> Parser<'input> {
         // Consume the :: token
         _ = parser.lexer.next();
 
-        // Parse the member identifier
+        // `Ident::{ ... }` — struct initializer
+        if parser.lexer.peek().inner == Token::OpenBrace {
+            let name = Spanned {
+                inner: symbol,
+                span: left.span,
+            };
+            return Parser::parse_struct_init_expression(parser, name);
+        }
+
+        // Normal namespace access: `Ident::member`
         let member_token = parser.next_expect(Token::Identifier)?;
         let member_symbol = parser.intern_identifier(member_token.span);
 
@@ -2815,7 +2925,7 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: Expression::NamespaceAccess {
                 namespace: Box::new(Spanned {
-                    inner: namespace,
+                    inner: TypeExpression::Identifier { symbol },
                     span: left.span,
                 }),
                 member: Spanned {
@@ -2845,7 +2955,7 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: Expression::Call {
                 callee: Box::new(callee),
-                arguments,
+                arguments: arguments.inner,
             },
             span,
         })
@@ -2945,6 +3055,34 @@ impl<'input> Parser<'input> {
             inner: Item::Global {
                 mut_span,
                 name,
+                ty,
+                value: Box::new(value),
+            },
+            span,
+        })
+    }
+
+    fn parse_const_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let const_span = parser.lexer.next().span;
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name_symbol = parser.intern_identifier(name_span);
+
+        let ty = if parser.lexer.next_if(Token::Colon).is_some() {
+            Some(Box::new(parser.parse_type_expression()?))
+        } else {
+            None
+        };
+
+        let _ = parser.next_expect(Token::Eq)?;
+        let value = parser.parse_expression(BindingPower::Default)?;
+
+        let span = TextSpan::merge(const_span, value.span);
+        Ok(Spanned {
+            inner: Item::Const {
+                name: Spanned {
+                    inner: name_symbol,
+                    span: name_span,
+                },
                 ty,
                 value: Box::new(value),
             },
@@ -3096,82 +3234,118 @@ impl<'input> Parser<'input> {
         let impl_span = parser.lexer.next().span;
         let target = Box::new(parser.parse_type_expression()?);
 
-        let methods = SeparatedGroup {
+        let items = SeparatedGroup {
             open_token: Token::OpenBrace,
             close_token: Token::CloseBrace,
             separator_token: Token::SemiColon,
-            item_handler: |parser: &mut Parser| -> Result<Spanned<ImplMethod>, ()> {
-                let fn_token = parser.next_expect(Token::Identifier)?;
-                let fn_span = fn_token.span;
-                match Keyword::try_from(fn_span.extract_str(parser.source)) {
-                    Ok(Keyword::Fn) => {}
+            item_handler: |parser: &mut Parser| -> Result<Spanned<ImplItem>, ()> {
+                let token = parser.lexer.peek();
+                let keyword = match token.inner {
+                    Token::Identifier => {
+                        Keyword::try_from(token.span.extract_str(parser.source)).ok()
+                    }
+                    _ => None,
+                };
+
+                match keyword {
+                    Some(Keyword::Const) => {
+                        let const_span = parser.lexer.next().span;
+                        let name_span = parser.next_expect(Token::Identifier)?.span;
+                        let name_symbol = parser.intern_identifier(name_span);
+
+                        let ty = if parser.lexer.next_if(Token::Colon).is_some() {
+                            Some(Box::new(parser.parse_type_expression()?))
+                        } else {
+                            None
+                        };
+
+                        let _ = parser.next_expect(Token::Eq)?;
+                        let value = parser.parse_expression(BindingPower::Default)?;
+                        let span = TextSpan::merge(const_span, value.span);
+                        Ok(Spanned {
+                            inner: ImplItem::Const {
+                                name: Spanned {
+                                    inner: name_symbol,
+                                    span: name_span,
+                                },
+                                ty,
+                                value: Box::new(value),
+                            },
+                            span,
+                        })
+                    }
+                    Some(Keyword::Fn) => {
+                        let fn_span = parser.lexer.next().span;
+                        let name_span = parser.next_expect(Token::Identifier)?.span;
+                        let name_symbol = parser.intern_identifier(name_span);
+                        let params = SeparatedGroup {
+                            open_token: Token::OpenParen,
+                            close_token: Token::CloseParen,
+                            separator_token: Token::Comma,
+                            item_handler: Parser::parse_function_param_item,
+                            should_warn_missing_separator: None,
+                        }
+                        .parse(parser)?;
+
+                        let self_symbol = parser.interner.get_or_intern("self");
+                        for param in params.inner.iter().skip(1) {
+                            if param.inner.inner.name.inner == self_symbol {
+                                parser.ast.diagnostics.push(
+                                    SelfNotFirstParamDiagnostic {
+                                        file_id: parser.ast.file_id,
+                                        span: param.inner.inner.name.span,
+                                    }
+                                    .report(),
+                                );
+                            }
+                        }
+
+                        let result = parser
+                            .lexer
+                            .next_if(Token::MinusRightArrow)
+                            .ok_or(())
+                            .and_then(|_| {
+                                Ok(Some(Box::new(Parser::parse_type_expression(parser)?)))
+                            })
+                            .unwrap_or_else(|_| None);
+                        let block = Parser::parse_block_expression(parser)?;
+                        let method_span = TextSpan::merge(fn_span, block.span);
+                        Ok(Spanned {
+                            inner: ImplItem::Method {
+                                signature: FunctionSignature {
+                                    name: Spanned {
+                                        inner: name_symbol,
+                                        span: name_span,
+                                    },
+                                    params,
+                                    result,
+                                },
+                                block: Box::new(block),
+                            },
+                            span: method_span,
+                        })
+                    }
                     _ => {
-                        // todo: make separate diagnostic for invalid impl item
+                        let token = parser.lexer.next();
                         parser.ast.diagnostics.push(
                             UnexpectedTokenDiagnostic {
                                 file_id: parser.ast.file_id,
-                                received: fn_token,
+                                received: token,
                                 expected: Token::Identifier,
                             }
                             .report(),
                         );
-                        return Err(());
+                        Err(())
                     }
                 }
-                let name_span = parser.next_expect(Token::Identifier)?.span;
-                let name_symbol = parser.intern_identifier(name_span);
-                let params = SeparatedGroup {
-                    open_token: Token::OpenParen,
-                    close_token: Token::CloseParen,
-                    separator_token: Token::Comma,
-                    item_handler: Parser::parse_function_param_item,
-                    should_warn_missing_separator: None,
-                }
-                .parse(parser)?;
-
-                let self_symbol = parser.interner.get_or_intern("self");
-                for param in params.inner.iter().skip(1) {
-                    if param.inner.inner.name.inner == self_symbol {
-                        parser.ast.diagnostics.push(
-                            SelfNotFirstParamDiagnostic {
-                                file_id: parser.ast.file_id,
-                                span: param.inner.inner.name.span,
-                            }
-                            .report(),
-                        );
-                    }
-                }
-
-                let result = parser
-                    .lexer
-                    .next_if(Token::MinusRightArrow)
-                    .ok_or(())
-                    .and_then(|_| Ok(Some(Box::new(Parser::parse_type_expression(parser)?))))
-                    .unwrap_or_else(|_| None);
-                let block = Parser::parse_block_expression(parser)?;
-                let method_span = TextSpan::merge(fn_span, block.span);
-                Ok(Spanned {
-                    inner: ImplMethod {
-                        signature: FunctionSignature {
-                            name: Spanned {
-                                inner: name_symbol,
-                                span: name_span,
-                            },
-                            params,
-                            result,
-                        },
-                        block: Box::new(block),
-                    },
-                    span: method_span,
-                })
             },
-            should_warn_missing_separator: Some(|method: &ImplMethod| !method.is_block_like()),
+            should_warn_missing_separator: Some(|item: &ImplItem| !item.is_block_like()),
         }
         .parse(parser)?;
 
-        let span = TextSpan::merge(impl_span, methods.close);
+        let span = TextSpan::merge(impl_span, items.close);
         Ok(Spanned {
-            inner: Item::Impl { target, methods },
+            inner: Item::Impl { target, items },
             span,
         })
     }
@@ -3558,19 +3732,46 @@ mod tests {
                 }
             }
 
+            const X: i32 = 42;
+
+            impl Vec3 {
+                const SIZE: usize = 12;
+                const ALIGN: usize = 4;
+            }
+
+            trait Sized {
+                const SIZE: usize;
+                const ALIGN: usize;
+            }
+
+            impl Sized for Vec3 {
+                const SIZE: usize = 12;
+                const ALIGN: usize = 4;
+            }
+
+            static BYTES: [1024]mut u8 = <[1024]mut u8>::init(0);
+
             fn main() {
                 local x = 'a'.to_ascii_uppercase();
                 local some_bytes: [3]u8 = [123, 34, 104] in MEM;
                 local tuple: (u8, u8, u8) = (123, 34, 104);
 
+                local x: []mut u8 = [1, 2, 3];
+                x[0] = 42;
+
                 local arena = ArenaAllocator::from_buffer(
                     MEM.as_bytes()[..1024]
                 );
+                
                 local ptr = arena.alloc(Layout { 
                     size: size_of::<Vec3>(),
                     align: align_of::<Vec3>()
                 }).unwrap();
-                ptr.* = Vec3 { x: 1.0, y: 2.0, z: 3.0 };
+                local ptr = arena.alloc(Layout { 
+                    size: Vec3::SIZE,
+                    align: Vec3::ALIGN,
+                }).unwrap();
+                ptr.* = Vec3::{ x: 1.0, y: 2.0, z: 3.0 };
 
                 local vec = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
                     .in(&mut arena)
@@ -3580,12 +3781,22 @@ mod tests {
 
                 arena.alloc(\"hello\");
                 arena.alloc((1, 2, 3));
-                let vec3 = arena.alloc(Vec3 { x: 1.0, y: 2.0, z: 3.0 }).unwrap();
+                let vec3 = arena.alloc(Vec3::{ x: 1.0, y: 2.0, z: 3.0 }).unwrap();
 
 
+                Foo::{
+                    x: 5,
+                }
 
+                b1: {
+                    break :b1 42;
+                }
 
-                
+                local Foo::{ x, y } = Point2D::{ x: 2, y: 3 };
+
+                match some_value {
+                    Ok(Foo::{ x, y }) => {}
+                }
 
                 let matrix: [3][3]i32 = {
                     { 1, 2, 3 },
@@ -3598,6 +3809,89 @@ mod tests {
                     [7, 8, 9],
                 ];
                 local s: string = string::from_bytes(some_bytes[..]);
+            }
+        "});
+        insta::assert_yaml_snapshot!(case.ast);
+    }
+
+    #[test]
+    fn test_struct_init_basic() {
+        let case = TestCase::new(indoc! {"
+            fn main() {
+                local v = Vec3::{ x: 1, y: 2, z: 3 }
+            }
+        "});
+        insta::assert_yaml_snapshot!(case.ast);
+    }
+
+    #[test]
+    fn test_struct_init_shorthand() {
+        // { field } is shorthand for { field: field }
+        let case = TestCase::new(indoc! {"
+            fn main() {
+                local x = 1
+                local y = 2
+                local p = Point::{ x, y }
+            }
+        "});
+        insta::assert_yaml_snapshot!(case.ast);
+    }
+
+    #[test]
+    fn test_struct_init_mixed_fields() {
+        // mix of shorthand and explicit fields
+        let case = TestCase::new(indoc! {"
+            fn main() {
+                local z = 0
+                local v = Vec3::{ x: 1, y: 2, z }
+            }
+        "});
+        insta::assert_yaml_snapshot!(case.ast);
+    }
+
+    #[test]
+    fn test_struct_init_trailing_comma() {
+        let case = TestCase::new(indoc! {"
+            fn main() {
+                local v = Vec3::{ x: 1, y: 2, z: 3, }
+            }
+        "});
+        insta::assert_yaml_snapshot!(case.ast);
+    }
+
+    #[test]
+    fn test_struct_init_empty() {
+        let case = TestCase::new(indoc! {"
+            fn main() {
+                local u = Unit::{}
+            }
+        "});
+        insta::assert_yaml_snapshot!(case.ast);
+    }
+
+    #[test]
+    fn test_struct_init_in_if_condition() {
+        // Foo::{ } in an if condition must not be confused with the if's block
+        let case = TestCase::new(indoc! {"
+            fn check(p: Point) -> bool {
+                local q = Point::{ x: 0, y: 0 }
+                if q.x == p.x {
+                    return 1
+                }
+                0
+            }
+        "});
+        insta::assert_yaml_snapshot!(case.ast);
+    }
+
+    #[test]
+    fn test_struct_init_label_not_confused() {
+        // b1: { } is a labelled block, NOT a struct init — different token (: vs ::)
+        let case = TestCase::new(indoc! {"
+            fn main() {
+                b1: {
+                    break :b1
+                }
             }
         "});
         insta::assert_yaml_snapshot!(case.ast);

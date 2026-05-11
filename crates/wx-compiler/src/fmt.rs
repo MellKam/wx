@@ -222,12 +222,12 @@ impl Builder {
                     items.push(Node::Text("}".to_string()));
                     Node::Concat(items)
                 }
-                Item::Memory { name } => Node::Text(format!(
-                    "memory {}",
-                    interner.resolve(name.inner).unwrap()
-                )),
+                Item::Memory { name } => {
+                    Node::Text(format!("memory {}", interner.resolve(name.inner).unwrap()))
+                }
                 Item::Enum { .. } => todo!("fmt for enum items"),
                 Item::Impl { .. } => todo!("fmt for impl items"),
+                Item::Const { .. } => todo!("fmt for const items"),
                 Item::Struct { name, fields } => {
                     let mut items = Vec::new();
                     items.push(Node::Text(format!(
@@ -518,7 +518,7 @@ impl Builder {
             Expression::Grouping { value } => {
                 let mut items = Vec::new();
                 items.push(Node::Text("(".to_string()));
-                items.push(Self::build_expression(interner, source, &value.inner));
+                items.push(Self::build_expression(interner, source, value));
                 items.push(Node::Text(")".to_string()));
                 Node::Concat(items)
             }
@@ -527,9 +527,9 @@ impl Builder {
                 items.push(Self::build_expression(interner, source, callee));
                 items.push(Node::Text("(".to_string()));
 
-                for (index, arg) in arguments.inner.iter().enumerate() {
+                for (index, arg) in arguments.iter().enumerate() {
                     items.push(Self::build_expression(interner, source, &arg.inner));
-                    if index + 1 < arguments.inner.len() {
+                    if index + 1 < arguments.len() {
                         items.push(Node::Text(", ".to_string()));
                     }
                 }
@@ -579,6 +579,91 @@ impl Builder {
                 Self::build_expression(interner, source, object),
                 Node::Text(format!(".{}", field.inner)),
             ]),
+            Expression::StructInit { name, fields } => {
+                let mut items = Vec::new();
+                items.push(Node::Text(format!(
+                    "{}::{{",
+                    interner.resolve(name.inner).unwrap()
+                )));
+
+                if !fields.inner.is_empty() {
+                    let field_items = fields
+                        .inner
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(index, field)| {
+                            let mut nodes = Vec::new();
+                            let field_name =
+                                interner.resolve(field.inner.inner.name.inner).unwrap();
+                            nodes.push(Node::Text(field_name.to_string()));
+
+                            if let Some(value) = &field.inner.inner.value {
+                                nodes.push(Node::Text(": ".to_string()));
+                                nodes.push(Self::build_expression(interner, source, value));
+                            }
+
+                            if index + 1 < fields.inner.len() {
+                                nodes.push(Node::Text(",".to_string()));
+                            } else {
+                                nodes.push(Node::IfBreak(",".to_string()));
+                            }
+
+                            vec![Node::Concat(nodes), Node::SoftLine]
+                        })
+                        .collect::<Vec<_>>();
+
+                    items.push(Node::Indent(Box::new(Node::Concat(
+                        std::iter::once(Node::Line)
+                            .chain(field_items)
+                            .collect::<Vec<_>>(),
+                    ))));
+                    items.push(Node::Line);
+                }
+
+                items.push(Node::Text("}".to_string()));
+                Node::Group(Box::new(Node::Concat(items)))
+            }
+            Expression::Tuple { elements } => {
+                let mut items = Vec::new();
+                items.push(Node::Text("(".to_string()));
+
+                if !elements.is_empty() {
+                    let last_idx = elements.len() - 1;
+                    let element_items = elements
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(index, element)| {
+                            let mut nodes = Vec::new();
+                            nodes.push(Self::build_expression(interner, source, element));
+
+                            if index < last_idx {
+                                nodes.push(Node::Text(",".to_string()));
+                            } else if elements.len() == 1 {
+                                // Single-element tuple always needs trailing comma
+                                nodes.push(Node::Text(",".to_string()));
+                            } else {
+                                nodes.push(Node::IfBreak(",".to_string()));
+                            }
+
+                            let mut result = vec![Node::Concat(nodes)];
+                            if index < last_idx {
+                                result.push(Node::SoftLine);
+                            }
+                            result
+                        })
+                        .collect::<Vec<_>>();
+
+                    items.push(Node::Indent(Box::new(Node::Concat(
+                        std::iter::once(Node::Line)
+                            .chain(element_items)
+                            .collect::<Vec<_>>(),
+                    ))));
+                    items.push(Node::Line);
+                }
+
+                items.push(Node::Text(")".to_string()));
+                Node::Group(Box::new(Node::Concat(items)))
+            }
         }
     }
 
@@ -684,13 +769,57 @@ impl Builder {
                 items.push(Self::build_type_expression(interner, &inner.inner));
                 Node::Concat(items)
             }
-            TypeExpression::Array { size, mutability, inner } => {
+            TypeExpression::Array {
+                size,
+                mutability,
+                inner,
+            } => {
                 let mut items = vec![Node::Text(format!("[{}]", size.inner))];
                 if mutability.is_some() {
                     items.push(Node::Text("mut ".to_string()));
                 }
                 items.push(Self::build_type_expression(interner, &inner.inner));
                 Node::Concat(items)
+            }
+            TypeExpression::Tuple { elements } => {
+                let mut items = Vec::new();
+                items.push(Node::Text("(".to_string()));
+
+                if !elements.is_empty() {
+                    let last_idx = elements.len() - 1;
+                    let element_items = elements
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(index, element)| {
+                            let mut nodes =
+                                vec![Self::build_type_expression(interner, &element.inner)];
+
+                            if index < last_idx {
+                                nodes.push(Node::Text(",".to_string()));
+                            } else if elements.len() == 1 {
+                                nodes.push(Node::Text(",".to_string()));
+                            } else {
+                                nodes.push(Node::IfBreak(",".to_string()));
+                            }
+
+                            let mut result = vec![Node::Concat(nodes)];
+                            if index < last_idx {
+                                result.push(Node::SoftLine);
+                            }
+                            result
+                        })
+                        .collect::<Vec<_>>();
+
+                    items.push(Node::Indent(Box::new(Node::Concat(
+                        std::iter::once(Node::Line)
+                            .chain(element_items)
+                            .collect::<Vec<_>>(),
+                    ))));
+                    items.push(Node::Line);
+                }
+
+                items.push(Node::Text(")".to_string()));
+                Node::Group(Box::new(Node::Concat(items)))
             }
         }
     }

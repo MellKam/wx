@@ -80,41 +80,68 @@ pub fn parse_char_literal(s: &str) -> Result<char, CharLiteralError> {
     Ok(value)
 }
 
+pub type TypeIndex = u32;
+
+// Pre-interned indices — values must match the intern order in
+// `TypePool::new()`.
+pub const ERROR_IDX: TypeIndex = 0;
+pub const UNIT_IDX: TypeIndex = 1;
+pub const NEVER_IDX: TypeIndex = 2;
+pub const UNKNOWN_IDX: TypeIndex = 3;
+pub const I32_IDX: TypeIndex = 4;
+pub const I64_IDX: TypeIndex = 5;
+pub const F32_IDX: TypeIndex = 6;
+pub const F64_IDX: TypeIndex = 7;
+pub const U32_IDX: TypeIndex = 8;
+pub const U64_IDX: TypeIndex = 9;
+pub const BOOL_IDX: TypeIndex = 10;
+/// TypeIndex for the built-in `string` sealed struct.
+pub const STRING_IDX: TypeIndex = 11;
+/// TypeIndex for the built-in `char` sealed struct.
+pub const CHAR_IDX: TypeIndex = 12;
+
+/// Struct pool index of the built-in `string` sealed struct.
+pub const BUILTIN_STRING_STRUCT: u32 = 0;
+/// Struct pool index of the built-in `char` sealed struct.
+pub const BUILTIN_CHAR_STRUCT: u32 = 1;
+
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Type {
+    Error,
+    Unit,
+    Never,
+    Unknown,
     I32,
     I64,
     F32,
     F64,
     U32,
     U64,
-    Unit,
-    Never,
-    Unknown,
-    Error,
-    String,
-    Char,
     Bool,
     Pointer {
-        to: Box<Type>,
+        to: TypeIndex,
         mutable: bool,
     },
     Array {
-        of: Box<Type>,
+        of: TypeIndex,
         size: u32,
         mutable: bool,
     },
     Slice {
-        of: Box<Type>,
+        of: TypeIndex,
         mutable: bool,
+    },
+    Tuple {
+        elements: Box<[TypeIndex]>,
     },
     Struct {
         struct_index: u32,
     },
     Function {
-        signature_index: u32,
+        items: Box<[TypeIndex]>,
+        params_count: usize,
     },
     Namespace {
         namespace_index: u32,
@@ -142,32 +169,12 @@ impl Type {
             _ => false,
         }
     }
-
-    pub fn coercible_to(&self, other: &Type) -> bool {
-        match (self, other) {
-            (a, b) if a == b => true,
-            (Type::Never, _) => true,
-            (Type::Error, _) | (_, Type::Error) => true,
-            (Type::Unknown, _) => false,
-            _ => false,
-        }
-    }
-
-    pub fn unify(a: Type, b: Type) -> Result<Type, ()> {
-        match (a, b) {
-            (a, b) if a == b => Ok(a),
-            (_, Type::Never) | (Type::Never, _) => Ok(b),
-            // ??? do we need to propagate error type like this?
-            (Type::Error, _) | (_, Type::Error) => Ok(Type::Error),
-            _ => Err(()),
-        }
-    }
 }
 
 impl TryFrom<&str> for Type {
     type Error = ();
 
-    fn try_from(value: &str) -> Result<Self, <Type as TryFrom<&str>>::Error> {
+    fn try_from(value: &str) -> Result<Self, ()> {
         match value {
             "i32" => Ok(Type::I32),
             "i64" => Ok(Type::I64),
@@ -178,37 +185,14 @@ impl TryFrom<&str> for Type {
             "bool" => Ok(Type::Bool),
             "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),
-            "string" => Ok(Type::String),
-            "char" => Ok(Type::Char),
+            "string" => Ok(Type::Struct {
+                struct_index: BUILTIN_STRING_STRUCT,
+            }),
+            "char" => Ok(Type::Struct {
+                struct_index: BUILTIN_CHAR_STRUCT,
+            }),
             _ => Err(()),
         }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub struct FunctionSignature {
-    pub items: Box<[Type]>,
-    pub params_count: usize,
-}
-
-impl FunctionSignature {
-    pub fn params(&self) -> &[Type] {
-        &self.items[..self.params_count]
-    }
-
-    pub fn result(&self) -> &Type {
-        &self.items[self.params_count]
-    }
-}
-
-impl std::hash::Hash for FunctionSignature {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        for item in self.items.iter() {
-            item.hash(state);
-        }
-        self.params_count.hash(state);
     }
 }
 
@@ -217,7 +201,9 @@ pub type ScopeIndex = u32;
 pub type FunctionIndex = u32;
 pub type NamespaceIndex = u32;
 pub type GlobalIndex = u32;
-pub type SignatureIndex = u32;
+/// `SignatureIndex` is now an alias for `TypeIndex` — the function type lives
+/// in the type pool.
+pub type SignatureIndex = TypeIndex;
 pub type EnumVariantIndex = u32;
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -312,13 +298,17 @@ pub enum ExprKind {
         object: Box<Expression>,
         member: ast::Spanned<SymbolU32>,
     },
+    StructInit {
+        struct_index: u32,
+        fields: Box<[Expression]>,
+    },
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Expression {
     pub kind: ExprKind,
-    pub ty: Type,
+    pub ty: TypeIndex,
     pub span: ast::TextSpan,
 }
 
@@ -335,7 +325,7 @@ pub enum AccessKind {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 struct AccessContext {
-    expected_type: Option<Type>,
+    expected_type: Option<TypeIndex>,
     access_kind: AccessKind,
 }
 
@@ -350,7 +340,7 @@ pub struct LocalAccess {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Local {
     pub name: ast::Spanned<SymbolU32>,
-    pub ty: Type,
+    pub ty: TypeIndex,
     pub mut_span: Option<ast::TextSpan>,
     pub accesses: Vec<LocalAccess>,
 }
@@ -373,8 +363,8 @@ pub struct BlockScope {
     pub label: Option<SymbolU32>,
     pub parent: Option<ScopeIndex>,
     pub locals: Vec<Local>,
-    pub inferred_type: Option<Type>,
-    pub expected_type: Option<Type>,
+    pub inferred_type: Option<TypeIndex>,
+    pub expected_type: Option<TypeIndex>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -414,7 +404,7 @@ impl StackFrame {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct DeclaredFunctionParam {
     pub name: Option<ast::Spanned<SymbolU32>>,
-    pub ty: ast::Spanned<Type>,
+    pub ty: ast::Spanned<TypeIndex>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -422,7 +412,7 @@ pub struct DeclaredFunctionParam {
 pub struct FunctionParam {
     pub mut_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
-    pub ty: ast::Spanned<Type>,
+    pub ty: ast::Spanned<TypeIndex>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -455,7 +445,7 @@ pub enum ExportItem {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Enum {
     pub name: ast::Spanned<SymbolU32>,
-    pub ty: Type,
+    pub ty: TypeIndex,
     pub variants: Box<[EnumVariant]>,
     pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
 }
@@ -471,7 +461,7 @@ pub struct EnumVariant {
 pub struct DeclaredGlobal {
     pub source: ItemSource,
     pub name: ast::Spanned<SymbolU32>,
-    pub ty: ast::Spanned<Type>,
+    pub ty: ast::Spanned<TypeIndex>,
     pub mut_span: Option<ast::TextSpan>,
     pub accesses: Vec<ast::TextSpan>,
 }
@@ -482,6 +472,7 @@ pub enum GlobalValue {
     Global { global_index: GlobalIndex },
     Function { func_index: FunctionIndex },
     Namespace { namespace_index: NamespaceIndex },
+    Struct { struct_index: u32 },
     True,
     False,
     Unreachable,
@@ -543,7 +534,7 @@ pub struct DeclaredFunction {
     pub signature_index: SignatureIndex,
     pub name: ast::Spanned<SymbolU32>,
     pub params: Box<[DeclaredFunctionParam]>,
-    pub result: Option<Spanned<Type>>,
+    pub result: Option<Spanned<TypeIndex>>,
     pub accesses: Vec<ast::TextSpan>,
 }
 
@@ -684,6 +675,11 @@ define_diagnostic_codes! {
         CannotExportItem => "E1019",
         NotANamespace => "E1020",
         UndeclaredType => "E1021",
+        DuplicateStructField => "E1022",
+        RecursiveStructType => "E1023",
+        UnknownStructField => "E1025",
+        DuplicateStructFieldInit => "E1026",
+        MissingStructFields => "E1027",
         CannotMutateImmutable => "W1000",
         UnusedVariable => "W1001",
         UnnecessaryMutability => "W1002",
@@ -808,8 +804,8 @@ impl CharLiteralTooLongDiagnostic {
 
 struct TypeMistmatchDiagnostic {
     file_id: FileId,
-    expected_type: Type,
-    actual_type: Type,
+    expected_type: TypeIndex,
+    actual_type: TypeIndex,
     span: ast::TextSpan,
 }
 
@@ -934,7 +930,7 @@ impl UnusedValueDiagnostic {
 
 struct IntegerLiteralOutOfRangeDiagnostic {
     file_id: FileId,
-    ty: Type,
+    ty: TypeIndex,
     value: i64,
     span: ast::TextSpan,
 }
@@ -957,7 +953,7 @@ impl IntegerLiteralOutOfRangeDiagnostic {
 
 struct UnableToCoerceDiagnostic {
     file_id: FileId,
-    target_type: Type,
+    target_type: TypeIndex,
     span: ast::TextSpan,
 }
 
@@ -1019,7 +1015,7 @@ impl UndeclaredTypeDiagnostic {
 struct BinaryOperatorCannotBeAppliedDiagnostic {
     file_id: FileId,
     operator: Spanned<ast::BinaryOp>,
-    operand: Spanned<Type>,
+    operand: Spanned<TypeIndex>,
 }
 
 impl BinaryOperatorCannotBeAppliedDiagnostic {
@@ -1038,9 +1034,9 @@ impl BinaryOperatorCannotBeAppliedDiagnostic {
 
 struct BinaryExpressionMistmatchDiagnostic {
     file_id: FileId,
-    left_type: Spanned<Type>,
+    left_type: Spanned<TypeIndex>,
     operator: Spanned<ast::BinaryOp>,
-    right_type: Spanned<Type>,
+    right_type: Spanned<TypeIndex>,
 }
 
 impl BinaryExpressionMistmatchDiagnostic {
@@ -1110,7 +1106,7 @@ impl BinaryExpressionMistmatchDiagnostic {
 
 struct CannotCallExpressionDiagnostic {
     file_id: FileId,
-    ty: Type,
+    ty: TypeIndex,
     span: TextSpan,
 }
 
@@ -1131,7 +1127,7 @@ impl CannotCallExpressionDiagnostic {
 struct UnaryOperatorCannotBeAppliedDiagnostic {
     file_id: FileId,
     operator: Spanned<ast::UnaryOp>,
-    operand: Spanned<Type>,
+    operand: Spanned<TypeIndex>,
 }
 
 impl UnaryOperatorCannotBeAppliedDiagnostic {
@@ -1274,7 +1270,7 @@ impl CannotExportItemDiagnostic<'_> {
 struct NotANamespaceDiagnostic {
     file_id: FileId,
     span: TextSpan,
-    ty: Type,
+    ty: TypeIndex,
 }
 
 impl NotANamespaceDiagnostic {
@@ -1292,7 +1288,7 @@ impl NotANamespaceDiagnostic {
 struct ArgumentCountMismatchDiagnostic<'a> {
     file_id: FileId,
     actual_count: usize,
-    params: &'a [Type],
+    params: &'a [TypeIndex],
     call_span: TextSpan,
     is_method: bool,
 }
@@ -1359,20 +1355,147 @@ impl ArgumentCountMismatchDiagnostic<'_> {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Global {
     pub name: ast::Spanned<SymbolU32>,
-    pub ty: ast::Spanned<Type>,
+    pub ty: ast::Spanned<TypeIndex>,
     pub mut_span: Option<ast::TextSpan>,
     pub value: Box<ast::Spanned<Expression>>,
 }
 
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct StructField {
     pub name: ast::Spanned<SymbolU32>,
-    pub ty: ast::Spanned<Type>,
+    pub ty: ast::Spanned<TypeIndex>,
 }
 
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Struct {
     pub name: ast::Spanned<SymbolU32>,
     pub fields: Box<[StructField]>,
     pub lookup: HashMap<SymbolU32, usize>,
+}
+
+struct DuplicateStructFieldDiagnostic<'a> {
+    file_id: FileId,
+    name: &'a str,
+    first_span: ast::TextSpan,
+    second_span: ast::TextSpan,
+}
+
+impl DuplicateStructFieldDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::DuplicateStructField.code())
+            .with_message(format!("field `{}` is already declared", self.name))
+            .with_label(Label::primary(self.file_id, self.second_span))
+            .with_label(
+                Label::secondary(self.file_id, self.first_span)
+                    .with_message(format!("`{}` first declared here", self.name)),
+            )
+    }
+}
+
+struct RecursiveStructTypeDiagnostic<'a> {
+    file_id: FileId,
+    struct_name: &'a str,
+    field_span: ast::TextSpan,
+}
+
+impl RecursiveStructTypeDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::RecursiveStructType.code())
+            .with_message(format!(
+                "recursive type `{}` has infinite size",
+                self.struct_name
+            ))
+            .with_label(
+                Label::primary(self.file_id, self.field_span).with_message("recursive field here"),
+            )
+            .with_note("consider using a pointer type to break the cycle")
+    }
+}
+
+struct NotAStructTypeDiagnostic {
+    file_id: FileId,
+    name: String,
+    span: ast::TextSpan,
+}
+
+impl NotAStructTypeDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::TypeMistmatch.code())
+            .with_message(format!("expected struct, found `{}`", self.name))
+            .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+struct UnknownStructFieldDiagnostic<'a> {
+    file_id: FileId,
+    struct_name: &'a str,
+    field_name: &'a str,
+    field_span: ast::TextSpan,
+}
+
+impl UnknownStructFieldDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::UnknownStructField.code())
+            .with_message(format!(
+                "no such field `{}` in struct `{}`",
+                self.field_name, self.struct_name
+            ))
+            .with_label(Label::primary(self.file_id, self.field_span))
+    }
+}
+
+struct DuplicateStructFieldInitDiagnostic<'a> {
+    file_id: FileId,
+    field_name: &'a str,
+    first_span: ast::TextSpan,
+    second_span: ast::TextSpan,
+}
+
+impl DuplicateStructFieldInitDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::DuplicateStructFieldInit.code())
+            .with_message(format!(
+                "field `{}` specified more than once",
+                self.field_name
+            ))
+            .with_label(Label::primary(self.file_id, self.second_span))
+            .with_label(
+                Label::secondary(self.file_id, self.first_span)
+                    .with_message("first use of this field"),
+            )
+    }
+}
+
+struct MissingStructFieldsDiagnostic<'a> {
+    file_id: FileId,
+    struct_name: &'a str,
+    missing_fields: Box<[&'a str]>,
+    init_span: ast::TextSpan,
+}
+
+impl MissingStructFieldsDiagnostic<'_> {
+    fn report(self) -> Diagnostic<FileId> {
+        let fields_str = self
+            .missing_fields
+            .iter()
+            .map(|f| format!("`{}`", f))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Diagnostic::error()
+            .with_code(DiagnosticCode::MissingStructFields.code())
+            .with_message(format!(
+                "missing fields {} in initializer of `{}`",
+                fields_str, self.struct_name
+            ))
+            .with_label(Label::primary(self.file_id, self.init_span))
+    }
 }
 
 struct Builder<'ast, 'interner> {
@@ -1386,10 +1509,9 @@ struct Builder<'ast, 'interner> {
     namespaces: Vec<Namespace>,
     declared_globals: Vec<DeclaredGlobal>,
     declared_functions: Vec<DeclaredFunction>,
-    signatures: Vec<FunctionSignature>,
-    signature_index_lookup: HashMap<FunctionSignature, SignatureIndex>,
+    type_pool: TypePool,
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), GlobalValue>,
-    impl_members: HashMap<Type, HashMap<SymbolU32, ImplEntry>>,
+    impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
     structs: Vec<Struct>,
 }
 
@@ -1399,18 +1521,25 @@ enum BlockState<T> {
 }
 
 impl Builder<'_, '_> {
-    pub fn resolve_type(&mut self, type_expr: &Spanned<ast::TypeExpression>) -> Type {
+    pub fn resolve_type(&mut self, type_expr: &Spanned<ast::TypeExpression>) -> TypeIndex {
         match &type_expr.inner {
             ast::TypeExpression::Identifier { symbol } => {
                 let symbol = *symbol;
                 let text = self.interner.resolve(symbol).unwrap();
                 if let Ok(ty) = Type::try_from(text) {
-                    return ty;
+                    return self.type_pool.intern(ty);
                 }
                 match self.symbol_lookup.get(&(SymbolNamespace::Type, symbol)) {
-                    Some(GlobalValue::Namespace { namespace_index }) => Type::Namespace {
-                        namespace_index: *namespace_index,
-                    },
+                    Some(GlobalValue::Namespace { namespace_index }) => {
+                        self.type_pool.intern(Type::Namespace {
+                            namespace_index: *namespace_index,
+                        })
+                    }
+                    Some(GlobalValue::Struct { struct_index }) => {
+                        self.type_pool.intern(Type::Struct {
+                            struct_index: *struct_index,
+                        })
+                    }
                     _ => {
                         self.diagnostics.push(
                             UndeclaredTypeDiagnostic {
@@ -1419,26 +1548,57 @@ impl Builder<'_, '_> {
                             }
                             .report(),
                         );
-                        Type::Error
+                        ERROR_IDX
                     }
                 }
             }
             ast::TypeExpression::Function { params, result } => {
-                let result = match result {
+                let result_idx = match result {
                     Some(result) => self.resolve_type(result),
-                    None => Type::Unit,
+                    None => UNIT_IDX,
                 };
-                let items = params
+                let params_count = params.inner.len();
+                let items: Box<[TypeIndex]> = params
                     .inner
                     .iter()
                     .map(|ty| self.resolve_type(&ty.inner.inner.ty))
-                    .chain(Some(result))
-                    .collect::<Box<_>>();
-                let signature_index = self.ensure_signature_index(&FunctionSignature {
+                    .chain(Some(result_idx))
+                    .collect();
+                self.type_pool.intern(Type::Function {
                     items,
-                    params_count: params.inner.len(),
-                });
-                Type::Function { signature_index }
+                    params_count,
+                })
+            }
+            ast::TypeExpression::Pointer { mutability, inner } => {
+                let to = self.resolve_type(inner);
+                self.type_pool.intern(Type::Pointer {
+                    to,
+                    mutable: mutability.is_some(),
+                })
+            }
+            ast::TypeExpression::Slice { mutability, inner } => {
+                let of = self.resolve_type(inner);
+                self.type_pool.intern(Type::Slice {
+                    of,
+                    mutable: mutability.is_some(),
+                })
+            }
+            ast::TypeExpression::Array {
+                size,
+                mutability,
+                inner,
+            } => {
+                let of = self.resolve_type(inner);
+                self.type_pool.intern(Type::Array {
+                    of,
+                    size: size.inner as u32,
+                    mutable: mutability.is_some(),
+                })
+            }
+            ast::TypeExpression::Tuple { elements } => {
+                let elems: Box<[TypeIndex]> =
+                    elements.iter().map(|e| self.resolve_type(e)).collect();
+                self.type_pool.intern(Type::Tuple { elements: elems })
             }
         }
     }
@@ -1447,22 +1607,23 @@ impl Builder<'_, '_> {
         &mut self,
         name: ast::Spanned<SymbolU32>,
         params: Box<[DeclaredFunctionParam]>,
-        result: Option<Spanned<Type>>,
+        result: Option<Spanned<TypeIndex>>,
         source: ItemSource,
     ) -> FunctionIndex {
-        let mut items = Vec::with_capacity(params.len() + 1);
-        for param in params.iter() {
-            items.push(param.ty.inner.clone());
-        }
-        items.push(match result {
-            Some(result) => result.inner,
-            None => Type::Unit,
-        });
-        let signature = FunctionSignature {
-            items: items.into_boxed_slice(),
-            params_count: params.len(),
+        let result_idx = match &result {
+            Some(r) => r.inner,
+            None => UNIT_IDX,
         };
-        let signature_index = self.ensure_signature_index(&signature);
+        let params_count = params.len();
+        let items: Box<[TypeIndex]> = params
+            .iter()
+            .map(|p| p.ty.inner)
+            .chain(Some(result_idx))
+            .collect();
+        let signature_index = self.type_pool.intern(Type::Function {
+            items,
+            params_count,
+        });
 
         let func_index = self.declared_functions.len() as u32;
         self.declared_functions.push(DeclaredFunction {
@@ -1474,19 +1635,6 @@ impl Builder<'_, '_> {
             result,
         });
         func_index
-    }
-
-    pub fn ensure_signature_index(&mut self, signature: &FunctionSignature) -> SignatureIndex {
-        match self.signature_index_lookup.get(signature).cloned() {
-            Some(type_index) => type_index,
-            None => {
-                let signature_index = self.signatures.len() as u32;
-                self.signatures.push(signature.clone());
-                self.signature_index_lookup
-                    .insert(signature.clone(), signature_index);
-                signature_index
-            }
-        }
     }
 
     pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<GlobalValue> {
@@ -1511,8 +1659,8 @@ impl Builder<'_, '_> {
         }
     }
 
-    pub fn display_type(&self, ty: &Type) -> String {
-        match ty {
+    pub fn display_type(&self, idx: TypeIndex) -> String {
+        match self.type_pool.get(idx) {
             Type::Unknown => "unknown".to_string(),
             Type::Error => "error".to_string(),
             Type::Unit => "unit".to_string(),
@@ -1524,22 +1672,32 @@ impl Builder<'_, '_> {
             Type::F64 => "f64".to_string(),
             Type::U32 => "u32".to_string(),
             Type::U64 => "u64".to_string(),
-            Type::String => "string".to_string(),
-            Type::Char => "char".to_string(),
             Type::Pointer { to, mutable } => {
-                let mutability = if *mutable { "mut " } else { "" };
+                let (to, mutable) = (*to, *mutable);
+                let mutability = if mutable { "mut " } else { "" };
                 format!("*{}{}", mutability, self.display_type(to))
             }
             Type::Slice { of, mutable } => {
-                let mutability = if *mutable { "mut " } else { "" };
+                let (of, mutable) = (*of, *mutable);
+                let mutability = if mutable { "mut " } else { "" };
                 format!("[]{}{}", mutability, self.display_type(of))
             }
             Type::Array { of, size, mutable } => {
-                let mutability = if *mutable { "mut " } else { "" };
-                format!("[{}]{}{}]", size, mutability, self.display_type(of))
+                let (of, size, mutable) = (*of, *size, *mutable);
+                let mutability = if mutable { "mut " } else { "" };
+                format!("[{}]{}{}", size, mutability, self.display_type(of))
+            }
+            Type::Tuple { elements } => {
+                let elems = elements
+                    .iter()
+                    .map(|&e| self.display_type(e))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({})", elems)
             }
             Type::Struct { struct_index } => {
-                todo!()
+                let s = &self.structs[*struct_index as usize];
+                self.interner.resolve(s.name.inner).unwrap().to_string()
             }
             Type::Namespace { namespace_index } => {
                 let ns = &self.namespaces[*namespace_index as usize];
@@ -1553,21 +1711,22 @@ impl Builder<'_, '_> {
                         self.interner.resolve(name).unwrap().to_string()
                     }
                     Namespace::Enum(enum_) => {
-                        let name = enum_.name.inner;
-                        self.interner.resolve(name).unwrap().to_string()
+                        self.interner.resolve(enum_.name.inner).unwrap().to_string()
                     }
                 }
             }
-            Type::Function { signature_index } => {
-                let func = &self.signatures[*signature_index as usize];
-                let params = func
-                    .params()
+            Type::Function {
+                items,
+                params_count,
+            } => {
+                let params_count = *params_count;
+                let params = items[..params_count]
                     .iter()
-                    .map(|param| self.display_type(param))
-                    .collect::<Box<[_]>>()
+                    .map(|&p| self.display_type(p))
+                    .collect::<Vec<_>>()
                     .join(", ");
-
-                format!("fn({}) -> {}", params, self.display_type(func.result()))
+                let result = self.display_type(items[params_count]);
+                format!("fn({}) -> {}", params, result)
             }
         }
     }
@@ -1641,7 +1800,7 @@ impl Builder<'_, '_> {
                                     span: ty.span,
                                 },
                                 None => Spanned {
-                                    inner: Type::Error,
+                                    inner: ERROR_IDX,
                                     span: param.inner.inner.name.span,
                                 },
                             },
@@ -1714,7 +1873,7 @@ impl Builder<'_, '_> {
                             .report(),
                         );
                         // Use Error type but still register the global
-                        (Type::Error, name.span)
+                        (ERROR_IDX, name.span)
                     }
                 };
 
@@ -1813,10 +1972,121 @@ impl Builder<'_, '_> {
                 // TODO: lower enum items in TIR
                 Ok(())
             }
-            ast::Item::Impl { target, methods } => {
+            ast::Item::Const { .. } => {
+                // TODO: lower const items in TIR
+                Ok(())
+            }
+            ast::Item::Struct { name, fields } => {
+                // Check for duplicate struct name in the type namespace
+                if let Some(existing) = self
+                    .symbol_lookup
+                    .get(&(SymbolNamespace::Type, name.inner))
+                    .cloned()
+                {
+                    let name_str = self.interner.resolve(name.inner).unwrap();
+                    let first_span = match existing {
+                        GlobalValue::Struct { struct_index } => {
+                            self.structs[struct_index as usize].name.span
+                        }
+                        _ => name.span,
+                    };
+                    self.diagnostics.push(
+                        DuplicateDefinitionDiagnostic {
+                            file_id: self.ast.file_id,
+                            name: name_str,
+                            namespace: SymbolNamespace::Type,
+                            first_definition: first_span,
+                            second_definition: name.span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+
+                let struct_index = self.structs.len() as u32;
+                let struct_name = self.interner.resolve(name.inner).unwrap().to_string();
+
+                // Reserve the slot so recursive field types can detect the cycle
+                self.symbol_lookup.insert(
+                    (SymbolNamespace::Type, name.inner),
+                    GlobalValue::Struct { struct_index },
+                );
+                self.structs.push(Struct {
+                    name: name.clone(),
+                    fields: Box::new([]),
+                    lookup: HashMap::new(),
+                });
+
+                let mut seen_fields: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
+                let mut tir_fields: Vec<StructField> = Vec::new();
+                let mut lookup: HashMap<SymbolU32, usize> = HashMap::new();
+                let mut has_error = false;
+
+                for field in fields.inner.iter() {
+                    let field = &field.inner.inner;
+                    let field_name_sym = field.name.inner;
+                    let field_name = self.interner.resolve(field_name_sym).unwrap().to_string();
+
+                    // Duplicate field name in the declaration
+                    if let Some(&first_span) = seen_fields.get(&field_name_sym) {
+                        self.diagnostics.push(
+                            DuplicateStructFieldDiagnostic {
+                                file_id: self.ast.file_id,
+                                name: &field_name,
+                                first_span,
+                                second_span: field.name.span,
+                            }
+                            .report(),
+                        );
+                        has_error = true;
+                        continue;
+                    }
+
+                    let field_ty = self.resolve_type(&field.ty);
+
+                    // Recursive struct: field type is this struct itself
+                    if field_ty == self.type_pool.intern(Type::Struct { struct_index }) {
+                        self.diagnostics.push(
+                            RecursiveStructTypeDiagnostic {
+                                file_id: self.ast.file_id,
+                                struct_name: &struct_name,
+                                field_span: field.name.span,
+                            }
+                            .report(),
+                        );
+                        has_error = true;
+                        continue;
+                    }
+
+                    seen_fields.insert(field_name_sym, field.name.span);
+                    let field_index = tir_fields.len();
+                    lookup.insert(field_name_sym, field_index);
+                    tir_fields.push(StructField {
+                        name: field.name.clone(),
+                        ty: ast::Spanned {
+                            inner: field_ty,
+                            span: field.ty.span,
+                        },
+                    });
+                }
+
+                // Patch the reserved slot with real fields
+                self.structs[struct_index as usize].fields = tir_fields.into_boxed_slice();
+                self.structs[struct_index as usize].lookup = lookup;
+
+                if has_error { Err(()) } else { Ok(()) }
+            }
+            ast::Item::Memory { .. } => {
+                // TODO: lower memory items in TIR
+                Ok(())
+            }
+            ast::Item::Impl { target, items } => {
                 let self_type = self.resolve_type(target);
-                for method in methods.inner.iter() {
-                    let sig = &method.inner.inner.signature;
+                for item in items.inner.iter() {
+                    let sig = match &item.inner.inner {
+                        ast::ImplItem::Method { signature, .. } => signature,
+                        ast::ImplItem::Const { .. } => continue,
+                    };
                     let self_symbol = self.interner.get_or_intern("self");
                     let params = sig
                         .params
@@ -1832,7 +2102,7 @@ impl Builder<'_, '_> {
                                         span: ty.span,
                                     },
                                     None => Spanned {
-                                        inner: if is_self { self_type } else { Type::Error },
+                                        inner: if is_self { self_type } else { ERROR_IDX },
                                         span: p.inner.inner.name.span,
                                     },
                                 },
@@ -2014,11 +2284,11 @@ impl Builder<'_, '_> {
                     _ => return Err(()),
                 };
 
-                let global_type = self.declared_globals[global_index as usize].ty.clone();
-                let value_expr = self.build_const_expression(value, global_type.inner)?;
+                let global_type_idx = self.declared_globals[global_index as usize].ty.inner;
+                let value_expr = self.build_const_expression(value, global_type_idx)?;
 
                 match value_expr.ty {
-                    Type::Unknown => {
+                    _ if value_expr.ty == UNKNOWN_IDX => {
                         self.diagnostics.push(
                             TypeAnnotationRequiredDiagnostic {
                                 file_id: self.ast.file_id,
@@ -2028,11 +2298,11 @@ impl Builder<'_, '_> {
                         );
                         return Err(());
                     }
-                    ty if !ty.coercible_to(global_type.inner) => {
+                    ty if !self.type_pool.coercible_to(ty, global_type_idx) => {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
-                                expected_type: global_type.inner,
+                                expected_type: global_type_idx,
                                 actual_type: ty,
                                 span: value.span,
                             }
@@ -2047,7 +2317,10 @@ impl Builder<'_, '_> {
                     global_index,
                     Global {
                         name: name.clone(),
-                        ty: global_type,
+                        ty: ast::Spanned {
+                            inner: global_type_idx,
+                            span: self.declared_globals[global_index as usize].ty.span,
+                        },
                         mut_span: *mut_span,
                         value: Box::new(ast::Spanned {
                             inner: value_expr,
@@ -2201,22 +2474,34 @@ impl Builder<'_, '_> {
                 // TODO: lower enum items in TIR
                 Ok(())
             }
-            ast::Item::Impl { target, methods } => {
+            ast::Item::Const { .. } => {
+                // TODO: lower const items in TIR
+                Ok(())
+            }
+            ast::Item::Struct { .. } => {
+                // TODO: lower struct items in TIR
+                Ok(())
+            }
+            ast::Item::Memory { .. } => {
+                // TODO: lower memory items in TIR
+                Ok(())
+            }
+            ast::Item::Impl { target, items } => {
                 let target_type = self.resolve_type(target);
-                for method in methods.inner.iter() {
+                for item in items.inner.iter() {
+                    let (sig, block) = match &item.inner.inner {
+                        ast::ImplItem::Method { signature, block } => (signature, block),
+                        ast::ImplItem::Const { .. } => continue,
+                    };
                     let func_index = match self
                         .impl_members
                         .get(&target_type)
-                        .and_then(|m| m.get(&method.inner.inner.signature.name.inner))
+                        .and_then(|m| m.get(&sig.name.inner))
                     {
                         Some(ImplEntry::Method(i) | ImplEntry::AssociatedFn(i)) => *i,
                         None => continue,
                     };
-                    self.build_function_definition(
-                        &method.inner.inner.signature,
-                        &method.inner.inner.block,
-                        func_index,
-                    )?;
+                    self.build_function_definition(sig, block, func_index)?;
                 }
                 Ok(())
             }
@@ -2226,7 +2511,7 @@ impl Builder<'_, '_> {
     fn build_const_expression(
         &mut self,
         expr: &ast::Spanned<ast::Expression>,
-        expected_type: Type,
+        expected_type: TypeIndex,
     ) -> Result<Expression, ()> {
         match &expr.inner {
             ast::Expression::Int { value } => Ok(Expression {
@@ -2244,12 +2529,12 @@ impl Builder<'_, '_> {
                 match self.resolve_value(*symbol) {
                     Some(GlobalValue::True) => Ok(Expression {
                         kind: ExprKind::Bool { value: true },
-                        ty: Type::Bool,
+                        ty: BOOL_IDX,
                         span: expr.span,
                     }),
                     Some(GlobalValue::False) => Ok(Expression {
                         kind: ExprKind::Bool { value: false },
-                        ty: Type::Bool,
+                        ty: BOOL_IDX,
                         span: expr.span,
                     }),
                     _ => {
@@ -2285,7 +2570,7 @@ impl Builder<'_, '_> {
                 let right_expr = self.build_const_expression(right, expected_type)?;
 
                 let result_ty = match operator.inner {
-                    operator if operator.is_comparison() || operator.is_logical() => Type::Bool,
+                    operator if operator.is_comparison() || operator.is_logical() => BOOL_IDX,
                     _ => left_expr.ty,
                 };
 
@@ -2300,7 +2585,7 @@ impl Builder<'_, '_> {
                 })
             }
             ast::Expression::Grouping { value } => {
-                self.build_const_expression(&value.inner, expected_type)
+                self.build_const_expression(value, expected_type)
             }
             ast::Expression::Cast { value, ty } => {
                 let cast_type = self.resolve_type(&ty);
@@ -2352,7 +2637,10 @@ impl Builder<'_, '_> {
             .map(|(ast_param, declared_param)| FunctionParam {
                 mut_span: ast_param.inner.inner.mut_span,
                 name: ast_param.inner.inner.name.clone(),
-                ty: declared_param.ty.clone(),
+                ty: Spanned {
+                    inner: declared_param.ty.inner,
+                    span: declared_param.ty.span,
+                },
             })
             .collect();
 
@@ -2361,7 +2649,7 @@ impl Builder<'_, '_> {
             None => None,
         };
         let signature_index = self.declared_functions[func_index as usize].signature_index;
-        let type_signature = self.signatures[signature_index as usize].clone();
+        let result_type_idx = self.type_pool.function_result(signature_index);
 
         let root_scope = BlockScope {
             parent: None,
@@ -2377,7 +2665,7 @@ impl Builder<'_, '_> {
                 })
                 .collect(),
             inferred_type: None,
-            expected_type: Some(type_signature.result()),
+            expected_type: Some(result_type_idx),
         };
 
         let mut ctx = FunctionContext {
@@ -2445,7 +2733,7 @@ impl Builder<'_, '_> {
                 }
 
                 let scope = &mut ctx.frame.scopes[ctx.scope_index as usize];
-                let inferred_type = scope.inferred_type.unwrap_or(Type::Never);
+                let inferred_type = scope.inferred_type.unwrap_or(NEVER_IDX);
                 scope.inferred_type = Some(inferred_type);
 
                 return Ok(Expression {
@@ -2468,7 +2756,7 @@ impl Builder<'_, '_> {
                         ctx,
                         &result,
                         AccessContext {
-                            expected_type: Some(Type::Unit),
+                            expected_type: Some(UNIT_IDX),
                             access_kind: AccessKind::Read,
                         },
                     )?),
@@ -2485,7 +2773,7 @@ impl Builder<'_, '_> {
                     },
                     ty: ctx.frame.scopes[ctx.scope_index as usize]
                         .inferred_type
-                        .unwrap_or(Type::Never),
+                        .unwrap_or(NEVER_IDX),
                     span: block.span,
                 })
             }
@@ -2497,7 +2785,9 @@ impl Builder<'_, '_> {
                 let scope = &ctx.frame.scopes[ctx.scope_index as usize];
                 let inferred_type = scope.inferred_type.expect("should have inferred type");
                 match scope.expected_type {
-                    Some(expected_type) if !inferred_type.coercible_to(expected_type) => {
+                    Some(expected_type)
+                        if !self.type_pool.coercible_to(inferred_type, expected_type) =>
+                    {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
@@ -2527,7 +2817,7 @@ impl Builder<'_, '_> {
 
     fn report_local_warnings(&mut self, block: &BlockScope) {
         for local in block.locals.iter() {
-            if local.accesses.is_empty() && local.ty != Type::Error {
+            if local.accesses.is_empty() && local.ty != ERROR_IDX {
                 self.diagnostics.push(
                     UnusedVariableDiagnostic {
                         file_id: self.ast.file_id,
@@ -2615,7 +2905,7 @@ impl Builder<'_, '_> {
                 let scope = &mut ctx.frame.scopes[ctx.scope_index as usize];
                 let inferred_type = self.infer_block_type(scope, &result)?;
                 scope.inferred_type = Some(inferred_type);
-                if result.ty == Type::Unknown {
+                if result.ty == UNKNOWN_IDX {
                     _ = self.coerce_untyped_expr(&mut result, inferred_type);
                 }
 
@@ -2623,7 +2913,7 @@ impl Builder<'_, '_> {
             }
             None => {
                 let scope = &mut ctx.frame.scopes[ctx.scope_index as usize];
-                let inferred_type = scope.inferred_type.unwrap_or(Type::Unit);
+                let inferred_type = scope.inferred_type.unwrap_or(UNIT_IDX);
                 scope.inferred_type = Some(inferred_type);
 
                 Ok(None)
@@ -2644,7 +2934,7 @@ impl Builder<'_, '_> {
             };
 
             match expr.ty {
-                Type::Never => {
+                _ if expr.ty == NEVER_IDX => {
                     expressions.push(expr);
                     return BlockState::Exhaustive(expressions.into_boxed_slice());
                 }
@@ -2659,10 +2949,14 @@ impl Builder<'_, '_> {
         BlockState::Incomplete(expressions.into_boxed_slice())
     }
 
-    fn infer_block_type(&mut self, scope: &BlockScope, value: &Expression) -> Result<Type, ()> {
-        match value.ty {
-            Type::Unknown => match scope.inferred_type.or(scope.expected_type) {
-                Some(ty) => Ok(ty),
+    fn infer_block_type(
+        &mut self,
+        scope: &BlockScope,
+        value: &Expression,
+    ) -> Result<TypeIndex, ()> {
+        if value.ty == UNKNOWN_IDX {
+            match scope.inferred_type.or(scope.expected_type) {
+                Some(ty) => return Ok(ty),
                 None => {
                     self.diagnostics.push(
                         TypeAnnotationRequiredDiagnostic {
@@ -2673,36 +2967,37 @@ impl Builder<'_, '_> {
                     );
                     return Err(());
                 }
-            },
-            result_type => match scope.inferred_type {
-                Some(inferred_type) if !result_type.coercible_to(inferred_type) => {
+            }
+        }
+        let result_type = value.ty;
+        match scope.inferred_type {
+            Some(inferred_type) if !self.type_pool.coercible_to(result_type, inferred_type) => {
+                self.diagnostics.push(
+                    TypeMistmatchDiagnostic {
+                        file_id: self.ast.file_id,
+                        expected_type: inferred_type,
+                        actual_type: result_type,
+                        span: value.span,
+                    }
+                    .report(&self),
+                );
+                Ok(inferred_type)
+            }
+            Some(inferred) => Ok(inferred),
+            None => match scope.expected_type {
+                Some(expected_type) if !self.type_pool.coercible_to(result_type, expected_type) => {
                     self.diagnostics.push(
                         TypeMistmatchDiagnostic {
                             file_id: self.ast.file_id,
-                            expected_type: inferred_type,
+                            expected_type,
                             actual_type: result_type,
                             span: value.span,
                         }
                         .report(&self),
                     );
-                    Ok(inferred_type)
+                    Err(())
                 }
-                Some(inferred) => Ok(inferred),
-                None => match scope.expected_type {
-                    Some(expected_type) if !result_type.coercible_to(expected_type) => {
-                        self.diagnostics.push(
-                            TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                expected_type,
-                                actual_type: result_type,
-                                span: value.span,
-                            }
-                            .report(&self),
-                        );
-                        Err(())
-                    }
-                    _ => Ok(result_type),
-                },
+                _ => Ok(result_type),
             },
         }
     }
@@ -2740,42 +3035,34 @@ impl Builder<'_, '_> {
                 expected_type: None,
             },
         )?;
-        match value.ty {
-            Type::Unit => Ok(value),
-            Type::Error => {
-                // Skip reporting unused value for error types, as the error has already been
-                // reported
-                Ok(value)
-            }
-            Type::Never => {
-                let scope = ctx.frame.scopes.get_mut(ctx.scope_index as usize).unwrap();
-                scope.inferred_type = scope.inferred_type.or(Some(Type::Never));
-
-                Ok(value)
-            }
-            Type::Unknown => {
-                self.diagnostics.push(
-                    TypeAnnotationRequiredDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: value.span,
-                    }
-                    .report(),
-                );
-
-                Err(())
-            }
-            _ => {
-                self.diagnostics.push(
-                    UnusedValueDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: value.span,
-                    }
-                    .report(),
-                );
-
-                Ok(value)
-            }
+        if value.ty == UNIT_IDX {
+            return Ok(value);
+        } else if value.ty == ERROR_IDX {
+            // Skip reporting unused value for error types, as the error has already been
+            // reported
+            return Ok(value);
+        } else if value.ty == NEVER_IDX {
+            let scope = ctx.frame.scopes.get_mut(ctx.scope_index as usize).unwrap();
+            scope.inferred_type = scope.inferred_type.or(Some(NEVER_IDX));
+            return Ok(value);
+        } else if value.ty == UNKNOWN_IDX {
+            self.diagnostics.push(
+                TypeAnnotationRequiredDiagnostic {
+                    file_id: self.ast.file_id,
+                    span: value.span,
+                }
+                .report(),
+            );
+            return Err(());
         }
+        self.diagnostics.push(
+            UnusedValueDiagnostic {
+                file_id: self.ast.file_id,
+                span: value.span,
+            }
+            .report(),
+        );
+        Ok(value)
     }
 
     fn build_expression(
@@ -2787,22 +3074,22 @@ impl Builder<'_, '_> {
         match &expr.inner {
             ast::Expression::Int { value } => Ok(Expression {
                 kind: ExprKind::Int { value: *value },
-                ty: Type::Unknown,
+                ty: UNKNOWN_IDX,
                 span: expr.span,
             }),
             ast::Expression::Float { value } => Ok(Expression {
                 kind: ExprKind::Float { value: *value },
-                ty: Type::Unknown,
+                ty: UNKNOWN_IDX,
                 span: expr.span,
             }),
             ast::Expression::Unreachable => Ok(Expression {
                 kind: ExprKind::Unreachable,
-                ty: Type::Never,
+                ty: NEVER_IDX,
                 span: expr.span,
             }),
             ast::Expression::Error => Ok(Expression {
                 kind: ExprKind::Error,
-                ty: Type::Error,
+                ty: ERROR_IDX,
                 span: expr.span,
             }),
             ast::Expression::String { symbol } => {
@@ -2810,7 +3097,7 @@ impl Builder<'_, '_> {
                 let symbol = self.interner.get_or_intern(&unescaped);
                 Ok(Expression {
                     kind: ExprKind::String { symbol },
-                    ty: Type::String,
+                    ty: STRING_IDX,
                     span: expr.span,
                 })
             }
@@ -2819,7 +3106,7 @@ impl Builder<'_, '_> {
                 match parse_char_literal(raw) {
                     Ok(value) => Ok(Expression {
                         kind: ExprKind::Char { value },
-                        ty: Type::Char,
+                        ty: CHAR_IDX,
                         span: expr.span,
                     }),
                     Err(CharLiteralError::Empty) => {
@@ -2851,7 +3138,7 @@ impl Builder<'_, '_> {
                 self.build_binary_expression(func_ctx, expr, access_ctx)
             }
             ast::Expression::Grouping { value } => {
-                self.build_expression(func_ctx, &value.inner, access_ctx)
+                self.build_expression(func_ctx, value, access_ctx)
             }
             ast::Expression::Unary { .. } => {
                 self.build_unary_expression(func_ctx, expr, access_ctx)
@@ -2890,6 +3177,12 @@ impl Builder<'_, '_> {
             ast::Expression::Label { .. } => {
                 self.build_label_expression(func_ctx, expr, access_ctx)
             }
+            ast::Expression::StructInit { name, fields } => {
+                self.build_struct_init_expression(func_ctx, expr.span, name.clone(), &fields.inner)
+            }
+            ast::Expression::Tuple { .. } => {
+                todo!("tuple in TIR")
+            }
         }
     }
 
@@ -2910,9 +3203,7 @@ impl Builder<'_, '_> {
                 let func_index = *func_index;
                 let func = &mut self.declared_functions[func_index as usize];
                 func.accesses.push(member.span);
-                let ty = Type::Function {
-                    signature_index: func.signature_index,
-                };
+                let ty = func.signature_index;
                 return Ok(Expression {
                     kind: ExprKind::ObjectAccess {
                         object: Box::new(object),
@@ -2923,7 +3214,8 @@ impl Builder<'_, '_> {
                 });
             }
             Some(ImplEntry::AssociatedFn(_)) => {
-                // TODO: emit "this is an associated function, use Type::name() syntax" diagnostic
+                // TODO: emit "this is an associated function, use Type::name()
+                // syntax" diagnostic
             }
             None => {}
         }
@@ -2943,18 +3235,21 @@ impl Builder<'_, '_> {
         member: Spanned<SymbolU32>,
     ) -> Result<Expression, ()> {
         let namespace_ty = self.resolve_type(&namespace_expr);
-        let namespace_index = match namespace_ty {
-            Type::Namespace { namespace_index } => namespace_index,
-            Type::Error => return Err(()),
-            ty => {
-                let diag = NotANamespaceDiagnostic {
-                    file_id: self.ast.file_id,
-                    span: namespace_expr.span,
-                    ty,
+        let namespace_index = if namespace_ty == ERROR_IDX {
+            return Err(());
+        } else {
+            match self.type_pool.get(namespace_ty) {
+                Type::Namespace { namespace_index } => *namespace_index,
+                _ => {
+                    let diag = NotANamespaceDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: namespace_expr.span,
+                        ty: namespace_ty,
+                    }
+                    .report(self);
+                    self.diagnostics.push(diag);
+                    return Err(());
                 }
-                .report(self);
-                self.diagnostics.push(diag);
-                return Err(());
             }
         };
 
@@ -2992,9 +3287,7 @@ impl Builder<'_, '_> {
                 Some(ImportValue::Function { func_index }) => {
                     let func = &mut self.declared_functions[*func_index as usize];
                     func.accesses.push(member.span);
-                    let ty = Type::Function {
-                        signature_index: func.signature_index,
-                    };
+                    let ty = func.signature_index;
                     Ok(Expression {
                         kind: ExprKind::NamespaceAccess {
                             namespace_index,
@@ -3117,7 +3410,7 @@ impl Builder<'_, '_> {
                 let scope = &ctx.frame.scopes[ctx.scope_index as usize];
                 match (scope.expected_type, scope.inferred_type) {
                     (Some(expected_type), Some(inferred_type))
-                        if !inferred_type.coercible_to(expected_type) =>
+                        if !self.type_pool.coercible_to(inferred_type, expected_type) =>
                     {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
@@ -3177,7 +3470,7 @@ impl Builder<'_, '_> {
 
         Ok(Expression {
             kind: ExprKind::Continue { scope_index },
-            ty: Type::Never,
+            ty: NEVER_IDX,
             span: expr.span,
         })
     }
@@ -3202,7 +3495,7 @@ impl Builder<'_, '_> {
             ctx,
             condition,
             AccessContext {
-                expected_type: Some(Type::Bool),
+                expected_type: Some(BOOL_IDX),
                 access_kind: AccessKind::Read,
             },
         )?;
@@ -3241,7 +3534,7 @@ impl Builder<'_, '_> {
                     _ => unreachable!(),
                 };
 
-                match Type::unify(then_block.ty, else_block.ty) {
+                match self.type_pool.unify(then_block.ty, else_block.ty) {
                     Ok(ty) => (Some(else_block), ty),
                     Err(_) => {
                         self.diagnostics.push(
@@ -3257,12 +3550,15 @@ impl Builder<'_, '_> {
                     }
                 }
             }
-            None => match then_block.ty {
-                Type::Unit | Type::Never => (None, Type::Unit),
-                _ => panic!(
-                    "if you want to return a value from if-else, you must provide an else block"
-                ),
-            },
+            None => {
+                if then_block.ty == UNIT_IDX || then_block.ty == NEVER_IDX {
+                    (None, UNIT_IDX)
+                } else {
+                    panic!(
+                        "if you want to return a value from if-else, you must provide an else block"
+                    )
+                }
+            }
         };
 
         Ok(Expression {
@@ -3287,42 +3583,41 @@ impl Builder<'_, '_> {
             _ => unreachable!(),
         };
 
-        match self.resolve_type(&cast_type) {
-            Type::Error => self.build_expression(ctx, value, access_ctx),
-            cast_type => {
-                let mut value = self.build_expression(
-                    ctx,
-                    value,
-                    AccessContext {
-                        expected_type: Some(cast_type),
-                        access_kind: access_ctx.access_kind,
-                    },
-                )?;
-                match value.ty {
-                    Type::Unknown => self.coerce_untyped_expr(&mut value, cast_type)?,
-                    ty if ty == cast_type => {
-                        // TODO: report redundant cast
-                    }
-                    Type::Bool if cast_type.is_integer() => value.ty = cast_type,
-                    ty if ty != cast_type => {
-                        self.diagnostics.push(
-                            TypeMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                expected_type: cast_type,
-                                actual_type: ty,
-                                span: value.span,
-                            }
-                            .report(&self),
-                        );
-                        // Set the type to the cast target to avoid cascading errors
-                        value.ty = cast_type;
-                    }
-                    _ => {}
-                };
-
-                Ok(value)
-            }
+        let cast_type_idx = self.resolve_type(&cast_type);
+        if cast_type_idx == ERROR_IDX {
+            return self.build_expression(ctx, value, access_ctx);
         }
+        let cast_type = cast_type_idx;
+        let mut value = self.build_expression(
+            ctx,
+            value,
+            AccessContext {
+                expected_type: Some(cast_type),
+                access_kind: access_ctx.access_kind,
+            },
+        )?;
+        if value.ty == UNKNOWN_IDX {
+            self.coerce_untyped_expr(&mut value, cast_type)?;
+        } else if value.ty == cast_type {
+            // TODO: report redundant cast
+        } else if *self.type_pool.get(value.ty) == Type::Bool
+            && self.type_pool.get(cast_type).is_integer()
+        {
+            value.ty = cast_type;
+        } else if value.ty != cast_type {
+            self.diagnostics.push(
+                TypeMistmatchDiagnostic {
+                    file_id: self.ast.file_id,
+                    expected_type: cast_type,
+                    actual_type: value.ty,
+                    span: value.span,
+                }
+                .report(&self),
+            );
+            // Set the type to the cast target to avoid cascading errors
+            value.ty = cast_type;
+        }
+        Ok(value)
     }
 
     fn build_break_expression(
@@ -3351,7 +3646,7 @@ impl Builder<'_, '_> {
                     // undeclared
                     return Ok(Expression {
                         kind: ExprKind::Error,
-                        ty: Type::Never,
+                        ty: NEVER_IDX,
                         span: expr.span,
                     });
                 }
@@ -3371,7 +3666,7 @@ impl Builder<'_, '_> {
                     // loop
                     return Ok(Expression {
                         kind: ExprKind::Error,
-                        ty: Type::Never,
+                        ty: NEVER_IDX,
                         span: expr.span,
                     });
                 }
@@ -3396,11 +3691,8 @@ impl Builder<'_, '_> {
                 .and_then(|mut value| {
                     let scope = ctx.frame.scopes.get_mut(scope_index as usize).unwrap();
                     let inferred_type = self.infer_block_type(scope, &value)?;
-                    match value.ty {
-                        Type::Unknown => {
-                            self.coerce_untyped_expr(&mut value, inferred_type)?;
-                        }
-                        _ => {}
+                    if value.ty == UNKNOWN_IDX {
+                        self.coerce_untyped_expr(&mut value, inferred_type)?;
                     }
                     scope.inferred_type = Some(inferred_type);
 
@@ -3409,34 +3701,33 @@ impl Builder<'_, '_> {
                             scope_index,
                             value: Some(Box::new(value)),
                         },
-                        ty: Type::Never,
+                        ty: NEVER_IDX,
                         span: expr.span,
                     })
                 })
                 .unwrap_or(Expression {
                     kind: ExprKind::Unreachable,
-                    ty: Type::Never,
+                    ty: NEVER_IDX,
                     span: expr.span,
                 })),
             None => {
                 let scope = ctx.frame.scopes.get_mut(scope_index as usize).unwrap();
                 match scope.inferred_type {
-                    Some(inferred) => match Type::Unit.coercible_to(inferred) {
-                        true => {}
-                        false => {
+                    Some(inferred) => {
+                        if !self.type_pool.coercible_to(UNIT_IDX, inferred) {
                             self.diagnostics.push(
                                 TypeMistmatchDiagnostic {
                                     file_id: self.ast.file_id,
                                     expected_type: inferred,
-                                    actual_type: Type::Unit,
+                                    actual_type: UNIT_IDX,
                                     span: expr.span,
                                 }
                                 .report(&self),
                             );
                         }
-                    },
+                    }
                     None => {
-                        scope.inferred_type = Some(Type::Unit);
+                        scope.inferred_type = Some(UNIT_IDX);
                     }
                 }
 
@@ -3445,7 +3736,7 @@ impl Builder<'_, '_> {
                         scope_index,
                         value: None,
                     },
-                    ty: Type::Never,
+                    ty: NEVER_IDX,
                     span: expr.span,
                 })
             }
@@ -3490,27 +3781,26 @@ impl Builder<'_, '_> {
             Some(global) => match global {
                 GlobalValue::True => Ok(Expression {
                     kind: ExprKind::Bool { value: true },
-                    ty: Type::Bool,
+                    ty: BOOL_IDX,
                     span: expr.span,
                 }),
                 GlobalValue::False => Ok(Expression {
                     kind: ExprKind::Bool { value: false },
-                    ty: Type::Bool,
+                    ty: BOOL_IDX,
                     span: expr.span,
                 }),
                 GlobalValue::Placeholder => Ok(Expression {
                     kind: ExprKind::Placeholder,
-                    ty: access_ctx.expected_type.unwrap_or(Type::Error),
+                    ty: access_ctx.expected_type.unwrap_or(ERROR_IDX),
                     span: expr.span,
                 }),
                 GlobalValue::Function { func_index } => {
                     let func = &mut self.declared_functions[func_index as usize];
                     func.accesses.push(expr.span);
+                    let ty = func.signature_index;
                     Ok(Expression {
                         kind: ExprKind::Function { func_index },
-                        ty: Type::Function {
-                            signature_index: func.signature_index,
-                        },
+                        ty,
                         span: expr.span,
                     })
                 }
@@ -3527,6 +3817,21 @@ impl Builder<'_, '_> {
                 // this must be handled in the namespace access expression
                 GlobalValue::Namespace { .. } => todo!(),
                 GlobalValue::Unreachable => unreachable!(),
+                // Struct names are type-namespace values, not usable as expressions
+                GlobalValue::Struct { .. } => {
+                    self.diagnostics.push(
+                        UndeclaredIdentifierDiagnostic {
+                            file_id: self.ast.file_id,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
+                    Ok(Expression {
+                        kind: ExprKind::Error,
+                        ty: access_ctx.expected_type.unwrap_or(ERROR_IDX),
+                        span: expr.span,
+                    })
+                }
             },
             None => {
                 self.diagnostics.push(
@@ -3539,7 +3844,7 @@ impl Builder<'_, '_> {
 
                 Ok(Expression {
                     kind: ExprKind::Error,
-                    ty: access_ctx.expected_type.unwrap_or(Type::Error),
+                    ty: access_ctx.expected_type.unwrap_or(ERROR_IDX),
                     span: expr.span,
                 })
             }
@@ -3608,8 +3913,9 @@ impl Builder<'_, '_> {
         )?;
 
         match operator.inner {
-            ast::UnaryOp::InvertSign | ast::UnaryOp::BitNot => match operand.ty {
-                Type::I32 | Type::I64 | Type::F32 | Type::F64 | Type::Unknown => {
+            ast::UnaryOp::InvertSign | ast::UnaryOp::BitNot => {
+                let ty_val = self.type_pool.get(operand.ty);
+                if ty_val.is_primitive() || operand.ty == UNKNOWN_IDX {
                     let ty = operand.ty;
                     Ok(Expression {
                         kind: ExprKind::Unary {
@@ -3619,31 +3925,32 @@ impl Builder<'_, '_> {
                         ty,
                         span: expr.span,
                     })
+                } else {
+                    panic!("can't apply unary operator to this type")
                 }
-                _ => panic!("can't apply unary operator to this type"),
-            },
-            ast::UnaryOp::Not => match operand.ty {
-                Type::Bool => Ok(Expression {
-                    kind: ExprKind::Unary {
-                        operator,
-                        operand: Box::new(operand),
-                    },
-                    ty: Type::Bool,
-                    span: expr.span,
-                }),
-                Type::Unknown => {
-                    _ = self.coerce_untyped_expr(&mut operand, Type::Bool);
-
+            }
+            ast::UnaryOp::Not => {
+                if operand.ty == BOOL_IDX {
                     Ok(Expression {
                         kind: ExprKind::Unary {
                             operator,
                             operand: Box::new(operand),
                         },
-                        ty: Type::Bool,
+                        ty: BOOL_IDX,
                         span: expr.span,
                     })
-                }
-                ty => {
+                } else if operand.ty == UNKNOWN_IDX {
+                    _ = self.coerce_untyped_expr(&mut operand, BOOL_IDX);
+                    Ok(Expression {
+                        kind: ExprKind::Unary {
+                            operator,
+                            operand: Box::new(operand),
+                        },
+                        ty: BOOL_IDX,
+                        span: expr.span,
+                    })
+                } else {
+                    let ty = operand.ty;
                     self.diagnostics.push(
                         UnaryOperatorCannotBeAppliedDiagnostic {
                             file_id: self.ast.file_id,
@@ -3655,17 +3962,16 @@ impl Builder<'_, '_> {
                         }
                         .report(&self),
                     );
-
                     Ok(Expression {
                         kind: ExprKind::Unary {
                             operator,
                             operand: Box::new(operand),
                         },
-                        ty: Type::Bool,
+                        ty: BOOL_IDX,
                         span: expr.span,
                     })
                 }
-            },
+            }
         }
     }
 
@@ -3688,69 +3994,59 @@ impl Builder<'_, '_> {
             ctx,
             left,
             AccessContext {
-                expected_type: Some(Type::Bool),
+                expected_type: Some(BOOL_IDX),
                 access_kind: AccessKind::Read,
             },
         )?;
-        match left.ty {
-            Type::Error => {
-                // Error already reported, allow operation to continue
-            }
-            Type::Unknown => {
-                self.diagnostics.push(
-                    TypeAnnotationRequiredDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: left.span,
-                    }
-                    .report(),
-                );
-            }
-            actual_type if actual_type != Type::Bool => {
-                self.diagnostics.push(
-                    TypeMistmatchDiagnostic {
-                        file_id: self.ast.file_id,
-                        expected_type: Type::Bool,
-                        actual_type,
-                        span: left.span,
-                    }
-                    .report(&self),
-                );
-            }
-            _ => {}
+        if left.ty == ERROR_IDX {
+            // Error already reported
+        } else if left.ty == UNKNOWN_IDX {
+            self.diagnostics.push(
+                TypeAnnotationRequiredDiagnostic {
+                    file_id: self.ast.file_id,
+                    span: left.span,
+                }
+                .report(),
+            );
+        } else if left.ty != BOOL_IDX {
+            self.diagnostics.push(
+                TypeMistmatchDiagnostic {
+                    file_id: self.ast.file_id,
+                    expected_type: BOOL_IDX,
+                    actual_type: left.ty,
+                    span: left.span,
+                }
+                .report(&self),
+            );
         }
         let right = self.build_expression(
             ctx,
             right,
             AccessContext {
-                expected_type: Some(Type::Bool),
+                expected_type: Some(BOOL_IDX),
                 access_kind: AccessKind::Read,
             },
         )?;
-        match right.ty {
-            Type::Error => {
-                // Error already reported, allow operation to continue
-            }
-            Type::Unknown => {
-                self.diagnostics.push(
-                    TypeAnnotationRequiredDiagnostic {
-                        file_id: self.ast.file_id,
-                        span: right.span,
-                    }
-                    .report(),
-                );
-            }
-            actual_type if actual_type != Type::Bool => {
-                self.diagnostics.push(
-                    TypeMistmatchDiagnostic {
-                        file_id: self.ast.file_id,
-                        expected_type: Type::Bool,
-                        actual_type,
-                        span: right.span,
-                    }
-                    .report(&self),
-                );
-            }
-            _ => {}
+        if right.ty == ERROR_IDX {
+            // Error already reported
+        } else if right.ty == UNKNOWN_IDX {
+            self.diagnostics.push(
+                TypeAnnotationRequiredDiagnostic {
+                    file_id: self.ast.file_id,
+                    span: right.span,
+                }
+                .report(),
+            );
+        } else if right.ty != BOOL_IDX {
+            self.diagnostics.push(
+                TypeMistmatchDiagnostic {
+                    file_id: self.ast.file_id,
+                    expected_type: BOOL_IDX,
+                    actual_type: right.ty,
+                    span: right.span,
+                }
+                .report(&self),
+            );
         }
 
         Ok(Expression {
@@ -3759,7 +4055,7 @@ impl Builder<'_, '_> {
                 left: Box::new(left),
                 right: Box::new(right),
             },
-            ty: Type::Bool,
+            ty: BOOL_IDX,
             span: expr.span,
         })
     }
@@ -3784,11 +4080,11 @@ impl Builder<'_, '_> {
             ctx,
             right,
             AccessContext {
-                expected_type: match left.ty {
+                expected_type: match *self.type_pool.get(left.ty) {
                     Type::Unknown | Type::Error | Type::Never | Type::Unit => {
                         access_ctx.expected_type
                     }
-                    ty => Some(ty),
+                    _ => Some(left.ty),
                 },
                 access_kind: access_ctx.access_kind,
             },
@@ -3796,21 +4092,21 @@ impl Builder<'_, '_> {
 
         match (left.ty, right.ty) {
             // Allow operations with Error type (error already reported elsewhere)
-            (Type::Error, _) | (_, Type::Error) => Ok(Expression {
+            (l, r) if l == ERROR_IDX || r == ERROR_IDX => Ok(Expression {
                 kind: ExprKind::Binary {
                     operator,
                     left: Box::new(left),
                     right: Box::new(right),
                 },
-                ty: access_ctx.expected_type.unwrap_or(Type::Error),
+                ty: access_ctx.expected_type.unwrap_or(ERROR_IDX),
                 span: expr.span,
             }),
-            (Type::Unknown, Type::Unknown) => match access_ctx.expected_type {
+            (l, r) if l == UNKNOWN_IDX && r == UNKNOWN_IDX => match access_ctx.expected_type {
                 Some(expected_type) => {
                     self.coerce_untyped_expr(&mut left, expected_type)?;
                     self.coerce_untyped_expr(&mut right, expected_type)?;
 
-                    if !expected_type.is_integer() {
+                    if !self.type_pool.get(expected_type).is_integer() {
                         self.diagnostics.push(
                             BinaryOperatorCannotBeAppliedDiagnostic {
                                 file_id: self.ast.file_id,
@@ -3845,8 +4141,8 @@ impl Builder<'_, '_> {
                     Err(())
                 }
             },
-            (Type::Unknown, right_type) => {
-                if !right_type.is_integer() {
+            (l, right_type) if l == UNKNOWN_IDX => {
+                if !self.type_pool.get(right_type).is_integer() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
                             file_id: self.ast.file_id,
@@ -3871,8 +4167,8 @@ impl Builder<'_, '_> {
                     span: expr.span,
                 })
             }
-            (left_type, Type::Unknown) => {
-                if !left_type.is_integer() {
+            (left_type, r) if r == UNKNOWN_IDX => {
+                if !self.type_pool.get(left_type).is_integer() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
                             file_id: self.ast.file_id,
@@ -3897,7 +4193,9 @@ impl Builder<'_, '_> {
                     span: expr.span,
                 })
             }
-            (left_type, right_type) if left_type == right_type && left_type.is_integer() => {
+            (left_type, right_type)
+                if left_type == right_type && self.type_pool.get(left_type).is_integer() =>
+            {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
@@ -3931,7 +4229,7 @@ impl Builder<'_, '_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: access_ctx.expected_type.unwrap_or(Type::Unknown),
+                    ty: access_ctx.expected_type.unwrap_or(UNKNOWN_IDX),
                     span: expr.span,
                 })
             }
@@ -3972,16 +4270,16 @@ impl Builder<'_, '_> {
 
         match (left.ty, right.ty) {
             // Allow operations with Error type (error already reported elsewhere)
-            (Type::Error, _) | (_, Type::Error) => Ok(Expression {
+            (l, r) if l == ERROR_IDX || r == ERROR_IDX => Ok(Expression {
                 kind: ExprKind::Binary {
                     operator,
                     left: Box::new(left),
                     right: Box::new(right),
                 },
-                ty: Type::Bool,
+                ty: BOOL_IDX,
                 span: expr.span,
             }),
-            (Type::Unknown, Type::Unknown) => {
+            (l, r) if l == UNKNOWN_IDX && r == UNKNOWN_IDX => {
                 self.diagnostics.push(
                     ComparisonTypeAnnotationRequiredDiagnostic {
                         file_id: self.ast.file_id,
@@ -3997,11 +4295,11 @@ impl Builder<'_, '_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: Type::Bool,
+                    ty: BOOL_IDX,
                     span: expr.span,
                 })
             }
-            (Type::Unknown, ty) => {
+            (l, ty) if l == UNKNOWN_IDX => {
                 self.coerce_untyped_expr(&mut left, ty)?;
 
                 Ok(Expression {
@@ -4010,11 +4308,11 @@ impl Builder<'_, '_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: Type::Bool,
+                    ty: BOOL_IDX,
                     span: expr.span,
                 })
             }
-            (ty, Type::Unknown) => {
+            (ty, r) if r == UNKNOWN_IDX => {
                 self.coerce_untyped_expr(&mut right, ty)?;
 
                 Ok(Expression {
@@ -4023,27 +4321,29 @@ impl Builder<'_, '_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: Type::Bool,
+                    ty: BOOL_IDX,
                     span: expr.span,
                 })
             }
-            (Type::Bool, Type::Bool) => Ok(Expression {
+            (l, r) if l == BOOL_IDX && r == BOOL_IDX => Ok(Expression {
                 kind: ExprKind::Binary {
                     operator,
                     left: Box::new(left),
                     right: Box::new(right),
                 },
-                ty: Type::Bool,
+                ty: BOOL_IDX,
                 span: expr.span,
             }),
-            (left_type, right_type) if left_type == right_type && left_type.is_primitive() => {
+            (left_type, right_type)
+                if left_type == right_type && self.type_pool.get(left_type).is_primitive() =>
+            {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: Type::Bool,
+                    ty: BOOL_IDX,
                     span: expr.span,
                 })
             }
@@ -4084,7 +4384,7 @@ impl Builder<'_, '_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: Type::Bool,
+                    ty: BOOL_IDX,
                     span: expr.span,
                 })
             }
@@ -4154,28 +4454,24 @@ impl Builder<'_, '_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                match right.ty {
-                    Type::Unknown => {
-                        self.coerce_untyped_expr(&mut right, local_type)?;
-                    }
-                    ty if !ty.coercible_to(local_type) => {
-                        self.diagnostics.push(
-                            BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                left_type: Spanned {
-                                    inner: local_type,
-                                    span: left.span,
-                                },
-                                operator: operator.clone(),
-                                right_type: Spanned {
-                                    inner: ty,
-                                    span: right.span,
-                                },
-                            }
-                            .report(&self),
-                        );
-                    }
-                    _ => {}
+                if right.ty == UNKNOWN_IDX {
+                    self.coerce_untyped_expr(&mut right, local_type)?;
+                } else if !self.type_pool.coercible_to(right.ty, local_type) {
+                    self.diagnostics.push(
+                        BinaryExpressionMistmatchDiagnostic {
+                            file_id: self.ast.file_id,
+                            left_type: Spanned {
+                                inner: local_type,
+                                span: left.span,
+                            },
+                            operator: operator.clone(),
+                            right_type: Spanned {
+                                inner: right.ty,
+                                span: right.span,
+                            },
+                        }
+                        .report(&self),
+                    );
                 }
 
                 Ok(Expression {
@@ -4184,7 +4480,7 @@ impl Builder<'_, '_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: Type::Unit,
+                    ty: UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -4212,28 +4508,24 @@ impl Builder<'_, '_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                match right.ty {
-                    Type::Unknown => {
-                        self.coerce_untyped_expr(&mut right, global_type)?;
-                    }
-                    ty if !ty.coercible_to(global_type) => {
-                        self.diagnostics.push(
-                            BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                left_type: Spanned {
-                                    inner: global_type,
-                                    span: left.span,
-                                },
-                                operator: operator.clone(),
-                                right_type: Spanned {
-                                    inner: ty,
-                                    span: right.span,
-                                },
-                            }
-                            .report(&self),
-                        );
-                    }
-                    _ => {}
+                if right.ty == UNKNOWN_IDX {
+                    self.coerce_untyped_expr(&mut right, global_type)?;
+                } else if !self.type_pool.coercible_to(right.ty, global_type) {
+                    self.diagnostics.push(
+                        BinaryExpressionMistmatchDiagnostic {
+                            file_id: self.ast.file_id,
+                            left_type: Spanned {
+                                inner: global_type,
+                                span: left.span,
+                            },
+                            operator: operator.clone(),
+                            right_type: Spanned {
+                                inner: right.ty,
+                                span: right.span,
+                            },
+                        }
+                        .report(&self),
+                    );
                 }
 
                 Ok(Expression {
@@ -4242,7 +4534,7 @@ impl Builder<'_, '_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: Type::Unit,
+                    ty: UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -4255,19 +4547,17 @@ impl Builder<'_, '_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                let right_type = match right.ty {
-                    Type::Unknown => {
-                        self.diagnostics.push(
-                            TypeAnnotationRequiredDiagnostic {
-                                file_id: self.ast.file_id,
-                                span: right.span,
-                            }
-                            .report(),
-                        );
-                        return Err(());
-                    }
-                    ty => ty,
-                };
+                if right.ty == UNKNOWN_IDX {
+                    self.diagnostics.push(
+                        TypeAnnotationRequiredDiagnostic {
+                            file_id: self.ast.file_id,
+                            span: right.span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+                let right_type = right.ty;
 
                 return Ok(Expression {
                     kind: ExprKind::Binary {
@@ -4279,7 +4569,7 @@ impl Builder<'_, '_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: Type::Unit,
+                    ty: UNIT_IDX,
                     span: expr.span,
                 });
             }
@@ -4294,7 +4584,7 @@ impl Builder<'_, '_> {
 
                 Ok(Expression {
                     kind: ExprKind::Error,
-                    ty: Type::Unit,
+                    ty: UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -4342,12 +4632,12 @@ impl Builder<'_, '_> {
                     }
                 };
                 // Allow operations with Error type (error already reported elsewhere)
-                if local.ty == Type::Error {
+                if local.ty == ERROR_IDX {
                     let right = self.build_expression(
                         ctx,
                         right,
                         AccessContext {
-                            expected_type: Some(Type::Error),
+                            expected_type: Some(ERROR_IDX),
                             access_kind: AccessKind::Read,
                         },
                     )?;
@@ -4357,11 +4647,11 @@ impl Builder<'_, '_> {
                             left: Box::new(left),
                             right: Box::new(right),
                         },
-                        ty: Type::Unit,
+                        ty: UNIT_IDX,
                         span: expr.span,
                     });
                 }
-                if !local.ty.is_primitive() {
+                if !self.type_pool.get(local.ty).is_primitive() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
                             file_id: self.ast.file_id,
@@ -4395,28 +4685,24 @@ impl Builder<'_, '_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                match right.ty {
-                    Type::Unknown => {
-                        self.coerce_untyped_expr(&mut right, local_type)?;
-                    }
-                    ty if !ty.coercible_to(local_type) => {
-                        self.diagnostics.push(
-                            BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                left_type: Spanned {
-                                    inner: local_type,
-                                    span: left.span,
-                                },
-                                operator: operator.clone(),
-                                right_type: Spanned {
-                                    inner: ty,
-                                    span: right.span,
-                                },
-                            }
-                            .report(&self),
-                        );
-                    }
-                    _ => {}
+                if right.ty == UNKNOWN_IDX {
+                    self.coerce_untyped_expr(&mut right, local_type)?;
+                } else if !self.type_pool.coercible_to(right.ty, local_type) {
+                    self.diagnostics.push(
+                        BinaryExpressionMistmatchDiagnostic {
+                            file_id: self.ast.file_id,
+                            left_type: Spanned {
+                                inner: local_type,
+                                span: left.span,
+                            },
+                            operator: operator.clone(),
+                            right_type: Spanned {
+                                inner: right.ty,
+                                span: right.span,
+                            },
+                        }
+                        .report(&self),
+                    );
                 }
 
                 Ok(Expression {
@@ -4425,7 +4711,7 @@ impl Builder<'_, '_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: Type::Unit,
+                    ty: UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -4435,7 +4721,7 @@ impl Builder<'_, '_> {
                     .get_mut(global_index as usize)
                     .unwrap();
 
-                if !global.ty.inner.is_primitive() {
+                if !self.type_pool.get(global.ty.inner).is_primitive() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
                             file_id: self.ast.file_id,
@@ -4470,28 +4756,24 @@ impl Builder<'_, '_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                match right.ty {
-                    Type::Unknown => {
-                        self.coerce_untyped_expr(&mut right, global_type)?;
-                    }
-                    ty if !ty.coercible_to(global_type) => {
-                        self.diagnostics.push(
-                            BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.ast.file_id,
-                                left_type: Spanned {
-                                    inner: global_type,
-                                    span: left.span,
-                                },
-                                operator: operator.clone(),
-                                right_type: Spanned {
-                                    inner: ty,
-                                    span: right.span,
-                                },
-                            }
-                            .report(&self),
-                        );
-                    }
-                    _ => {}
+                if right.ty == UNKNOWN_IDX {
+                    self.coerce_untyped_expr(&mut right, global_type)?;
+                } else if !self.type_pool.coercible_to(right.ty, global_type) {
+                    self.diagnostics.push(
+                        BinaryExpressionMistmatchDiagnostic {
+                            file_id: self.ast.file_id,
+                            left_type: Spanned {
+                                inner: global_type,
+                                span: left.span,
+                            },
+                            operator: operator.clone(),
+                            right_type: Spanned {
+                                inner: right.ty,
+                                span: right.span,
+                            },
+                        }
+                        .report(&self),
+                    );
                 }
 
                 Ok(Expression {
@@ -4500,7 +4782,7 @@ impl Builder<'_, '_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: Type::Unit,
+                    ty: UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -4515,7 +4797,7 @@ impl Builder<'_, '_> {
 
                 Ok(Expression {
                     kind: ExprKind::Error,
-                    ty: Type::Unit,
+                    ty: UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -4546,15 +4828,14 @@ impl Builder<'_, '_> {
                     let scope = ctx.frame.scopes.get_mut(0).unwrap();
                     let inferred_type = self.infer_block_type(scope, &value)?;
                     scope.inferred_type = Some(inferred_type);
-                    match value.ty {
-                        Type::Unknown => {
-                            self.coerce_untyped_expr(&mut value, inferred_type)?;
-                        }
-                        _ => {}
+                    if value.ty == UNKNOWN_IDX {
+                        self.coerce_untyped_expr(&mut value, inferred_type)?;
                     }
 
                     match scope.expected_type {
-                        Some(expected_type) if !inferred_type.coercible_to(expected_type) => {
+                        Some(expected_type)
+                            if !self.type_pool.coercible_to(inferred_type, expected_type) =>
+                        {
                             self.diagnostics.push(
                                 TypeMistmatchDiagnostic {
                                     file_id: self.ast.file_id,
@@ -4573,23 +4854,25 @@ impl Builder<'_, '_> {
                         kind: ExprKind::Return {
                             value: Some(Box::new(value)),
                         },
-                        ty: Type::Never,
+                        ty: NEVER_IDX,
                         span: expr.span,
                     })
                 })
                 .unwrap_or(Expression {
                     kind: ExprKind::Unreachable,
-                    ty: Type::Never,
+                    ty: NEVER_IDX,
                     span: expr.span,
                 })),
             None => {
                 let scope = ctx.frame.scopes.get_mut(ctx.scope_index as usize).unwrap();
 
-                let inferred_type = scope.inferred_type.unwrap_or(Type::Unit);
+                let inferred_type = scope.inferred_type.unwrap_or(UNIT_IDX);
                 scope.inferred_type = Some(inferred_type);
 
                 match scope.expected_type {
-                    Some(expected_type) if inferred_type.coercible_to(expected_type) => {
+                    Some(expected_type)
+                        if self.type_pool.coercible_to(inferred_type, expected_type) =>
+                    {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
                                 file_id: self.ast.file_id,
@@ -4606,7 +4889,7 @@ impl Builder<'_, '_> {
 
                 Ok(Expression {
                     kind: ExprKind::Return { value: None },
-                    ty: Type::Never,
+                    ty: NEVER_IDX,
                     span: expr.span,
                 })
             }
@@ -4640,25 +4923,25 @@ impl Builder<'_, '_> {
             ctx,
             right,
             AccessContext {
-                expected_type: match left.ty {
+                expected_type: match *self.type_pool.get(left.ty) {
                     Type::Unknown | Type::Error | Type::Never | Type::Unit => {
                         access_ctx.expected_type
                     }
-                    ty => Some(ty),
+                    _ => Some(left.ty),
                 },
                 access_kind: AccessKind::Read,
             },
         )?;
 
         match (left.ty, right.ty) {
-            (Type::Unknown, Type::Unknown) => match access_ctx.expected_type {
+            (l, r) if l == UNKNOWN_IDX && r == UNKNOWN_IDX => match access_ctx.expected_type {
                 Some(_) => Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: Type::Unknown,
+                    ty: UNKNOWN_IDX,
                     span: expr.span,
                 }),
                 None => {
@@ -4672,8 +4955,8 @@ impl Builder<'_, '_> {
                     Err(())
                 }
             },
-            (Type::Unknown, ty) => {
-                if !ty.is_primitive() {
+            (l, ty) if l == UNKNOWN_IDX => {
+                if !self.type_pool.get(ty).is_primitive() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
                             file_id: self.ast.file_id,
@@ -4692,7 +4975,7 @@ impl Builder<'_, '_> {
                             left: Box::new(left),
                             right: Box::new(right),
                         },
-                        ty: access_ctx.expected_type.unwrap_or(Type::Unknown),
+                        ty: access_ctx.expected_type.unwrap_or(UNKNOWN_IDX),
                         span: expr.span,
                     });
                 }
@@ -4708,7 +4991,7 @@ impl Builder<'_, '_> {
                     span: expr.span,
                 })
             }
-            (ty, Type::Unknown) => {
+            (ty, r) if r == UNKNOWN_IDX => {
                 // TODO: check if primitive
                 self.coerce_untyped_expr(&mut right, ty)?;
 
@@ -4722,7 +5005,7 @@ impl Builder<'_, '_> {
                     span: expr.span,
                 })
             }
-            (Type::Never, _) => {
+            (l, _) if l == NEVER_IDX => {
                 self.diagnostics.push(
                     UnreachableCodeDiagnostic {
                         file_id: self.ast.file_id,
@@ -4733,7 +5016,7 @@ impl Builder<'_, '_> {
 
                 Ok(left)
             }
-            (_, Type::Never) => {
+            (_, r) if r == NEVER_IDX => {
                 self.diagnostics.push(
                     UnreachableCodeDiagnostic {
                         file_id: self.ast.file_id,
@@ -4744,7 +5027,9 @@ impl Builder<'_, '_> {
 
                 Ok(right)
             }
-            (left_type, right_type) if left_type == right_type && left_type.is_primitive() => {
+            (left_type, right_type)
+                if left_type == right_type && self.type_pool.get(left_type).is_primitive() =>
+            {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
@@ -4791,15 +5076,14 @@ impl Builder<'_, '_> {
     fn build_call_arguments(
         &mut self,
         ctx: &mut FunctionContext,
-        arguments: &ast::Grouped<Box<[Separated<Spanned<ast::Expression>>]>>,
-        params: &[Type],
+        arguments: &[Separated<Spanned<ast::Expression>>],
+        params: &[TypeIndex],
     ) -> Result<Box<[Expression]>, ()> {
         arguments
-            .inner
             .iter()
             .enumerate()
             .map(|(index, argument)| {
-                let expected_type = params.get(index).copied();
+                let expected_type: Option<TypeIndex> = params.get(index).copied();
 
                 let mut argument = self.build_expression(
                     ctx,
@@ -4811,22 +5095,18 @@ impl Builder<'_, '_> {
                 )?;
 
                 if let Some(expected_type) = expected_type {
-                    match argument.ty {
-                        Type::Unknown => {
-                            self.coerce_untyped_expr(&mut argument, expected_type)?;
-                        }
-                        ty if !ty.coercible_to(expected_type) => {
-                            self.diagnostics.push(
-                                TypeMistmatchDiagnostic {
-                                    file_id: self.ast.file_id,
-                                    expected_type,
-                                    actual_type: ty,
-                                    span: argument.span,
-                                }
-                                .report(&self),
-                            );
-                        }
-                        _ => {}
+                    if argument.ty == UNKNOWN_IDX {
+                        self.coerce_untyped_expr(&mut argument, expected_type)?;
+                    } else if !self.type_pool.coercible_to(argument.ty, expected_type) {
+                        self.diagnostics.push(
+                            TypeMistmatchDiagnostic {
+                                file_id: self.ast.file_id,
+                                expected_type,
+                                actual_type: argument.ty,
+                                span: argument.span,
+                            }
+                            .report(&self),
+                        );
                     }
                 }
 
@@ -4853,14 +5133,14 @@ impl Builder<'_, '_> {
                 access_kind: AccessKind::Read,
             },
         )?;
-        let signature_index = match callee.ty {
-            Type::Function { signature_index } => signature_index,
-            ty => {
+        let signature_index = match self.type_pool.get(callee.ty) {
+            Type::Function { .. } => callee.ty,
+            _ => {
                 self.diagnostics.push(
                     CannotCallExpressionDiagnostic {
                         file_id: self.ast.file_id,
                         span: ast_callee.span,
-                        ty,
+                        ty: callee.ty,
                     }
                     .report(&self),
                 );
@@ -4870,17 +5150,14 @@ impl Builder<'_, '_> {
                         callee: Box::new(callee),
                         arguments: Box::new([]),
                     },
-                    ty: Type::Error,
+                    ty: ERROR_IDX,
                     span: expr.span,
                 });
             }
         };
 
-        let signature = self
-            .signatures
-            .get(signature_index as usize)
-            .unwrap()
-            .clone();
+        let params_all = self.type_pool.function_params(signature_index).to_vec();
+        let result_ty = self.type_pool.function_result(signature_index);
         match callee.kind {
             ExprKind::ObjectAccess { member, object } => {
                 match self
@@ -4890,12 +5167,12 @@ impl Builder<'_, '_> {
                     .copied()
                 {
                     Some(ImplEntry::Method(func_index)) => {
-                        let params = &signature.items[1..signature.params_count];
-                        if arguments.inner.len() != params.len() {
+                        let params = &params_all[1..];
+                        if arguments.len() != params.len() {
                             self.diagnostics.push(
                                 ArgumentCountMismatchDiagnostic {
                                     file_id: self.ast.file_id,
-                                    actual_count: arguments.inner.len(),
+                                    actual_count: arguments.len(),
                                     params,
                                     call_span: callee.span,
                                     is_method: true,
@@ -4912,7 +5189,7 @@ impl Builder<'_, '_> {
                                 arguments,
                                 func_index,
                             },
-                            ty: signature.result(),
+                            ty: result_ty,
                             span: expr.span,
                         })
                     }
@@ -4922,12 +5199,12 @@ impl Builder<'_, '_> {
                 }
             }
             _ => {
-                let params = signature.params();
-                if arguments.inner.len() != params.len() {
+                let params = &params_all[..];
+                if arguments.len() != params.len() {
                     self.diagnostics.push(
                         ArgumentCountMismatchDiagnostic {
                             file_id: self.ast.file_id,
-                            actual_count: arguments.inner.len(),
+                            actual_count: arguments.len(),
                             params,
                             call_span: callee.span,
                             is_method: false,
@@ -4943,7 +5220,7 @@ impl Builder<'_, '_> {
                         callee: Box::new(callee),
                         arguments,
                     },
-                    ty: signature.result(),
+                    ty: result_ty,
                     span: expr.span,
                 })
             }
@@ -4979,8 +5256,8 @@ impl Builder<'_, '_> {
             },
         )?;
 
-        let ty = match (value.ty, expected_type) {
-            (Type::Unknown, None) => {
+        let ty: TypeIndex = match (value.ty, expected_type) {
+            (v, None) if v == UNKNOWN_IDX => {
                 self.diagnostics.push(
                     TypeAnnotationRequiredDiagnostic {
                         file_id: self.ast.file_id,
@@ -4990,15 +5267,15 @@ impl Builder<'_, '_> {
                 );
                 // Use Error type for recovery - this allows later references to work
                 // without cascading "undeclared identifier" errors
-                Type::Error
+                ERROR_IDX
             }
             (ty, None) => ty,
-            (Type::Unknown, Some(expected_type)) => {
+            (v, Some(expected_type)) if v == UNKNOWN_IDX => {
                 self.coerce_untyped_expr(&mut value, expected_type)?;
                 expected_type
             }
             (actual_type, Some(expected_type)) => {
-                if actual_type.coercible_to(expected_type) {
+                if self.type_pool.coercible_to(actual_type, expected_type) {
                     expected_type
                 } else {
                     self.diagnostics.push(
@@ -5029,10 +5306,7 @@ impl Builder<'_, '_> {
                 local_index,
                 value: Box::new(value),
             },
-            ty: match ty {
-                Type::Never => Type::Never,
-                _ => Type::Unit,
-            },
+            ty: if ty == NEVER_IDX { NEVER_IDX } else { UNIT_IDX },
             span: stmt.inner.span,
         })
     }
@@ -5040,14 +5314,14 @@ impl Builder<'_, '_> {
     fn coerce_untyped_expr(
         &mut self,
         expression: &mut Expression,
-        target_type: Type,
+        target_idx: TypeIndex,
     ) -> Result<(), ()> {
         match expression.kind {
-            ExprKind::Int { .. } => self.coerce_untyped_int_expr(expression, target_type),
-            ExprKind::Float { .. } => self.coerce_untyped_float_expr(expression, target_type),
-            ExprKind::Unary { .. } => self.coerce_untyped_unary_expr(expression, target_type),
+            ExprKind::Int { .. } => self.coerce_untyped_int_expr(expression, target_idx),
+            ExprKind::Float { .. } => self.coerce_untyped_float_expr(expression, target_idx),
+            ExprKind::Unary { .. } => self.coerce_untyped_unary_expr(expression, target_idx),
             ExprKind::Binary { .. } => {
-                self.coerce_untyped_binary_expression(expression, target_type)
+                self.coerce_untyped_binary_expression(expression, target_idx)
             }
             // Any other expression kind that ends up here already had an error
             // reported; propagate failure without emitting a second diagnostic.
@@ -5058,153 +5332,123 @@ impl Builder<'_, '_> {
     fn coerce_untyped_int_expr(
         &mut self,
         expr: &mut Expression,
-        target_type: Type,
+        target_idx: TypeIndex,
     ) -> Result<(), ()> {
-        match target_type {
-            Type::I32 => {
-                let value = match expr.kind {
-                    ExprKind::Int { value } => value,
-                    _ => unreachable!(),
-                };
+        let value = match expr.kind {
+            ExprKind::Int { value } => value,
+            _ => unreachable!(),
+        };
 
-                if value > i32::MAX as i64 || value < i32::MIN as i64 {
-                    self.diagnostics.push(
-                        IntegerLiteralOutOfRangeDiagnostic {
-                            file_id: self.ast.file_id,
-                            ty: Type::I32,
-                            value,
-                            span: expr.span,
-                        }
-                        .report(&self),
-                    );
-                }
-
-                expr.ty = Type::I32;
-                Ok(())
-            }
-            Type::I64 => {
-                let value = match expr.kind {
-                    ExprKind::Int { value } => value,
-                    _ => unreachable!(),
-                };
-                if value > i64::MAX || value < i64::MIN {
-                    self.diagnostics.push(
-                        IntegerLiteralOutOfRangeDiagnostic {
-                            file_id: self.ast.file_id,
-                            ty: Type::I64,
-                            value,
-                            span: expr.span,
-                        }
-                        .report(&self),
-                    );
-                }
-
-                expr.ty = Type::I64;
-                Ok(())
-            }
-            Type::U32 => {
-                let value = match expr.kind {
-                    ExprKind::Int { value } => value,
-                    _ => unreachable!(),
-                };
-
-                if value > u32::MAX as i64 || value < 0 {
-                    self.diagnostics.push(
-                        IntegerLiteralOutOfRangeDiagnostic {
-                            file_id: self.ast.file_id,
-                            ty: Type::U32,
-                            value,
-                            span: expr.span,
-                        }
-                        .report(&self),
-                    );
-                }
-
-                expr.ty = Type::U32;
-                Ok(())
-            }
-            Type::U64 => {
-                let value = match expr.kind {
-                    ExprKind::Int { value } => value,
-                    _ => unreachable!(),
-                };
-
-                if value > u64::MAX as i64 || value < 0 {
-                    self.diagnostics.push(
-                        IntegerLiteralOutOfRangeDiagnostic {
-                            file_id: self.ast.file_id,
-                            ty: Type::U64,
-                            value,
-                            span: expr.span,
-                        }
-                        .report(&self),
-                    );
-                }
-
-                expr.ty = Type::U64;
-                Ok(())
-            }
-            Type::F32 | Type::F64 => {
+        if target_idx == I32_IDX {
+            if value > i32::MAX as i64 || value < i32::MIN as i64 {
                 self.diagnostics.push(
-                    IntegerLiteralForFloatTypeDiagnostic {
+                    IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.ast.file_id,
-                        span: expr.span,
-                    }
-                    .report(),
-                );
-
-                Err(())
-            }
-            target_type => {
-                self.diagnostics.push(
-                    UnableToCoerceDiagnostic {
-                        file_id: self.ast.file_id,
-                        target_type,
+                        ty: I32_IDX,
+                        value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
-
-                Err(())
             }
+            expr.ty = I32_IDX;
+            Ok(())
+        } else if target_idx == I64_IDX {
+            if value > i64::MAX || value < i64::MIN {
+                self.diagnostics.push(
+                    IntegerLiteralOutOfRangeDiagnostic {
+                        file_id: self.ast.file_id,
+                        ty: I64_IDX,
+                        value,
+                        span: expr.span,
+                    }
+                    .report(&self),
+                );
+            }
+            expr.ty = I64_IDX;
+            Ok(())
+        } else if target_idx == U32_IDX {
+            if value > u32::MAX as i64 || value < 0 {
+                self.diagnostics.push(
+                    IntegerLiteralOutOfRangeDiagnostic {
+                        file_id: self.ast.file_id,
+                        ty: U32_IDX,
+                        value,
+                        span: expr.span,
+                    }
+                    .report(&self),
+                );
+            }
+            expr.ty = U32_IDX;
+            Ok(())
+        } else if target_idx == U64_IDX {
+            // i64 is at most i64::MAX which always fits in u64; only negative values are
+            // invalid
+            if value < 0 {
+                self.diagnostics.push(
+                    IntegerLiteralOutOfRangeDiagnostic {
+                        file_id: self.ast.file_id,
+                        ty: U64_IDX,
+                        value,
+                        span: expr.span,
+                    }
+                    .report(&self),
+                );
+            }
+            expr.ty = U64_IDX;
+            Ok(())
+        } else if target_idx == F32_IDX || target_idx == F64_IDX {
+            self.diagnostics.push(
+                IntegerLiteralForFloatTypeDiagnostic {
+                    file_id: self.ast.file_id,
+                    span: expr.span,
+                }
+                .report(),
+            );
+            Err(())
+        } else {
+            self.diagnostics.push(
+                UnableToCoerceDiagnostic {
+                    file_id: self.ast.file_id,
+                    target_type: target_idx,
+                    span: expr.span,
+                }
+                .report(&self),
+            );
+            Err(())
         }
     }
 
     fn coerce_untyped_float_expr(
         &mut self,
         expr: &mut Expression,
-        target_type: Type,
+        target_idx: TypeIndex,
     ) -> Result<(), ()> {
-        match target_type {
-            Type::F32 => {
-                // TODO: add a diagnostic if the literal is out of range
-                expr.ty = Type::F32;
-                Ok(())
-            }
-            Type::F64 => {
-                // TODO: add a diagnostic if the literal is out of range
-                expr.ty = Type::F64;
-                Ok(())
-            }
-            target_type => {
-                self.diagnostics.push(
-                    UnableToCoerceDiagnostic {
-                        file_id: self.ast.file_id,
-                        target_type,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
-
-                Err(())
-            }
+        if target_idx == F32_IDX {
+            // TODO: add a diagnostic if the literal is out of range
+            expr.ty = F32_IDX;
+            Ok(())
+        } else if target_idx == F64_IDX {
+            // TODO: add a diagnostic if the literal is out of range
+            expr.ty = F64_IDX;
+            Ok(())
+        } else {
+            self.diagnostics.push(
+                UnableToCoerceDiagnostic {
+                    file_id: self.ast.file_id,
+                    target_type: target_idx,
+                    span: expr.span,
+                }
+                .report(&self),
+            );
+            Err(())
         }
     }
 
     fn coerce_untyped_unary_expr(
         &mut self,
         expr: &mut Expression,
-        target_type: Type,
+        target_idx: TypeIndex,
     ) -> Result<(), ()> {
         let (operand, operator) = match &mut expr.kind {
             ExprKind::Unary { operand, operator } => (operand, operator.inner),
@@ -5212,21 +5456,31 @@ impl Builder<'_, '_> {
         };
 
         match operator {
-            ast::UnaryOp::BitNot | ast::UnaryOp::InvertSign => match target_type {
-                Type::I32 | Type::I64 => {}
-                _ => unreachable!(),
-            },
+            ast::UnaryOp::BitNot | ast::UnaryOp::InvertSign => {
+                let is_valid = target_idx == I32_IDX || target_idx == I64_IDX;
+                if !is_valid {
+                    self.diagnostics.push(
+                        UnableToCoerceDiagnostic {
+                            file_id: self.ast.file_id,
+                            target_type: target_idx,
+                            span: expr.span,
+                        }
+                        .report(&self),
+                    );
+                    return Err(());
+                }
+            }
             _ => unreachable!(),
         }
 
-        self.coerce_untyped_expr(operand, target_type)
-            .and_then(|_| Ok(expr.ty = target_type))
+        self.coerce_untyped_expr(operand, target_idx)
+            .and_then(|_| Ok(expr.ty = target_idx))
     }
 
     fn coerce_untyped_binary_expression(
         &mut self,
         expr: &mut Expression,
-        target_type: Type,
+        target_idx: TypeIndex,
     ) -> Result<(), ()> {
         let (left, right, operator) = match &mut expr.kind {
             ExprKind::Binary {
@@ -5238,57 +5492,334 @@ impl Builder<'_, '_> {
         };
 
         match operator {
-            operator if operator.is_arithmetic() => match target_type {
-                target_type if target_type.is_primitive() => {}
-                target_type => {
+            operator if operator.is_arithmetic() => {
+                if !self.type_pool.get(target_idx).is_primitive() {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
                             file_id: self.ast.file_id,
-                            target_type,
+                            target_type: target_idx,
                             span: expr.span,
                         }
                         .report(&self),
                     );
                     return Err(());
                 }
-            },
-            operator if operator.is_bitwise() => match target_type {
-                Type::I32 | Type::I64 | Type::U32 | Type::U64 => {}
-                Type::F32 | Type::F64 => {
+            }
+            operator if operator.is_bitwise() => {
+                let is_integer = target_idx == I32_IDX
+                    || target_idx == I64_IDX
+                    || target_idx == U32_IDX
+                    || target_idx == U64_IDX;
+                if !is_integer {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
                             file_id: self.ast.file_id,
-                            target_type,
+                            target_type: target_idx,
                             span: expr.span,
                         }
                         .report(&self),
                     );
                     return Err(());
                 }
-                target_type => {
-                    self.diagnostics.push(
-                        UnableToCoerceDiagnostic {
-                            file_id: self.ast.file_id,
-                            target_type,
-                            span: expr.span,
-                        }
-                        .report(&self),
-                    );
-                    return Err(());
-                }
-            },
+            }
             _ => unreachable!(),
         };
 
         match (
-            self.coerce_untyped_expr(left, target_type),
-            self.coerce_untyped_expr(right, target_type),
+            self.coerce_untyped_expr(left, target_idx),
+            self.coerce_untyped_expr(right, target_idx),
         ) {
             (Ok(_), Ok(_)) => {
-                expr.ty = target_type;
+                expr.ty = target_idx;
                 Ok(())
             }
             _ => Err(()),
+        }
+    }
+
+    fn build_struct_init_expression(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        init_span: ast::TextSpan,
+        name: ast::Spanned<SymbolU32>,
+        fields: &[ast::Separated<ast::Spanned<ast::StructInitField>>],
+    ) -> Result<Expression, ()> {
+        let struct_index = match self
+            .symbol_lookup
+            .get(&(SymbolNamespace::Type, name.inner))
+            .cloned()
+        {
+            Some(GlobalValue::Struct { struct_index }) => struct_index,
+            Some(_) => {
+                self.diagnostics.push(
+                    NotAStructTypeDiagnostic {
+                        file_id: self.ast.file_id,
+                        name: self.interner.resolve(name.inner).unwrap().to_string(),
+                        span: name.span,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+            None => {
+                self.diagnostics.push(
+                    UndeclaredIdentifierDiagnostic {
+                        file_id: self.ast.file_id,
+                        span: name.span,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+        };
+
+        let struct_name = self
+            .interner
+            .resolve(self.structs[struct_index as usize].name.inner)
+            .unwrap()
+            .to_string();
+        let field_count = self.structs[struct_index as usize].fields.len();
+        // Tracks the field name span of the first mention of each field (regardless of
+        // whether the value built successfully). Used for duplicate detection and to
+        // distinguish genuinely-missing fields from errored ones.
+        let mut first_mention: Vec<Option<ast::TextSpan>> =
+            (0..field_count).map(|_| None).collect();
+        let mut field_slots: Vec<Option<Expression>> = (0..field_count).map(|_| None).collect();
+
+        for field in fields.iter() {
+            let field = &field.inner.inner;
+            let field_name = self.interner.resolve(field.name.inner).unwrap();
+
+            let field_index = match self.structs[struct_index as usize]
+                .lookup
+                .get(&field.name.inner)
+                .copied()
+            {
+                Some(idx) => idx,
+                None => {
+                    self.diagnostics.push(
+                        UnknownStructFieldDiagnostic {
+                            file_id: self.ast.file_id,
+                            struct_name: &struct_name,
+                            field_name,
+                            field_span: field.name.span,
+                        }
+                        .report(),
+                    );
+                    continue;
+                }
+            };
+
+            if let Some(first_span) = first_mention[field_index] {
+                self.diagnostics.push(
+                    DuplicateStructFieldInitDiagnostic {
+                        file_id: self.ast.file_id,
+                        field_name: &field_name,
+                        first_span,
+                        second_span: field.name.span,
+                    }
+                    .report(),
+                );
+                continue;
+            }
+            // Mark this field as mentioned (by its name span) before building the value,
+            // so that build errors don't cause it to appear in the "missing fields" list.
+            first_mention[field_index] = Some(field.name.span);
+
+            let field_value = match &field.value {
+                Some(expr) => expr.as_ref(),
+                None => {
+                    // Shorthand: treat `{ a }` as `{ a: a }` by synthesising an identifier expr
+                    &ast::Spanned {
+                        inner: ast::Expression::Identifier {
+                            symbol: field.name.inner,
+                        },
+                        span: field.name.span,
+                    }
+                }
+            };
+            let expected_ty = self.structs[struct_index as usize].fields[field_index]
+                .ty
+                .inner;
+            let mut field_expr = match self.build_expression(
+                func_ctx,
+                field_value,
+                AccessContext {
+                    expected_type: Some(expected_ty),
+                    access_kind: AccessKind::Read,
+                },
+            ) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            if field_expr.ty == UNKNOWN_IDX {
+                match self.coerce_untyped_expr(&mut field_expr, expected_ty) {
+                    Ok(_) => {}
+                    Err(_) => continue,
+                }
+            } else if !self.type_pool.coercible_to(field_expr.ty, expected_ty) {
+                self.diagnostics.push(
+                    TypeMistmatchDiagnostic {
+                        file_id: self.ast.file_id,
+                        expected_type: expected_ty,
+                        actual_type: field_expr.ty,
+                        span: field_expr.span,
+                    }
+                    .report(&self),
+                );
+                continue;
+            }
+
+            field_slots[field_index] = Some(field_expr);
+        }
+
+        let missing: Box<[&str]> = first_mention
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.is_none())
+            .map(|(i, _)| {
+                self.interner
+                    .resolve(self.structs[struct_index as usize].fields[i].name.inner)
+                    .unwrap()
+            })
+            .collect();
+        let ty = self.type_pool.intern(Type::Struct { struct_index });
+
+        if !missing.is_empty() {
+            self.diagnostics.push(
+                MissingStructFieldsDiagnostic {
+                    file_id: self.ast.file_id,
+                    struct_name: &struct_name,
+                    missing_fields: missing,
+                    init_span,
+                }
+                .report(),
+            );
+        }
+
+        // If any field was mentioned but failed to build (type error, coercion error,
+        // …), its slot is still None even though first_mention is Some. Return
+        // an error expression so we don't panic on unwrap, and the error has
+        // already been reported above.
+        let has_field_errors = field_slots.iter().any(|s| s.is_none());
+        if has_field_errors {
+            return Ok(Expression {
+                kind: ExprKind::StructInit {
+                    struct_index,
+                    fields: Box::new([]),
+                },
+                ty,
+                span: init_span,
+            });
+        }
+
+        let fields: Box<[Expression]> = field_slots.into_iter().map(|e| e.unwrap()).collect();
+        Ok(Expression {
+            kind: ExprKind::StructInit {
+                struct_index,
+                fields,
+            },
+            ty,
+            span: init_span,
+        })
+    }
+}
+
+/// Interning pool for `Type` values. All type construction goes through here,
+/// guaranteeing deduplication and stable `TypeIndex` handles.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct TypePool {
+    pool: Vec<Type>,
+    lookup: HashMap<Type, TypeIndex>,
+}
+
+impl TypePool {
+    pub fn new() -> Self {
+        let mut p = TypePool {
+            pool: Vec::new(),
+            lookup: HashMap::new(),
+        };
+        // Order MUST match the IDX constants defined at the top of this file.
+        p.intern_raw(Type::Error); // 0 = ERROR_IDX
+        p.intern_raw(Type::Unit); // 1 = UNIT_IDX
+        p.intern_raw(Type::Never); // 2 = NEVER_IDX
+        p.intern_raw(Type::Unknown); // 3 = UNKNOWN_IDX
+        p.intern_raw(Type::I32); // 4 = I32_IDX
+        p.intern_raw(Type::I64); // 5 = I64_IDX
+        p.intern_raw(Type::F32); // 6 = F32_IDX
+        p.intern_raw(Type::F64); // 7 = F64_IDX
+        p.intern_raw(Type::U32); // 8 = U32_IDX
+        p.intern_raw(Type::U64); // 9 = U64_IDX
+        p.intern_raw(Type::Bool); // 10 = BOOL_IDX
+        p.intern_raw(Type::Struct {
+            struct_index: BUILTIN_STRING_STRUCT,
+        }); // 11 = STRING_IDX
+        p.intern_raw(Type::Struct {
+            struct_index: BUILTIN_CHAR_STRUCT,
+        }); // 12 = CHAR_IDX
+        p
+    }
+
+    fn intern_raw(&mut self, ty: Type) -> TypeIndex {
+        let idx = self.pool.len() as TypeIndex;
+        self.lookup.insert(ty.clone(), idx);
+        self.pool.push(ty);
+        idx
+    }
+
+    pub fn intern(&mut self, ty: Type) -> TypeIndex {
+        if let Some(&idx) = self.lookup.get(&ty) {
+            return idx;
+        }
+        self.intern_raw(ty)
+    }
+
+    pub fn get(&self, idx: TypeIndex) -> &Type {
+        &self.pool[idx as usize]
+    }
+
+    /// Returns `true` if a value of type `a` can be coerced to type `b`.
+    pub fn coercible_to(&self, a: TypeIndex, b: TypeIndex) -> bool {
+        a == b || a == NEVER_IDX || a == ERROR_IDX || b == ERROR_IDX
+    }
+
+    /// Unified type of `a` and `b`, or `Err` if they are incompatible.
+    pub fn unify(&self, a: TypeIndex, b: TypeIndex) -> Result<TypeIndex, ()> {
+        if a == b {
+            return Ok(a);
+        }
+        if a == NEVER_IDX {
+            return Ok(b);
+        }
+        if b == NEVER_IDX {
+            return Ok(a);
+        }
+        if a == ERROR_IDX || b == ERROR_IDX {
+            return Ok(ERROR_IDX);
+        }
+        Err(())
+    }
+
+    /// Returns the parameter types of a function type (excludes the result).
+    pub fn function_params(&self, func_type_idx: TypeIndex) -> &[TypeIndex] {
+        match self.get(func_type_idx) {
+            Type::Function {
+                items,
+                params_count,
+            } => &items[..*params_count],
+            _ => panic!("not a function type"),
+        }
+    }
+
+    /// Returns the result type index of a function type.
+    pub fn function_result(&self, func_type_idx: TypeIndex) -> TypeIndex {
+        match self.get(func_type_idx) {
+            Type::Function {
+                items,
+                params_count,
+            } => items[*params_count],
+            _ => panic!("not a function type"),
         }
     }
 }
@@ -5296,7 +5827,7 @@ impl Builder<'_, '_> {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TIR {
     pub file_id: ast::FileId,
-    pub signatures: Vec<FunctionSignature>,
+    pub type_pool: Vec<Type>,
     pub defined_functions: HashMap<FunctionIndex, Function>,
     pub defined_globals: HashMap<GlobalIndex, Global>,
     pub namespaces: Vec<Namespace>,
@@ -5304,6 +5835,7 @@ pub struct TIR {
     pub declared_functions: Vec<DeclaredFunction>,
     pub declared_globals: Vec<DeclaredGlobal>,
     pub diagnostics: Vec<Diagnostic<FileId>>,
+    pub structs: Vec<Struct>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -5335,6 +5867,8 @@ impl TIR {
             GlobalValue::Unreachable,
         );
 
+        let string_sym = interner.get_or_intern("string");
+        let char_sym = interner.get_or_intern("char");
         let mut builder = Builder {
             ast,
             interner,
@@ -5345,11 +5879,29 @@ impl TIR {
             declared_functions: Vec::new(),
             declared_globals: Vec::new(),
             namespaces: Vec::new(),
-            signature_index_lookup: HashMap::new(),
-            signatures: Vec::new(),
+            type_pool: TypePool::new(),
             symbol_lookup,
             impl_members: HashMap::new(),
-            structs: Vec::new(),
+            structs: vec![
+                // BUILTIN_STRING_STRUCT = 0
+                Struct {
+                    name: ast::Spanned {
+                        inner: string_sym,
+                        span: ast::TextSpan::new(0, 0),
+                    },
+                    fields: Box::new([]),
+                    lookup: HashMap::new(),
+                },
+                // BUILTIN_CHAR_STRUCT = 1
+                Struct {
+                    name: ast::Spanned {
+                        inner: char_sym,
+                        span: ast::TextSpan::new(0, 0),
+                    },
+                    fields: Box::new([]),
+                    lookup: HashMap::new(),
+                },
+            ],
         };
 
         for item in ast.items.iter() {
@@ -5370,14 +5922,15 @@ impl TIR {
 
         TIR {
             file_id: ast.file_id,
+            type_pool: builder.type_pool.pool,
             defined_functions: builder.defined_functions,
             defined_globals: builder.defined_globals,
             namespaces: builder.namespaces,
             exports: builder.exports.into_values().collect(),
-            signatures: builder.signatures,
             declared_functions: builder.declared_functions,
             declared_globals: builder.declared_globals,
             diagnostics: builder.diagnostics,
+            structs: builder.structs,
         }
     }
 }
@@ -5527,33 +6080,454 @@ mod tests {
         insta::assert_yaml_snapshot!(case.tir);
     }
 
+    fn has_error_code(tir: &TIR, code: &str) -> bool {
+        tir.diagnostics.iter().any(|d| {
+            d.code
+                .as_ref()
+                .map(|c| c.to_string().contains(code))
+                .unwrap_or(false)
+        })
+    }
+
+    // ── coerce_untyped_int_expr ──────────────────────────────────────────────
+
     #[test]
-    fn test_impl_block() {
-        let x: char = 'a'.to_ascii_uppercase();
+    fn test_coerce_int_to_i32() {
+        let case = TestCase::new("fn f() -> i32 { 42 } export { f }");
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "{:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_int_to_i64() {
+        let case = TestCase::new("fn f() -> i64 { 9999999999 } export { f }");
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "{:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_int_to_u32() {
+        let case = TestCase::new("fn f() -> u32 { 100 } export { f }");
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "{:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_int_to_u64() {
+        let case = TestCase::new("fn f() -> u64 { 0 } export { f }");
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "{:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_int_overflow_i32() {
+        // i32::MAX + 1 = 2147483648 overflows i32
+        let case = TestCase::new("fn f() -> i32 { 2147483648 } export { f }");
+        assert!(
+            has_error_code(&case.tir, "E1004"),
+            "expected E1004 (out of range), got: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_int_negative_for_u32() {
+        let case = TestCase::new("fn f() -> u32 { -1 } export { f }");
+        // -1 can't fit in u32 — expect out-of-range OR unable-to-coerce error
+        assert!(
+            !case.tir.diagnostics.is_empty(),
+            "expected a diagnostic for negative u32 literal"
+        );
+    }
+
+    #[test]
+    fn test_coerce_int_literal_for_float_type_errors() {
+        // An untyped integer literal cannot be coerced to f32 (must write 1.0)
+        let case = TestCase::new("fn f() -> f32 { 1 } export { f }");
+        assert!(
+            has_error_code(&case.tir, "E1006"),
+            "expected E1006 (int literal for float type), got: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_int_to_bool_errors() {
+        let case = TestCase::new("fn f() -> bool { 1 } export { f }");
+        // int literal is not coercible to bool — expect E1005 (unable to coerce)
+        assert!(
+            has_error_code(&case.tir, "E1005"),
+            "expected E1005 (unable to coerce), got: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // ── coerce_untyped_float_expr ────────────────────────────────────────────
+
+    #[test]
+    fn test_coerce_float_to_f32() {
+        let case = TestCase::new("fn f() -> f32 { 3.14 } export { f }");
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "{:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_float_to_f64() {
+        let case = TestCase::new("fn f() -> f64 { 2.718 } export { f }");
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "{:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_float_to_i32_errors() {
+        let case = TestCase::new("fn f() -> i32 { 1.5 } export { f }");
+        assert!(
+            has_error_code(&case.tir, "E1005"),
+            "expected E1005 (unable to coerce float to i32), got: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // ── binary arithmetic coercion ───────────────────────────────────────────
+
+    #[test]
+    fn test_coerce_binary_arithmetic_i32() {
+        let case = TestCase::new("fn f() -> i32 { 1 + 2 } export { f }");
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "{:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_coerce_binary_bitwise_i32() {
+        let case = TestCase::new("fn f() -> i32 { 10 & 12 } export { f }");
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "{:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // ── struct definition & initialization ──────────────────────────────────
+
+    /// Basic valid struct definition and initialization.
+    #[test]
+    fn test_struct_valid_init() {
         let case = TestCase::new(indoc! {"
-            struct string {
+            struct Point {
+                pub x: i32,
+                pub y: i32,
+            }
+
+            fn make() -> Point {
+                Point::{ x: 1, y: 2 }
+            }
+
+            export { make }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+        insta::assert_yaml_snapshot!(case.tir);
+    }
+
+    /// Shorthand field init `{ x }` should behave like `{ x: x }`.
+    #[test]
+    fn test_struct_shorthand_init() {
+        let case = TestCase::new(indoc! {"
+            struct Point {
+                pub x: i32,
+                pub y: i32,
+            }
+
+            fn make(x: i32, y: i32) -> Point {
+                Point::{ x, y }
+            }
+
+            export { make }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Fields may be provided in any order.
+    #[test]
+    fn test_struct_init_out_of_order() {
+        let case = TestCase::new(indoc! {"
+            struct Point {
+                pub x: i32,
+                pub y: i32,
+            }
+
+            fn make() -> Point {
+                Point::{ y: 2, x: 1 }
+            }
+
+            export { make }
+        "});
+        assert!(
+            case.tir.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Duplicate field in the struct *definition* should produce E1022.
+    #[test]
+    fn test_struct_duplicate_field_definition() {
+        let case = TestCase::new(indoc! {"
+            struct Bad {
+                pub x: i32,
+                pub x: i32,
+            }
+
+            export { }
+        "});
+        assert!(
+            has_error_code(&case.tir, "E1022"),
+            "expected E1022 (duplicate struct field), got: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Using an undeclared name in struct init position should produce an
+    /// error.
+    #[test]
+    fn test_struct_init_undeclared_name() {
+        let case = TestCase::new(indoc! {"
+            fn main() {
+                Unknown::{ }
+            }
+
+            export { main }
+        "});
+        assert!(
+            !case.tir.diagnostics.is_empty(),
+            "expected an error for unknown struct name"
+        );
+    }
+
+    /// Unknown field name in struct init should produce E1025.
+    #[test]
+    fn test_struct_init_unknown_field() {
+        let case = TestCase::new(indoc! {"
+            struct Point {
+                pub x: i32,
+                pub y: i32,
+            }
+
+            fn make() -> Point {
+                Point::{ x: 1, y: 2, z: 3 }
+            }
+
+            export { make }
+        "});
+        assert!(
+            has_error_code(&case.tir, "E1025"),
+            "expected E1025 (unknown struct field), got: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Specifying the same field twice in init should produce E1026 but NOT
+    /// E1027 (the field was mentioned, just duplicated — it should not
+    /// appear as missing).
+    #[test]
+    fn test_struct_init_duplicate_field() {
+        let case = TestCase::new(indoc! {"
+            struct Point {
+                pub x: i32,
+                pub y: i32,
+            }
+
+            fn make() -> Point {
+                Point::{ x: 1, y: 2, x: 3 }
+            }
+
+            export { make }
+        "});
+        assert!(
+            has_error_code(&case.tir, "E1026"),
+            "expected E1026 (duplicate field in init), got: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+        // x was mentioned (just duplicated) — must NOT also appear as missing
+        assert!(
+            !has_error_code(&case.tir, "E1027"),
+            "E1027 must not fire for a duplicated field (it was mentioned)"
+        );
+    }
+
+    /// Omitting required fields in init should produce E1027.
+    #[test]
+    fn test_struct_init_missing_fields() {
+        let case = TestCase::new(indoc! {"
+            struct Point {
+                pub x: i32,
+                pub y: i32,
+            }
+
+            fn make() -> Point {
+                Point::{ x: 1 }
+            }
+
+            export { make }
+        "});
+        assert!(
+            has_error_code(&case.tir, "E1027"),
+            "expected E1027 (missing fields), got: {:?}",
+            case.tir
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A field whose value fails type-checking should NOT cause that field to
+    /// appear in the missing-fields list (E1027).
+    #[test]
+    fn test_struct_init_errored_field_not_reported_as_missing() {
+        let case = TestCase::new(indoc! {"
+            struct Point {
+                pub x: i32,
+                pub y: i32,
+            }
+
+            fn make() -> Point {
+                Point::{ x: true, y: 2 }
+            }
+
+            export { make }
+        "});
+        // Should have a type mismatch error for `x`…
+        assert!(
+            !case.tir.diagnostics.is_empty(),
+            "expected a type-mismatch diagnostic"
+        );
+        // …but must NOT report `x` as a missing field
+        let missing_x = case.tir.diagnostics.iter().any(|d| {
+            d.code
+                .as_ref()
+                .map(|c| c.to_string().contains("E1027"))
+                .unwrap_or(false)
+                && d.message.contains('x')
+        });
+        assert!(
+            !missing_x,
+            "errored field `x` must not be reported as missing"
+        );
+    }
+
+    /// Snapshot test for the duplicate-field-in-init case to lock in diagnostic
+    /// details.
+    #[test]
+    fn test_structs() {
+        let case = TestCase::new(indoc! {"
+            struct str {
                 pub ptr: u32,
                 pub len: u32,
             }
 
-            struct char {
-                value: u32
-            }
-
-            impl char {
-                fn to_ascii_uppercase(self) -> char {
-                    char { value: self.value ^ 32 }
-                }
-            }
-
-            impl string {
-                fn len(self) -> u32 {
-                    self.len
-                }
-            }
-
-            fn main() -> u32 {
-                \"abc\".len()
+            fn main() -> str {
+                str::{ ptr: 0, ptr: 10 }
             }
 
             export { main }
