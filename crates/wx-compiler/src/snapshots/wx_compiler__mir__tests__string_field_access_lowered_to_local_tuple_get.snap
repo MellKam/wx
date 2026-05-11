@@ -87,20 +87,20 @@ globals: []
 exports:
   - Function:
       func_index: 1
-      name: 11
+      name: 14
 imports:
   - name: console
     items:
       - Function:
-          name: 10
+          name: 13
           func_index: 0
-          signature_index: 14
+          signature_index: 19
 tuples:
   - fields:
       - StringPointer
       - U32
   - fields:
-      - U32
+      - I32
       - U32
 strings:
-  - 20
+  - 23

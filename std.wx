@@ -1,16 +1,14 @@
 pub struct string {
-  ptr: u32,
+  ptr: []u8,
   len: u32,
 }
 
-pub struct char {
-  value: u32,
-}
+const ASCII_CASE_MASK: u8 = 0b0010_0000;
 
 impl char {
   pub fn to_ascii_uppercase(self) -> char {
-    if self.value >= 97 && self.value <= 122 {
-      char::{ value: self.value - 32 }
+    if self >= 'a' && self <= 'z' {
+      ((self as u8) ^ ASCII_CASE_MASK) as char
     } else {
       self
     }

@@ -15,14 +15,20 @@ type_pool:
   - U32
   - U64
   - Bool
+  - Char
   - Struct:
       struct_index: 0
-  - Struct:
-      struct_index: 1
+  - U8
+  - I8
+  - U16
+  - I16
+  - Slice:
+      of: 13
+      mutable: false
   - Function:
       items:
-        - 12
-        - 12
+        - 11
+        - 11
       params_count: 1
   - Function:
       items:
@@ -39,26 +45,26 @@ type_pool:
 defined_functions:
   0:
     name:
-      inner: 7
+      inner: 8
       span:
-        start: 95
-        end: 113
+        start: 111
+        end: 129
     params:
       - mut_span: ~
         name:
-          inner: 8
+          inner: 9
           span:
-            start: 114
-            end: 118
+            start: 130
+            end: 134
         ty:
-          inner: 12
+          inner: 11
           span:
-            start: 114
-            end: 118
+            start: 130
+            end: 134
     result_span:
-      start: 123
-      end: 127
-    signature_index: 13
+      start: 139
+      end: 143
+    signature_index: 18
     stack:
       scopes:
         - kind: Block
@@ -66,43 +72,43 @@ defined_functions:
           parent: ~
           locals:
             - name:
-                inner: 8
+                inner: 9
                 span:
-                  start: 114
-                  end: 118
-              ty: 12
+                  start: 130
+                  end: 134
+              ty: 11
               mut_span: ~
               accesses:
                 - span:
-                    start: 137
-                    end: 141
+                    start: 153
+                    end: 157
                   kind: Read
                 - span:
-                    start: 157
-                    end: 161
+                    start: 168
+                    end: 172
                   kind: Read
                 - span:
-                    start: 198
-                    end: 202
+                    start: 190
+                    end: 194
                   kind: Read
                 - span:
-                    start: 235
-                    end: 239
+                    start: 248
+                    end: 252
                   kind: Read
-          inferred_type: 12
-          expected_type: 12
+          inferred_type: 11
+          expected_type: 11
         - kind: Block
           label: ~
           parent: 0
           locals: []
-          inferred_type: 12
-          expected_type: 12
+          inferred_type: 11
+          expected_type: 11
         - kind: Block
           label: ~
           parent: 0
           locals: []
-          inferred_type: 12
-          expected_type: 12
+          inferred_type: 11
+          expected_type: 11
     block:
       kind:
         Block:
@@ -117,94 +123,70 @@ defined_functions:
                       operator:
                         inner: And
                         span:
-                          start: 154
-                          end: 156
+                          start: 165
+                          end: 167
                       left:
                         kind:
                           Binary:
                             operator:
                               inner: GreaterEq
                               span:
-                                start: 148
-                                end: 150
+                                start: 158
+                                end: 160
                             left:
                               kind:
-                                ObjectAccess:
-                                  object:
-                                    kind:
-                                      Local:
-                                        scope_index: 0
-                                        local_index: 0
-                                    ty: 12
-                                    span:
-                                      start: 137
-                                      end: 141
-                                  member:
-                                    inner: 6
-                                    span:
-                                      start: 142
-                                      end: 147
-                              ty: 8
+                                Local:
+                                  scope_index: 0
+                                  local_index: 0
+                              ty: 11
                               span:
-                                start: 137
-                                end: 147
+                                start: 153
+                                end: 157
                             right:
                               kind:
-                                Int:
-                                  value: 97
-                              ty: 8
+                                Char:
+                                  value: a
+                              ty: 11
                               span:
-                                start: 151
-                                end: 153
+                                start: 161
+                                end: 164
                         ty: 10
                         span:
-                          start: 137
-                          end: 153
+                          start: 153
+                          end: 164
                       right:
                         kind:
                           Binary:
                             operator:
                               inner: LessEq
                               span:
-                                start: 168
-                                end: 170
+                                start: 173
+                                end: 175
                             left:
                               kind:
-                                ObjectAccess:
-                                  object:
-                                    kind:
-                                      Local:
-                                        scope_index: 0
-                                        local_index: 0
-                                    ty: 12
-                                    span:
-                                      start: 157
-                                      end: 161
-                                  member:
-                                    inner: 6
-                                    span:
-                                      start: 162
-                                      end: 167
-                              ty: 8
+                                Local:
+                                  scope_index: 0
+                                  local_index: 0
+                              ty: 11
                               span:
-                                start: 157
-                                end: 167
+                                start: 168
+                                end: 172
                             right:
                               kind:
-                                Int:
-                                  value: 122
-                              ty: 8
+                                Char:
+                                  value: z
+                              ty: 11
                               span:
-                                start: 171
-                                end: 174
+                                start: 176
+                                end: 179
                         ty: 10
                         span:
-                          start: 157
-                          end: 174
+                          start: 168
+                          end: 179
                   ty: 10
                   span:
-                    start: 137
-                    end: 174
+                    start: 153
+                    end: 179
                 then_block:
                   kind:
                     Block:
@@ -212,57 +194,37 @@ defined_functions:
                       expressions: []
                       result:
                         kind:
-                          StructInit:
-                            struct_index: 1
-                            fields:
-                              - kind:
-                                  Binary:
-                                    operator:
-                                      inner: Sub
-                                      span:
-                                        start: 209
-                                        end: 210
-                                    left:
-                                      kind:
-                                        ObjectAccess:
-                                          object:
-                                            kind:
-                                              Local:
-                                                scope_index: 0
-                                                local_index: 0
-                                            ty: 12
-                                            span:
-                                              start: 198
-                                              end: 202
-                                          member:
-                                            inner: 6
-                                            span:
-                                              start: 203
-                                              end: 208
-                                      ty: 8
-                                      span:
-                                        start: 198
-                                        end: 208
-                                    right:
-                                      kind:
-                                        Int:
-                                          value: 32
-                                      ty: 8
-                                      span:
-                                        start: 211
-                                        end: 213
-                                ty: 8
-                                span:
-                                  start: 198
-                                  end: 213
-                        ty: 12
+                          Binary:
+                            operator:
+                              inner: BitXor
+                              span:
+                                start: 202
+                                end: 203
+                            left:
+                              kind:
+                                Local:
+                                  scope_index: 0
+                                  local_index: 0
+                              ty: 13
+                              span:
+                                start: 190
+                                end: 194
+                            right:
+                              kind:
+                                Int:
+                                  value: 32
+                              ty: 13
+                              span:
+                                start: 204
+                                end: 219
+                        ty: 11
                         span:
-                          start: 183
-                          end: 215
-                  ty: 12
+                          start: 189
+                          end: 219
+                  ty: 11
                   span:
-                    start: 175
-                    end: 221
+                    start: 180
+                    end: 234
                 else_block:
                   kind:
                     Block:
@@ -273,25 +235,25 @@ defined_functions:
                           Local:
                             scope_index: 0
                             local_index: 0
-                        ty: 12
+                        ty: 11
                         span:
-                          start: 235
-                          end: 239
-                  ty: 12
+                          start: 248
+                          end: 252
+                  ty: 11
                   span:
-                    start: 227
-                    end: 245
-            ty: 12
+                    start: 240
+                    end: 258
+            ty: 11
             span:
-              start: 134
-              end: 245
-      ty: 12
+              start: 150
+              end: 258
+      ty: 11
       span:
-        start: 128
-        end: 249
+        start: 144
+        end: 262
   2:
     name:
-      inner: 13
+      inner: 16
       span:
         start: 76
         end: 80
@@ -299,7 +261,7 @@ defined_functions:
     result_span:
       start: 86
       end: 90
-    signature_index: 15
+    signature_index: 20
     stack:
       scopes:
         - kind: Block
@@ -319,16 +281,16 @@ defined_functions:
                     kind:
                       NamespaceAccess:
                         ty:
-                          inner: 16
+                          inner: 21
                           span:
                             start: 97
                             end: 104
                         member:
-                          inner: 11
+                          inner: 14
                           span:
                             start: 106
                             end: 109
-                    ty: 14
+                    ty: 19
                     span:
                       start: 97
                       end: 109
@@ -360,23 +322,23 @@ defined_globals: {}
 namespaces:
   - ImportModule:
       external_name:
-        inner: 10
+        inner: 13
         span:
           start: 7
           end: 16
       internal_name:
-        inner: 10
+        inner: 13
         span:
           start: 20
           end: 27
       lookup:
-        11:
+        14:
           Function:
             func_index: 1
 exports:
   - Function:
       internal_name:
-        inner: 13
+        inner: 16
         span:
           start: 129
           end: 133
@@ -384,36 +346,36 @@ exports:
       func_index: 2
 declared_functions:
   - source: Defined
-    signature_index: 13
+    signature_index: 18
     name:
-      inner: 7
+      inner: 8
       span:
-        start: 95
-        end: 113
+        start: 111
+        end: 129
     params:
       - name:
-          inner: 8
+          inner: 9
           span:
-            start: 114
-            end: 118
+            start: 130
+            end: 134
         ty:
-          inner: 12
+          inner: 11
           span:
-            start: 114
-            end: 118
+            start: 130
+            end: 134
     result:
-      inner: 12
+      inner: 11
       span:
-        start: 123
-        end: 127
+        start: 139
+        end: 143
     accesses: []
     pub_span:
-      start: 92
-      end: 94
+      start: 108
+      end: 110
   - source: Imported
-    signature_index: 14
+    signature_index: 19
     name:
-      inner: 11
+      inner: 14
       span:
         start: 37
         end: 40
@@ -448,9 +410,9 @@ declared_functions:
         end: 109
     pub_span: ~
   - source: Defined
-    signature_index: 15
+    signature_index: 20
     name:
-      inner: 13
+      inner: 16
       span:
         start: 76
         end: 80
@@ -470,52 +432,34 @@ structs:
   - name:
       inner: 1
       span:
-        start: 7
-        end: 13
+        start: 11
+        end: 17
     fields:
       - name:
           inner: 2
           span:
-            start: 18
-            end: 21
+            start: 22
+            end: 25
         ty:
-          inner: 8
+          inner: 17
           span:
-            start: 23
-            end: 26
+            start: 27
+            end: 31
       - name:
           inner: 4
           span:
-            start: 30
-            end: 33
+            start: 35
+            end: 38
         ty:
           inner: 8
           span:
-            start: 35
-            end: 38
+            start: 40
+            end: 43
     lookup:
       2: 0
       4: 1
-  - name:
-      inner: 5
-      span:
-        start: 50
-        end: 54
-    fields:
-      - name:
-          inner: 6
-          span:
-            start: 59
-            end: 64
-        ty:
-          inner: 8
-          span:
-            start: 66
-            end: 69
-    lookup:
-      6: 0
 impl_members:
-  12:
-    7:
+  11:
+    8:
       Method: 0
-  16: {}
+  21: {}

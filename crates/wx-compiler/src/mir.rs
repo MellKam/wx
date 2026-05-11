@@ -187,6 +187,10 @@ pub enum Type {
     F64,
     U32,
     U64,
+    U8,
+    I8,
+    U16,
+    I16,
     Unit,
     Never,
     Bool,
@@ -614,27 +618,28 @@ impl<'tir> Builder<'tir> {
             tir::Type::F64 => Type::F64,
             tir::Type::U32 => Type::U32,
             tir::Type::U64 => Type::U64,
+            tir::Type::U8 => Type::U8,
+            tir::Type::I8 => Type::I8,
+            tir::Type::U16 => Type::U16,
+            tir::Type::I16 => Type::I16,
             tir::Type::Unit => Type::Unit,
             tir::Type::Never => Type::Never,
             tir::Type::Bool => Type::Bool,
+            tir::Type::Char => Type::U32,
             tir::Type::Struct { struct_index } => {
-                if struct_index == tir::BUILTIN_CHAR_STRUCT {
-                    Type::U32
-                } else {
-                    let field_type_indices: Box<[tir::TypeIndex]> = self.tir.structs
-                        [struct_index as usize]
-                        .fields
-                        .iter()
-                        .map(|f| f.ty.inner)
-                        .collect();
-                    let fields: Box<[Type]> = field_type_indices
-                        .iter()
-                        .map(|&idx| self.lower_type_index(idx))
-                        .collect();
-                    let tuple = Tuple { fields };
-                    let tuple_index = self.tuple_pool.add(tuple);
-                    Type::Tuple { tuple_index }
-                }
+                let field_type_indices: Box<[tir::TypeIndex]> = self.tir.structs
+                    [struct_index as usize]
+                    .fields
+                    .iter()
+                    .map(|f| f.ty.inner)
+                    .collect();
+                let fields: Box<[Type]> = field_type_indices
+                    .iter()
+                    .map(|&idx| self.lower_type_index(idx))
+                    .collect();
+                let tuple = Tuple { fields };
+                let tuple_index = self.tuple_pool.add(tuple);
+                Type::Tuple { tuple_index }
             }
             tir::Type::Function { .. } => {
                 let sig_idx = self.sig_index_remap[&type_idx];

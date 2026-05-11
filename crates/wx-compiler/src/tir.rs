@@ -152,15 +152,17 @@ pub const F64_IDX: TypeIndex = 7;
 pub const U32_IDX: TypeIndex = 8;
 pub const U64_IDX: TypeIndex = 9;
 pub const BOOL_IDX: TypeIndex = 10;
+/// TypeIndex for the built-in `char` primitive type.
+pub const CHAR_IDX: TypeIndex = 11;
 /// TypeIndex for the built-in `string` sealed struct.
-pub const STRING_IDX: TypeIndex = 11;
-/// TypeIndex for the built-in `char` sealed struct.
-pub const CHAR_IDX: TypeIndex = 12;
+pub const STRING_IDX: TypeIndex = 12;
+pub const U8_IDX: TypeIndex = 13;
+pub const I8_IDX: TypeIndex = 14;
+pub const U16_IDX: TypeIndex = 15;
+pub const I16_IDX: TypeIndex = 16;
 
 /// Struct pool index of the built-in `string` sealed struct.
 pub const BUILTIN_STRING_STRUCT: u32 = 0;
-/// Struct pool index of the built-in `char` sealed struct.
-pub const BUILTIN_CHAR_STRUCT: u32 = 1;
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -177,6 +179,11 @@ pub enum Type {
     U32,
     U64,
     Bool,
+    Char,
+    U8,
+    I8,
+    U16,
+    I16,
     Pointer {
         to: TypeIndex,
         mutable: bool,
@@ -208,14 +215,16 @@ pub enum Type {
 impl Type {
     pub fn is_primitive(&self) -> bool {
         match self {
-            Type::I32 | Type::I64 | Type::U32 | Type::U64 | Type::F32 | Type::F64 => true,
+            Type::I32 | Type::I64 | Type::U32 | Type::U64 | Type::F32 | Type::F64
+            | Type::Char | Type::U8 | Type::I8 | Type::U16 | Type::I16 => true,
             _ => false,
         }
     }
 
     pub fn is_integer(&self) -> bool {
         match self {
-            Type::I32 | Type::I64 | Type::U32 | Type::U64 => true,
+            Type::I32 | Type::I64 | Type::U32 | Type::U64
+            | Type::U8 | Type::I8 | Type::U16 | Type::I16 => true,
             _ => false,
         }
     }
@@ -240,17 +249,32 @@ impl TryFrom<&str> for Type {
             "u32" => Ok(Type::U32),
             "u64" => Ok(Type::U64),
             "bool" => Ok(Type::Bool),
+            "char" => Ok(Type::Char),
+            "u8" => Ok(Type::U8),
+            "i8" => Ok(Type::I8),
+            "u16" => Ok(Type::U16),
+            "i16" => Ok(Type::I16),
             "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),
             "string" => Ok(Type::Struct {
                 struct_index: BUILTIN_STRING_STRUCT,
             }),
-            "char" => Ok(Type::Struct {
-                struct_index: BUILTIN_CHAR_STRUCT,
-            }),
             _ => Err(()),
         }
     }
+}
+
+/// Returns true if casting from `from` to `to` is allowed without an explicit
+/// unsafe annotation. Permitted conversions:
+/// - integer ↔ integer (any combination of i8/u8/i16/u16/i32/u32/i64/u64)
+/// - char ↔ u8 or u16 (ASCII / Latin-1 / BMP range fits naturally)
+pub fn is_numeric_cast(from: TypeIndex, to: TypeIndex) -> bool {
+    use Type::*;
+    let is_int = |idx: TypeIndex| matches!(idx, I8_IDX | U8_IDX | I16_IDX | U16_IDX | I32_IDX | U32_IDX | I64_IDX | U64_IDX);
+    let is_char_compat = |idx: TypeIndex| matches!(idx, U8_IDX | U16_IDX);
+    (is_int(from) && is_int(to))
+        || (from == CHAR_IDX && is_char_compat(to))
+        || (is_char_compat(from) && to == CHAR_IDX)
 }
 
 pub type LocalIndex = u32;
@@ -258,10 +282,23 @@ pub type ScopeIndex = u32;
 pub type FunctionIndex = u32;
 pub type NamespaceIndex = u32;
 pub type GlobalIndex = u32;
+pub type ConstIndex = u32;
 /// `SignatureIndex` is now an alias for `TypeIndex` — the function type lives
 /// in the type pool.
 pub type SignatureIndex = TypeIndex;
 pub type EnumVariantIndex = u32;
+
+#[derive(Clone)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+pub enum ConstValue {
+    Int(i64),
+    Float(f64),
+}
+
+pub struct DeclaredConst {
+    pub name: ast::Spanned<SymbolU32>,
+    pub ty: ast::Spanned<TypeIndex>,
+}
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -530,6 +567,7 @@ pub enum GlobalValue {
     Function { func_index: FunctionIndex },
     Namespace { namespace_index: NamespaceIndex },
     Struct { struct_index: u32 },
+    Const { const_index: ConstIndex },
     True,
     False,
     Unreachable,
@@ -1581,6 +1619,8 @@ struct Builder<'interner> {
     namespaces: Vec<Namespace>,
     declared_globals: Vec<DeclaredGlobal>,
     declared_functions: Vec<DeclaredFunction>,
+    declared_consts: Vec<DeclaredConst>,
+    const_pool: Vec<ConstValue>,
     type_pool: TypePool,
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), GlobalValue>,
     impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
@@ -1739,6 +1779,11 @@ impl Builder<'_> {
             Type::Error => "error".to_string(),
             Type::Unit => "unit".to_string(),
             Type::Bool => "bool".to_string(),
+            Type::Char => "char".to_string(),
+            Type::U8 => "u8".to_string(),
+            Type::I8 => "i8".to_string(),
+            Type::U16 => "u16".to_string(),
+            Type::I16 => "i16".to_string(),
             Type::Never => "never".to_string(),
             Type::I32 => "i32".to_string(),
             Type::I64 => "i64".to_string(),
@@ -2046,8 +2091,73 @@ impl Builder<'_> {
                 // TODO: lower enum items in TIR
                 Ok(())
             }
-            ast::Item::Const { .. } => {
-                // TODO: lower const items in TIR
+            ast::Item::Const { name, ty, value } => {
+                match self
+                    .symbol_lookup
+                    .get(&(SymbolNamespace::Value, name.inner))
+                    .cloned()
+                {
+                    Some(first_definition) => {
+                        let name_str = self.interner.resolve(name.inner).unwrap();
+                        let first_definition_span = match first_definition {
+                            GlobalValue::Function { func_index } => {
+                                self.declared_functions[func_index as usize].name.span
+                            }
+                            GlobalValue::Global { global_index } => {
+                                self.declared_globals[global_index as usize].name.span
+                            }
+                            _ => name.span,
+                        };
+                        self.diagnostics.push(
+                            DuplicateDefinitionDiagnostic {
+                                file_id: self.file_id,
+                                name: name_str,
+                                namespace: SymbolNamespace::Value,
+                                first_definition: first_definition_span,
+                                second_definition: name.span,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
+                    None => {}
+                }
+
+                let (ty_idx, ty_span) = match ty {
+                    Some(ty) => (self.resolve_type(ty), ty.span),
+                    None => (UNKNOWN_IDX, name.span),
+                };
+
+                let expected_ty = if ty_idx == UNKNOWN_IDX { ERROR_IDX } else { ty_idx };
+                let value_expr = self.build_const_expression(value, expected_ty)?;
+
+                let const_value = match &value_expr.kind {
+                    ExprKind::Int { value } => ConstValue::Int(*value),
+                    ExprKind::Float { value } => ConstValue::Float(*value),
+                    _ => {
+                        self.diagnostics.push(
+                            NonConstantGlobalInitializerDiagnostic {
+                                file_id: self.file_id,
+                                span: value.span,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
+                };
+
+                let resolved_ty = if ty_idx == UNKNOWN_IDX { value_expr.ty } else { ty_idx };
+                let const_index = self.declared_consts.len() as ConstIndex;
+                self.declared_consts.push(DeclaredConst {
+                    name: name.clone(),
+                    ty: ast::Spanned { inner: resolved_ty, span: ty_span },
+                });
+                self.const_pool.push(const_value);
+                self.symbol_lookup.insert(
+                    (SymbolNamespace::Value, name.inner),
+                    GlobalValue::Const { const_index },
+                );
+
                 Ok(())
             }
             ast::Item::Struct { pub_span: _, name, fields } => {
@@ -2595,7 +2705,7 @@ impl Builder<'_> {
                 Ok(())
             }
             ast::Item::Const { .. } => {
-                // TODO: lower const items in TIR
+                // Evaluated eagerly in define_item; nothing to do here.
                 Ok(())
             }
             ast::Item::Struct { .. } => {
@@ -2740,6 +2850,21 @@ impl Builder<'_> {
                         ty: BOOL_IDX,
                         span: expr.span,
                     }),
+                    Some(GlobalValue::Const { const_index }) => {
+                        let ty = self.declared_consts[const_index as usize].ty.inner;
+                        match self.const_pool[const_index as usize].clone() {
+                            ConstValue::Int(v) => Ok(Expression {
+                                kind: ExprKind::Int { value: v },
+                                ty,
+                                span: expr.span,
+                            }),
+                            ConstValue::Float(v) => Ok(Expression {
+                                kind: ExprKind::Float { value: v },
+                                ty,
+                                span: expr.span,
+                            }),
+                        }
+                    }
                     _ => {
                         self.diagnostics.push(
                             NonConstantGlobalInitializerDiagnostic {
@@ -3887,6 +4012,8 @@ impl Builder<'_> {
             && self.type_pool.get(cast_type).is_integer()
         {
             value.ty = cast_type;
+        } else if is_numeric_cast(value.ty, cast_type) {
+            value.ty = cast_type;
         } else if value.ty != cast_type {
             self.diagnostics.push(
                 TypeMistmatchDiagnostic {
@@ -4096,6 +4223,21 @@ impl Builder<'_> {
                         ty: global.ty.inner,
                         span: expr.span,
                     })
+                }
+                GlobalValue::Const { const_index } => {
+                    let ty = self.declared_consts[const_index as usize].ty.inner;
+                    match self.const_pool[const_index as usize].clone() {
+                        ConstValue::Int(v) => Ok(Expression {
+                            kind: ExprKind::Int { value: v },
+                            ty,
+                            span: expr.span,
+                        }),
+                        ConstValue::Float(v) => Ok(Expression {
+                            kind: ExprKind::Float { value: v },
+                            ty,
+                            span: expr.span,
+                        }),
+                    }
                 }
                 // this must be handled in the namespace access expression
                 GlobalValue::Namespace { .. } => todo!(),
@@ -5680,6 +5822,76 @@ impl Builder<'_> {
             }
             expr.ty = U64_IDX;
             Ok(())
+        } else if target_idx == U8_IDX {
+            if value < 0 || value > u8::MAX as i64 {
+                self.diagnostics.push(
+                    IntegerLiteralOutOfRangeDiagnostic {
+                        file_id: self.file_id,
+                        ty: U8_IDX,
+                        value,
+                        span: expr.span,
+                    }
+                    .report(&self),
+                );
+            }
+            expr.ty = U8_IDX;
+            Ok(())
+        } else if target_idx == I8_IDX {
+            if value < i8::MIN as i64 || value > i8::MAX as i64 {
+                self.diagnostics.push(
+                    IntegerLiteralOutOfRangeDiagnostic {
+                        file_id: self.file_id,
+                        ty: I8_IDX,
+                        value,
+                        span: expr.span,
+                    }
+                    .report(&self),
+                );
+            }
+            expr.ty = I8_IDX;
+            Ok(())
+        } else if target_idx == U16_IDX {
+            if value < 0 || value > u16::MAX as i64 {
+                self.diagnostics.push(
+                    IntegerLiteralOutOfRangeDiagnostic {
+                        file_id: self.file_id,
+                        ty: U16_IDX,
+                        value,
+                        span: expr.span,
+                    }
+                    .report(&self),
+                );
+            }
+            expr.ty = U16_IDX;
+            Ok(())
+        } else if target_idx == I16_IDX {
+            if value < i16::MIN as i64 || value > i16::MAX as i64 {
+                self.diagnostics.push(
+                    IntegerLiteralOutOfRangeDiagnostic {
+                        file_id: self.file_id,
+                        ty: I16_IDX,
+                        value,
+                        span: expr.span,
+                    }
+                    .report(&self),
+                );
+            }
+            expr.ty = I16_IDX;
+            Ok(())
+        } else if target_idx == CHAR_IDX {
+            if value < 0 || value > u32::MAX as i64 {
+                self.diagnostics.push(
+                    IntegerLiteralOutOfRangeDiagnostic {
+                        file_id: self.file_id,
+                        ty: CHAR_IDX,
+                        value,
+                        span: expr.span,
+                    }
+                    .report(&self),
+                );
+            }
+            expr.ty = CHAR_IDX;
+            Ok(())
         } else if target_idx == F32_IDX || target_idx == F64_IDX {
             self.diagnostics.push(
                 IntegerLiteralForFloatTypeDiagnostic {
@@ -6035,12 +6247,14 @@ impl TypePool {
         p.intern_raw(Type::U32); // 8 = U32_IDX
         p.intern_raw(Type::U64); // 9 = U64_IDX
         p.intern_raw(Type::Bool); // 10 = BOOL_IDX
+        p.intern_raw(Type::Char); // 11 = CHAR_IDX
         p.intern_raw(Type::Struct {
             struct_index: BUILTIN_STRING_STRUCT,
-        }); // 11 = STRING_IDX
-        p.intern_raw(Type::Struct {
-            struct_index: BUILTIN_CHAR_STRUCT,
-        }); // 12 = CHAR_IDX
+        }); // 12 = STRING_IDX
+        p.intern_raw(Type::U8); // 13 = U8_IDX
+        p.intern_raw(Type::I8); // 14 = I8_IDX
+        p.intern_raw(Type::U16); // 15 = U16_IDX
+        p.intern_raw(Type::I16); // 16 = I16_IDX
         p
     }
 
@@ -6182,7 +6396,9 @@ pub fn compute_layout(
 ) -> Layout {
     match &types[idx as usize] {
         Type::Unit | Type::Never => Layout::ZERO,
-        Type::I32 | Type::U32 | Type::F32 => Layout { size: 4, align: 4 },
+        Type::I32 | Type::U32 | Type::F32 | Type::Char => Layout { size: 4, align: 4 },
+        Type::U8 | Type::I8 => Layout { size: 1, align: 1 },
+        Type::U16 | Type::I16 => Layout { size: 2, align: 2 },
         Type::Bool => Layout { size: 1, align: 1 },
         Type::I64 | Type::U64 | Type::F64 => Layout { size: 8, align: 8 },
         Type::Pointer { .. } => Layout::ptr(ptr_size),
@@ -6213,9 +6429,6 @@ pub fn compute_layout(
                     size: p * 2,
                     align: p,
                 };
-            }
-            if si == BUILTIN_CHAR_STRUCT {
-                return Layout { size: 4, align: 4 };
             }
             let field_types: Box<[TypeIndex]> = structs[si as usize]
                 .fields
@@ -6306,6 +6519,8 @@ impl TIR {
             diagnostics: Vec::new(),
             declared_functions: Vec::new(),
             declared_globals: Vec::new(),
+            declared_consts: Vec::new(),
+            const_pool: Vec::new(),
             namespaces: Vec::new(),
             type_pool: TypePool::new(),
             symbol_lookup,
@@ -6327,12 +6542,6 @@ impl TIR {
             Some(builder.interner.get_or_intern("string")),
             "stdlib must define `string` as the first struct (BUILTIN_STRING_STRUCT = {})",
             BUILTIN_STRING_STRUCT,
-        );
-        assert_eq!(
-            builder.structs.get(BUILTIN_CHAR_STRUCT as usize).map(|s| s.name.inner),
-            Some(builder.interner.get_or_intern("char")),
-            "stdlib must define `char` as the second struct (BUILTIN_CHAR_STRUCT = {})",
-            BUILTIN_CHAR_STRUCT,
         );
 
         for ast in asts.iter() {
@@ -6977,11 +7186,11 @@ mod tests {
     #[test]
     fn test_stdlib_types_available() {
         let case = TestCase::new(indoc! {"
-            fn make_char(v: u32) -> char {
-                char::{ value: v }
+            fn is_lower(c: char) -> bool {
+                c >= 'a' && c <= 'z'
             }
 
-            export { make_char }
+            export { is_lower }
         "});
         assert!(
             case.tir.diagnostics.is_empty(),
@@ -6990,15 +7199,15 @@ mod tests {
         );
     }
 
-    /// Field access on a stdlib struct type should resolve correctly.
+    /// char is a primitive type — arithmetic on chars should resolve correctly.
     #[test]
     fn test_stdlib_struct_field_access() {
         let case = TestCase::new(indoc! {"
-            fn char_value(c: char) -> u32 {
-                c.value
+            fn shift(c: char) -> char {
+                c - 32
             }
 
-            export { char_value }
+            export { shift }
         "});
         assert!(
             case.tir.diagnostics.is_empty(),

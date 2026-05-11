@@ -34,10 +34,9 @@ functions:
                             GreaterEq:
                               left:
                                 kind:
-                                  LocalTupleGet:
+                                  LocalGet:
                                     scope_index: 0
                                     local_index: 0
-                                    field_index: 0
                                 ty: U32
                               right:
                                 kind:
@@ -50,10 +49,9 @@ functions:
                             LessEq:
                               left:
                                 kind:
-                                  LocalTupleGet:
+                                  LocalGet:
                                     scope_index: 0
                                     local_index: 0
-                                    field_index: 0
                                 ty: U32
                               right:
                                 kind:
@@ -68,23 +66,18 @@ functions:
                         scope_index: 1
                         expressions:
                           - kind:
-                              StructCreate:
-                                fields:
-                                  - kind:
-                                      Sub:
-                                        left:
-                                          kind:
-                                            LocalTupleGet:
-                                              scope_index: 0
-                                              local_index: 0
-                                              field_index: 0
-                                          ty: U32
-                                        right:
-                                          kind:
-                                            Int:
-                                              value: 32
-                                          ty: U32
-                                    ty: U32
+                              BitXor:
+                                left:
+                                  kind:
+                                    LocalGet:
+                                      scope_index: 0
+                                      local_index: 0
+                                  ty: U8
+                                right:
+                                  kind:
+                                    Int:
+                                      value: 32
+                                  ty: U8
                             ty: U32
                     ty: U32
                   else_block:
@@ -137,7 +130,7 @@ globals: []
 exports:
   - Function:
       func_index: 1
-      name: 9
+      name: 12
 imports: []
 tuples:
   - fields:

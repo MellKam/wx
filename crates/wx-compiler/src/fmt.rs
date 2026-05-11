@@ -45,9 +45,9 @@ impl Builder {
             }
 
             items.push(match &item.inner.inner {
-                Item::Function { signature, block, .. } => {
-                    Self::build_function_definition(interner, source, signature, block)
-                }
+                Item::Function {
+                    signature, block, ..
+                } => Self::build_function_definition(interner, source, signature, block),
                 Item::Global {
                     mut_span,
                     name,

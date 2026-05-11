@@ -801,11 +801,41 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_number(&mut self) -> Token {
-        let mut peeker = self.chars.clone();
+        // Check for a base prefix immediately after the leading digit.
+        // At this point `advance()` has consumed the first digit character.
+        let first_remaining = self.chars.clone().next();
+        match first_remaining {
+            Some('b' | 'B') => {
+                _ = self.chars.next(); // consume 'b'
+                let mut peeker = self.chars.clone();
+                while let Some(c) = peeker.next() {
+                    match c {
+                        '0' | '1' | '_' => { _ = self.chars.next(); }
+                        _ => break,
+                    }
+                }
+                return Token::Int;
+            }
+            Some('x' | 'X') => {
+                _ = self.chars.next(); // consume 'x'
+                let mut peeker = self.chars.clone();
+                while let Some(c) = peeker.next() {
+                    match c {
+                        '0'..='9' | 'a'..='f' | 'A'..='F' | '_' => { _ = self.chars.next(); }
+                        _ => break,
+                    }
+                }
+                return Token::Int;
+            }
+            _ => {}
+        }
+
+        // Decimal integer or float; underscores are allowed as separators.
         let mut seen_dot = false;
+        let mut peeker = self.chars.clone();
         while let Some(char) = peeker.next() {
             match char {
-                '0'..='9' => {
+                '0'..='9' | '_' => {
                     _ = self.chars.next();
                 }
                 '.' if !seen_dot => {
@@ -2548,9 +2578,19 @@ impl<'input> Parser<'input> {
     }
 
     fn parse_int_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
+        fn parse_integer_literal(s: &str) -> Option<i64> {
+            let s = s.replace('_', "");
+            if let Some(rest) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
+                i64::from_str_radix(rest, 2).ok()
+            } else if let Some(rest) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                i64::from_str_radix(rest, 16).ok()
+            } else {
+                s.parse::<i64>().ok()
+            }
+        }
         let token = parser.lexer.next();
         let value = match token.inner {
-            Token::Int => token.span.extract_str(parser.source).parse::<i64>().ok(),
+            Token::Int => parse_integer_literal(token.span.extract_str(parser.source)),
             _ => unreachable!(),
         };
 
