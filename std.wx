@@ -1,16 +1,87 @@
 pub struct string {
-  ptr: []u8,
-  len: u32,
+  bytes: []u8,
 }
 
 const ASCII_CASE_MASK: u8 = 0b0010_0000;
 
 impl char {
+  #[inline]
   pub fn to_ascii_uppercase(self) -> char {
-    if self >= 'a' && self <= 'z' {
+    if self.is_ascii_lowercase() {
       ((self as u8) ^ ASCII_CASE_MASK) as char
     } else {
       self
     }
+  }
+
+  #[inline]
+  pub fn to_ascii_lowercase(self) -> char {
+    if self.is_ascii_uppercase() {
+      ((self as u8) ^ ASCII_CASE_MASK) as char
+    } else {
+      self
+    }
+  }
+
+  #[inline]
+  pub fn is_ascii(self) -> bool {
+    (self as u32) <= 0x7F
+  }
+
+  #[inline]
+  pub fn is_ascii_uppercase(self) -> bool {
+    self >= 'A' && self <= 'Z'
+  }
+
+  #[inline]
+  pub fn is_ascii_lowercase(self) -> bool {
+    self >= 'a' && self <= 'z'
+  }
+  
+  #[inline]
+  pub fn is_ascii_alphabetic(self) -> bool {
+    (self >= 'A' && self <= 'Z') | (self >= 'a' && self <= 'z')
+  }
+
+  #[inline]
+  pub fn is_ascii_digit(self) -> bool {
+    self >= '0' && self <= '9'
+  }
+
+  #[inline]
+  pub fn is_ascii_alphanumeric(self) -> bool {
+    (self >= 'A' && self <= 'Z')
+      | (self >= 'a' && self <= 'z')
+      | (self >= '0' && self <= '9')
+  }
+
+  #[inline]
+  pub fn is_ascii_whitespace(self) -> bool {
+    self == '\t' || self == '\n' || self == '\x0C' || self == '\r' || self == ' '
+  }
+
+  #[inline]
+  pub fn is_ascii_control(self) -> bool {
+    (self as u32) <= 0x1F || self == '\x7F'
+  }
+
+  #[inline]
+  pub fn is_ascii_hexdigit(self) -> bool {
+    (self >= '0' && self <= '9')
+      | (self >= 'A' && self <= 'F')
+      | (self >= 'a' && self <= 'f')
+  }
+
+  #[inline]
+  pub fn is_ascii_punctuation(self) -> bool {
+    (self >= '!' && self <= '/')
+      | (self >= ':' && self <= '@')
+      | (self >= '[' && self <= '`')
+      | (self >= '{' && self <= '~')
+  }
+
+  #[inline]
+  pub fn is_ascii_graphic(self) -> bool {
+    self >= '!' && self <= '~'
   }
 }

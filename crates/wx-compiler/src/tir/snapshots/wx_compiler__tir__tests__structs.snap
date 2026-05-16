@@ -1,0 +1,163 @@
+---
+source: crates/wx-compiler/src/tir/tests.rs
+expression: case.tir
+---
+file_id: 0
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - U8
+  - I8
+  - U16
+  - I16
+  - U32
+  - I32
+  - U64
+  - I64
+  - F32
+  - F64
+  - Bool
+  - Char
+  - Struct:
+      struct_index: 0
+  - Function:
+      items:
+        - 16
+      params_count: 0
+defined_functions:
+  0:
+    name:
+      inner: 5
+      span:
+        start: 55
+        end: 59
+    params: []
+    result_span:
+      start: 65
+      end: 68
+    signature_index: 17
+    stack:
+      scopes:
+        - kind: Block
+          label: ~
+          parent: ~
+          locals: []
+          inferred_type: 16
+          expected_type: 16
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions: []
+          result:
+            kind:
+              StructInit:
+                struct_index: 0
+                fields: []
+            ty: 16
+            span:
+              start: 75
+              end: 99
+      ty: 16
+      span:
+        start: 69
+        end: 101
+    pub_span: ~
+    attributes: []
+defined_globals: {}
+import_modules: []
+enums: []
+modules: []
+exports:
+  5:
+    Function:
+      internal_name:
+        inner: 5
+        span:
+          start: 112
+          end: 116
+      external_name: ~
+      func_index: 0
+declared_functions:
+  - source: Defined
+    signature_index: 17
+    name:
+      inner: 5
+      span:
+        start: 55
+        end: 59
+    params: []
+    result:
+      inner: 16
+      span:
+        start: 65
+        end: 68
+    accesses:
+      - caller: ~
+        kind: Reference
+        span:
+          start: 112
+          end: 116
+declared_globals: []
+diagnostics:
+  - severity: Error
+    code: E1026
+    message: "field `ptr` specified more than once"
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 90
+          end: 93
+        message: ""
+      - style: Secondary
+        file_id: 0
+        range:
+          start: 82
+          end: 85
+        message: first use of this field
+    notes: []
+  - severity: Error
+    code: E1027
+    message: "missing fields `len` in initializer of `str`"
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 75
+          end: 99
+        message: ""
+    notes: []
+structs:
+  - name:
+      inner: 1
+      span:
+        start: 7
+        end: 10
+    fields:
+      - name:
+          inner: 2
+          span:
+            start: 21
+            end: 24
+        ty:
+          inner: 8
+          span:
+            start: 26
+            end: 29
+      - name:
+          inner: 4
+          span:
+            start: 39
+            end: 42
+        ty:
+          inner: 8
+          span:
+            start: 44
+            end: 47
+    lookup:
+      2: 0
+      4: 1
+impl_members: {}

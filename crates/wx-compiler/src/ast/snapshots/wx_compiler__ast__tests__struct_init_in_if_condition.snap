@@ -1,5 +1,5 @@
 ---
-source: crates/wx-compiler/src/ast.rs
+source: crates/wx-compiler/src/ast/tests.rs
 expression: case.ast
 ---
 file_id: 0
@@ -20,6 +20,7 @@ items:
       inner:
         Function:
           pub_span: ~
+          attributes: []
           signature:
             name:
               inner: 1
@@ -56,7 +57,7 @@ items:
             result:
               inner:
                 Identifier:
-                  symbol: 5
+                  symbol: 4
               span:
                 start: 22
                 end: 26
@@ -73,7 +74,7 @@ items:
                           LocalDefinition:
                             mut_span: ~
                             name:
-                              inner: 6
+                              inner: 5
                               span:
                                 start: 39
                                 end: 40
@@ -94,7 +95,7 @@ items:
                                       - inner:
                                           inner:
                                             name:
-                                              inner: 7
+                                              inner: 6
                                               span:
                                                 start: 52
                                                 end: 53
@@ -114,7 +115,7 @@ items:
                                       - inner:
                                           inner:
                                             name:
-                                              inner: 8
+                                              inner: 7
                                               span:
                                                 start: 58
                                                 end: 59
@@ -153,12 +154,12 @@ items:
                                             object:
                                               inner:
                                                 Identifier:
-                                                  symbol: 6
+                                                  symbol: 5
                                               span:
                                                 start: 72
                                                 end: 73
                                             member:
-                                              inner: 7
+                                              inner: 6
                                               span:
                                                 start: 74
                                                 end: 75
@@ -181,7 +182,7 @@ items:
                                                 start: 79
                                                 end: 80
                                             member:
-                                              inner: 7
+                                              inner: 6
                                               span:
                                                 start: 81
                                                 end: 82

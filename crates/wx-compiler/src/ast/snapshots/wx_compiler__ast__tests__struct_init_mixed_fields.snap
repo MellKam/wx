@@ -1,5 +1,5 @@
 ---
-source: crates/wx-compiler/src/ast.rs
+source: crates/wx-compiler/src/ast/tests.rs
 expression: case.ast
 ---
 file_id: 0
@@ -20,6 +20,7 @@ items:
       inner:
         Function:
           pub_span: ~
+          attributes: []
           signature:
             name:
               inner: 1
@@ -48,7 +49,7 @@ items:
                           LocalDefinition:
                             mut_span: ~
                             name:
-                              inner: 3
+                              inner: 2
                               span:
                                 start: 22
                                 end: 23
@@ -69,7 +70,7 @@ items:
                           LocalDefinition:
                             mut_span: ~
                             name:
-                              inner: 4
+                              inner: 3
                               span:
                                 start: 38
                                 end: 39
@@ -78,7 +79,7 @@ items:
                               inner:
                                 StructInit:
                                   name:
-                                    inner: 5
+                                    inner: 4
                                     span:
                                       start: 42
                                       end: 46
@@ -90,7 +91,7 @@ items:
                                       - inner:
                                           inner:
                                             name:
-                                              inner: 6
+                                              inner: 5
                                               span:
                                                 start: 50
                                                 end: 51
@@ -110,7 +111,7 @@ items:
                                       - inner:
                                           inner:
                                             name:
-                                              inner: 7
+                                              inner: 6
                                               span:
                                                 start: 56
                                                 end: 57
@@ -130,7 +131,7 @@ items:
                                       - inner:
                                           inner:
                                             name:
-                                              inner: 3
+                                              inner: 2
                                               span:
                                                 start: 62
                                                 end: 63

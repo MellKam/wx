@@ -99,25 +99,42 @@ functions:
               ty: Bool
       ty: Bool
     inline: true
-  - signature_index: 2
+  - signature_index: 5
     scopes:
       - kind: Block
         parent: ~
         locals:
-          - ty: U32
+          - ty:
+              Tuple:
+                tuple_index: 0
             mutability: Immutable
-        result: U32
+        result: Unit
     block:
       kind:
         Block:
           scope_index: 0
           expressions:
             - kind:
-                LocalGet:
+                LocalSet:
                   scope_index: 0
                   local_index: 0
-              ty: U32
-      ty: U32
+                  value:
+                    kind:
+                      Packed:
+                        fields:
+                          - kind:
+                              StringIndex:
+                                string_index: 0
+                            ty: Pointer
+                          - kind:
+                              Int:
+                                value: 5
+                            ty: U32
+                    ty:
+                      Tuple:
+                        tuple_index: 0
+              ty: Unit
+      ty: Unit
     inline: false
 signatures:
   - items:
@@ -137,13 +154,28 @@ signatures:
       - U32
       - Bool
     params_count: 1
+  - items:
+      - U32
+      - U32
+      - Unit
+    params_count: 2
+  - items:
+      - Unit
+    params_count: 0
 globals: []
 exports:
   - Function:
-      func_index: 2
-      name: 56
-imports: []
+      func_index: 3
+      name: 59
+imports:
+  - name: console
+    items:
+      - Function:
+          name: 57
+          func_index: 0
+          signature_index: 22
 tuples:
   - fields:
       - I32
-strings: []
+strings:
+  - 67

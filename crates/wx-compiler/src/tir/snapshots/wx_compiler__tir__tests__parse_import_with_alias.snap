@@ -1,0 +1,196 @@
+---
+source: crates/wx-compiler/src/tir/tests.rs
+expression: case.tir
+---
+file_id: 0
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - U8
+  - I8
+  - U16
+  - I16
+  - U32
+  - I32
+  - U64
+  - I64
+  - F32
+  - F64
+  - Bool
+  - Char
+  - Function:
+      items:
+        - 8
+        - 8
+        - 1
+      params_count: 2
+  - Function:
+      items:
+        - 1
+      params_count: 0
+  - ImportModule:
+      module_index: 0
+defined_functions:
+  1:
+    name:
+      inner: 8
+      span:
+        start: 76
+        end: 80
+    params: []
+    result_span:
+      start: 86
+      end: 90
+    signature_index: 17
+    stack:
+      scopes:
+        - kind: Block
+          label: ~
+          parent: ~
+          locals: []
+          inferred_type: 1
+          expected_type: 1
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Call:
+                  callee:
+                    kind:
+                      NamespaceAccess:
+                        ty:
+                          inner: 18
+                          span:
+                            start: 97
+                            end: 104
+                        member:
+                          inner: 3
+                          span:
+                            start: 106
+                            end: 109
+                    ty: 16
+                    span:
+                      start: 97
+                      end: 109
+                  arguments:
+                    - kind:
+                        Int:
+                          value: 0
+                      ty: 8
+                      span:
+                        start: 110
+                        end: 111
+                    - kind:
+                        Int:
+                          value: 0
+                      ty: 8
+                      span:
+                        start: 113
+                        end: 114
+              ty: 1
+              span:
+                start: 97
+                end: 115
+          result: ~
+      ty: 1
+      span:
+        start: 91
+        end: 118
+    pub_span: ~
+    attributes: []
+defined_globals: {}
+import_modules:
+  - external_name:
+      inner: 2
+      span:
+        start: 7
+        end: 16
+    internal_name:
+      inner: 2
+      span:
+        start: 20
+        end: 27
+    lookup:
+      3:
+        Function:
+          func_index: 0
+enums: []
+modules: []
+exports:
+  8:
+    Function:
+      internal_name:
+        inner: 8
+        span:
+          start: 129
+          end: 133
+      external_name: ~
+      func_index: 1
+declared_functions:
+  - source: Imported
+    signature_index: 16
+    name:
+      inner: 3
+      span:
+        start: 37
+        end: 40
+    params:
+      - name:
+          inner: 4
+          span:
+            start: 41
+            end: 44
+        ty:
+          inner: 8
+          span:
+            start: 46
+            end: 49
+      - name:
+          inner: 6
+          span:
+            start: 51
+            end: 54
+        ty:
+          inner: 8
+          span:
+            start: 56
+            end: 59
+    result:
+      inner: 1
+      span:
+        start: 64
+        end: 68
+    accesses:
+      - caller: 1
+        kind: Reference
+        span:
+          start: 106
+          end: 109
+  - source: Defined
+    signature_index: 17
+    name:
+      inner: 8
+      span:
+        start: 76
+        end: 80
+    params: []
+    result:
+      inner: 1
+      span:
+        start: 86
+        end: 90
+    accesses:
+      - caller: ~
+        kind: Reference
+        span:
+          start: 129
+          end: 133
+declared_globals: []
+diagnostics: []
+structs: []
+impl_members:
+  18: {}

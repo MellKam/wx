@@ -46,8 +46,34 @@ impl Builder {
 
             items.push(match &item.inner.inner {
                 Item::Function {
-                    signature, block, ..
-                } => Self::build_function_definition(interner, source, signature, block),
+                    signature,
+                    block,
+                    attributes,
+                    pub_span,
+                } => {
+                    let mut items = Vec::new();
+                    Builder::build_attributes(&mut items, interner, attributes);
+                    if pub_span.is_some() {
+                        items.push(Node::Text("pub ".to_string()));
+                    }
+                    Builder::build_function_signature(&mut items, interner, signature);
+                    items.push(Self::build_expression(interner, source, block));
+                    Node::Group(Box::new(Node::Concat(items)))
+                }
+                Item::FunctionDeclaration {
+                    pub_span,
+                    attributes,
+                    signature,
+                } => {
+                    let mut items = Vec::new();
+                    Builder::build_attributes(&mut items, interner, attributes);
+                    if pub_span.is_some() {
+                        items.push(Node::Text("pub ".to_string()));
+                    }
+                    Builder::build_function_signature(&mut items, interner, signature);
+                    items.push(Node::Text(";".to_string()));
+                    Node::Concat(items)
+                }
                 Item::Global {
                     mut_span,
                     name,
@@ -61,52 +87,7 @@ impl Builder {
                     type_annotation,
                     value,
                 ),
-                Item::Export { entries } => {
-                    let mut items = Vec::new();
-                    items.push(Node::Text("export {".to_string()));
-
-                    if !entries.inner.is_empty() {
-                        let entry_items = entries
-                            .inner
-                            .iter()
-                            .enumerate()
-                            .flat_map(|(index, entry)| {
-                                let mut entry_nodes = Vec::new();
-
-                                let name = interner.resolve(entry.inner.inner.name.inner).unwrap();
-                                entry_nodes.push(Node::Text(name.to_string()));
-
-                                if let Some(alias) = &entry.inner.inner.alias {
-                                    let alias_str = interner.resolve(alias.inner).unwrap();
-                                    entry_nodes.push(Node::Text(format!(" as {}", alias_str)));
-                                }
-
-                                if entry.separator.is_some() {
-                                    entry_nodes.push(Node::Text(",".to_string()));
-                                }
-
-                                let mut result = vec![Node::Concat(entry_nodes)];
-
-                                // Add line break after each entry except the last
-                                if index + 1 < entries.inner.len() {
-                                    result.push(Node::Line);
-                                }
-
-                                result
-                            })
-                            .collect::<Vec<_>>();
-
-                        items.push(Node::Indent(Box::new(Node::Concat(
-                            std::iter::once(Node::Line)
-                                .chain(entry_items)
-                                .collect::<Vec<_>>(),
-                        ))));
-                    }
-
-                    items.push(Node::Line);
-                    items.push(Node::Text("}".to_string()));
-                    Node::Concat(items)
-                }
+                Item::Export { entries } => Builder::build_export_definition(interner, entries),
                 Item::Import {
                     module,
                     alias,
@@ -144,40 +125,12 @@ impl Builder {
 
                                 // Declaration
                                 match &entry.inner.inner.declaration {
-                                    crate::ast::ImportDeclaration::Function {
-                                        name,
-                                        params,
-                                        result,
-                                    } => {
-                                        entry_nodes.push(Node::Text("fn ".to_string()));
-                                        let fn_name = interner.resolve(name.inner).unwrap();
-                                        entry_nodes.push(Node::Text(format!("{}(", fn_name)));
-
-                                        for (i, param) in params.inner.iter().enumerate() {
-                                            if let Some(name) = &param.inner.inner.name {
-                                                entry_nodes.push(Node::Text(format!(
-                                                    "{}: ",
-                                                    interner.resolve(name.inner).unwrap()
-                                                )));
-                                            }
-                                            entry_nodes.push(Self::build_type_expression(
-                                                interner,
-                                                &param.inner.inner.ty.inner,
-                                            ));
-
-                                            if i + 1 < params.inner.len() {
-                                                entry_nodes.push(Node::Text(", ".to_string()));
-                                            }
-                                        }
-
-                                        entry_nodes.push(Node::Text(")".to_string()));
-                                        if let Some(result) = result {
-                                            entry_nodes.push(Node::Text(" -> ".to_string()));
-                                            entry_nodes.push(Self::build_type_expression(
-                                                interner,
-                                                &result.inner,
-                                            ));
-                                        }
+                                    crate::ast::ImportDeclaration::Function { signature } => {
+                                        Builder::build_function_signature(
+                                            &mut entry_nodes,
+                                            interner,
+                                            signature,
+                                        );
                                     }
                                     crate::ast::ImportDeclaration::Global {
                                         mut_span,
@@ -228,77 +181,149 @@ impl Builder {
                 Item::Enum { .. } => todo!("fmt for enum items"),
                 Item::Impl { .. } => todo!("fmt for impl items"),
                 Item::Const { .. } => todo!("fmt for const items"),
-                Item::Struct { name, fields, .. } => {
-                    let mut items = Vec::new();
-                    items.push(Node::Text(format!(
-                        "struct {} {{",
-                        interner.resolve(name.inner).unwrap()
-                    )));
-
-                    if !fields.inner.is_empty() {
-                        let field_items = fields
-                            .inner
-                            .iter()
-                            .enumerate()
-                            .flat_map(|(index, field)| {
-                                let mut nodes = Vec::new();
-
-                                if field.inner.inner.pub_span.is_some() {
-                                    nodes.push(Node::Text("pub ".to_string()));
-                                }
-                                let field_name =
-                                    interner.resolve(field.inner.inner.name.inner).unwrap();
-                                nodes.push(Node::Text(format!("{}: ", field_name)));
-                                nodes.push(Self::build_type_expression(
-                                    interner,
-                                    &field.inner.inner.ty.inner,
-                                ));
-                                if index + 1 < fields.inner.len() {
-                                    nodes.push(Node::Text(",".to_string()));
-                                } else {
-                                    nodes.push(Node::IfBreak(",".to_string()));
-                                }
-
-                                vec![Node::Concat(nodes), Node::SoftLine]
-                            })
-                            .collect::<Vec<_>>();
-
-                        items.push(Node::Indent(Box::new(Node::Concat(
-                            std::iter::once(Node::Line)
-                                .chain(field_items)
-                                .collect::<Vec<_>>(),
-                        ))));
-                        items.push(Node::Line);
-                    }
-
-                    items.push(Node::Text("}".to_string()));
-                    Node::Group(Box::new(Node::Concat(items)))
-                }
+                Item::Module { .. } => todo!("fmt for module items"),
+                Item::Struct {
+                    name,
+                    fields,
+                    pub_span,
+                } => Self::build_struct_declaration(interner, name, fields, *pub_span),
             });
         }
 
         Node::Concat(items)
     }
 
-    fn build_function_definition(
+    fn build_struct_declaration(
         interner: &StringInterner,
-        source: &str,
-        signature: &FunctionSignature,
-        block: &Spanned<Expression>,
+        name: &Spanned<SymbolU32>,
+        fields: &Grouped<Box<[Separated<Spanned<StructField>>]>>,
+        pub_span: Option<TextSpan>,
     ) -> Node {
         let mut items = Vec::new();
+        if pub_span.is_some() {
+            items.push(Node::Text("pub ".to_string()));
+        }
         items.push(Node::Text(format!(
+            "struct {} {{",
+            interner.resolve(name.inner).unwrap()
+        )));
+
+        if !fields.inner.is_empty() {
+            let field_items = fields
+                .inner
+                .iter()
+                .enumerate()
+                .flat_map(|(index, field)| {
+                    let mut nodes = Vec::new();
+
+                    if field.inner.inner.pub_span.is_some() {
+                        nodes.push(Node::Text("pub ".to_string()));
+                    }
+                    let field_name = interner.resolve(field.inner.inner.name.inner).unwrap();
+                    nodes.push(Node::Text(format!("{}: ", field_name)));
+                    nodes.push(Self::build_type_expression(
+                        interner,
+                        &field.inner.inner.ty.inner,
+                    ));
+                    if index + 1 < fields.inner.len() {
+                        nodes.push(Node::Text(",".to_string()));
+                    } else {
+                        nodes.push(Node::IfBreak(",".to_string()));
+                    }
+
+                    vec![Node::Concat(nodes), Node::SoftLine]
+                })
+                .collect::<Vec<_>>();
+
+            items.push(Node::Indent(Box::new(Node::Concat(
+                std::iter::once(Node::Line)
+                    .chain(field_items)
+                    .collect::<Vec<_>>(),
+            ))));
+            items.push(Node::Line);
+        }
+
+        items.push(Node::Text("}".to_string()));
+        Node::Group(Box::new(Node::Concat(items)))
+    }
+
+    fn build_export_definition(
+        interner: &StringInterner,
+        entries: &Grouped<Box<[Separated<Spanned<ExportEntry>>]>>,
+    ) -> Node {
+        let mut items = Vec::new();
+        items.push(Node::Text("export {".to_string()));
+
+        if !entries.inner.is_empty() {
+            let entry_items = entries
+                .inner
+                .iter()
+                .enumerate()
+                .flat_map(|(index, entry)| {
+                    let mut entry_nodes = Vec::new();
+
+                    let name = interner.resolve(entry.inner.inner.name.inner).unwrap();
+                    entry_nodes.push(Node::Text(name.to_string()));
+
+                    if let Some(alias) = &entry.inner.inner.alias {
+                        let alias_str = interner.resolve(alias.inner).unwrap();
+                        entry_nodes.push(Node::Text(format!(" as {}", alias_str)));
+                    }
+
+                    if entry.separator.is_some() {
+                        entry_nodes.push(Node::Text(",".to_string()));
+                    }
+
+                    let mut result = vec![Node::Concat(entry_nodes)];
+
+                    // Add line break after each entry except the last
+                    if index + 1 < entries.inner.len() {
+                        result.push(Node::Line);
+                    }
+
+                    result
+                })
+                .collect::<Vec<_>>();
+
+            items.push(Node::Indent(Box::new(Node::Concat(
+                std::iter::once(Node::Line)
+                    .chain(entry_items)
+                    .collect::<Vec<_>>(),
+            ))));
+        }
+
+        items.push(Node::Line);
+        items.push(Node::Text("}".to_string()));
+        Node::Concat(items)
+    }
+
+    fn build_attributes(out: &mut Vec<Node>, interner: &StringInterner, attributes: &[Attribute]) {
+        for attr in attributes {
+            out.push(Node::Text(format!(
+                "#[{}]",
+                interner.resolve(attr.name.inner).unwrap()
+            )));
+            out.push(Node::HardLine);
+        }
+    }
+
+    fn build_function_signature(
+        out: &mut Vec<Node>,
+        interner: &StringInterner,
+        signature: &FunctionSignature,
+    ) {
+        out.push(Node::Text(format!(
             "fn {}(",
             interner.resolve(signature.name.inner).unwrap()
         )));
 
         if signature.params.inner.len() > 0 {
-            items.push(Node::Indent(Box::new({
-                let mut items = Vec::new();
-                items.push(Node::Line);
+            out.push(Node::Indent(Box::new({
+                let mut params = Vec::new();
+                params.push(Node::Line);
 
                 for (index, param) in signature.params.inner.iter().enumerate() {
-                    items.push(Node::Text(format!(
+                    params.push(Node::Text(format!(
                         "{}{}",
                         match param.inner.inner.mut_span {
                             Some(_) => "mut ",
@@ -310,31 +335,28 @@ impl Builder {
                             .to_string()
                     )));
                     if let Some(ty) = &param.inner.inner.ty {
-                        items.push(Node::Text(": ".to_string()));
-                        items.push(Self::build_type_expression(interner, &ty.inner));
+                        params.push(Node::Text(": ".to_string()));
+                        params.push(Self::build_type_expression(interner, &ty.inner));
                     }
                     if index + 1 < signature.params.inner.len() {
-                        items.push(Node::Text(",".to_string()));
-                        items.push(Node::SoftLine);
+                        params.push(Node::Text(",".to_string()));
+                        params.push(Node::SoftLine);
                     } else {
-                        items.push(Node::IfBreak(",".to_string()));
+                        params.push(Node::IfBreak(",".to_string()));
                     }
                 }
 
-                Node::Concat(items)
+                Node::Concat(params)
             })));
-            items.push(Node::Line);
+            out.push(Node::Line);
         }
 
-        items.push(Node::Text(") ".to_string()));
+        out.push(Node::Text(") ".to_string()));
         if let Some(result) = &signature.result {
-            items.push(Node::Text("-> ".to_string()));
-            items.push(Self::build_type_expression(interner, &result.inner));
-            items.push(Node::Text(" ".to_string()));
+            out.push(Node::Text("-> ".to_string()));
+            out.push(Self::build_type_expression(interner, &result.inner));
+            out.push(Node::Text(" ".to_string()));
         }
-        items.push(Self::build_expression(interner, source, block));
-
-        Node::Group(Box::new(Node::Concat(items)))
     }
 
     fn build_global_definition(

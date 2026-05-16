@@ -1,0 +1,211 @@
+---
+source: crates/wx-compiler/src/tir/tests.rs
+expression: case.tir
+---
+file_id: 0
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - U8
+  - I8
+  - U16
+  - I16
+  - U32
+  - I32
+  - U64
+  - I64
+  - F32
+  - F64
+  - Bool
+  - Char
+  - Function:
+      items:
+        - 9
+        - 9
+        - 9
+      params_count: 2
+defined_functions:
+  0:
+    name:
+      inner: 1
+      span:
+        start: 3
+        end: 6
+    params:
+      - mut_span: ~
+        name:
+          inner: 2
+          span:
+            start: 7
+            end: 8
+        ty:
+          inner: 9
+          span:
+            start: 10
+            end: 13
+      - mut_span: ~
+        name:
+          inner: 4
+          span:
+            start: 15
+            end: 16
+        ty:
+          inner: 9
+          span:
+            start: 18
+            end: 21
+    result_span:
+      start: 26
+      end: 29
+    signature_index: 16
+    stack:
+      scopes:
+        - kind: Block
+          label: ~
+          parent: ~
+          locals:
+            - name:
+                inner: 2
+                span:
+                  start: 7
+                  end: 8
+              ty: 9
+              mut_span: ~
+              accesses:
+                - span:
+                    start: 32
+                    end: 33
+                  kind: Read
+            - name:
+                inner: 4
+                span:
+                  start: 15
+                  end: 16
+              ty: 9
+              mut_span: ~
+              accesses:
+                - span:
+                    start: 36
+                    end: 37
+                  kind: Read
+          inferred_type: 9
+          expected_type: 9
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions: []
+          result:
+            kind:
+              Binary:
+                operator:
+                  inner: Add
+                  span:
+                    start: 34
+                    end: 35
+                left:
+                  kind:
+                    Local:
+                      scope_index: 0
+                      local_index: 0
+                  ty: 9
+                  span:
+                    start: 32
+                    end: 33
+                right:
+                  kind:
+                    Local:
+                      scope_index: 0
+                      local_index: 1
+                  ty: 9
+                  span:
+                    start: 36
+                    end: 37
+            ty: 9
+            span:
+              start: 32
+              end: 37
+      ty: 9
+      span:
+        start: 30
+        end: 39
+    pub_span: ~
+    attributes: []
+defined_globals: {}
+import_modules: []
+enums: []
+modules: []
+exports:
+  1:
+    Function:
+      internal_name:
+        inner: 1
+        span:
+          start: 50
+          end: 53
+      external_name: ~
+      func_index: 0
+  10:
+    Function:
+      internal_name:
+        inner: 1
+        span:
+          start: 55
+          end: 58
+      external_name:
+        inner: 10
+        span:
+          start: 62
+          end: 68
+      func_index: 0
+declared_functions:
+  - source: Defined
+    signature_index: 16
+    name:
+      inner: 1
+      span:
+        start: 3
+        end: 6
+    params:
+      - name:
+          inner: 2
+          span:
+            start: 7
+            end: 8
+        ty:
+          inner: 9
+          span:
+            start: 10
+            end: 13
+      - name:
+          inner: 4
+          span:
+            start: 15
+            end: 16
+        ty:
+          inner: 9
+          span:
+            start: 18
+            end: 21
+    result:
+      inner: 9
+      span:
+        start: 26
+        end: 29
+    accesses:
+      - caller: ~
+        kind: Reference
+        span:
+          start: 50
+          end: 53
+      - caller: ~
+        kind: Reference
+        span:
+          start: 55
+          end: 58
+declared_globals: []
+diagnostics: []
+structs: []
+impl_members: {}

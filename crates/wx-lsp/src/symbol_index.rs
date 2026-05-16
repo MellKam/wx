@@ -2,8 +2,8 @@
 
 use wx_compiler::ast::TextSpan;
 use wx_compiler::tir::{
-    EnumVariantIndex, ExprKind, Expression, FunctionIndex, GlobalIndex, LocalIndex, NamespaceIndex,
-    ScopeIndex, TIR, Type,
+    EnumVariantIndex, ExprKind, Expression, FunctionIndex, GlobalIndex, LocalIndex, ScopeIndex,
+    TIR, Type,
 };
 
 /// The kind of symbol being referenced or defined
@@ -22,7 +22,7 @@ pub enum SymbolKind {
         func_idx: FunctionIndex,
     },
     EnumVariant {
-        namespace_index: NamespaceIndex,
+        enum_index: u32,
         variant_idx: EnumVariantIndex,
     },
     FunctionParam {
@@ -184,18 +184,20 @@ impl SymbolIndex {
             ) => f1 == f2 && *l1 == *p2,
             (
                 SymbolKind::Type {
-                    ty:
-                        Type::Namespace {
-                            namespace_index: n1,
-                        },
+                    ty: Type::ImportModule { module_index: m1 },
                 },
                 SymbolKind::Type {
-                    ty:
-                        Type::Namespace {
-                            namespace_index: n2,
-                        },
+                    ty: Type::ImportModule { module_index: m2 },
                 },
-            ) => n1 == n2,
+            ) => m1 == m2,
+            (
+                SymbolKind::Type {
+                    ty: Type::Enum { enum_index: e1 },
+                },
+                SymbolKind::Type {
+                    ty: Type::Enum { enum_index: e2 },
+                },
+            ) => e1 == e2,
             _ => false,
         }
     }
@@ -300,68 +302,64 @@ pub fn build_span_index(tir: &TIR) -> SymbolIndex {
         });
     }
 
-    for (namespace_index, namespace) in tir.namespaces.iter().enumerate() {
-        match namespace {
-            wx_compiler::tir::Namespace::ImportModule(module) => {
-                for import_value in module.lookup.values() {
-                    match import_value {
-                        wx_compiler::tir::ImportValue::Function { func_index } => {
-                            index.add(SpanInfo {
-                                span: tir.declared_functions[*func_index as usize].name.span,
-                                kind: SymbolKind::Function {
-                                    func_idx: *func_index,
-                                },
-                                usage: SymbolUsage::Definition,
-                            });
-                        }
-                        wx_compiler::tir::ImportValue::Global { global_index } => {
-                            index.add(SpanInfo {
-                                span: tir.declared_globals[*global_index as usize].name.span,
-                                kind: SymbolKind::GlobalVariable {
-                                    global_idx: *global_index,
-                                },
-                                usage: SymbolUsage::Definition,
-                            });
-                        }
-                    }
-                }
-                index.add(SpanInfo {
-                    span: module
-                        .internal_name
-                        .clone()
-                        .map(|n| n.span)
-                        .unwrap_or(module.external_name.span),
-                    kind: SymbolKind::Type {
-                        ty: Type::Namespace {
-                            namespace_index: namespace_index as u32,
-                        },
-                    },
-                    usage: SymbolUsage::Definition,
-                });
-            }
-            wx_compiler::tir::Namespace::Enum(enum_) => {
-                for (variant_index, variant) in enum_.variants.iter().enumerate() {
+    for (module_index, module) in tir.import_modules.iter().enumerate() {
+        for import_value in module.lookup.values() {
+            match import_value {
+                wx_compiler::tir::ImportValue::Function { func_index } => {
                     index.add(SpanInfo {
-                        span: variant.name.span,
-                        kind: SymbolKind::EnumVariant {
-                            namespace_index: namespace_index as u32,
-                            variant_idx: variant_index as u32,
+                        span: tir.declared_functions[*func_index as usize].name.span,
+                        kind: SymbolKind::Function {
+                            func_idx: *func_index,
                         },
                         usage: SymbolUsage::Definition,
                     });
                 }
-
-                index.add(SpanInfo {
-                    span: enum_.name.span,
-                    kind: SymbolKind::Type {
-                        ty: Type::Namespace {
-                            namespace_index: namespace_index as u32,
+                wx_compiler::tir::ImportValue::Global { global_index } => {
+                    index.add(SpanInfo {
+                        span: tir.declared_globals[*global_index as usize].name.span,
+                        kind: SymbolKind::GlobalVariable {
+                            global_idx: *global_index,
                         },
-                    },
-                    usage: SymbolUsage::Definition,
-                });
+                        usage: SymbolUsage::Definition,
+                    });
+                }
             }
         }
+        index.add(SpanInfo {
+            span: module
+                .internal_name
+                .clone()
+                .map(|n| n.span)
+                .unwrap_or(module.external_name.span),
+            kind: SymbolKind::Type {
+                ty: Type::ImportModule {
+                    module_index: module_index as u32,
+                },
+            },
+            usage: SymbolUsage::Definition,
+        });
+    }
+
+    for (enum_index, enum_) in tir.enums.iter().enumerate() {
+        for (variant_index, variant) in enum_.variants.iter().enumerate() {
+            index.add(SpanInfo {
+                span: variant.name.span,
+                kind: SymbolKind::EnumVariant {
+                    enum_index: enum_index as u32,
+                    variant_idx: variant_index as u32,
+                },
+                usage: SymbolUsage::Definition,
+            });
+        }
+        index.add(SpanInfo {
+            span: enum_.name.span,
+            kind: SymbolKind::Type {
+                ty: Type::Enum {
+                    enum_index: enum_index as u32,
+                },
+            },
+            usage: SymbolUsage::Definition,
+        });
     }
 
     // Sort entries for efficient lookup
@@ -422,13 +420,13 @@ fn index_expression(index: &mut SymbolIndex, func_idx: Option<FunctionIndex>, ex
             });
         }
         ExprKind::EnumVariant {
-            namespace_index,
+            enum_index,
             variant_index,
         } => {
             index.add(SpanInfo {
                 span: expr.span,
                 kind: SymbolKind::EnumVariant {
-                    namespace_index: *namespace_index,
+                    enum_index: *enum_index,
                     variant_idx: *variant_index,
                 },
                 usage: SymbolUsage::Reference,
@@ -488,18 +486,10 @@ fn index_expression(index: &mut SymbolIndex, func_idx: Option<FunctionIndex>, ex
                 index_expression(index, func_idx, value);
             }
         }
-        ExprKind::NamespaceAccess {
-            namespace_index,
-            namespace_span,
-            member,
-        } => {
+        ExprKind::NamespaceAccess { ty, member } => {
             index.add(SpanInfo {
-                span: namespace_span.clone(),
-                kind: SymbolKind::Type {
-                    ty: Type::Namespace {
-                        namespace_index: *namespace_index,
-                    },
-                },
+                span: ty.span,
+                kind: SymbolKind::Type { ty: *ty.inner },
                 usage: SymbolUsage::Reference,
             });
 

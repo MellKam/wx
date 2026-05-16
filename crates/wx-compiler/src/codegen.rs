@@ -66,7 +66,7 @@ impl From<mir::FunctionSignature> for FunctionSignature {
                     param_results.push(ValueType::I32);
                     param_results.push(ValueType::I32);
                 }
-                mir::Type::StringPointer | mir::Type::I32 | mir::Type::U32 => {
+                mir::Type::Pointer | mir::Type::I32 | mir::Type::U32 => {
                     param_results.push(ValueType::I32)
                 }
                 mir::Type::I64 | mir::Type::U64 => param_results.push(ValueType::I64),
@@ -81,7 +81,7 @@ impl From<mir::FunctionSignature> for FunctionSignature {
                 param_results.push(ValueType::I32);
                 param_results.push(ValueType::I32);
             }
-            mir::Type::StringPointer | mir::Type::I32 | mir::Type::U32 | mir::Type::Bool => {
+            mir::Type::Pointer | mir::Type::I32 | mir::Type::U32 | mir::Type::Bool => {
                 param_results.push(ValueType::I32)
             }
             mir::Type::I64 | mir::Type::U64 => param_results.push(ValueType::I64),
@@ -372,6 +372,9 @@ pub struct WasmModule {
 pub struct Builder {
     table: Vec<FuncIndex>,
     string_pool: StringPool,
+    /// Maps MIR func_index → WASM func_index. Inline functions are absent from
+    /// WASM, so their slots hold u32::MAX (never accessed during emit).
+    mir_to_wasm: Box<[u32]>,
 }
 
 impl TryFrom<mir::Type> for ValueType {
@@ -386,7 +389,7 @@ impl TryFrom<mir::Type> for ValueType {
             mir::Type::F64 => Ok(ValueType::F64),
             mir::Type::U32 => Ok(ValueType::I32),
             mir::Type::U64 => Ok(ValueType::I64),
-            mir::Type::StringPointer => Ok(ValueType::I32),
+            mir::Type::Pointer => Ok(ValueType::I32),
             mir::Type::Function { .. } => Ok(ValueType::I32),
             ty => {
                 eprintln!("Unsupported type in codegen: {:?}", ty);
@@ -410,6 +413,7 @@ struct FunctionContext<'mir> {
     locals: Box<[Local]>,
     scope_offsets: Box<[usize]>,
     scopes: &'mir Vec<mir::BlockScope>,
+    tuples: &'mir [mir::Tuple],
     scope_index: mir::ScopeIndex,
 }
 
@@ -417,6 +421,11 @@ impl FunctionContext<'_> {
     fn get_flat_index(&self, scope_index: tir::ScopeIndex, local_index: tir::LocalIndex) -> u32 {
         let scope_offset = self.scope_offsets[scope_index as usize];
         self.local_offsets[scope_offset + local_index as usize] as u32
+    }
+
+    fn get_local_width(&self, scope_index: tir::ScopeIndex, local_index: tir::LocalIndex) -> u32 {
+        let flat = self.scope_offsets[scope_index as usize] + local_index as usize;
+        (self.local_offsets[flat + 1] - self.local_offsets[flat]) as u32
     }
 
     pub fn get_break_depth(&self, target_scope: tir::ScopeIndex) -> Option<u32> {
@@ -498,6 +507,7 @@ impl Builder {
         let mut builder = Builder {
             table: Vec::new(),
             string_pool: StringPool::new(),
+            mir_to_wasm: Box::new([]),
         };
 
         for symbol in mir.strings.iter().copied() {
@@ -561,6 +571,28 @@ impl Builder {
             }
         }
 
+        // Build the MIR→WASM function index map now that `imports` is complete.
+        // Imported functions occupy indices 0..import_func_count; defined
+        // non-inline functions follow. Inline functions have no WASM slot.
+        let import_func_count = imports
+            .iter()
+            .filter(|i| matches!(i.desc, ImportDesc::Function { .. }))
+            .count() as u32;
+        builder.mir_to_wasm = {
+            let mut map = vec![u32::MAX; import_func_count as usize + mir.functions.len()];
+            for i in 0..import_func_count as usize {
+                map[i] = i as u32;
+            }
+            let mut wasm_idx = import_func_count;
+            for (i, func) in mir.functions.iter().enumerate() {
+                if !func.inline {
+                    map[import_func_count as usize + i] = wasm_idx;
+                    wasm_idx += 1;
+                }
+            }
+            map.into_boxed_slice()
+        };
+
         let mut function_signatures = Vec::<SignatureIndex>::with_capacity(mir.functions.len());
         let exports: Box<_> = mir
             .exports
@@ -572,9 +604,7 @@ impl Builder {
                 },
                 mir::ExportItem::Function { func_index, name } => ExportItem::Function {
                     name: interner.resolve(*name).unwrap().to_string(),
-                    // MIR func_index already accounts for imports (absolute index in function
-                    // space)
-                    func_index: FuncIndex(*func_index),
+                    func_index: FuncIndex(builder.mir_to_wasm[*func_index as usize]),
                 },
             })
             .chain(if required_pages > 0 {
@@ -588,7 +618,7 @@ impl Builder {
             .collect();
 
         let mut functions = Vec::<FunctionBody>::with_capacity(mir.functions.len());
-        for func in mir.functions.iter() {
+        for func in mir.functions.iter().filter(|f| !f.inline) {
             let signature =
                 FunctionSignature::from(mir.signatures[func.signature_index as usize].clone());
             let next_signature_index = SignatureIndex(signatures.len() as u32);
@@ -647,6 +677,7 @@ impl Builder {
                 local_offsets: local_offsets.into_boxed_slice(),
                 scope_index: 0 as tir::ScopeIndex,
                 scopes: &func.scopes,
+                tuples: &mir.tuples,
             };
 
             let mut sink = Vec::new();
@@ -792,8 +823,9 @@ impl Builder {
                 _ => unreachable!(),
             },
             mir::ExprKind::Function { func_index } => {
+                let wasm_index = self.mir_to_wasm[*func_index as usize];
                 let table_index = self.table.len() as i32;
-                self.table.push(FuncIndex(*func_index));
+                self.table.push(FuncIndex(wasm_index));
                 sink.push(Instruction::I32Const as u8);
                 table_index.encode(sink);
             }
@@ -810,7 +842,7 @@ impl Builder {
                 match callee.kind {
                     mir::ExprKind::Function { func_index } => {
                         sink.push(Instruction::Call as u8);
-                        func_index.encode(sink);
+                        self.mir_to_wasm[func_index as usize].encode(sink);
                     }
                     _ => match callee.ty {
                         mir::Type::Function { signature_index } => {
@@ -828,11 +860,12 @@ impl Builder {
                 scope_index,
             } => match expr.ty {
                 mir::Type::Tuple { .. } => {
-                    let tuple_start_index = ctx.get_flat_index(*scope_index, *local_index);
-                    sink.push(Instruction::LocalGet as u8);
-                    tuple_start_index.encode(sink);
-                    sink.push(Instruction::LocalGet as u8);
-                    (tuple_start_index + 1).encode(sink);
+                    let start = ctx.get_flat_index(*scope_index, *local_index);
+                    let width = ctx.get_local_width(*scope_index, *local_index);
+                    for i in 0..width {
+                        sink.push(Instruction::LocalGet as u8);
+                        (start + i).encode(sink);
+                    }
                 }
                 _ => {
                     sink.push(Instruction::LocalGet as u8);
@@ -844,23 +877,16 @@ impl Builder {
                 scope_index,
                 value,
             } => match value.ty {
-                mir::Type::Tuple { .. } => match &value.kind {
-                    mir::ExprKind::String { string_index } => {
-                        let tuple_start_index = ctx.get_flat_index(*scope_index, *local_index);
-                        let (offset, len) = self.string_pool.strings[*string_index as usize];
-
-                        sink.push(Instruction::I32Const as u8);
-                        offset.encode(sink);
+                mir::Type::Tuple { .. } => {
+                    let start = ctx.get_flat_index(*scope_index, *local_index);
+                    let width = ctx.get_local_width(*scope_index, *local_index);
+                    self.build_expression(ctx, value, sink);
+                    // Fields are pushed left-to-right; set in reverse (LIFO).
+                    for i in (0..width).rev() {
                         sink.push(Instruction::LocalSet as u8);
-                        tuple_start_index.encode(sink);
-
-                        sink.push(Instruction::I32Const as u8);
-                        len.encode(sink);
-                        sink.push(Instruction::LocalSet as u8);
-                        (tuple_start_index + 1).encode(sink);
+                        (start + i).encode(sink);
                     }
-                    _ => unreachable!(),
-                },
+                }
                 _ => {
                     self.build_expression(ctx, &value, sink);
                     sink.push(Instruction::LocalSet as u8);
@@ -888,7 +914,15 @@ impl Builder {
             }
             mir::ExprKind::Drop { value } => {
                 self.build_expression(ctx, value, sink);
-                sink.push(Instruction::Drop as u8);
+                let drop_count = match value.ty {
+                    mir::Type::Tuple { tuple_index } => {
+                        ctx.tuples[tuple_index as usize].fields.len()
+                    }
+                    _ => 1,
+                };
+                for _ in 0..drop_count {
+                    sink.push(Instruction::Drop as u8);
+                }
             }
             mir::ExprKind::Block {
                 expressions,
@@ -979,15 +1013,12 @@ impl Builder {
                 sink.push(Instruction::End as u8);
             }
             mir::ExprKind::Noop => {}
-            mir::ExprKind::String { string_index, .. } => {
-                let (ptr, len) = self.string_pool.strings[*string_index as usize];
-
+            mir::ExprKind::StringIndex { string_index } => {
+                let (ptr, _len) = self.string_pool.strings[*string_index as usize];
                 sink.push(Instruction::I32Const as u8);
                 (ptr as i32).encode(sink);
-                sink.push(Instruction::I32Const as u8);
-                (len as i32).encode(sink);
             }
-            mir::ExprKind::LocalTupleGet {
+            mir::ExprKind::PackedFieldGet {
                 scope_index,
                 local_index,
                 field_index,
@@ -995,6 +1026,11 @@ impl Builder {
                 let local_index = ctx.get_flat_index(*scope_index, *local_index) + *field_index;
                 sink.push(Instruction::LocalGet as u8);
                 local_index.encode(sink);
+            }
+            mir::ExprKind::Packed { fields } => {
+                for field in fields.iter() {
+                    self.build_expression(ctx, field, sink);
+                }
             }
             mir::ExprKind::Neg { value } => match expr.ty {
                 mir::Type::I32 => {
@@ -2066,7 +2102,7 @@ mod tests {
                 }
                 std::process::exit(1);
             }
-            let tir = tir::TIR::build(&ast, &mut interner);
+            let tir = tir::TIR::build(&[&ast], &mut interner);
             if tir.diagnostics.len() > 0 {
                 let writer = StandardStream::stderr(ColorChoice::Always);
                 let config = codespan_reporting::term::Config::default();

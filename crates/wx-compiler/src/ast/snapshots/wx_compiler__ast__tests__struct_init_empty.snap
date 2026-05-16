@@ -1,5 +1,5 @@
 ---
-source: crates/wx-compiler/src/ast.rs
+source: crates/wx-compiler/src/ast/tests.rs
 expression: case.ast
 ---
 file_id: 0
@@ -9,6 +9,7 @@ items:
       inner:
         Function:
           pub_span: ~
+          attributes: []
           signature:
             name:
               inner: 1
@@ -37,7 +38,7 @@ items:
                           LocalDefinition:
                             mut_span: ~
                             name:
-                              inner: 3
+                              inner: 2
                               span:
                                 start: 22
                                 end: 23
@@ -46,7 +47,7 @@ items:
                               inner:
                                 StructInit:
                                   name:
-                                    inner: 4
+                                    inner: 3
                                     span:
                                       start: 26
                                       end: 30

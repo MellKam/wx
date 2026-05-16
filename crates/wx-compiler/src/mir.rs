@@ -16,7 +16,7 @@ pub type TupleIndex = u32;
 pub type StringIndex = u32;
 
 #[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ExprKind {
     Noop,
     Bool {
@@ -35,27 +35,21 @@ pub enum ExprKind {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
     },
-    LocalTupleGet {
-        scope_index: ScopeIndex,
-        local_index: LocalIndex,
-        field_index: u32,
-    },
-    /// Get a field from an arbitrary struct/tuple expression.
-    TupleFieldGet {
-        object: Box<Expression>,
-        field_index: u32,
-    },
-    /// Construct a struct/tuple value from its fields (in declaration order).
-    StructCreate {
-        fields: Box<[Expression]>,
-    },
     LocalSet {
         scope_index: ScopeIndex,
         local_index: LocalIndex,
         value: Box<Expression>,
     },
-    String {
+    StringIndex {
         string_index: StringIndex,
+    },
+    Packed {
+        fields: Box<[Expression]>,
+    },
+    PackedFieldGet {
+        scope_index: ScopeIndex,
+        local_index: LocalIndex,
+        field_index: u32,
     },
     Global {
         global_index: GlobalIndex,
@@ -194,13 +188,13 @@ pub enum Type {
     Unit,
     Never,
     Bool,
-    StringPointer,
+    Pointer,
     Tuple { tuple_index: TupleIndex },
     Function { signature_index: SignatureIndex },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expression {
     pub kind: ExprKind,
     pub ty: Type,
@@ -277,6 +271,7 @@ pub struct Local {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone)]
 pub struct BlockScope {
     pub kind: tir::BlockKind,
     pub parent: Option<ScopeIndex>,
@@ -302,10 +297,12 @@ impl FunctionSignature {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone)]
 pub struct Function {
     pub signature_index: SignatureIndex,
     pub scopes: Vec<BlockScope>,
     pub block: Expression,
+    pub inline: bool,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -321,18 +318,10 @@ struct TuplePool {
 }
 
 impl TuplePool {
-    const STRING_TUPLE_INDEX: TupleIndex = 0;
-
     fn new() -> Self {
-        let mut lookup = HashMap::new();
-        let string_tuple = Tuple {
-            fields: Box::new([Type::StringPointer, Type::U32]),
-        };
-        lookup.insert(string_tuple.clone(), 0);
-
         TuplePool {
-            lookup,
-            tuples: vec![string_tuple],
+            lookup: HashMap::new(),
+            tuples: Vec::new(),
         }
     }
 
@@ -385,6 +374,8 @@ fn build_index_remap_filtered<T>(
             }
             // Dead defined items get no MIR slot; sentinel value is never accessed.
             tir::ItemSource::Defined => u32::MAX,
+            // Built-in items (compiler intrinsics) get no MIR slot.
+            tir::ItemSource::Buildin => u32::MAX,
         };
     }
 
@@ -438,6 +429,7 @@ impl MIR {
 
         let mut builder = Builder {
             tir,
+            interner,
             string_pool: StringPool::new(),
             tuple_pool: TuplePool::new(),
             func_index_remap,
@@ -456,9 +448,11 @@ impl MIR {
             .enumerate()
             .filter(|(_, decl)| decl.source == tir::ItemSource::Defined && is_function_live(decl))
             .filter_map(|(tir_index, _)| {
-                tir.defined_functions
-                    .get(&(tir_index as u32))
-                    .map(|func| builder.lower_function(func))
+                tir.defined_functions.get(&(tir_index as u32)).map(|func| {
+                    let mut mir_func = builder.lower_function(func);
+                    mir_func.inline = func.is_inline();
+                    mir_func
+                })
             })
             .collect();
 
@@ -493,77 +487,80 @@ impl MIR {
             })
             .collect();
 
-        MIR {
+        let mut mir = MIR {
             functions,
             globals,
             strings: builder.string_pool.strings.into_boxed_slice(),
             signatures,
             tuples: builder.tuple_pool.tuples.into_boxed_slice(),
             imports: tir
-                .namespaces
+                .import_modules
                 .iter()
-                .filter_map(|namespace| match namespace {
-                    tir::Namespace::ImportModule(module) => Some(ImportModule {
-                        name: interner
-                            .resolve(module.external_name.inner)
-                            .unwrap()
-                            .to_string(),
-                        items: module
-                            .lookup
-                            .iter()
-                            .map(|(symbol, value)| match value {
-                                tir::ImportValue::Function { func_index } => {
-                                    let signature_index = tir.declared_functions
-                                        [*func_index as usize]
-                                        .signature_index;
-                                    ImportModuleItem::Function {
-                                        name: *symbol,
-                                        func_index: builder.func_index_remap[*func_index as usize],
-                                        signature_index,
-                                    }
+                .map(|module| ImportModule {
+                    name: interner
+                        .resolve(module.external_name.inner)
+                        .unwrap()
+                        .to_string(),
+                    items: module
+                        .lookup
+                        .iter()
+                        .map(|(symbol, value)| match value {
+                            tir::ImportValue::Function { func_index } => {
+                                let signature_index =
+                                    tir.declared_functions[*func_index as usize].signature_index;
+                                ImportModuleItem::Function {
+                                    name: *symbol,
+                                    func_index: builder.func_index_remap[*func_index as usize],
+                                    signature_index,
                                 }
-                                tir::ImportValue::Global { global_index } => {
-                                    ImportModuleItem::Global {
-                                        name: *symbol,
-                                        global_index: builder.global_index_remap
-                                            [*global_index as usize],
-                                    }
-                                }
-                            })
-                            .collect(),
-                    }),
-                    _ => None,
+                            }
+                            tir::ImportValue::Global { global_index } => ImportModuleItem::Global {
+                                name: *symbol,
+                                global_index: builder.global_index_remap[*global_index as usize],
+                            },
+                        })
+                        .collect(),
                 })
                 .collect(),
-            exports: tir
-                .exports
-                .iter()
-                .map(|export| match export {
-                    tir::ExportItem::Function {
-                        func_index,
-                        external_name,
-                        internal_name,
-                    } => ExportItem::Function {
-                        func_index: builder.func_index_remap[*func_index as usize],
-                        name: external_name
-                            .clone()
-                            .map(|n| n.inner)
-                            .unwrap_or(internal_name.inner),
-                    },
-                    tir::ExportItem::Global {
-                        global_index,
-                        external_name,
-                        internal_name,
-                    } => ExportItem::Global {
-                        global_index: builder.global_index_remap[*global_index as usize],
-                        name: external_name
-                            .clone()
-                            .map(|n| n.inner)
-                            .unwrap_or(internal_name.inner),
-                    },
-                })
-                .collect(),
-        }
+            exports: {
+                let mut exports: Vec<ExportItem> = tir
+                    .exports
+                    .values()
+                    .map(|export| match export {
+                        tir::ExportItem::Function {
+                            func_index,
+                            external_name,
+                            internal_name,
+                        } => ExportItem::Function {
+                            func_index: builder.func_index_remap[*func_index as usize],
+                            name: external_name
+                                .clone()
+                                .map(|n| n.inner)
+                                .unwrap_or(internal_name.inner),
+                        },
+                        tir::ExportItem::Global {
+                            global_index,
+                            external_name,
+                            internal_name,
+                        } => ExportItem::Global {
+                            global_index: builder.global_index_remap[*global_index as usize],
+                            name: external_name
+                                .clone()
+                                .map(|n| n.inner)
+                                .unwrap_or(internal_name.inner),
+                        },
+                    })
+                    .collect();
+                exports.sort_by_key(|e| match e {
+                    ExportItem::Function { name, .. } => *name,
+                    ExportItem::Global { name, .. } => *name,
+                });
+                exports
+            },
+        };
+
+        run_inlining_pass(&mut mir);
+        mir
     }
 }
 
@@ -594,6 +591,7 @@ impl StringPool {
 
 struct Builder<'tir> {
     tir: &'tir tir::TIR,
+    interner: &'tir ast::StringInterner,
     string_pool: StringPool,
     tuple_pool: TuplePool,
     func_index_remap: Box<[u32]>,
@@ -650,7 +648,8 @@ impl<'tir> Builder<'tir> {
             // Types not yet supported in MIR — map to I32 as a placeholder
             tir::Type::Unknown
             | tir::Type::Error
-            | tir::Type::Namespace { .. }
+            | tir::Type::ImportModule { .. }
+            | tir::Type::Enum { .. }
             | tir::Type::Pointer { .. }
             | tir::Type::Array { .. }
             | tir::Type::Slice { .. }
@@ -664,14 +663,13 @@ impl<'tir> Builder<'tir> {
             .scopes
             .iter()
             .map(|scope| {
-                let local_type_indices: Box<[(tir::TypeIndex, Option<ast::TextSpan>)]> =
-                    scope.locals.iter().map(|l| (l.ty, l.mut_span)).collect();
-                let result_type_idx = scope.inferred_type.unwrap_or(tir::UNIT_IDX);
-                let locals = local_type_indices
+                let result_type_idx = scope.inferred_type.unwrap_or(tir::Type::UNIT_IDX);
+                let locals = scope
+                    .locals
                     .iter()
-                    .map(|&(ty_idx, mut_span)| Local {
-                        ty: self.lower_type_index(ty_idx),
-                        mutability: if mut_span.is_some() {
+                    .map(|tir_local| Local {
+                        ty: self.lower_type_index(tir_local.ty),
+                        mutability: if tir_local.mut_span.is_some() {
                             Mutability::Mutable
                         } else {
                             Mutability::Immutable
@@ -692,12 +690,14 @@ impl<'tir> Builder<'tir> {
             frame,
         };
 
-        let block = self.lower_expression(&mut ctx, &func.block);
+        let mut top_sink = Vec::new();
+        let block = self.lower_expression(&mut ctx, &func.block, &mut top_sink);
 
         Function {
             signature_index: self.sig_index_remap[&func.signature_index],
             scopes: ctx.frame,
             block,
+            inline: false,
         }
     }
 
@@ -714,7 +714,7 @@ impl<'tir> Builder<'tir> {
             } else {
                 Mutability::Immutable
             },
-            value: self.lower_expression(&mut dummy_ctx, &global.value.inner),
+            value: self.lower_expression(&mut dummy_ctx, &global.value.inner, &mut Vec::new()),
         }
     }
 
@@ -722,6 +722,7 @@ impl<'tir> Builder<'tir> {
         &mut self,
         func_ctx: &mut FunctionContext,
         expr: &tir::Expression,
+        sink: &mut Vec<Expression>,
     ) -> Expression {
         use crate::ast::{BinaryOp, UnaryOp};
 
@@ -773,38 +774,46 @@ impl<'tir> Builder<'tir> {
             },
             tir::ExprKind::String { symbol } => {
                 let string_index = self.string_pool.add(*symbol);
+                let len = self.interner.resolve(*symbol).unwrap().len() as i64;
+                let ty = self.lower_type_index(expr.ty);
                 Expression {
-                    kind: ExprKind::String { string_index },
-                    ty: Type::Tuple {
-                        tuple_index: TuplePool::STRING_TUPLE_INDEX,
+                    kind: ExprKind::Packed {
+                        fields: Box::new([
+                            Expression {
+                                kind: ExprKind::StringIndex { string_index },
+                                ty: Type::Pointer,
+                            },
+                            Expression {
+                                kind: ExprKind::Int { value: len },
+                                ty: Type::U32,
+                            },
+                        ]),
                     },
+                    ty,
                 }
             }
             tir::ExprKind::Return { value } => Expression {
                 kind: ExprKind::Return {
                     value: value
                         .as_ref()
-                        .map(|v| Box::new(self.lower_expression(func_ctx, v))),
+                        .map(|v| Box::new(self.lower_expression(func_ctx, v, sink))),
                 },
                 ty: Type::Never,
             },
             tir::ExprKind::EnumVariant {
-                namespace_index,
+                enum_index,
                 variant_index,
-            } => match &self.tir.namespaces[*namespace_index as usize] {
-                tir::Namespace::Enum(enum_) => {
-                    let variant = &enum_.variants[*variant_index as usize];
-                    self.lower_expression(func_ctx, &variant.value)
-                }
-                _ => unreachable!(),
-            },
+            } => {
+                let enum_ = &self.tir.enums[*enum_index as usize];
+                let variant = &enum_.variants[*variant_index as usize];
+                self.lower_expression(func_ctx, &variant.value, sink)
+            }
             tir::ExprKind::Call { callee, arguments } => {
-                let callee = Box::new(self.lower_expression(func_ctx, callee));
+                let callee = Box::new(self.lower_expression(func_ctx, callee, sink));
                 let arguments = arguments
                     .iter()
-                    .map(|arg| self.lower_expression(func_ctx, arg))
+                    .map(|arg| self.lower_expression(func_ctx, arg, sink))
                     .collect();
-
                 Expression {
                     kind: ExprKind::Call { callee, arguments },
                     ty: self.lower_type_index(expr.ty),
@@ -821,15 +830,14 @@ impl<'tir> Builder<'tir> {
                     },
                     ty: self.lower_type_index(expr.ty),
                 });
-                let object = Box::new(self.lower_expression(func_ctx, object));
-                let arguments: Box<_> = std::iter::once(*object)
+                let object = self.lower_expression(func_ctx, object, sink);
+                let arguments: Box<_> = std::iter::once(object)
                     .chain(
                         arguments
                             .iter()
-                            .map(|arg| self.lower_expression(func_ctx, arg)),
+                            .map(|arg| self.lower_expression(func_ctx, arg, sink)),
                     )
                     .collect();
-
                 Expression {
                     kind: ExprKind::Call { callee, arguments },
                     ty: self.lower_type_index(expr.ty),
@@ -837,37 +845,36 @@ impl<'tir> Builder<'tir> {
             }
             tir::ExprKind::NamespaceAccess { ty, member, .. } => {
                 match &self.tir.type_pool[ty.inner as usize] {
-                    tir::Type::Namespace { namespace_index } => {
-                        let namespace_index = *namespace_index;
-                        match &self.tir.namespaces[namespace_index as usize] {
-                            tir::Namespace::Enum(enum_) => {
-                                let variant_index = *enum_
-                                    .lookup
-                                    .get(&member.inner)
-                                    .expect("unknown enum variant");
-                                let variant = &enum_.variants[variant_index as usize];
-                                self.lower_expression(func_ctx, &variant.value)
-                            }
-                            tir::Namespace::ImportModule(module) => {
-                                match module
-                                    .lookup
-                                    .get(&member.inner)
-                                    .expect("unknown import member")
-                                {
-                                    tir::ImportValue::Function { func_index } => Expression {
-                                        kind: ExprKind::Function {
-                                            func_index: self.func_index_remap[*func_index as usize],
-                                        },
-                                        ty: self.lower_type_index(expr.ty),
-                                    },
-                                    tir::ImportValue::Global { global_index } => Expression {
-                                        kind: ExprKind::Global {
-                                            global_index: *global_index,
-                                        },
-                                        ty: self.lower_type_index(expr.ty),
-                                    },
-                                }
-                            }
+                    tir::Type::Enum { enum_index } => {
+                        let enum_index = *enum_index;
+                        let enum_ = &self.tir.enums[enum_index as usize];
+                        let variant_index = *enum_
+                            .lookup
+                            .get(&member.inner)
+                            .expect("unknown enum variant");
+                        let variant = &enum_.variants[variant_index as usize];
+                        self.lower_expression(func_ctx, &variant.value, sink)
+                    }
+                    tir::Type::ImportModule { module_index } => {
+                        let module_index = *module_index;
+                        let module = &self.tir.import_modules[module_index as usize];
+                        match module
+                            .lookup
+                            .get(&member.inner)
+                            .expect("unknown import member")
+                        {
+                            tir::ImportValue::Function { func_index } => Expression {
+                                kind: ExprKind::Function {
+                                    func_index: self.func_index_remap[*func_index as usize],
+                                },
+                                ty: self.lower_type_index(expr.ty),
+                            },
+                            tir::ImportValue::Global { global_index } => Expression {
+                                kind: ExprKind::Global {
+                                    global_index: *global_index,
+                                },
+                                ty: self.lower_type_index(expr.ty),
+                            },
                         }
                     }
                     _ => {
@@ -888,35 +895,52 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::ObjectAccess { object, member } => {
-                // Resolve the field index from the struct type.
                 let struct_index = match &self.tir.type_pool[object.ty as usize] {
                     tir::Type::Struct { struct_index } => *struct_index,
                     _ => unreachable!("ObjectAccess on non-struct type"),
                 };
                 let field_index =
                     self.tir.structs[struct_index as usize].lookup[&member.inner] as u32;
+                let field_ty = self.lower_type_index(expr.ty);
 
-                // Prefer LocalTupleGet when the object is a plain local — cheaper.
                 match &object.kind {
                     tir::ExprKind::Local {
                         scope_index,
                         local_index,
                     } => Expression {
-                        kind: ExprKind::LocalTupleGet {
+                        kind: ExprKind::PackedFieldGet {
                             scope_index: *scope_index,
                             local_index: *local_index,
                             field_index,
                         },
-                        ty: self.lower_type_index(expr.ty),
+                        ty: field_ty,
                     },
                     _ => {
-                        let object = Box::new(self.lower_expression(func_ctx, object));
+                        let object_ty = self.lower_type_index(object.ty);
+                        let object_lowered = self.lower_expression(func_ctx, object, sink);
+
+                        let temp_idx = func_ctx.frame[0].locals.len() as u32;
+                        func_ctx.frame[0].locals.push(Local {
+                            ty: object_ty,
+                            mutability: Mutability::Immutable,
+                        });
+
+                        sink.push(Expression {
+                            kind: ExprKind::LocalSet {
+                                scope_index: 0,
+                                local_index: temp_idx,
+                                value: Box::new(object_lowered),
+                            },
+                            ty: Type::Unit,
+                        });
+
                         Expression {
-                            kind: ExprKind::TupleFieldGet {
-                                object,
+                            kind: ExprKind::PackedFieldGet {
+                                scope_index: 0,
+                                local_index: temp_idx,
                                 field_index,
                             },
-                            ty: self.lower_type_index(expr.ty),
+                            ty: field_ty,
                         }
                     }
                 }
@@ -924,10 +948,10 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::StructInit { fields, .. } => {
                 let mir_fields: Box<[Expression]> = fields
                     .iter()
-                    .map(|f| self.lower_expression(func_ctx, f))
+                    .map(|f| self.lower_expression(func_ctx, f, sink))
                     .collect();
                 Expression {
-                    kind: ExprKind::StructCreate { fields: mir_fields },
+                    kind: ExprKind::Packed { fields: mir_fields },
                     ty: self.lower_type_index(expr.ty),
                 }
             }
@@ -936,11 +960,11 @@ impl<'tir> Builder<'tir> {
                 then_block,
                 else_block,
             } => {
-                let condition = Box::new(self.lower_expression(func_ctx, condition));
-                let then_block = Box::new(self.lower_expression(func_ctx, then_block));
+                let condition = Box::new(self.lower_expression(func_ctx, condition, sink));
+                let then_block = Box::new(self.lower_expression(func_ctx, then_block, sink));
                 let else_block = else_block
                     .as_ref()
-                    .map(|e| Box::new(self.lower_expression(func_ctx, e)));
+                    .map(|e| Box::new(self.lower_expression(func_ctx, e, sink)));
                 Expression {
                     kind: ExprKind::IfElse {
                         condition,
@@ -955,7 +979,7 @@ impl<'tir> Builder<'tir> {
                     scope_index: *scope_index,
                     value: value
                         .as_ref()
-                        .map(|v| Box::new(self.lower_expression(func_ctx, v))),
+                        .map(|v| Box::new(self.lower_expression(func_ctx, v, sink))),
                 },
                 ty: self.lower_type_index(expr.ty),
             },
@@ -968,7 +992,7 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Loop { scope_index, block } => Expression {
                 kind: ExprKind::Loop {
                     scope_index: *scope_index,
-                    block: Box::new(self.lower_expression(func_ctx, block)),
+                    block: Box::new(self.lower_expression(func_ctx, block, sink)),
                 },
                 ty: self.lower_type_index(expr.ty),
             },
@@ -978,19 +1002,21 @@ impl<'tir> Builder<'tir> {
                 result,
             } => {
                 func_ctx.current_scope_index = *scope_index as usize;
-                let mut lowered_exprs: Vec<Expression> = expressions
-                    .iter()
-                    .map(|e| self.lower_expression(func_ctx, e))
-                    .collect();
+                let mut inner_sink: Vec<Expression> = Vec::new();
 
+                for e in expressions.iter() {
+                    let lowered = self.lower_expression(func_ctx, e, &mut inner_sink);
+                    inner_sink.push(lowered);
+                }
                 if let Some(result) = result {
-                    lowered_exprs.push(self.lower_expression(func_ctx, result));
+                    let lowered = self.lower_expression(func_ctx, result, &mut inner_sink);
+                    inner_sink.push(lowered);
                 }
 
                 Expression {
                     kind: ExprKind::Block {
                         scope_index: *scope_index,
-                        expressions: lowered_exprs.into_boxed_slice(),
+                        expressions: inner_sink.into_boxed_slice(),
                     },
                     ty: self.lower_type_index(expr.ty),
                 }
@@ -1004,12 +1030,12 @@ impl<'tir> Builder<'tir> {
                 kind: ExprKind::LocalSet {
                     scope_index: *scope_index,
                     local_index: *local_index,
-                    value: Box::new(self.lower_expression(func_ctx, value)),
+                    value: Box::new(self.lower_expression(func_ctx, value, sink)),
                 },
                 ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Unary { operator, operand } => {
-                let operand = Box::new(self.lower_expression(func_ctx, operand));
+                let operand = Box::new(self.lower_expression(func_ctx, operand, sink));
                 Expression {
                     kind: match operator.inner {
                         UnaryOp::InvertSign => ExprKind::Neg { value: operand },
@@ -1027,105 +1053,98 @@ impl<'tir> Builder<'tir> {
                 use BinaryOp::*;
 
                 let kind = match operator.inner {
-                    // Handle compound assignments by desugaring
-                    Assign => {
-                        // left = right
-                        // This requires left to be an assignable expression
-                        self.lower_assignment(func_ctx, left, right)
-                    }
+                    Assign => self.lower_assignment(func_ctx, left, right, sink),
                     AddAssign | SubAssign | MulAssign | DivAssign | RemAssign => {
-                        // x += y becomes x = x + y
-                        self.lower_compound_assignment(func_ctx, operator.inner, left, right)
+                        self.lower_compound_assignment(func_ctx, operator.inner, left, right, sink)
                     }
-                    // Regular binary operations
                     Add => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Add { left, right }
                     }
                     Sub => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Sub { left, right }
                     }
                     Mul => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Mul { left, right }
                     }
                     Div => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Div { left, right }
                     }
                     Rem => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Rem { left, right }
                     }
                     Eq => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Eq { left, right }
                     }
                     NotEq => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::NotEq { left, right }
                     }
                     Less => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Less { left, right }
                     }
                     LessEq => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::LessEq { left, right }
                     }
                     Greater => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Greater { left, right }
                     }
                     GreaterEq => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::GreaterEq { left, right }
                     }
                     And => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::And { left, right }
                     }
                     Or => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::Or { left, right }
                     }
                     BitAnd => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::BitAnd { left, right }
                     }
                     BitOr => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::BitOr { left, right }
                     }
                     BitXor => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::BitXor { left, right }
                     }
                     LeftShift => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::LeftShift { left, right }
                     }
                     RightShift => {
-                        let left = Box::new(self.lower_expression(func_ctx, left));
-                        let right = Box::new(self.lower_expression(func_ctx, right));
+                        let left = Box::new(self.lower_expression(func_ctx, left, sink));
+                        let right = Box::new(self.lower_expression(func_ctx, right, sink));
                         ExprKind::RightShift { left, right }
                     }
                 };
@@ -1143,6 +1162,7 @@ impl<'tir> Builder<'tir> {
         func_ctx: &mut FunctionContext,
         left: &tir::Expression,
         right: &tir::Expression,
+        sink: &mut Vec<Expression>,
     ) -> ExprKind {
         match &left.kind {
             tir::ExprKind::Local {
@@ -1151,11 +1171,11 @@ impl<'tir> Builder<'tir> {
             } => ExprKind::LocalSet {
                 scope_index: *scope_index,
                 local_index: *local_index,
-                value: Box::new(self.lower_expression(func_ctx, right)),
+                value: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
             tir::ExprKind::Global { global_index } => ExprKind::GlobalSet {
                 global_index: self.global_index_remap[*global_index as usize],
-                value: Box::new(self.lower_expression(func_ctx, right)),
+                value: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
             _ => unreachable!(),
         }
@@ -1167,6 +1187,7 @@ impl<'tir> Builder<'tir> {
         op: crate::ast::BinaryOp,
         left: &tir::Expression,
         right: &tir::Expression,
+        sink: &mut Vec<Expression>,
     ) -> ExprKind {
         use crate::ast::BinaryOp::*;
 
@@ -1183,24 +1204,24 @@ impl<'tir> Builder<'tir> {
         // Create the binary operation: x + y
         let binary_expr_kind = match binary_op {
             Add => ExprKind::Add {
-                left: Box::new(self.lower_expression(func_ctx, left)),
-                right: Box::new(self.lower_expression(func_ctx, right)),
+                left: Box::new(self.lower_expression(func_ctx, left, sink)),
+                right: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
             Sub => ExprKind::Sub {
-                left: Box::new(self.lower_expression(func_ctx, left)),
-                right: Box::new(self.lower_expression(func_ctx, right)),
+                left: Box::new(self.lower_expression(func_ctx, left, sink)),
+                right: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
             Mul => ExprKind::Mul {
-                left: Box::new(self.lower_expression(func_ctx, left)),
-                right: Box::new(self.lower_expression(func_ctx, right)),
+                left: Box::new(self.lower_expression(func_ctx, left, sink)),
+                right: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
             Div => ExprKind::Div {
-                left: Box::new(self.lower_expression(func_ctx, left)),
-                right: Box::new(self.lower_expression(func_ctx, right)),
+                left: Box::new(self.lower_expression(func_ctx, left, sink)),
+                right: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
             Rem => ExprKind::Rem {
-                left: Box::new(self.lower_expression(func_ctx, left)),
-                right: Box::new(self.lower_expression(func_ctx, right)),
+                left: Box::new(self.lower_expression(func_ctx, left, sink)),
+                right: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
             _ => unreachable!(),
         };
@@ -1229,8 +1250,376 @@ impl<'tir> Builder<'tir> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Inlining pass
+// ---------------------------------------------------------------------------
+
+/// Deep-clones `expr`, offsetting every scope index by `scope_offset` and
+/// rewriting `Return { value }` into `Break { scope_index: wrapper_scope, value }`.
+fn rewrite_body(
+    expr: Expression,
+    scope_offset: ScopeIndex,
+    wrapper_scope: ScopeIndex,
+) -> Expression {
+    let rw = |e: Expression| rewrite_body(e, scope_offset, wrapper_scope);
+    let rw_box = |e: Box<Expression>| Box::new(rw(*e));
+    let rw_opt = |e: Option<Box<Expression>>| e.map(|b| rw_box(b));
+    let rw_args = |es: Box<[Expression]>| es.into_vec().into_iter().map(rw).collect::<Box<[_]>>();
+
+    let ty = expr.ty;
+    let kind = match expr.kind {
+        // Scope-indexed variants — offset the index and recurse into children.
+        ExprKind::LocalGet {
+            scope_index,
+            local_index,
+        } => ExprKind::LocalGet {
+            scope_index: scope_index + scope_offset,
+            local_index,
+        },
+        ExprKind::PackedFieldGet {
+            scope_index,
+            local_index,
+            field_index,
+        } => ExprKind::PackedFieldGet {
+            scope_index: scope_index + scope_offset,
+            local_index,
+            field_index,
+        },
+        ExprKind::LocalSet {
+            scope_index,
+            local_index,
+            value,
+        } => ExprKind::LocalSet {
+            scope_index: scope_index + scope_offset,
+            local_index,
+            value: rw_box(value),
+        },
+        ExprKind::Block {
+            scope_index,
+            expressions,
+        } => ExprKind::Block {
+            scope_index: scope_index + scope_offset,
+            expressions: rw_args(expressions),
+        },
+        ExprKind::Break { scope_index, value } => ExprKind::Break {
+            scope_index: scope_index + scope_offset,
+            value: rw_opt(value),
+        },
+        ExprKind::Continue { scope_index } => ExprKind::Continue {
+            scope_index: scope_index + scope_offset,
+        },
+        ExprKind::Loop { scope_index, block } => ExprKind::Loop {
+            scope_index: scope_index + scope_offset,
+            block: rw_box(block),
+        },
+        // Return becomes a Break out of the wrapper scope.
+        ExprKind::Return { value } => ExprKind::Break {
+            scope_index: wrapper_scope,
+            value: rw_opt(value),
+        },
+        // Non-scope variants — recurse into children only.
+        ExprKind::Drop { value } => ExprKind::Drop {
+            value: rw_box(value),
+        },
+        ExprKind::Neg { value } => ExprKind::Neg {
+            value: rw_box(value),
+        },
+        ExprKind::BitNot { value } => ExprKind::BitNot {
+            value: rw_box(value),
+        },
+        ExprKind::Eqz { value } => ExprKind::Eqz {
+            value: rw_box(value),
+        },
+        ExprKind::GlobalSet {
+            global_index,
+            value,
+        } => ExprKind::GlobalSet {
+            global_index,
+            value: rw_box(value),
+        },
+        ExprKind::Packed { fields } => ExprKind::Packed {
+            fields: rw_args(fields),
+        },
+        ExprKind::Call { callee, arguments } => ExprKind::Call {
+            callee: rw_box(callee),
+            arguments: rw_args(arguments),
+        },
+        ExprKind::IfElse {
+            condition,
+            then_block,
+            else_block,
+        } => ExprKind::IfElse {
+            condition: rw_box(condition),
+            then_block: rw_box(then_block),
+            else_block: else_block.map(rw_box),
+        },
+        ExprKind::Add { left, right } => ExprKind::Add {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::Sub { left, right } => ExprKind::Sub {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::Mul { left, right } => ExprKind::Mul {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::Div { left, right } => ExprKind::Div {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::Rem { left, right } => ExprKind::Rem {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::And { left, right } => ExprKind::And {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::Or { left, right } => ExprKind::Or {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::Eq { left, right } => ExprKind::Eq {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::NotEq { left, right } => ExprKind::NotEq {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::Less { left, right } => ExprKind::Less {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::LessEq { left, right } => ExprKind::LessEq {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::Greater { left, right } => ExprKind::Greater {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::GreaterEq { left, right } => ExprKind::GreaterEq {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::BitAnd { left, right } => ExprKind::BitAnd {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::BitOr { left, right } => ExprKind::BitOr {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::BitXor { left, right } => ExprKind::BitXor {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::LeftShift { left, right } => ExprKind::LeftShift {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        ExprKind::RightShift { left, right } => ExprKind::RightShift {
+            left: rw_box(left),
+            right: rw_box(right),
+        },
+        // Leaf variants — nothing to rewrite.
+        k @ (ExprKind::Noop
+        | ExprKind::Bool { .. }
+        | ExprKind::Function { .. }
+        | ExprKind::Int { .. }
+        | ExprKind::Float { .. }
+        | ExprKind::StringIndex { .. }
+        | ExprKind::Global { .. }
+        | ExprKind::Unreachable) => k,
+    };
+    Expression { kind, ty }
+}
+
+/// Substitutes a direct call at the call site with the callee's body inlined
+/// into the caller. Appends the required scopes to `caller_scopes`.
+fn inline_call(
+    callee: Function,
+    arguments: Box<[Expression]>,
+    caller_scopes: &mut Vec<BlockScope>,
+) -> Expression {
+    let result_ty = callee.block.ty;
+
+    // The wrapper scope is the break-target for all rewritten `Return` nodes.
+    let wrapper_scope = caller_scopes.len() as ScopeIndex;
+    caller_scopes.push(BlockScope {
+        kind: tir::BlockKind::Block,
+        parent: None,
+        locals: vec![],
+        result: result_ty,
+    });
+
+    // Callee's scopes follow the wrapper.  Offset their parent pointers.
+    let body_scope_offset = caller_scopes.len() as ScopeIndex;
+    for scope in callee.scopes {
+        caller_scopes.push(BlockScope {
+            parent: scope.parent.map(|p| p + body_scope_offset),
+            ..scope
+        });
+    }
+
+    // Store each argument into the corresponding param local in the callee's
+    // root scope (now living at body_scope_offset).
+    let mut exprs: Vec<Expression> = arguments
+        .into_vec()
+        .into_iter()
+        .enumerate()
+        .map(|(i, arg)| Expression {
+            ty: Type::Unit,
+            kind: ExprKind::LocalSet {
+                scope_index: body_scope_offset,
+                local_index: i as LocalIndex,
+                value: Box::new(arg),
+            },
+        })
+        .collect();
+
+    exprs.push(rewrite_body(callee.block, body_scope_offset, wrapper_scope));
+
+    Expression {
+        ty: result_ty,
+        kind: ExprKind::Block {
+            scope_index: wrapper_scope,
+            expressions: exprs.into_boxed_slice(),
+        },
+    }
+}
+
+/// Walks `expr` in-place (post-order) and replaces every direct call to an
+/// `#[inline]` function with its inlined body.
+fn inline_expr(expr: &mut Expression, caller_scopes: &mut Vec<BlockScope>, functions: &[Function]) {
+    // Recurse into all children first.
+    match &mut expr.kind {
+        ExprKind::LocalSet { value, .. }
+        | ExprKind::GlobalSet { value, .. }
+        | ExprKind::Drop { value }
+        | ExprKind::Neg { value }
+        | ExprKind::BitNot { value }
+        | ExprKind::Eqz { value } => inline_expr(value, caller_scopes, functions),
+
+        ExprKind::Packed { fields } => {
+            for e in fields.iter_mut() {
+                inline_expr(e, caller_scopes, functions);
+            }
+        }
+        ExprKind::Block { expressions, .. } => {
+            for e in expressions.iter_mut() {
+                inline_expr(e, caller_scopes, functions);
+            }
+        }
+        ExprKind::Loop { block, .. } => inline_expr(block, caller_scopes, functions),
+
+        ExprKind::Break { value, .. } | ExprKind::Return { value } => {
+            if let Some(v) = value {
+                inline_expr(v, caller_scopes, functions);
+            }
+        }
+        ExprKind::IfElse {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            inline_expr(condition, caller_scopes, functions);
+            inline_expr(then_block, caller_scopes, functions);
+            if let Some(e) = else_block {
+                inline_expr(e, caller_scopes, functions);
+            }
+        }
+        ExprKind::Call { callee, arguments } => {
+            inline_expr(callee, caller_scopes, functions);
+            for a in arguments.iter_mut() {
+                inline_expr(a, caller_scopes, functions);
+            }
+        }
+        ExprKind::Add { left, right }
+        | ExprKind::Sub { left, right }
+        | ExprKind::Mul { left, right }
+        | ExprKind::Div { left, right }
+        | ExprKind::Rem { left, right }
+        | ExprKind::And { left, right }
+        | ExprKind::Or { left, right }
+        | ExprKind::Eq { left, right }
+        | ExprKind::NotEq { left, right }
+        | ExprKind::Less { left, right }
+        | ExprKind::LessEq { left, right }
+        | ExprKind::Greater { left, right }
+        | ExprKind::GreaterEq { left, right }
+        | ExprKind::BitAnd { left, right }
+        | ExprKind::BitOr { left, right }
+        | ExprKind::BitXor { left, right }
+        | ExprKind::LeftShift { left, right }
+        | ExprKind::RightShift { left, right } => {
+            inline_expr(left, caller_scopes, functions);
+            inline_expr(right, caller_scopes, functions);
+        }
+        // Leaf variants — nothing to recurse into.
+        ExprKind::Noop
+        | ExprKind::Bool { .. }
+        | ExprKind::Function { .. }
+        | ExprKind::Int { .. }
+        | ExprKind::Float { .. }
+        | ExprKind::StringIndex { .. }
+        | ExprKind::Global { .. }
+        | ExprKind::Unreachable
+        | ExprKind::LocalGet { .. }
+        | ExprKind::PackedFieldGet { .. }
+        | ExprKind::Continue { .. } => {}
+    }
+
+    // After children are processed, check if this node is an inlinable call.
+    let func_index = match &expr.kind {
+        ExprKind::Call { callee, .. } => match callee.kind {
+            ExprKind::Function { func_index } => func_index,
+            _ => return,
+        },
+        _ => return,
+    };
+    let f = func_index as usize;
+    if f >= functions.len() || !functions[f].inline {
+        return;
+    }
+
+    // Extract the arguments, then replace the expression with the inlined body.
+    let arguments = match std::mem::replace(&mut expr.kind, ExprKind::Noop) {
+        ExprKind::Call { arguments, .. } => arguments,
+        _ => unreachable!(),
+    };
+    *expr = inline_call(functions[f].clone(), arguments, caller_scopes);
+}
+
+/// Runs one shallow inlining pass over all function bodies in `mir`.
+/// Every direct call to a function marked `#[inline]` is replaced with that
+/// function's body (one level deep — calls within the inlined body are not
+/// further expanded).
+pub fn run_inlining_pass(mir: &mut MIR) {
+    let placeholder = Function {
+        signature_index: 0,
+        scopes: vec![],
+        block: Expression {
+            kind: ExprKind::Noop,
+            ty: Type::Unit,
+        },
+        inline: false,
+    };
+    for i in 0..mir.functions.len() {
+        // Swap the function out so we can borrow the rest of `mir.functions`
+        // immutably for reading callee bodies while mutating this function.
+        let mut func = std::mem::replace(&mut mir.functions[i], placeholder.clone());
+        inline_expr(&mut func.block, &mut func.scopes, &mir.functions);
+        mir.functions[i] = func;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
     use indoc::indoc;
 
     use super::*;
@@ -1385,6 +1774,40 @@ mod tests {
             }
 
             export { get_u32_size }
+        "});
+        insta::assert_yaml_snapshot!(case.mir);
+    }
+
+    #[test]
+    fn test_inline_method_is_substituted() {
+        // A call to an #[inline] method must be replaced by its body in MIR —
+        // the snapshot shows the inlined if/xor logic directly inside to_upper,
+        // with no Call node pointing to to_ascii_uppercase.
+        let case = TestCase::new(indoc! {"
+            fn to_upper(c: char) -> char {
+                c.to_ascii_uppercase()
+            }
+
+            export { to_upper }
+        "});
+        insta::assert_yaml_snapshot!(case.mir);
+    }
+
+    #[test]
+    fn test_string_literal_lowered_to_tuple() {
+        // A string literal should lower to a Tuple of (StringIndex ptr, Int len),
+        // matching the shape of the stdlib `string` struct.
+        let case = TestCase::new(indoc! {"
+            import \"console\" {
+                fn log(ptr: u32, len: u32);
+            }
+
+            fn greet() {
+                local s = \"hello\";
+                console::log(s.ptr, s.len);
+            }
+
+            export { greet }
         "});
         insta::assert_yaml_snapshot!(case.mir);
     }

@@ -187,6 +187,7 @@ pub enum Token {
     Vbar,
     DoubleVbar,
     Caret,
+    Hash,
     MinusRightArrow,
     // Special
     Comment,
@@ -240,6 +241,7 @@ impl std::fmt::Display for Token {
             Vbar => "|",
             DoubleVbar => "||",
             Caret => "^",
+            Hash => "#",
             MinusRightArrow => "->",
             Comment => "comment",
             Whitespace => "whitespace",
@@ -305,6 +307,7 @@ define_diagnostic_codes! {
         MissingInitializer => "E0010",
         SelfInNonAssociatedFunction => "E0011",
         SelfNotFirstParam => "E0012",
+        InvalidAttribute => "E0013",
     }
 }
 
@@ -595,6 +598,25 @@ impl MissingGlobalInitializerDiagnostic {
     }
 }
 
+pub struct InvalidAttributeDiagnostic {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl InvalidAttributeDiagnostic {
+    pub const CODE: &'static str = DiagnosticCode::InvalidAttribute.code();
+
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(Self::CODE)
+            .with_message("invalid attribute")
+            .with_label(
+                Label::primary(self.file_id, self.span)
+                    .with_message("expected attribute name here"),
+            )
+    }
+}
+
 struct Lexer<'a> {
     chars: std::str::Chars<'a>,
     offset: usize,
@@ -688,6 +710,7 @@ impl<'a> Lexer<'a> {
             '=' => self.consume_and_check('=', Token::EqEq, Token::Eq),
             '{' => Token::OpenBrace,
             '}' => Token::CloseBrace,
+            '#' => Token::Hash,
             '[' => Token::OpenBracket,
             ']' => Token::CloseBracket,
             '.' => Token::Dot,
@@ -810,7 +833,9 @@ impl<'a> Lexer<'a> {
                 let mut peeker = self.chars.clone();
                 while let Some(c) = peeker.next() {
                     match c {
-                        '0' | '1' | '_' => { _ = self.chars.next(); }
+                        '0' | '1' | '_' => {
+                            _ = self.chars.next();
+                        }
                         _ => break,
                     }
                 }
@@ -821,7 +846,9 @@ impl<'a> Lexer<'a> {
                 let mut peeker = self.chars.clone();
                 while let Some(c) = peeker.next() {
                     match c {
-                        '0'..='9' | 'a'..='f' | 'A'..='F' | '_' => { _ = self.chars.next(); }
+                        '0'..='9' | 'a'..='f' | 'A'..='F' | '_' => {
+                            _ = self.chars.next();
+                        }
                         _ => break,
                     }
                 }
@@ -1304,12 +1331,6 @@ pub struct FunctionTypeParam {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
-pub struct ImportFunctionParam {
-    pub name: Option<Spanned<SymbolU32>>,
-    pub ty: Box<Spanned<TypeExpression>>,
-}
-
-#[cfg_attr(test, derive(serde::Serialize))]
 pub enum TypeExpression {
     /// `i32`
     Identifier { symbol: SymbolU32 },
@@ -1369,10 +1390,17 @@ pub struct FunctionParam {
     pub ty: Option<Box<Spanned<TypeExpression>>>,
 }
 
+/// A single `#[name]` attribute on a function or method.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct Attribute {
+    pub name: Spanned<SymbolU32>,
+}
+
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImplItem {
     Method {
         pub_span: Option<TextSpan>,
+        attributes: Box<[Attribute]>,
         signature: FunctionSignature,
         block: Box<Spanned<Expression>>,
     },
@@ -1408,9 +1436,7 @@ pub struct ExportEntry {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImportDeclaration {
     Function {
-        name: Spanned<SymbolU32>,
-        params: Grouped<Box<[Separated<Spanned<ImportFunctionParam>>]>>,
-        result: Option<Box<Spanned<TypeExpression>>>,
+        signature: FunctionSignature,
     },
     Global {
         mut_span: Option<TextSpan>,
@@ -1435,8 +1461,14 @@ pub struct EnumVariant {
 pub enum Item {
     Function {
         pub_span: Option<TextSpan>,
+        attributes: Box<[Attribute]>,
         signature: FunctionSignature,
         block: Box<Spanned<Expression>>,
+    },
+    FunctionDeclaration {
+        pub_span: Option<TextSpan>,
+        attributes: Box<[Attribute]>,
+        signature: FunctionSignature,
     },
     Global {
         mut_span: Option<TextSpan>,
@@ -1474,6 +1506,11 @@ pub enum Item {
         ty: Option<Box<Spanned<TypeExpression>>>,
         value: Box<Spanned<Expression>>,
     },
+    Module {
+        pub_span: Option<TextSpan>,
+        name: Spanned<SymbolU32>,
+        items: Grouped<Box<[Separated<Spanned<Item>>]>>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1486,13 +1523,17 @@ pub struct StructField {
 impl Item {
     pub fn is_block_like(&self) -> bool {
         match self {
-            Item::Global { .. } | Item::Memory { .. } | Item::Const { .. } => false,
-            Item::Function { .. } => true,
-            Item::Export { .. } => true,
-            Item::Import { .. } => true,
-            Item::Enum { .. } => true,
-            Item::Impl { .. } => true,
-            Item::Struct { .. } => true,
+            Item::Global { .. }
+            | Item::Const { .. }
+            | Item::Memory { .. }
+            | Item::FunctionDeclaration { .. } => false,
+            Item::Function { .. }
+            | Item::Export { .. }
+            | Item::Import { .. }
+            | Item::Enum { .. }
+            | Item::Impl { .. }
+            | Item::Struct { .. }
+            | Item::Module { .. } => true,
         }
     }
 }
@@ -1584,6 +1625,7 @@ pub enum Keyword {
     Pub,
     Memory,
     Const,
+    Module,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1612,6 +1654,7 @@ impl TryFrom<&str> for Keyword {
             "pub" => Ok(Keyword::Pub),
             "memory" => Ok(Keyword::Memory),
             "const" => Ok(Keyword::Const),
+            "module" => Ok(Keyword::Module),
             _ => Err(()),
         }
     }
@@ -1776,6 +1819,11 @@ impl<'input> Parser<'input> {
         };
 
         loop {
+            let item_attrs = match Parser::parse_attributes(&mut parser) {
+                Ok(attrs) => attrs,
+                Err(_) => continue,
+            };
+
             let start_token = parser.lexer.peek();
             if start_token.inner == Token::Eof {
                 break;
@@ -1795,7 +1843,13 @@ impl<'input> Parser<'input> {
             };
 
             match item_handler(&mut parser) {
-                Ok(item) => {
+                Ok(mut item) => {
+                    if let Item::Function {
+                        ref mut attributes, ..
+                    } = item.inner
+                    {
+                        *attributes = item_attrs;
+                    }
                     let separator_span = if !item.inner.is_block_like() {
                         let token = parser.lexer.peek();
                         match token.inner {
@@ -1873,6 +1927,7 @@ impl<'input> Parser<'input> {
             Some(Keyword::Struct) => Ok(Parser::parse_struct_item),
             Some(Keyword::Memory) => Ok(Parser::parse_memory_item),
             Some(Keyword::Const) => Ok(Parser::parse_const_item),
+            Some(Keyword::Module) => Ok(Parser::parse_module_item),
             Some(Keyword::Pub) => Ok(Parser::parse_pub_item),
             _ => return Err(()),
         }
@@ -1932,6 +1987,53 @@ impl<'input> Parser<'input> {
         self.interner.get_or_intern(text)
     }
 
+    fn parse_attributes(parser: &mut Parser) -> Result<Box<[Attribute]>, ()> {
+        let mut attrs = Vec::new();
+        loop {
+            if parser.lexer.peek().inner != Token::Hash {
+                break;
+            }
+            parser.lexer.next();
+            let open_bracket = parser.next_expect(Token::OpenBracket)?;
+            let name_token = parser.lexer.peek();
+            if name_token.inner != Token::Identifier {
+                parser.ast.diagnostics.push(
+                    InvalidAttributeDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: name_token.span,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+            let name_span = parser.lexer.next().span;
+            let name_symbol = parser
+                .interner
+                .get_or_intern(name_span.extract_str(parser.source));
+            let close_token = parser.lexer.peek();
+            if close_token.inner != Token::CloseBracket {
+                parser.ast.diagnostics.push(
+                    UnclosedDelimiterDiagnostic {
+                        file_id: parser.ast.file_id,
+                        open_span: open_bracket.span,
+                        close_token: Token::CloseBracket,
+                        expected_close_span: close_token.span,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+            parser.lexer.next();
+            attrs.push(Attribute {
+                name: Spanned {
+                    inner: name_symbol,
+                    span: name_span,
+                },
+            });
+        }
+        Ok(attrs.into_boxed_slice())
+    }
+
     fn parse_function_param_item(parser: &mut Parser) -> Result<Spanned<FunctionParam>, ()> {
         let token = parser.peek_expect(Token::Identifier)?;
         let mut_span = match Keyword::try_from(token.span.extract_str(parser.source)) {
@@ -1981,10 +2083,10 @@ impl<'input> Parser<'input> {
         })
     }
 
-    fn parse_function_definition_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
-        let fn_span = parser.lexer.next();
-        let name_span = parser.next_expect(Token::Identifier)?.span;
-        let name_symbol = parser.intern_identifier(name_span);
+    fn parse_function_signature(&mut self) -> Result<Spanned<FunctionSignature>, ()> {
+        let fn_span = self.lexer.next();
+        let name_span = self.next_expect(Token::Identifier)?.span;
+        let name_symbol = self.intern_identifier(name_span);
         let name = Spanned {
             inner: name_symbol,
             span: name_span,
@@ -1997,39 +2099,56 @@ impl<'input> Parser<'input> {
             item_handler: Parser::parse_function_param_item,
             should_warn_missing_separator: None,
         }
-        .parse(parser)?;
+        .parse(self)?;
 
-        let self_symbol = parser.interner.get_or_intern("self");
-        for param in params.inner.iter() {
-            if param.inner.inner.name.inner == self_symbol {
-                parser.ast.diagnostics.push(
-                    SelfInNonAssociatedFunctionDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: param.inner.inner.name.span,
-                    }
-                    .report(),
-                );
-            }
-        }
-
-        let result = parser
+        let result = self
             .lexer
             .next_if(Token::MinusRightArrow)
             .ok_or(())
-            .and_then(|_| Ok(Some(Box::new(Parser::parse_type_expression(parser)?))))
+            .and_then(|_| Ok(Some(Box::new(Parser::parse_type_expression(self)?))))
             .unwrap_or_else(|_| None);
 
-        let block = Parser::parse_block_expression(parser)?;
-        let span = TextSpan::merge(fn_span.span, block.span);
+        let span = TextSpan::merge(
+            fn_span.span,
+            match &result {
+                Some(result) => result.span,
+                None => params.close,
+            },
+        );
+
         Ok(Spanned {
-            inner: Item::Function {
-                pub_span: None,
-                signature: FunctionSignature {
-                    name,
-                    params,
-                    result,
+            inner: FunctionSignature {
+                name,
+                params,
+                result,
+            },
+            span,
+        })
+    }
+
+    fn parse_function_definition_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let signature = Parser::parse_function_signature(parser)?;
+        let block = Parser::parse_block_expression(parser).ok().map(Box::new);
+        let span = TextSpan::merge(
+            signature.span,
+            match &block {
+                Some(block) => block.span,
+                None => signature.span,
+            },
+        );
+        Ok(Spanned {
+            inner: match block {
+                Some(block) => Item::Function {
+                    pub_span: None,
+                    attributes: Box::new([]),
+                    signature: signature.inner,
+                    block,
                 },
-                block: Box::new(block),
+                None => Item::FunctionDeclaration {
+                    pub_span: None,
+                    attributes: Box::new([]),
+                    signature: signature.inner,
+                },
             },
             span,
         })
@@ -3284,6 +3403,8 @@ impl<'input> Parser<'input> {
             close_token: Token::CloseBrace,
             separator_token: Token::SemiColon,
             item_handler: |parser: &mut Parser| -> Result<Spanned<ImplItem>, ()> {
+                let attrs = Parser::parse_attributes(parser)?;
+
                 let token = parser.lexer.peek();
                 let keyword = match token.inner {
                     Token::Identifier => {
@@ -3302,10 +3423,10 @@ impl<'input> Parser<'input> {
 
                 let keyword = if pub_span.is_some() {
                     match parser.lexer.peek().inner {
-                        Token::Identifier => Keyword::try_from(
-                            parser.lexer.peek().span.extract_str(parser.source),
-                        )
-                        .ok(),
+                        Token::Identifier => {
+                            Keyword::try_from(parser.lexer.peek().span.extract_str(parser.source))
+                                .ok()
+                        }
                         _ => None,
                     }
                 } else {
@@ -3378,6 +3499,7 @@ impl<'input> Parser<'input> {
                         Ok(Spanned {
                             inner: ImplItem::Method {
                                 pub_span,
+                                attributes: attrs,
                                 signature: FunctionSignature {
                                     name: Spanned {
                                         inner: name_symbol,
@@ -3481,14 +3603,33 @@ impl<'input> Parser<'input> {
         match keyword {
             Some(Keyword::Fn) => {
                 let mut item = Parser::parse_function_definition_item(parser)?;
-                if let Item::Function { pub_span: ref mut ps, .. } = item.inner {
+                if let Item::Function {
+                    pub_span: ref mut ps,
+                    ..
+                } = item.inner
+                {
                     *ps = Some(pub_span);
                 }
                 Ok(item)
             }
             Some(Keyword::Struct) => {
                 let mut item = Parser::parse_struct_item(parser)?;
-                if let Item::Struct { pub_span: ref mut ps, .. } = item.inner {
+                if let Item::Struct {
+                    pub_span: ref mut ps,
+                    ..
+                } = item.inner
+                {
+                    *ps = Some(pub_span);
+                }
+                Ok(item)
+            }
+            Some(Keyword::Module) => {
+                let mut item = Parser::parse_module_item(parser)?;
+                if let Item::Module {
+                    pub_span: ref mut ps,
+                    ..
+                } = item.inner
+                {
                     *ps = Some(pub_span);
                 }
                 Ok(item)
@@ -3518,73 +3659,6 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(memory_span, name_span);
         Ok(Spanned {
             inner: Item::Memory { name },
-            span,
-        })
-    }
-
-    fn parse_import_function_param(
-        parser: &mut Parser,
-    ) -> Result<Spanned<ImportFunctionParam>, ()> {
-        let first = parser.parse_type_expression()?;
-        let (name, ty) = match first.inner {
-            TypeExpression::Identifier { symbol } => {
-                if parser.lexer.next_if(Token::Colon).is_some() {
-                    let ty = parser.parse_type_expression()?;
-                    (
-                        Some(Spanned {
-                            inner: symbol,
-                            span: first.span,
-                        }),
-                        Box::new(ty),
-                    )
-                } else {
-                    (None, Box::new(first))
-                }
-            }
-            _ => (None, Box::new(first)),
-        };
-        let span = TextSpan::merge(name.as_ref().map(|n| n.span).unwrap_or(ty.span), ty.span);
-        Ok(Spanned {
-            inner: ImportFunctionParam { name, ty },
-            span,
-        })
-    }
-
-    fn parse_function_import_declaration(&mut self) -> Result<Spanned<ImportDeclaration>, ()> {
-        let fn_span = self.lexer.next();
-        let name_span = self.next_expect(Token::Identifier)?.span;
-        let name_symbol = self.intern_identifier(name_span);
-        let name = Spanned {
-            inner: name_symbol,
-            span: name_span,
-        };
-
-        let params = SeparatedGroup {
-            open_token: Token::OpenParen,
-            close_token: Token::CloseParen,
-            separator_token: Token::Comma,
-            item_handler: Parser::parse_import_function_param,
-            should_warn_missing_separator: None,
-        }
-        .parse(self)?;
-
-        let result = self
-            .lexer
-            .next_if(Token::MinusRightArrow)
-            .ok_or(())
-            .and_then(|_| Ok(Some(Box::new(self.parse_type_expression()?))))
-            .unwrap_or_else(|_| None);
-
-        let span = TextSpan::merge(
-            fn_span.span,
-            result.as_ref().map(|r| r.span).unwrap_or(params.close),
-        );
-        Ok(Spanned {
-            inner: ImportDeclaration::Function {
-                name,
-                params,
-                result,
-            },
             span,
         })
     }
@@ -3625,15 +3699,15 @@ impl<'input> Parser<'input> {
             _ => None,
         };
         match keyword {
-            Some(Keyword::Fn) => parser
-                .parse_function_import_declaration()
-                .map(|decl| Spanned {
-                    inner: ImportEntry {
-                        external_name: None,
-                        declaration: decl.inner,
+            Some(Keyword::Fn) => parser.parse_function_signature().map(|signature| Spanned {
+                inner: ImportEntry {
+                    external_name: None,
+                    declaration: ImportDeclaration::Function {
+                        signature: signature.inner,
                     },
-                    span: decl.span,
-                }),
+                },
+                span: signature.span,
+            }),
             Some(Keyword::Global) => parser
                 .parse_global_import_declaration()
                 .map(|decl| Spanned {
@@ -3654,6 +3728,52 @@ impl<'input> Parser<'input> {
                 Err(())
             }
         }
+    }
+
+    fn parse_module_body_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let token = parser.lexer.peek();
+        match parser.get_item_handler(token.clone()) {
+            Ok(handler) => handler(parser),
+            Err(()) => {
+                parser.ast.diagnostics.push(
+                    InvalidItemDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
+    }
+
+    fn parse_module_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let module_span = parser.lexer.next().span; // consume `module`
+
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name_symbol = parser.intern_identifier(name_span);
+
+        let items = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::SemiColon,
+            item_handler: Parser::parse_module_body_item,
+            should_warn_missing_separator: None,
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(module_span, items.close);
+        Ok(Spanned {
+            inner: Item::Module {
+                pub_span: None,
+                name: Spanned {
+                    inner: name_symbol,
+                    span: name_span,
+                },
+                items,
+            },
+            span,
+        })
     }
 
     fn parse_import_block(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
@@ -3708,352 +3828,6 @@ impl<'input> Parser<'input> {
     }
 }
 
+
 #[cfg(test)]
-mod tests {
-    use indoc::indoc;
-
-    use super::*;
-
-    #[allow(unused)]
-    struct TestCase {
-        interner: StringInterner,
-        files: Files,
-        ast: AST,
-    }
-
-    impl<'case> TestCase {
-        fn new(source: &str) -> Self {
-            let mut interner = StringInterner::new();
-            let mut files = Files::new();
-            let file_id = files
-                .add("main.wx".to_string(), source.to_string())
-                .unwrap();
-            let ast = Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-
-            TestCase {
-                interner,
-                files,
-                ast,
-            }
-        }
-    }
-
-    #[test]
-    fn test_parse_export_with_alias() {
-        let case = TestCase::new(indoc! {"
-            fn test() -> i32 {
-                local x: i32 = a: loop {
-                    break :a 1 as i32;
-                };
-
-                x
-            }
-            
-            export {
-                test as \"test\",
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-
-    #[test]
-    fn test_parse_impl_block() {
-        let case = TestCase::new(indoc! {"
-            struct string {
-                bytes: []u8,
-            }
-
-            impl string {
-                fn from_bytes(bytes: []u8) -> string {
-                    string { bytes }
-                }
-            }
-
-            struct char {
-                code: u32,
-            }
-
-            impl char {
-                fn to_ascii_uppercase(self) -> char {
-                    if self.code >= 97 && self.code <= 122 {
-                        char { code: self.code ^ 32 }
-                    } else {
-                        self
-                    }
-                }
-            }
-
-            local list: *[u8] = [1, 2, 3];
-
-            *u8 // just a pointer to a single u8
-            *mut u8 // mutable pointer to a single u8
-            []u8 // slice of u8
-            []mut u8 // mutable slice of u8
-            [10]u8 // but this uses slice-like syntax for fixed-size array, which is not a pointer but just a 10 bytes
-            
-            local x: ref[]u8
-
-            ref<*mut vec3>
-            ref<[](own*mut vec3)>
-
-
-            ref[]Vec3
-            &[Vec3]
-
-            type string<'a> = ref'a[]u8;
-
-            struct StringBuilder<'a> {
-                alloc: ref'a*Allocator,
-                buffer: ref'a[]mut u8,
-                length: usize,
-                capacity: usize,
-            }
-
-            impl<'a> StringBuilder<'a> {
-                fn in(alloc: Allocator) -> Self {
-                    StringBuilder {
-                        buffer: ref'a[]mut u8,
-                        length: 0,
-                    }
-                }
-            } 
-
-            impl<'a> Drop for StringBuilder<'a> {
-                fn drop(self) {
-                    self.alloc.dealloc(self.buffer);
-                }
-            }
-
-            fn main() {
-                local alloc = ArenaAllocator::from_buffer(MEM.as_bytes()[..1024]);
-                local builder = StringBuilder::in(alloc);
-            }
-
-            StringBuilder<'a>
-
-            [][]u8
-
-            u8[10][10]
-
-            []u8
-
-            struct ArenaAllocator {
-                base: []mut u8, // 16 bytes
-                offset: usize, // 8 bytes
-            }
-
-            struct Layout {
-                size: usize, // 8 bytes
-                align: usize, // 8 bytes
-            }
-
-            trait Allocator {
-                fn alloc<T>(&mut self, layout: Layout) -> Result<*mut T, ()>;
-            }
-
-            impl Allocator for ArenaAllocator {
-                fn alloc<T>(&mut self, layout: Layout) -> Result<*mut T, ()> {
-                    ...
-                }
-
-                fn from_buffer(buffer: []mut u8) -> ArenaAllocator {
-                    ArenaAllocator {
-                        base: buffer,
-                        offset: 0,
-                    }
-                }
-            }
-
-            struct Vec3 {
-                x: f32,
-                y: f32,
-                z: f32,
-            }
-
-            struct Memory {
-                index: u32,
-            }
-
-            declare Memory {
-                const BASE: usize;
-
-                fn size() -> usize;
-                fn grow(pages: usize) -> Result<(), ()>;
-                fn as_bytes() -> []mut u8;
-            }
-
-            impl Allocator for Memory {
-                fn alloc<T>(self, layout: Layout) -> Result<*mut T, ()> {
-                    
-                }
-            }
-
-            const X: i32 = 42;
-
-            impl Vec3 {
-                const SIZE: usize = 12;
-                const ALIGN: usize = 4;
-            }
-
-            trait Sized {
-                const SIZE: usize;
-                const ALIGN: usize;
-            }
-
-            impl Sized for Vec3 {
-                const SIZE: usize = 12;
-                const ALIGN: usize = 4;
-            }
-
-            static BYTES: [1024]mut u8 = <[1024]mut u8>::init(0);
-
-            fn main() {
-                local x = 'a'.to_ascii_uppercase();
-                local some_bytes: [3]u8 = [123, 34, 104] in MEM;
-                local tuple: (u8, u8, u8) = (123, 34, 104);
-
-                local x: []mut u8 = [1, 2, 3];
-                x[0] = 42;
-
-                &x[0]
-
-                *const [u8]
-
-                local arena = ArenaAllocator::from_buffer(
-                    MEM.as_bytes()[..1024]
-                );
-                
-                local ptr = arena.alloc(Layout { 
-                    size: size_of::<Vec3>(),
-                    align: align_of::<Vec3>()
-                }).unwrap();
-                local ptr = arena.alloc(Layout { 
-                    size: Vec3::SIZE,
-                    align: Vec3::ALIGN,
-                }).unwrap();
-                ptr.* = Vec3::{ x: 1.0, y: 2.0, z: 3.0 };
-
-                local vec = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
-                    .in(&mut arena)
-                    .unwrap();
-
-
-
-                arena.alloc(\"hello\");
-                arena.alloc((1, 2, 3));
-                let vec3 = arena.alloc(Vec3::{ x: 1.0, y: 2.0, z: 3.0 }).unwrap();
-
-
-                Foo::{
-                    x: 5,
-                }
-
-                b1: {
-                    break :b1 42;
-                }
-
-                local Foo::{ x, y } = Point2D::{ x: 2, y: 3 };
-
-                match some_value {
-                    Ok(Foo::{ x, y }) => {}
-                }
-
-                let matrix: [3][3]i32 = {
-                    { 1, 2, 3 },
-                    { 4, 5, 6 },
-                    { 7, 8, 9 },
-                };
-                let matrix: [3][3]i32 = [
-                    [1, 2, 3],
-                    [4, 5, 6],
-                    [7, 8, 9],
-                ];
-                local s: string = string::from_bytes(some_bytes[..]);
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-
-    #[test]
-    fn test_struct_init_basic() {
-        let case = TestCase::new(indoc! {"
-            fn main() {
-                local v = Vec3::{ x: 1, y: 2, z: 3 }
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-
-    #[test]
-    fn test_struct_init_shorthand() {
-        // { field } is shorthand for { field: field }
-        let case = TestCase::new(indoc! {"
-            fn main() {
-                local x = 1
-                local y = 2
-                local p = Point::{ x, y }
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-
-    #[test]
-    fn test_struct_init_mixed_fields() {
-        // mix of shorthand and explicit fields
-        let case = TestCase::new(indoc! {"
-            fn main() {
-                local z = 0
-                local v = Vec3::{ x: 1, y: 2, z }
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-
-    #[test]
-    fn test_struct_init_trailing_comma() {
-        let case = TestCase::new(indoc! {"
-            fn main() {
-                local v = Vec3::{ x: 1, y: 2, z: 3, }
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-
-    #[test]
-    fn test_struct_init_empty() {
-        let case = TestCase::new(indoc! {"
-            fn main() {
-                local u = Unit::{}
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-
-    #[test]
-    fn test_struct_init_in_if_condition() {
-        // Foo::{ } in an if condition must not be confused with the if's block
-        let case = TestCase::new(indoc! {"
-            fn check(p: Point) -> bool {
-                local q = Point::{ x: 0, y: 0 }
-                if q.x == p.x {
-                    return 1
-                }
-                0
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-
-    #[test]
-    fn test_struct_init_label_not_confused() {
-        // b1: { } is a labelled block, NOT a struct init — different token (: vs ::)
-        let case = TestCase::new(indoc! {"
-            fn main() {
-                b1: {
-                    break :b1
-                }
-            }
-        "});
-        insta::assert_yaml_snapshot!(case.ast);
-    }
-}
+mod tests;

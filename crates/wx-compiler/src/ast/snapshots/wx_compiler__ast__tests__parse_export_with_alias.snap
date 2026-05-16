@@ -1,5 +1,5 @@
 ---
-source: crates/wx-compiler/src/ast.rs
+source: crates/wx-compiler/src/ast/tests.rs
 expression: case.ast
 ---
 file_id: 0
@@ -9,6 +9,7 @@ items:
       inner:
         Function:
           pub_span: ~
+          attributes: []
           signature:
             name:
               inner: 1
@@ -26,7 +27,7 @@ items:
             result:
               inner:
                 Identifier:
-                  symbol: 3
+                  symbol: 2
               span:
                 start: 13
                 end: 16
@@ -43,14 +44,14 @@ items:
                           LocalDefinition:
                             mut_span: ~
                             name:
-                              inner: 4
+                              inner: 3
                               span:
                                 start: 29
                                 end: 30
                             ty:
                               inner:
                                 Identifier:
-                                  symbol: 3
+                                  symbol: 2
                               span:
                                 start: 32
                                 end: 35
@@ -58,7 +59,7 @@ items:
                               inner:
                                 Label:
                                   label:
-                                    inner: 5
+                                    inner: 4
                                     span:
                                       start: 38
                                       end: 39
@@ -79,7 +80,7 @@ items:
                                                           inner:
                                                             Break:
                                                               label:
-                                                                inner: 5
+                                                                inner: 4
                                                                 span:
                                                                   start: 63
                                                                   end: 64
@@ -96,7 +97,7 @@ items:
                                                                     ty:
                                                                       inner:
                                                                         Identifier:
-                                                                          symbol: 3
+                                                                          symbol: 2
                                                                       span:
                                                                         start: 70
                                                                         end: 73
@@ -135,7 +136,7 @@ items:
                           Expression:
                             inner:
                               Identifier:
-                                symbol: 4
+                                symbol: 3
                             span:
                               start: 87
                               end: 88
@@ -169,7 +170,7 @@ items:
                         start: 105
                         end: 109
                     alias:
-                      inner: 6
+                      inner: 5
                       span:
                         start: 113
                         end: 119

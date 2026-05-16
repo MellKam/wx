@@ -3,21 +3,117 @@ source: crates/wx-compiler/src/mir.rs
 expression: case.mir
 ---
 functions:
-  - signature_index: 1
+  - signature_index: 3
     scopes:
       - kind: Block
         parent: ~
-        locals: []
-        result:
-          Tuple:
-            tuple_index: 1
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: Bool
     block:
       kind:
         Block:
           scope_index: 0
           expressions:
             - kind:
-                StructCreate:
+                And:
+                  left:
+                    kind:
+                      GreaterEq:
+                        left:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 65
+                          ty: U32
+                    ty: Bool
+                  right:
+                    kind:
+                      LessEq:
+                        left:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 90
+                          ty: U32
+                    ty: Bool
+              ty: Bool
+      ty: Bool
+    inline: true
+  - signature_index: 3
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: Bool
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                And:
+                  left:
+                    kind:
+                      GreaterEq:
+                        left:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 97
+                          ty: U32
+                    ty: Bool
+                  right:
+                    kind:
+                      LessEq:
+                        left:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 122
+                          ty: U32
+                    ty: Bool
+              ty: Bool
+      ty: Bool
+    inline: true
+  - signature_index: 4
+    scopes:
+      - kind: Block
+        parent: ~
+        locals: []
+        result:
+          Tuple:
+            tuple_index: 0
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Packed:
                   fields:
                     - kind:
                         Int:
@@ -29,30 +125,43 @@ functions:
                       ty: U32
               ty:
                 Tuple:
-                  tuple_index: 1
+                  tuple_index: 0
       ty:
         Tuple:
-          tuple_index: 1
+          tuple_index: 0
+    inline: false
 signatures:
+  - items:
+      - Tuple:
+          tuple_index: 1
+      - U32
+    params_count: 1
+  - items:
+      - F32
+      - F32
+    params_count: 1
   - items:
       - U32
       - U32
     params_count: 1
   - items:
+      - U32
+      - Bool
+    params_count: 1
+  - items:
       - Tuple:
-          tuple_index: 1
+          tuple_index: 0
     params_count: 0
 globals: []
 exports:
   - Function:
-      func_index: 0
-      name: 15
+      func_index: 2
+      name: 59
 imports: []
 tuples:
   - fields:
-      - StringPointer
+      - U32
       - U32
   - fields:
-      - U32
-      - U32
+      - I32
 strings: []

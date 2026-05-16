@@ -3,18 +3,134 @@ source: crates/wx-compiler/src/mir.rs
 expression: case.mir
 ---
 functions:
-  - signature_index: 2
+  - signature_index: 3
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: Bool
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                And:
+                  left:
+                    kind:
+                      GreaterEq:
+                        left:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 65
+                          ty: U32
+                    ty: Bool
+                  right:
+                    kind:
+                      LessEq:
+                        left:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 90
+                          ty: U32
+                    ty: Bool
+              ty: Bool
+      ty: Bool
+    inline: true
+  - signature_index: 3
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: Bool
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                And:
+                  left:
+                    kind:
+                      GreaterEq:
+                        left:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 97
+                          ty: U32
+                    ty: Bool
+                  right:
+                    kind:
+                      LessEq:
+                        left:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 122
+                          ty: U32
+                    ty: Bool
+              ty: Bool
+      ty: Bool
+    inline: true
+  - signature_index: 5
     scopes:
       - kind: Block
         parent: ~
         locals:
           - ty:
               Tuple:
-                tuple_index: 1
+                tuple_index: 0
             mutability: Immutable
-          - ty: I32
+          - ty: U32
             mutability: Immutable
         result: Unit
+      - kind: Block
+        parent: ~
+        locals: []
+        result: Bool
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: Bool
+      - kind: Block
+        parent: ~
+        locals: []
+        result: Bool
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: Bool
     block:
       kind:
         Block:
@@ -26,8 +142,16 @@ functions:
                   local_index: 0
                   value:
                     kind:
-                      String:
-                        string_index: 0
+                      Packed:
+                        fields:
+                          - kind:
+                              StringIndex:
+                                string_index: 0
+                            ty: Pointer
+                          - kind:
+                              Int:
+                                value: 4
+                            ty: U32
                     ty:
                       Tuple:
                         tuple_index: 0
@@ -38,42 +162,145 @@ functions:
                   local_index: 1
                   value:
                     kind:
-                      Call:
-                        callee:
-                          kind:
-                            LocalTupleGet:
-                              scope_index: 0
-                              local_index: 0
-                              field_index: 1
-                          ty: U32
-                        arguments: []
-                    ty: I32
+                      Block:
+                        scope_index: 1
+                        expressions:
+                          - kind:
+                              LocalSet:
+                                scope_index: 2
+                                local_index: 0
+                                value:
+                                  kind:
+                                    LocalGet:
+                                      scope_index: 0
+                                      local_index: 0
+                                  ty:
+                                    Tuple:
+                                      tuple_index: 0
+                            ty: Unit
+                          - kind:
+                              Block:
+                                scope_index: 2
+                                expressions:
+                                  - kind:
+                                      And:
+                                        left:
+                                          kind:
+                                            GreaterEq:
+                                              left:
+                                                kind:
+                                                  LocalGet:
+                                                    scope_index: 2
+                                                    local_index: 0
+                                                ty: U32
+                                              right:
+                                                kind:
+                                                  Int:
+                                                    value: 97
+                                                ty: U32
+                                          ty: Bool
+                                        right:
+                                          kind:
+                                            LessEq:
+                                              left:
+                                                kind:
+                                                  LocalGet:
+                                                    scope_index: 2
+                                                    local_index: 0
+                                                ty: U32
+                                              right:
+                                                kind:
+                                                  Int:
+                                                    value: 122
+                                                ty: U32
+                                          ty: Bool
+                                    ty: Bool
+                            ty: Bool
+                    ty: Bool
               ty: Unit
             - kind:
-                Call:
-                  callee:
-                    kind:
-                      Function:
-                        func_index: 0
-                    ty:
-                      Function:
-                        signature_index: 1
-                  arguments:
+                Block:
+                  scope_index: 3
+                  expressions:
                     - kind:
-                        Int:
-                          value: 0
-                      ty: U32
+                        LocalSet:
+                          scope_index: 4
+                          local_index: 0
+                          value:
+                            kind:
+                              Int:
+                                value: 0
+                            ty: U32
+                      ty: Unit
                     - kind:
-                        LocalGet:
-                          scope_index: 0
+                        LocalSet:
+                          scope_index: 4
                           local_index: 1
-                      ty: I32
-              ty: Unit
+                          value:
+                            kind:
+                              LocalGet:
+                                scope_index: 0
+                                local_index: 1
+                            ty: U32
+                      ty: Unit
+                    - kind:
+                        Block:
+                          scope_index: 4
+                          expressions:
+                            - kind:
+                                And:
+                                  left:
+                                    kind:
+                                      GreaterEq:
+                                        left:
+                                          kind:
+                                            LocalGet:
+                                              scope_index: 4
+                                              local_index: 0
+                                          ty: U32
+                                        right:
+                                          kind:
+                                            Int:
+                                              value: 65
+                                          ty: U32
+                                    ty: Bool
+                                  right:
+                                    kind:
+                                      LessEq:
+                                        left:
+                                          kind:
+                                            LocalGet:
+                                              scope_index: 4
+                                              local_index: 0
+                                          ty: U32
+                                        right:
+                                          kind:
+                                            Int:
+                                              value: 90
+                                          ty: U32
+                                    ty: Bool
+                              ty: Bool
+                      ty: Bool
+              ty: Bool
       ty: Unit
+    inline: false
 signatures:
+  - items:
+      - Tuple:
+          tuple_index: 0
+      - U32
+    params_count: 1
+  - items:
+      - F32
+      - F32
+    params_count: 1
   - items:
       - U32
       - U32
+    params_count: 1
+  - items:
+      - U32
+      - Bool
     params_count: 1
   - items:
       - U32
@@ -86,21 +313,17 @@ signatures:
 globals: []
 exports:
   - Function:
-      func_index: 1
-      name: 14
+      func_index: 4
+      name: 59
 imports:
   - name: console
     items:
       - Function:
-          name: 13
+          name: 57
           func_index: 0
-          signature_index: 19
+          signature_index: 22
 tuples:
   - fields:
-      - StringPointer
-      - U32
-  - fields:
       - I32
-      - U32
 strings:
-  - 23
+  - 68

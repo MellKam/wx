@@ -125,6 +125,17 @@ pub fn parse_char_literal(s: &str) -> Result<char, CharLiteralError> {
             Some('\\') => '\\',
             Some('\'') => '\'',
             Some('0') => '\0',
+            Some('x') => {
+                let hi = chars.next().and_then(|c| c.to_digit(16));
+                let lo = chars.next().and_then(|c| c.to_digit(16));
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        let codepoint = h * 16 + l;
+                        char::from_u32(codepoint).unwrap()
+                    }
+                    _ => return Err(CharLiteralError::TooLong),
+                }
+            }
             Some(c) => c,
         },
         Some(c) => c,
@@ -139,31 +150,6 @@ pub fn parse_char_literal(s: &str) -> Result<char, CharLiteralError> {
 
 pub type TypeIndex = u32;
 
-// Pre-interned indices — values must match the intern order in
-// `TypePool::new()`.
-pub const ERROR_IDX: TypeIndex = 0;
-pub const UNIT_IDX: TypeIndex = 1;
-pub const NEVER_IDX: TypeIndex = 2;
-pub const UNKNOWN_IDX: TypeIndex = 3;
-pub const I32_IDX: TypeIndex = 4;
-pub const I64_IDX: TypeIndex = 5;
-pub const F32_IDX: TypeIndex = 6;
-pub const F64_IDX: TypeIndex = 7;
-pub const U32_IDX: TypeIndex = 8;
-pub const U64_IDX: TypeIndex = 9;
-pub const BOOL_IDX: TypeIndex = 10;
-/// TypeIndex for the built-in `char` primitive type.
-pub const CHAR_IDX: TypeIndex = 11;
-/// TypeIndex for the built-in `string` sealed struct.
-pub const STRING_IDX: TypeIndex = 12;
-pub const U8_IDX: TypeIndex = 13;
-pub const I8_IDX: TypeIndex = 14;
-pub const U16_IDX: TypeIndex = 15;
-pub const I16_IDX: TypeIndex = 16;
-
-/// Struct pool index of the built-in `string` sealed struct.
-pub const BUILTIN_STRING_STRUCT: u32 = 0;
-
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -172,18 +158,19 @@ pub enum Type {
     Unit,
     Never,
     Unknown,
-    I32,
-    I64,
-    F32,
-    F64,
-    U32,
-    U64,
-    Bool,
-    Char,
     U8,
     I8,
     U16,
     I16,
+    U32,
+    I32,
+    U64,
+    I64,
+    F32,
+    F64,
+    Bool,
+    Char,
+
     Pointer {
         to: TypeIndex,
         mutable: bool,
@@ -207,24 +194,61 @@ pub enum Type {
         items: Box<[TypeIndex]>,
         params_count: usize,
     },
-    Namespace {
-        namespace_index: u32,
+    ImportModule {
+        module_index: u32,
     },
+    Enum {
+        enum_index: u32,
+    },
+}
+
+impl Type {
+    pub const ERROR_IDX: TypeIndex = 0;
+    pub const UNIT_IDX: TypeIndex = 1;
+    pub const NEVER_IDX: TypeIndex = 2;
+    pub const UNKNOWN_IDX: TypeIndex = 3;
+    pub const U8_IDX: TypeIndex = 4;
+    pub const I8_IDX: TypeIndex = 5;
+    pub const U16_IDX: TypeIndex = 6;
+    pub const I16_IDX: TypeIndex = 7;
+    pub const U32_IDX: TypeIndex = 8;
+    pub const I32_IDX: TypeIndex = 9;
+    pub const U64_IDX: TypeIndex = 10;
+    pub const I64_IDX: TypeIndex = 11;
+    pub const F32_IDX: TypeIndex = 12;
+    pub const F64_IDX: TypeIndex = 13;
+    pub const BOOL_IDX: TypeIndex = 14;
+    pub const CHAR_IDX: TypeIndex = 15;
 }
 
 impl Type {
     pub fn is_primitive(&self) -> bool {
         match self {
-            Type::I32 | Type::I64 | Type::U32 | Type::U64 | Type::F32 | Type::F64
-            | Type::Char | Type::U8 | Type::I8 | Type::U16 | Type::I16 => true,
+            Type::I32
+            | Type::I64
+            | Type::U32
+            | Type::U64
+            | Type::F32
+            | Type::F64
+            | Type::Char
+            | Type::U8
+            | Type::I8
+            | Type::U16
+            | Type::I16 => true,
             _ => false,
         }
     }
 
     pub fn is_integer(&self) -> bool {
         match self {
-            Type::I32 | Type::I64 | Type::U32 | Type::U64
-            | Type::U8 | Type::I8 | Type::U16 | Type::I16 => true,
+            Type::I32
+            | Type::I64
+            | Type::U32
+            | Type::U64
+            | Type::U8
+            | Type::I8
+            | Type::U16
+            | Type::I16 => true,
             _ => false,
         }
     }
@@ -256,9 +280,6 @@ impl TryFrom<&str> for Type {
             "i16" => Ok(Type::I16),
             "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),
-            "string" => Ok(Type::Struct {
-                struct_index: BUILTIN_STRING_STRUCT,
-            }),
             _ => Err(()),
         }
     }
@@ -267,20 +288,32 @@ impl TryFrom<&str> for Type {
 /// Returns true if casting from `from` to `to` is allowed without an explicit
 /// unsafe annotation. Permitted conversions:
 /// - integer ↔ integer (any combination of i8/u8/i16/u16/i32/u32/i64/u64)
-/// - char ↔ u8 or u16 (ASCII / Latin-1 / BMP range fits naturally)
+/// - char → u8, u16, u32 (lossless widening; u32 is the natural repr of char)
+/// - u8, u16 → char (narrow range guaranteed to be valid unicode scalar values)
+/// - u32 → char is intentionally excluded (not all u32 values are valid chars)
 pub fn is_numeric_cast(from: TypeIndex, to: TypeIndex) -> bool {
-    use Type::*;
-    let is_int = |idx: TypeIndex| matches!(idx, I8_IDX | U8_IDX | I16_IDX | U16_IDX | I32_IDX | U32_IDX | I64_IDX | U64_IDX);
-    let is_char_compat = |idx: TypeIndex| matches!(idx, U8_IDX | U16_IDX);
+    let is_int = |idx: TypeIndex| {
+        matches!(
+            idx,
+            Type::I8_IDX
+                | Type::U8_IDX
+                | Type::I16_IDX
+                | Type::U16_IDX
+                | Type::I32_IDX
+                | Type::U32_IDX
+                | Type::I64_IDX
+                | Type::U64_IDX
+        )
+    };
+    let is_char_compat = |idx: TypeIndex| matches!(idx, Type::U8_IDX | Type::U16_IDX);
     (is_int(from) && is_int(to))
-        || (from == CHAR_IDX && is_char_compat(to))
-        || (is_char_compat(from) && to == CHAR_IDX)
+        || (from == Type::CHAR_IDX && (is_char_compat(to) || to == Type::U32_IDX))
+        || (is_char_compat(from) && to == Type::CHAR_IDX)
 }
 
 pub type LocalIndex = u32;
 pub type ScopeIndex = u32;
 pub type FunctionIndex = u32;
-pub type NamespaceIndex = u32;
 pub type GlobalIndex = u32;
 pub type ConstIndex = u32;
 /// `SignatureIndex` is now an alias for `TypeIndex` — the function type lives
@@ -335,7 +368,7 @@ pub enum ExprKind {
         value: Option<Box<Expression>>,
     },
     EnumVariant {
-        namespace_index: NamespaceIndex,
+        enum_index: u32,
         variant_index: EnumVariantIndex,
     },
     Unary {
@@ -517,6 +550,16 @@ pub struct Function {
     pub signature_index: SignatureIndex,
     pub stack: StackFrame,
     pub block: Box<Expression>,
+    pub pub_span: Option<ast::TextSpan>,
+    pub attributes: Box<[FunctionAttribute]>,
+}
+
+impl Function {
+    pub fn is_inline(&self) -> bool {
+        self.attributes
+            .iter()
+            .any(|a| matches!(a, FunctionAttribute::Inline))
+    }
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
@@ -562,11 +605,16 @@ pub struct DeclaredGlobal {
 
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
-pub enum GlobalValue {
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum SymbolKind {
+    // Types
+    ImportModule { module_index: u32 },
+    Enum { enum_index: u32 },
+    Struct { struct_index: u32 },
+    Module { module_index: u32 },
+    // Values
     Global { global_index: GlobalIndex },
     Function { func_index: FunctionIndex },
-    Namespace { namespace_index: NamespaceIndex },
-    Struct { struct_index: u32 },
     Const { const_index: ConstIndex },
     True,
     False,
@@ -581,6 +629,14 @@ pub enum ImportValue {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+pub struct Module {
+    pub name: ast::Spanned<SymbolU32>,
+    pub pub_span: Option<ast::TextSpan>,
+    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    pub symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ImportModule {
     pub external_name: ast::Spanned<SymbolU32>,
     pub internal_name: Option<ast::Spanned<SymbolU32>>,
@@ -589,17 +645,20 @@ pub struct ImportModule {
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum SymbolNamespace {
     Type,
     Value,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum ItemSource {
     Defined,
     Imported,
+    Buildin,
 }
 
 /// Classifies a source file for diagnostic purposes.
@@ -635,16 +694,36 @@ impl Ord for ItemSource {
     }
 }
 
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum FunctionAttribute {
+    Inline,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum FunctionAccessKind {
+    DirectCall,
+    Reference,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct FunctionAccess {
+    pub caller: Option<FunctionIndex>,
+    pub kind: FunctionAccessKind,
+    pub span: ast::TextSpan,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct DeclaredFunction {
     pub source: ItemSource,
     pub signature_index: SignatureIndex,
     pub name: ast::Spanned<SymbolU32>,
     pub params: Box<[DeclaredFunctionParam]>,
     pub result: Option<Spanned<TypeIndex>>,
-    pub accesses: Vec<ast::TextSpan>,
-    /// Set when the function was declared `pub fn`; suppresses the unused-item warning.
-    pub pub_span: Option<ast::TextSpan>,
+    pub accesses: Vec<FunctionAccess>,
 }
 
 pub struct FunctionContext {
@@ -847,23 +926,6 @@ impl DuplicateParameterDiagnostic<'_> {
             .with_label(
                 Label::secondary(self.file_id, self.first_definition)
                     .with_message(format!("first use of `{}` as parameter", self.name)),
-            )
-    }
-}
-
-struct MissingImportParamNameDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl MissingImportParamNameDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::warning()
-            .with_code(DiagnosticCode::MissingImportParamName.code())
-            .with_message("imported function parameter has no name")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("give this parameter a name: `name: type`"),
             )
     }
 }
@@ -1616,13 +1678,16 @@ struct Builder<'interner> {
     defined_globals: HashMap<GlobalIndex, Global>,
     exports: HashMap<SymbolU32, ExportItem>,
     diagnostics: Vec<Diagnostic<FileId>>,
-    namespaces: Vec<Namespace>,
+    import_modules: Vec<ImportModule>,
+    enums: Vec<Enum>,
+    modules: Vec<Module>,
+    module_scope: Vec<u32>,
     declared_globals: Vec<DeclaredGlobal>,
     declared_functions: Vec<DeclaredFunction>,
     declared_consts: Vec<DeclaredConst>,
     const_pool: Vec<ConstValue>,
     type_pool: TypePool,
-    symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), GlobalValue>,
+    symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
     impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
     structs: Vec<Struct>,
     ptr_size: PointerSize,
@@ -1634,6 +1699,25 @@ enum BlockState<T> {
 }
 
 impl Builder<'_> {
+    fn insert_symbol(&mut self, ns: SymbolNamespace, sym: SymbolU32, kind: SymbolKind) {
+        if let Some(&idx) = self.module_scope.last() {
+            self.modules[idx as usize]
+                .symbol_lookup
+                .insert((ns, sym), kind);
+        } else {
+            self.symbol_lookup.insert((ns, sym), kind);
+        }
+    }
+
+    fn lookup_symbol(&self, ns: SymbolNamespace, sym: SymbolU32) -> Option<&SymbolKind> {
+        for &idx in self.module_scope.iter().rev() {
+            if let Some(kind) = self.modules[idx as usize].symbol_lookup.get(&(ns, sym)) {
+                return Some(kind);
+            }
+        }
+        self.symbol_lookup.get(&(ns, sym))
+    }
+
     pub fn resolve_type(&mut self, type_expr: &Spanned<ast::TypeExpression>) -> TypeIndex {
         match &type_expr.inner {
             ast::TypeExpression::Identifier { symbol } => {
@@ -1642,13 +1726,16 @@ impl Builder<'_> {
                 if let Ok(ty) = Type::try_from(text) {
                     return self.type_pool.intern(ty);
                 }
-                match self.symbol_lookup.get(&(SymbolNamespace::Type, symbol)) {
-                    Some(GlobalValue::Namespace { namespace_index }) => {
-                        self.type_pool.intern(Type::Namespace {
-                            namespace_index: *namespace_index,
+                match self.lookup_symbol(SymbolNamespace::Type, symbol) {
+                    Some(SymbolKind::ImportModule { module_index }) => {
+                        self.type_pool.intern(Type::ImportModule {
+                            module_index: *module_index,
                         })
                     }
-                    Some(GlobalValue::Struct { struct_index }) => {
+                    Some(SymbolKind::Enum { enum_index }) => self.type_pool.intern(Type::Enum {
+                        enum_index: *enum_index,
+                    }),
+                    Some(SymbolKind::Struct { struct_index }) => {
                         self.type_pool.intern(Type::Struct {
                             struct_index: *struct_index,
                         })
@@ -1661,14 +1748,14 @@ impl Builder<'_> {
                             }
                             .report(),
                         );
-                        ERROR_IDX
+                        Type::ERROR_IDX
                     }
                 }
             }
             ast::TypeExpression::Function { params, result } => {
                 let result_idx = match result {
                     Some(result) => self.resolve_type(result),
-                    None => UNIT_IDX,
+                    None => Type::UNIT_IDX,
                 };
                 let params_count = params.inner.len();
                 let items: Box<[TypeIndex]> = params
@@ -1725,7 +1812,7 @@ impl Builder<'_> {
     ) -> FunctionIndex {
         let result_idx = match &result {
             Some(r) => r.inner,
-            None => UNIT_IDX,
+            None => Type::UNIT_IDX,
         };
         let params_count = params.len();
         let items: Box<[TypeIndex]> = params
@@ -1744,31 +1831,29 @@ impl Builder<'_> {
             signature_index,
             name,
             accesses: Vec::new(),
-            pub_span: None,
             params,
             result,
         });
         func_index
     }
 
-    pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<GlobalValue> {
-        match self
-            .symbol_lookup
-            .get(&(SymbolNamespace::Value, symbol))
-            .cloned()
-        {
-            Some(value) => Some(value),
-            None => None,
-        }
+    fn resolve_function_attributes(&self, attrs: &[ast::Attribute]) -> Box<[FunctionAttribute]> {
+        attrs
+            .iter()
+            .filter_map(|a| match self.interner.resolve(a.name.inner) {
+                Some("inline") => Some(FunctionAttribute::Inline),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn resolve_value(&mut self, symbol: SymbolU32) -> Option<SymbolKind> {
+        self.lookup_symbol(SymbolNamespace::Value, symbol).cloned()
     }
 
     pub fn resolve_func(&self, symbol: SymbolU32) -> Option<FunctionIndex> {
-        match self
-            .symbol_lookup
-            .get(&(SymbolNamespace::Value, symbol))
-            .cloned()
-        {
-            Some(GlobalValue::Function { func_index }) => Some(func_index),
+        match self.lookup_symbol(SymbolNamespace::Value, symbol) {
+            Some(SymbolKind::Function { func_index }) => Some(*func_index),
             _ => None,
         }
     }
@@ -1818,21 +1903,18 @@ impl Builder<'_> {
                 let s = &self.structs[*struct_index as usize];
                 self.interner.resolve(s.name.inner).unwrap().to_string()
             }
-            Type::Namespace { namespace_index } => {
-                let ns = &self.namespaces[*namespace_index as usize];
-                match ns {
-                    Namespace::ImportModule(module) => {
-                        let name = module
-                            .internal_name
-                            .as_ref()
-                            .map(|x| x.inner)
-                            .unwrap_or(module.external_name.inner);
-                        self.interner.resolve(name).unwrap().to_string()
-                    }
-                    Namespace::Enum(enum_) => {
-                        self.interner.resolve(enum_.name.inner).unwrap().to_string()
-                    }
-                }
+            Type::ImportModule { module_index } => {
+                let module = &self.import_modules[*module_index as usize];
+                let name = module
+                    .internal_name
+                    .as_ref()
+                    .map(|x| x.inner)
+                    .unwrap_or(module.external_name.inner);
+                self.interner.resolve(name).unwrap().to_string()
+            }
+            Type::Enum { enum_index } => {
+                let enum_ = &self.enums[*enum_index as usize];
+                self.interner.resolve(enum_.name.inner).unwrap().to_string()
             }
             Type::Function {
                 items,
@@ -1850,115 +1932,103 @@ impl Builder<'_> {
         }
     }
 
+    fn get_symbol_span(&self, symbol: SymbolKind) -> Option<TextSpan> {
+        match symbol {
+            SymbolKind::Function { func_index } => {
+                let func = &self.declared_functions[func_index as usize];
+                Some(func.name.span)
+            }
+            SymbolKind::Global { global_index } => {
+                let global = &self.declared_globals[global_index as usize];
+                Some(global.name.span)
+            }
+            SymbolKind::Const { const_index } => {
+                let const_ = &self.declared_consts[const_index as usize];
+                Some(const_.name.span)
+            }
+            SymbolKind::ImportModule { module_index } => {
+                let module = &self.import_modules[module_index as usize];
+                match &module.internal_name {
+                    Some(internal_name) => Some(internal_name.span),
+                    None => Some(module.external_name.span),
+                }
+            }
+            SymbolKind::Enum { enum_index } => Some(self.enums[enum_index as usize].name.span),
+            SymbolKind::Struct { struct_index } => {
+                let s = &self.structs[struct_index as usize];
+                Some(s.name.span)
+            }
+            SymbolKind::Module { module_index } => {
+                Some(self.modules[module_index as usize].name.span)
+            }
+            _ => unreachable!(),
+        }
+    }
+
     fn define_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match item {
             ast::Item::Function { signature, .. } => {
-                match self
-                    .symbol_lookup
-                    .get(&(SymbolNamespace::Value, signature.name.inner))
+                let existing_definition_span = match self
+                    .lookup_symbol(SymbolNamespace::Value, signature.name.inner)
                     .cloned()
                 {
-                    Some(first_definition) => {
-                        let name = self.interner.resolve(signature.name.inner).unwrap();
-                        let first_definition_span = match first_definition {
-                            GlobalValue::Function { func_index } => {
-                                let func = &self.declared_functions[func_index as usize];
-                                func.name.span
-                            }
-                            GlobalValue::Global { global_index } => {
-                                let global = &self.declared_globals[global_index as usize];
-                                global.name.span
-                            }
-                            _ => unreachable!(),
-                        };
-
-                        self.diagnostics.push(
-                            DuplicateDefinitionDiagnostic {
-                                file_id: self.file_id,
-                                name,
-                                namespace: SymbolNamespace::Value,
-                                first_definition: first_definition_span,
-                                second_definition: signature.name.span,
-                            }
-                            .report(),
-                        );
-
-                        // TODO: we should probably continue processing the function to find more
-                        // errors
-                        return Err(());
-                    }
-                    None => {}
+                    Some(existing_definition) => self.get_symbol_span(existing_definition),
+                    None => None,
                 };
 
-                let mut seen_params: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
-                let params: Box<[DeclaredFunctionParam]> = signature
-                    .params
-                    .inner
-                    .iter()
-                    .map(|param| {
-                        let name = &param.inner.inner.name;
-                        if let Some(&first_span) = seen_params.get(&name.inner) {
-                            let name_str = self.interner.resolve(name.inner).unwrap();
-                            self.diagnostics.push(
-                                DuplicateParameterDiagnostic {
-                                    file_id: self.file_id,
-                                    name: name_str,
-                                    first_definition: first_span,
-                                    second_definition: name.span,
-                                }
-                                .report(),
-                            );
-                        } else {
-                            seen_params.insert(name.inner, name.span);
-                        }
-                        DeclaredFunctionParam {
-                            name: Some(name.clone()),
-                            ty: match &param.inner.inner.ty {
-                                Some(ty) => Spanned {
-                                    inner: self.resolve_type(&ty),
-                                    span: ty.span,
-                                },
-                                None => Spanned {
-                                    inner: ERROR_IDX,
-                                    span: param.inner.inner.name.span,
-                                },
-                            },
-                        }
-                    })
-                    .collect();
-                let result = signature.result.as_ref().map(|result| Spanned {
-                    inner: self.resolve_type(result),
-                    span: result.span,
-                });
-
+                let (params, result) = self.build_function_signature(signature);
                 let func_index = self.declare_function(
                     signature.name.clone(),
                     params,
                     result,
                     ItemSource::Defined,
                 );
-                self.symbol_lookup.insert(
-                    (SymbolNamespace::Value, signature.name.inner),
-                    GlobalValue::Function { func_index },
-                );
+                match existing_definition_span {
+                    Some(span) => {
+                        let name = self.interner.resolve(signature.name.inner).unwrap();
+                        self.diagnostics.push(
+                            DuplicateDefinitionDiagnostic {
+                                file_id: self.file_id,
+                                name,
+                                namespace: SymbolNamespace::Value,
+                                first_definition: span,
+                                second_definition: signature.name.span,
+                            }
+                            .report(),
+                        );
+                        return Err(());
+                    }
+                    None => {
+                        self.insert_symbol(
+                            SymbolNamespace::Value,
+                            signature.name.inner,
+                            SymbolKind::Function { func_index },
+                        );
+                    }
+                }
+
                 Ok(())
             }
+            ast::Item::FunctionDeclaration {
+                pub_span,
+                attributes,
+                signature,
+            } => Ok(()),
             ast::Item::Global {
                 mut_span, name, ty, ..
             } => {
                 match self
-                    .symbol_lookup
-                    .get(&(SymbolNamespace::Value, name.inner))
+                    .lookup_symbol(SymbolNamespace::Value, name.inner)
                     .cloned()
                 {
                     Some(first_definition) => {
                         let name_str = self.interner.resolve(name.inner).unwrap();
                         let first_definition_span = match first_definition {
-                            GlobalValue::Function { func_index } => {
+                            SymbolKind::Function { func_index } => {
                                 let func = &self.declared_functions[func_index as usize];
                                 func.name.span
                             }
-                            GlobalValue::Global { global_index } => {
+                            SymbolKind::Global { global_index } => {
                                 let global = &self.declared_globals[global_index as usize];
                                 global.name.span
                             }
@@ -1992,14 +2062,15 @@ impl Builder<'_> {
                             .report(),
                         );
                         // Use Error type but still register the global
-                        (ERROR_IDX, name.span)
+                        (Type::ERROR_IDX, name.span)
                     }
                 };
 
                 let global_index = self.declared_globals.len() as u32;
-                self.symbol_lookup.insert(
-                    (SymbolNamespace::Value, name.inner),
-                    GlobalValue::Global { global_index },
+                self.insert_symbol(
+                    SymbolNamespace::Value,
+                    name.inner,
+                    SymbolKind::Global { global_index },
                 );
 
                 self.declared_globals.push(DeclaredGlobal {
@@ -2021,7 +2092,7 @@ impl Builder<'_> {
                 alias,
                 entries,
             } => {
-                let ns_index = self.namespaces.len() as u32;
+                let module_index = self.import_modules.len() as u32;
 
                 let external_name = {
                     let module_str = self.interner.resolve(module.inner).unwrap();
@@ -2037,27 +2108,24 @@ impl Builder<'_> {
                     None => external_name.inner,
                 };
 
-                if let Some(existing) = self
-                    .symbol_lookup
-                    .get(&(SymbolNamespace::Type, module_symbol))
-                {
+                if let Some(existing) = self.lookup_symbol(SymbolNamespace::Type, module_symbol) {
                     let name_str = self.interner.resolve(module_symbol).unwrap();
                     let first_definition_span = match existing {
-                        GlobalValue::Function { func_index } => {
+                        SymbolKind::Function { func_index } => {
                             self.declared_functions[*func_index as usize].name.span
                         }
-                        GlobalValue::Global { global_index } => {
+                        SymbolKind::Global { global_index } => {
                             self.declared_globals[*global_index as usize].name.span
                         }
-                        GlobalValue::Namespace { namespace_index } => {
-                            match &self.namespaces[*namespace_index as usize] {
-                                Namespace::ImportModule(module) => module
-                                    .internal_name
-                                    .as_ref()
-                                    .map(|x| x.span)
-                                    .unwrap_or(module.external_name.span),
-                                Namespace::Enum(enum_) => enum_.name.span,
-                            }
+                        SymbolKind::ImportModule { module_index } => {
+                            let m = &self.import_modules[*module_index as usize];
+                            m.internal_name
+                                .as_ref()
+                                .map(|x| x.span)
+                                .unwrap_or(m.external_name.span)
+                        }
+                        SymbolKind::Enum { enum_index } => {
+                            self.enums[*enum_index as usize].name.span
                         }
                         _ => alias.as_ref().unwrap_or(module).span,
                     };
@@ -2075,15 +2143,14 @@ impl Builder<'_> {
                     return Err(());
                 }
 
-                self.symbol_lookup.insert(
-                    (SymbolNamespace::Type, module_symbol),
-                    GlobalValue::Namespace {
-                        namespace_index: ns_index,
-                    },
+                self.insert_symbol(
+                    SymbolNamespace::Type,
+                    module_symbol,
+                    SymbolKind::ImportModule { module_index },
                 );
 
                 let module = self.define_import_module(external_name, alias.clone(), entries)?;
-                self.namespaces.push(Namespace::ImportModule(module));
+                self.import_modules.push(module);
 
                 Ok(())
             }
@@ -2093,17 +2160,16 @@ impl Builder<'_> {
             }
             ast::Item::Const { name, ty, value } => {
                 match self
-                    .symbol_lookup
-                    .get(&(SymbolNamespace::Value, name.inner))
+                    .lookup_symbol(SymbolNamespace::Value, name.inner)
                     .cloned()
                 {
                     Some(first_definition) => {
                         let name_str = self.interner.resolve(name.inner).unwrap();
                         let first_definition_span = match first_definition {
-                            GlobalValue::Function { func_index } => {
+                            SymbolKind::Function { func_index } => {
                                 self.declared_functions[func_index as usize].name.span
                             }
-                            GlobalValue::Global { global_index } => {
+                            SymbolKind::Global { global_index } => {
                                 self.declared_globals[global_index as usize].name.span
                             }
                             _ => name.span,
@@ -2125,10 +2191,14 @@ impl Builder<'_> {
 
                 let (ty_idx, ty_span) = match ty {
                     Some(ty) => (self.resolve_type(ty), ty.span),
-                    None => (UNKNOWN_IDX, name.span),
+                    None => (Type::UNKNOWN_IDX, name.span),
                 };
 
-                let expected_ty = if ty_idx == UNKNOWN_IDX { ERROR_IDX } else { ty_idx };
+                let expected_ty = if ty_idx == Type::UNKNOWN_IDX {
+                    Type::ERROR_IDX
+                } else {
+                    ty_idx
+                };
                 let value_expr = self.build_const_expression(value, expected_ty)?;
 
                 let const_value = match &value_expr.kind {
@@ -2146,30 +2216,41 @@ impl Builder<'_> {
                     }
                 };
 
-                let resolved_ty = if ty_idx == UNKNOWN_IDX { value_expr.ty } else { ty_idx };
+                let resolved_ty = if ty_idx == Type::UNKNOWN_IDX {
+                    value_expr.ty
+                } else {
+                    ty_idx
+                };
                 let const_index = self.declared_consts.len() as ConstIndex;
                 self.declared_consts.push(DeclaredConst {
                     name: name.clone(),
-                    ty: ast::Spanned { inner: resolved_ty, span: ty_span },
+                    ty: ast::Spanned {
+                        inner: resolved_ty,
+                        span: ty_span,
+                    },
                 });
                 self.const_pool.push(const_value);
-                self.symbol_lookup.insert(
-                    (SymbolNamespace::Value, name.inner),
-                    GlobalValue::Const { const_index },
+                self.insert_symbol(
+                    SymbolNamespace::Value,
+                    name.inner,
+                    SymbolKind::Const { const_index },
                 );
 
                 Ok(())
             }
-            ast::Item::Struct { pub_span: _, name, fields } => {
+            ast::Item::Struct {
+                pub_span: _,
+                name,
+                fields,
+            } => {
                 // Check for duplicate struct name in the type namespace
                 if let Some(existing) = self
-                    .symbol_lookup
-                    .get(&(SymbolNamespace::Type, name.inner))
+                    .lookup_symbol(SymbolNamespace::Type, name.inner)
                     .cloned()
                 {
                     let name_str = self.interner.resolve(name.inner).unwrap();
                     let first_span = match existing {
-                        GlobalValue::Struct { struct_index } => {
+                        SymbolKind::Struct { struct_index } => {
                             self.structs[struct_index as usize].name.span
                         }
                         _ => name.span,
@@ -2191,9 +2272,10 @@ impl Builder<'_> {
                 let struct_name = self.interner.resolve(name.inner).unwrap().to_string();
 
                 // Reserve the slot so recursive field types can detect the cycle
-                self.symbol_lookup.insert(
-                    (SymbolNamespace::Type, name.inner),
-                    GlobalValue::Struct { struct_index },
+                self.insert_symbol(
+                    SymbolNamespace::Type,
+                    name.inner,
+                    SymbolKind::Struct { struct_index },
                 );
                 self.structs.push(Struct {
                     name: name.clone(),
@@ -2277,8 +2359,7 @@ impl Builder<'_> {
                     .enumerate()
                     .map(|(phys, (_, f))| (f.name.inner, phys))
                     .collect();
-                let tir_fields: Vec<StructField> =
-                    pairs.into_iter().map(|(_, f)| f).collect();
+                let tir_fields: Vec<StructField> = pairs.into_iter().map(|(_, f)| f).collect();
 
                 // Patch the reserved slot with real fields
                 self.structs[struct_index as usize].fields = tir_fields.into_boxed_slice();
@@ -2290,6 +2371,50 @@ impl Builder<'_> {
                 // TODO: lower memory items in TIR
                 Ok(())
             }
+            ast::Item::Module {
+                pub_span,
+                name,
+                items,
+            } => {
+                let existing = self
+                    .lookup_symbol(SymbolNamespace::Type, name.inner)
+                    .cloned();
+                let module_index = self.modules.len() as u32;
+                if let Some(existing) = existing {
+                    let first_span = self.get_symbol_span(existing);
+                    let name_str = self.interner.resolve(name.inner).unwrap();
+                    self.diagnostics.push(
+                        DuplicateDefinitionDiagnostic {
+                            file_id: self.file_id,
+                            name: name_str,
+                            namespace: SymbolNamespace::Type,
+                            first_definition: first_span.unwrap_or(name.span),
+                            second_definition: name.span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+
+                self.modules.push(Module {
+                    name: name.clone(),
+                    pub_span: *pub_span,
+                    symbol_lookup: HashMap::new(),
+                });
+                self.insert_symbol(
+                    SymbolNamespace::Type,
+                    name.inner,
+                    SymbolKind::Module { module_index },
+                );
+
+                self.module_scope.push(module_index);
+                for item in items.inner.iter() {
+                    let _ = self.define_item(&item.inner.inner);
+                }
+                self.module_scope.pop();
+
+                Ok(())
+            }
             ast::Item::Impl { target, items } => {
                 let self_type = self.resolve_type(target);
                 let self_symbol = self.interner.get_or_intern("self");
@@ -2298,7 +2423,7 @@ impl Builder<'_> {
                         ast::ImplItem::Const { name, ty, value } => {
                             let resolved_ty = match ty {
                                 Some(ty_expr) => self.resolve_type(ty_expr),
-                                None => UNKNOWN_IDX,
+                                None => Type::UNKNOWN_IDX,
                             };
                             let const_value = match self.eval_impl_const_int(value, resolved_ty) {
                                 Ok(v) => v,
@@ -2327,7 +2452,11 @@ impl Builder<'_> {
                                                 span: ty.span,
                                             },
                                             None => Spanned {
-                                                inner: if is_self { self_type } else { ERROR_IDX },
+                                                inner: if is_self {
+                                                    self_type
+                                                } else {
+                                                    Type::ERROR_IDX
+                                                },
                                                 span: p.inner.inner.name.span,
                                             },
                                         },
@@ -2367,6 +2496,59 @@ impl Builder<'_> {
         }
     }
 
+    fn build_function_signature(
+        &mut self,
+        signature: &ast::FunctionSignature,
+    ) -> (Box<[DeclaredFunctionParam]>, Option<Spanned<TypeIndex>>) {
+        let mut seen_params: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
+        let params: Box<[DeclaredFunctionParam]> = signature
+            .params
+            .inner
+            .iter()
+            .map(|param| {
+                let name = &param.inner.inner.name;
+                if let Some(&first_span) = seen_params.get(&name.inner) {
+                    let name_str = self.interner.resolve(name.inner).unwrap();
+                    self.diagnostics.push(
+                        DuplicateParameterDiagnostic {
+                            file_id: self.file_id,
+                            name: name_str,
+                            first_definition: first_span,
+                            second_definition: name.span,
+                        }
+                        .report(),
+                    );
+                } else {
+                    seen_params.insert(name.inner, name.span);
+                }
+                // TODO: report unnecessary mutability for imported function signatures or move this to the resolver itself
+                // match param.inner.inner.mut_span {
+                //     Some(mut_span) => {}
+                //     None => {}
+                // }
+                DeclaredFunctionParam {
+                    name: Some(name.clone()),
+                    ty: match &param.inner.inner.ty {
+                        Some(ty) => Spanned {
+                            inner: self.resolve_type(&ty),
+                            span: ty.span,
+                        },
+                        None => Spanned {
+                            inner: Type::ERROR_IDX,
+                            span: param.inner.inner.name.span,
+                        },
+                    },
+                }
+            })
+            .collect();
+        let result = signature.result.as_ref().map(|result| Spanned {
+            inner: self.resolve_type(result),
+            span: result.span,
+        });
+
+        (params, result)
+    }
+
     fn define_import_module(
         &mut self,
         external_name: ast::Spanned<SymbolU32>,
@@ -2381,7 +2563,7 @@ impl Builder<'_> {
 
         for entry in &entries.inner {
             let entry_name_symbol = match &entry.inner.inner.declaration {
-                ast::ImportDeclaration::Function { name, .. } => name.inner,
+                ast::ImportDeclaration::Function { signature } => signature.name.inner,
                 ast::ImportDeclaration::Global { name, .. } => name.inner,
             };
 
@@ -2413,61 +2595,14 @@ impl Builder<'_> {
             };
 
             let import_value = match &entry.inner.inner.declaration {
-                ast::ImportDeclaration::Function {
-                    name,
-                    params,
-                    result,
-                } => {
-                    let mut seen_params: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
-                    let params: Box<[DeclaredFunctionParam]> = params
-                        .inner
-                        .iter()
-                        .map(|param| {
-                            let param_name = match param.inner.inner.name.clone() {
-                                Some(name) => Some(name),
-                                None => {
-                                    self.diagnostics.push(
-                                        MissingImportParamNameDiagnostic {
-                                            file_id: self.file_id,
-                                            span: param.inner.inner.ty.span,
-                                        }
-                                        .report(),
-                                    );
-                                    None
-                                }
-                            };
-                            if let Some(explicit_name) = &param.inner.inner.name {
-                                if let Some(&first_span) = seen_params.get(&explicit_name.inner) {
-                                    let name_str =
-                                        self.interner.resolve(explicit_name.inner).unwrap();
-                                    self.diagnostics.push(
-                                        DuplicateParameterDiagnostic {
-                                            file_id: self.file_id,
-                                            name: name_str,
-                                            first_definition: first_span,
-                                            second_definition: explicit_name.span,
-                                        }
-                                        .report(),
-                                    );
-                                } else {
-                                    seen_params.insert(explicit_name.inner, explicit_name.span);
-                                }
-                            }
-                            DeclaredFunctionParam {
-                                name: param_name,
-                                ty: Spanned {
-                                    inner: self.resolve_type(&param.inner.inner.ty),
-                                    span: param.inner.inner.ty.span,
-                                },
-                            }
-                        })
-                        .collect();
-                    let result = result.as_ref().map(|result| Spanned {
-                        inner: self.resolve_type(result),
-                        span: result.span,
-                    });
-                    let func_index =
-                        self.declare_function(name.clone(), params, result, ItemSource::Imported);
+                ast::ImportDeclaration::Function { signature } => {
+                    let (params, result) = self.build_function_signature(signature);
+                    let func_index = self.declare_function(
+                        signature.name.clone(),
+                        params,
+                        result,
+                        ItemSource::Imported,
+                    );
                     ImportValue::Function { func_index }
                 }
                 ast::ImportDeclaration::Global { name, mut_span, ty } => {
@@ -2496,12 +2631,15 @@ impl Builder<'_> {
 
     fn build_item(&mut self, item: &ast::Item) -> Result<(), ()> {
         match item {
-            ast::Item::Function { pub_span, signature, block } => {
+            ast::Item::Function {
+                pub_span,
+                attributes,
+                signature,
+                block,
+            } => {
                 let func_index = self.resolve_func(signature.name.inner).unwrap();
-                if let Some(span) = pub_span {
-                    self.declared_functions[func_index as usize].pub_span = Some(*span);
-                }
-                self.build_function_definition(signature, block, func_index)
+                let tir_attrs = self.resolve_function_attributes(attributes);
+                self.build_function_definition(signature, block, func_index, *pub_span, tir_attrs)
             }
             ast::Item::Global {
                 name,
@@ -2510,7 +2648,7 @@ impl Builder<'_> {
                 ..
             } => {
                 let global_index = match self.resolve_value(name.inner) {
-                    Some(GlobalValue::Global { global_index }) => global_index,
+                    Some(SymbolKind::Global { global_index }) => global_index,
                     _ => return Err(()),
                 };
 
@@ -2518,7 +2656,7 @@ impl Builder<'_> {
                 let value_expr = self.build_const_expression(value, global_type_idx)?;
 
                 match value_expr.ty {
-                    _ if value_expr.ty == UNKNOWN_IDX => {
+                    _ if value_expr.ty == Type::UNKNOWN_IDX => {
                         self.diagnostics.push(
                             TypeAnnotationRequiredDiagnostic {
                                 file_id: self.file_id,
@@ -2598,10 +2736,14 @@ impl Builder<'_> {
 
                     // Create the export item
                     let export_item = match global_value {
-                        GlobalValue::Function { func_index } => {
-                            self.declared_functions[func_index as usize]
-                                .accesses
-                                .push(internal_name.span);
+                        SymbolKind::Function { func_index } => {
+                            self.declared_functions[func_index as usize].accesses.push(
+                                FunctionAccess {
+                                    caller: None,
+                                    kind: FunctionAccessKind::Reference,
+                                    span: internal_name.span,
+                                },
+                            );
 
                             ExportItem::Function {
                                 func_index,
@@ -2609,7 +2751,7 @@ impl Builder<'_> {
                                 external_name,
                             }
                         }
-                        GlobalValue::Global { global_index } => {
+                        SymbolKind::Global { global_index } => {
                             self.declared_globals[global_index as usize]
                                 .accesses
                                 .push(internal_name.span);
@@ -2695,11 +2837,7 @@ impl Builder<'_> {
 
                 Ok(())
             }
-            ast::Item::Import { .. } => {
-                // Imports are defined in define_item to handle duplicate definition errors, so
-                // nothing to do here
-                Ok(())
-            }
+            ast::Item::Import { .. } => Ok(()),
             ast::Item::Enum { .. } => {
                 // TODO: lower enum items in TIR
                 Ok(())
@@ -2708,19 +2846,34 @@ impl Builder<'_> {
                 // Evaluated eagerly in define_item; nothing to do here.
                 Ok(())
             }
-            ast::Item::Struct { .. } => {
-                // TODO: lower struct items in TIR
-                Ok(())
-            }
+            ast::Item::Struct { .. } => Ok(()),
             ast::Item::Memory { .. } => {
                 // TODO: lower memory items in TIR
                 Ok(())
             }
+            ast::Item::Module { name, items, .. } => {
+                let module_index = match self.lookup_symbol(SymbolNamespace::Type, name.inner) {
+                    Some(SymbolKind::Module { module_index }) => *module_index,
+                    _ => return Ok(()),
+                };
+                self.module_scope.push(module_index);
+                for item in items.inner.iter() {
+                    let _ = self.build_item(&item.inner.inner);
+                }
+                self.module_scope.pop();
+                Ok(())
+            }
+            ast::Item::FunctionDeclaration { .. } => Ok(()),
             ast::Item::Impl { target, items } => {
                 let target_type = self.resolve_type(target);
                 for item in items.inner.iter() {
-                    let (sig, block, pub_span) = match &item.inner.inner {
-                        ast::ImplItem::Method { pub_span, signature, block } => (signature, block, pub_span),
+                    let (sig, block, pub_span, attrs) = match &item.inner.inner {
+                        ast::ImplItem::Method {
+                            pub_span,
+                            attributes,
+                            signature,
+                            block,
+                        } => (signature, block, pub_span, attributes),
                         ast::ImplItem::Const { .. } => continue,
                     };
                     let func_index = match self
@@ -2732,10 +2885,8 @@ impl Builder<'_> {
                         Some(ImplEntry::AssociatedConst { .. }) => continue,
                         None => continue,
                     };
-                    if let Some(span) = pub_span {
-                        self.declared_functions[func_index as usize].pub_span = Some(*span);
-                    }
-                    self.build_function_definition(sig, block, func_index)?;
+                    let tir_attrs = self.resolve_function_attributes(attrs);
+                    self.build_function_definition(sig, block, func_index, *pub_span, tir_attrs)?;
                 }
                 Ok(())
             }
@@ -2751,8 +2902,8 @@ impl Builder<'_> {
         ty: TypeIndex,
     ) -> Result<i64, ()> {
         match ty {
-            I32_IDX | I64_IDX | U32_IDX | U64_IDX | UNKNOWN_IDX => {}
-            _ => todo!("associated constants are only supported for integer types"),
+            Type::I32_IDX | Type::I64_IDX | Type::U32_IDX | Type::U64_IDX | Type::UNKNOWN_IDX => {}
+            _ => return Err(()), // non-integer associated constants not yet supported
         }
         self.eval_const_int_expr(expr)
     }
@@ -2840,17 +2991,17 @@ impl Builder<'_> {
             ast::Expression::Identifier { symbol } => {
                 // Allow references to global constants like true/false
                 match self.resolve_value(*symbol) {
-                    Some(GlobalValue::True) => Ok(Expression {
+                    Some(SymbolKind::True) => Ok(Expression {
                         kind: ExprKind::Bool { value: true },
-                        ty: BOOL_IDX,
+                        ty: Type::BOOL_IDX,
                         span: expr.span,
                     }),
-                    Some(GlobalValue::False) => Ok(Expression {
+                    Some(SymbolKind::False) => Ok(Expression {
                         kind: ExprKind::Bool { value: false },
-                        ty: BOOL_IDX,
+                        ty: Type::BOOL_IDX,
                         span: expr.span,
                     }),
-                    Some(GlobalValue::Const { const_index }) => {
+                    Some(SymbolKind::Const { const_index }) => {
                         let ty = self.declared_consts[const_index as usize].ty.inner;
                         match self.const_pool[const_index as usize].clone() {
                             ConstValue::Int(v) => Ok(Expression {
@@ -2898,7 +3049,7 @@ impl Builder<'_> {
                 let right_expr = self.build_const_expression(right, expected_type)?;
 
                 let result_ty = match operator.inner {
-                    operator if operator.is_comparison() || operator.is_logical() => BOOL_IDX,
+                    operator if operator.is_comparison() || operator.is_logical() => Type::BOOL_IDX,
                     _ => left_expr.ty,
                 };
 
@@ -2943,6 +3094,8 @@ impl Builder<'_> {
         signature: &ast::FunctionSignature,
         block: &Spanned<ast::Expression>,
         func_index: FunctionIndex,
+        pub_span: Option<ast::TextSpan>,
+        attributes: Box<[FunctionAttribute]>,
     ) -> Result<(), ()> {
         let lookup = signature
             .params
@@ -3015,6 +3168,8 @@ impl Builder<'_> {
                 name: signature.name.clone(),
                 stack: ctx.frame,
                 block: Box::new(block),
+                pub_span,
+                attributes,
             },
         );
         Ok(())
@@ -3061,7 +3216,7 @@ impl Builder<'_> {
                 }
 
                 let scope = &mut ctx.frame.scopes[ctx.scope_index as usize];
-                let inferred_type = scope.inferred_type.unwrap_or(NEVER_IDX);
+                let inferred_type = scope.inferred_type.unwrap_or(Type::NEVER_IDX);
                 scope.inferred_type = Some(inferred_type);
 
                 return Ok(Expression {
@@ -3084,7 +3239,7 @@ impl Builder<'_> {
                         ctx,
                         &result,
                         AccessContext {
-                            expected_type: Some(UNIT_IDX),
+                            expected_type: Some(Type::UNIT_IDX),
                             access_kind: AccessKind::Read,
                         },
                     )?),
@@ -3101,7 +3256,7 @@ impl Builder<'_> {
                     },
                     ty: ctx.frame.scopes[ctx.scope_index as usize]
                         .inferred_type
-                        .unwrap_or(NEVER_IDX),
+                        .unwrap_or(Type::NEVER_IDX),
                     span: block.span,
                 })
             }
@@ -3145,7 +3300,7 @@ impl Builder<'_> {
 
     fn report_local_warnings(&mut self, block: &BlockScope) {
         for local in block.locals.iter() {
-            if local.accesses.is_empty() && local.ty != ERROR_IDX {
+            if local.accesses.is_empty() && local.ty != Type::ERROR_IDX {
                 self.diagnostics.push(
                     UnusedVariableDiagnostic {
                         file_id: self.file_id,
@@ -3177,7 +3332,7 @@ impl Builder<'_> {
     fn report_unused_items(&mut self) {
         for (func_index, func) in self.defined_functions.iter() {
             let decl = &self.declared_functions[*func_index as usize];
-            if decl.accesses.is_empty() && decl.pub_span.is_none() {
+            if decl.accesses.is_empty() && func.pub_span.is_none() {
                 let name = self.interner.resolve(func.name.inner).unwrap().to_string();
                 self.diagnostics.push(
                     UnusedFunctionDiagnostic {
@@ -3231,7 +3386,7 @@ impl Builder<'_> {
                 let scope = &mut ctx.frame.scopes[ctx.scope_index as usize];
                 let inferred_type = self.infer_block_type(scope, &result)?;
                 scope.inferred_type = Some(inferred_type);
-                if result.ty == UNKNOWN_IDX {
+                if result.ty == Type::UNKNOWN_IDX {
                     _ = self.coerce_untyped_expr(&mut result, inferred_type);
                 }
 
@@ -3239,7 +3394,7 @@ impl Builder<'_> {
             }
             None => {
                 let scope = &mut ctx.frame.scopes[ctx.scope_index as usize];
-                let inferred_type = scope.inferred_type.unwrap_or(UNIT_IDX);
+                let inferred_type = scope.inferred_type.unwrap_or(Type::UNIT_IDX);
                 scope.inferred_type = Some(inferred_type);
 
                 Ok(None)
@@ -3260,7 +3415,7 @@ impl Builder<'_> {
             };
 
             match expr.ty {
-                _ if expr.ty == NEVER_IDX => {
+                _ if expr.ty == Type::NEVER_IDX => {
                     expressions.push(expr);
                     return BlockState::Exhaustive(expressions.into_boxed_slice());
                 }
@@ -3280,7 +3435,7 @@ impl Builder<'_> {
         scope: &BlockScope,
         value: &Expression,
     ) -> Result<TypeIndex, ()> {
-        if value.ty == UNKNOWN_IDX {
+        if value.ty == Type::UNKNOWN_IDX {
             match scope.inferred_type.or(scope.expected_type) {
                 Some(ty) => return Ok(ty),
                 None => {
@@ -3361,17 +3516,17 @@ impl Builder<'_> {
                 expected_type: None,
             },
         )?;
-        if value.ty == UNIT_IDX {
+        if value.ty == Type::UNIT_IDX {
             return Ok(value);
-        } else if value.ty == ERROR_IDX {
+        } else if value.ty == Type::ERROR_IDX {
             // Skip reporting unused value for error types, as the error has already been
             // reported
             return Ok(value);
-        } else if value.ty == NEVER_IDX {
+        } else if value.ty == Type::NEVER_IDX {
             let scope = ctx.frame.scopes.get_mut(ctx.scope_index as usize).unwrap();
-            scope.inferred_type = scope.inferred_type.or(Some(NEVER_IDX));
+            scope.inferred_type = scope.inferred_type.or(Some(Type::NEVER_IDX));
             return Ok(value);
-        } else if value.ty == UNKNOWN_IDX {
+        } else if value.ty == Type::UNKNOWN_IDX {
             self.diagnostics.push(
                 TypeAnnotationRequiredDiagnostic {
                     file_id: self.file_id,
@@ -3400,30 +3555,38 @@ impl Builder<'_> {
         match &expr.inner {
             ast::Expression::Int { value } => Ok(Expression {
                 kind: ExprKind::Int { value: *value },
-                ty: UNKNOWN_IDX,
+                ty: Type::UNKNOWN_IDX,
                 span: expr.span,
             }),
             ast::Expression::Float { value } => Ok(Expression {
                 kind: ExprKind::Float { value: *value },
-                ty: UNKNOWN_IDX,
+                ty: Type::UNKNOWN_IDX,
                 span: expr.span,
             }),
             ast::Expression::Unreachable => Ok(Expression {
                 kind: ExprKind::Unreachable,
-                ty: NEVER_IDX,
+                ty: Type::NEVER_IDX,
                 span: expr.span,
             }),
             ast::Expression::Error => Ok(Expression {
                 kind: ExprKind::Error,
-                ty: ERROR_IDX,
+                ty: Type::ERROR_IDX,
                 span: expr.span,
             }),
             ast::Expression::String { symbol } => {
                 let unescaped = unescape_string(self.interner.resolve(*symbol).unwrap());
                 let symbol = self.interner.get_or_intern(&unescaped);
+                let string_symbol = self.interner.get_or_intern("string");
                 Ok(Expression {
                     kind: ExprKind::String { symbol },
-                    ty: STRING_IDX,
+                    ty: match self.lookup_symbol(SymbolNamespace::Type, string_symbol) {
+                        Some(SymbolKind::Struct { struct_index }) => {
+                            self.type_pool.intern(Type::Struct {
+                                struct_index: *struct_index,
+                            })
+                        }
+                        _ => panic!("built-in string struct should be defined"),
+                    },
                     span: expr.span,
                 })
             }
@@ -3432,7 +3595,7 @@ impl Builder<'_> {
                 match parse_char_literal(raw) {
                     Ok(value) => Ok(Expression {
                         kind: ExprKind::Char { value },
-                        ty: CHAR_IDX,
+                        ty: Type::CHAR_IDX,
                         span: expr.span,
                     }),
                     Err(CharLiteralError::Empty) => {
@@ -3471,7 +3634,7 @@ impl Builder<'_> {
             }
             ast::Expression::Call { .. } => self.build_call_expression(func_ctx, expr),
             ast::Expression::NamespaceAccess { namespace, member } => {
-                self.build_namespace_access_expression(namespace, member.clone())
+                self.build_namespace_access_expression(func_ctx, namespace, member.clone())
             }
             ast::Expression::ObjectAccess { object, member } => {
                 self.build_object_access_expression(func_ctx, object, member.clone(), access_ctx)
@@ -3528,7 +3691,11 @@ impl Builder<'_> {
             Some(ImplEntry::Method(func_index)) => {
                 let func_index = *func_index;
                 let func = &mut self.declared_functions[func_index as usize];
-                func.accesses.push(member.span);
+                func.accesses.push(FunctionAccess {
+                    caller: Some(func_ctx.func_index),
+                    kind: FunctionAccessKind::Reference,
+                    span: member.span,
+                });
                 let ty = func.signature_index;
                 return Ok(Expression {
                     kind: ExprKind::ObjectAccess {
@@ -3557,8 +3724,13 @@ impl Builder<'_> {
 
         // Check struct fields
         if let Type::Struct { struct_index } = *self.type_pool.get(object.ty) {
-            if let Some(&field_index) = self.structs[struct_index as usize].lookup.get(&member.inner) {
-                let field_ty = self.structs[struct_index as usize].fields[field_index].ty.inner;
+            if let Some(&field_index) = self.structs[struct_index as usize]
+                .lookup
+                .get(&member.inner)
+            {
+                let field_ty = self.structs[struct_index as usize].fields[field_index]
+                    .ty
+                    .inner;
                 return Ok(Expression {
                     kind: ExprKind::ObjectAccess {
                         object: Box::new(object),
@@ -3593,15 +3765,19 @@ impl Builder<'_> {
         if !already_seeded {
             let is_sized = !matches!(
                 self.type_pool.get(ty),
-                Type::Error | Type::Unknown | Type::Namespace { .. } | Type::Function { .. }
+                Type::Error
+                    | Type::Unknown
+                    | Type::ImportModule { .. }
+                    | Type::Enum { .. }
+                    | Type::Function { .. }
             );
             if is_sized {
                 let align_sym = self.interner.get_or_intern("ALIGN");
                 let layout =
                     compute_layout(self.type_pool.as_slice(), &self.structs, ty, self.ptr_size);
                 let result_ty = match self.ptr_size {
-                    PointerSize::P32 => U32_IDX,
-                    PointerSize::P64 => U64_IDX,
+                    PointerSize::P32 => Type::U32_IDX,
+                    PointerSize::P64 => Type::U64_IDX,
                 };
                 let members = self.impl_members.entry(ty).or_default();
                 members.insert(
@@ -3625,11 +3801,12 @@ impl Builder<'_> {
 
     fn build_namespace_access_expression(
         &mut self,
+        func_ctx: &FunctionContext,
         namespace_expr: &Spanned<ast::TypeExpression>,
         member: Spanned<SymbolU32>,
     ) -> Result<Expression, ()> {
         let namespace_ty = self.resolve_type(&namespace_expr);
-        if namespace_ty == ERROR_IDX {
+        if namespace_ty == Type::ERROR_IDX {
             return Err(());
         }
 
@@ -3660,8 +3837,86 @@ impl Builder<'_> {
             }
         }
 
-        let namespace_index = match self.type_pool.get(namespace_ty) {
-            Type::Namespace { namespace_index } => *namespace_index,
+        match *self.type_pool.get(namespace_ty) {
+            Type::Enum { enum_index } => {
+                let enum_ = &self.enums[enum_index as usize];
+                match enum_.lookup.get(&member.inner) {
+                    Some(_variant_index) => Ok(Expression {
+                        kind: ExprKind::NamespaceAccess {
+                            ty: ast::Spanned {
+                                inner: namespace_ty,
+                                span: namespace_expr.span,
+                            },
+                            member: member.clone(),
+                        },
+                        ty: enum_.ty,
+                        span: ast::TextSpan::merge(namespace_expr.span, member.span),
+                    }),
+                    _ => {
+                        self.diagnostics.push(
+                            UndeclaredIdentifierDiagnostic {
+                                file_id: self.file_id,
+                                span: member.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
+            }
+            Type::ImportModule { module_index } => {
+                let module = &self.import_modules[module_index as usize];
+                match module.lookup.get(&member.inner) {
+                    Some(ImportValue::Function { func_index }) => {
+                        let func_index = *func_index;
+                        let func = &mut self.declared_functions[func_index as usize];
+                        func.accesses.push(FunctionAccess {
+                            caller: Some(func_ctx.func_index),
+                            kind: FunctionAccessKind::Reference,
+                            span: member.span,
+                        });
+                        let ty = func.signature_index;
+                        Ok(Expression {
+                            kind: ExprKind::NamespaceAccess {
+                                ty: ast::Spanned {
+                                    inner: namespace_ty,
+                                    span: namespace_expr.span,
+                                },
+                                member: member.clone(),
+                            },
+                            ty,
+                            span: ast::TextSpan::merge(namespace_expr.span, member.span),
+                        })
+                    }
+                    Some(ImportValue::Global { global_index }) => {
+                        let global_index = *global_index;
+                        let global = &mut self.declared_globals[global_index as usize];
+                        global.accesses.push(member.span);
+                        let ty = global.ty.inner;
+                        Ok(Expression {
+                            kind: ExprKind::NamespaceAccess {
+                                ty: ast::Spanned {
+                                    inner: namespace_ty,
+                                    span: namespace_expr.span,
+                                },
+                                member: member.clone(),
+                            },
+                            ty,
+                            span: ast::TextSpan::merge(namespace_expr.span, member.span),
+                        })
+                    }
+                    None => {
+                        self.diagnostics.push(
+                            UndeclaredIdentifierDiagnostic {
+                                file_id: self.file_id,
+                                span: member.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
+            }
             _ => {
                 let diag = NotANamespaceDiagnostic {
                     file_id: self.file_id,
@@ -3670,79 +3925,8 @@ impl Builder<'_> {
                 }
                 .report(self);
                 self.diagnostics.push(diag);
-                return Err(());
+                Err(())
             }
-        };
-
-        let namespace = &self.namespaces[namespace_index as usize];
-        match namespace {
-            Namespace::Enum(enum_) => match enum_.lookup.get(&member.inner) {
-                Some(_variant_index) => Ok(Expression {
-                    kind: ExprKind::NamespaceAccess {
-                        ty: ast::Spanned {
-                            inner: namespace_ty,
-                            span: namespace_expr.span,
-                        },
-                        member: member.clone(),
-                    },
-                    ty: enum_.ty,
-                    span: ast::TextSpan::merge(namespace_expr.span, member.span),
-                }),
-                _ => {
-                    self.diagnostics.push(
-                        UndeclaredIdentifierDiagnostic {
-                            file_id: self.file_id,
-                            span: member.span,
-                        }
-                        .report(),
-                    );
-                    Err(())
-                }
-            },
-            Namespace::ImportModule(module) => match module.lookup.get(&member.inner) {
-                Some(ImportValue::Function { func_index }) => {
-                    let func = &mut self.declared_functions[*func_index as usize];
-                    func.accesses.push(member.span);
-                    let ty = func.signature_index;
-                    Ok(Expression {
-                        kind: ExprKind::NamespaceAccess {
-                            ty: ast::Spanned {
-                                inner: namespace_ty,
-                                span: namespace_expr.span,
-                            },
-                            member: member.clone(),
-                        },
-                        ty,
-                        span: ast::TextSpan::merge(namespace_expr.span, member.span),
-                    })
-                }
-                Some(ImportValue::Global { global_index }) => {
-                    let global = &mut self.declared_globals[*global_index as usize];
-                    global.accesses.push(member.span);
-                    let ty = global.ty.inner;
-                    Ok(Expression {
-                        kind: ExprKind::NamespaceAccess {
-                            ty: ast::Spanned {
-                                inner: namespace_ty,
-                                span: namespace_expr.span,
-                            },
-                            member: member.clone(),
-                        },
-                        ty,
-                        span: ast::TextSpan::merge(namespace_expr.span, member.span),
-                    })
-                }
-                None => {
-                    self.diagnostics.push(
-                        UndeclaredIdentifierDiagnostic {
-                            file_id: self.file_id,
-                            span: member.span,
-                        }
-                        .report(),
-                    );
-                    Err(())
-                }
-            },
         }
     }
 
@@ -3878,7 +4062,7 @@ impl Builder<'_> {
 
         Ok(Expression {
             kind: ExprKind::Continue { scope_index },
-            ty: NEVER_IDX,
+            ty: Type::NEVER_IDX,
             span: expr.span,
         })
     }
@@ -3903,7 +4087,7 @@ impl Builder<'_> {
             ctx,
             condition,
             AccessContext {
-                expected_type: Some(BOOL_IDX),
+                expected_type: Some(Type::BOOL_IDX),
                 access_kind: AccessKind::Read,
             },
         )?;
@@ -3959,8 +4143,8 @@ impl Builder<'_> {
                 }
             }
             None => {
-                if then_block.ty == UNIT_IDX || then_block.ty == NEVER_IDX {
-                    (None, UNIT_IDX)
+                if then_block.ty == Type::UNIT_IDX || then_block.ty == Type::NEVER_IDX {
+                    (None, Type::UNIT_IDX)
                 } else {
                     panic!(
                         "if you want to return a value from if-else, you must provide an else block"
@@ -3992,7 +4176,7 @@ impl Builder<'_> {
         };
 
         let cast_type_idx = self.resolve_type(&cast_type);
-        if cast_type_idx == ERROR_IDX {
+        if cast_type_idx == Type::ERROR_IDX {
             return self.build_expression(ctx, value, access_ctx);
         }
         let cast_type = cast_type_idx;
@@ -4004,7 +4188,7 @@ impl Builder<'_> {
                 access_kind: access_ctx.access_kind,
             },
         )?;
-        if value.ty == UNKNOWN_IDX {
+        if value.ty == Type::UNKNOWN_IDX {
             self.coerce_untyped_expr(&mut value, cast_type)?;
         } else if value.ty == cast_type {
             // TODO: report redundant cast
@@ -4056,7 +4240,7 @@ impl Builder<'_> {
                     // undeclared
                     return Ok(Expression {
                         kind: ExprKind::Error,
-                        ty: NEVER_IDX,
+                        ty: Type::NEVER_IDX,
                         span: expr.span,
                     });
                 }
@@ -4076,7 +4260,7 @@ impl Builder<'_> {
                     // loop
                     return Ok(Expression {
                         kind: ExprKind::Error,
-                        ty: NEVER_IDX,
+                        ty: Type::NEVER_IDX,
                         span: expr.span,
                     });
                 }
@@ -4101,7 +4285,7 @@ impl Builder<'_> {
                 .and_then(|mut value| {
                     let scope = ctx.frame.scopes.get_mut(scope_index as usize).unwrap();
                     let inferred_type = self.infer_block_type(scope, &value)?;
-                    if value.ty == UNKNOWN_IDX {
+                    if value.ty == Type::UNKNOWN_IDX {
                         self.coerce_untyped_expr(&mut value, inferred_type)?;
                     }
                     scope.inferred_type = Some(inferred_type);
@@ -4111,25 +4295,25 @@ impl Builder<'_> {
                             scope_index,
                             value: Some(Box::new(value)),
                         },
-                        ty: NEVER_IDX,
+                        ty: Type::NEVER_IDX,
                         span: expr.span,
                     })
                 })
                 .unwrap_or(Expression {
                     kind: ExprKind::Unreachable,
-                    ty: NEVER_IDX,
+                    ty: Type::NEVER_IDX,
                     span: expr.span,
                 })),
             None => {
                 let scope = ctx.frame.scopes.get_mut(scope_index as usize).unwrap();
                 match scope.inferred_type {
                     Some(inferred) => {
-                        if !self.type_pool.coercible_to(UNIT_IDX, inferred) {
+                        if !self.type_pool.coercible_to(Type::UNIT_IDX, inferred) {
                             self.diagnostics.push(
                                 TypeMistmatchDiagnostic {
                                     file_id: self.file_id,
                                     expected_type: inferred,
-                                    actual_type: UNIT_IDX,
+                                    actual_type: Type::UNIT_IDX,
                                     span: expr.span,
                                 }
                                 .report(&self),
@@ -4137,7 +4321,7 @@ impl Builder<'_> {
                         }
                     }
                     None => {
-                        scope.inferred_type = Some(UNIT_IDX);
+                        scope.inferred_type = Some(Type::UNIT_IDX);
                     }
                 }
 
@@ -4146,7 +4330,7 @@ impl Builder<'_> {
                         scope_index,
                         value: None,
                     },
-                    ty: NEVER_IDX,
+                    ty: Type::NEVER_IDX,
                     span: expr.span,
                 })
             }
@@ -4189,24 +4373,28 @@ impl Builder<'_> {
 
         match self.resolve_value(symbol) {
             Some(global) => match global {
-                GlobalValue::True => Ok(Expression {
+                SymbolKind::True => Ok(Expression {
                     kind: ExprKind::Bool { value: true },
-                    ty: BOOL_IDX,
+                    ty: Type::BOOL_IDX,
                     span: expr.span,
                 }),
-                GlobalValue::False => Ok(Expression {
+                SymbolKind::False => Ok(Expression {
                     kind: ExprKind::Bool { value: false },
-                    ty: BOOL_IDX,
+                    ty: Type::BOOL_IDX,
                     span: expr.span,
                 }),
-                GlobalValue::Placeholder => Ok(Expression {
+                SymbolKind::Placeholder => Ok(Expression {
                     kind: ExprKind::Placeholder,
-                    ty: access_ctx.expected_type.unwrap_or(ERROR_IDX),
+                    ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
                     span: expr.span,
                 }),
-                GlobalValue::Function { func_index } => {
+                SymbolKind::Function { func_index } => {
                     let func = &mut self.declared_functions[func_index as usize];
-                    func.accesses.push(expr.span);
+                    func.accesses.push(FunctionAccess {
+                        caller: Some(func_ctx.func_index),
+                        kind: FunctionAccessKind::Reference,
+                        span: expr.span,
+                    });
                     let ty = func.signature_index;
                     Ok(Expression {
                         kind: ExprKind::Function { func_index },
@@ -4214,7 +4402,7 @@ impl Builder<'_> {
                         span: expr.span,
                     })
                 }
-                GlobalValue::Global { global_index } => {
+                SymbolKind::Global { global_index } => {
                     let global = &mut self.declared_globals[global_index as usize];
                     global.accesses.push(expr.span);
 
@@ -4224,7 +4412,7 @@ impl Builder<'_> {
                         span: expr.span,
                     })
                 }
-                GlobalValue::Const { const_index } => {
+                SymbolKind::Const { const_index } => {
                     let ty = self.declared_consts[const_index as usize].ty.inner;
                     match self.const_pool[const_index as usize].clone() {
                         ConstValue::Int(v) => Ok(Expression {
@@ -4239,11 +4427,13 @@ impl Builder<'_> {
                         }),
                     }
                 }
-                // this must be handled in the namespace access expression
-                GlobalValue::Namespace { .. } => todo!(),
-                GlobalValue::Unreachable => unreachable!(),
+                // these must be handled in the namespace access expression
+                SymbolKind::ImportModule { .. }
+                | SymbolKind::Enum { .. }
+                | SymbolKind::Module { .. } => todo!(),
+                SymbolKind::Unreachable => unreachable!(),
                 // Struct names are type-namespace values, not usable as expressions
-                GlobalValue::Struct { .. } => {
+                SymbolKind::Struct { .. } => {
                     self.diagnostics.push(
                         UndeclaredIdentifierDiagnostic {
                             file_id: self.file_id,
@@ -4253,7 +4443,7 @@ impl Builder<'_> {
                     );
                     Ok(Expression {
                         kind: ExprKind::Error,
-                        ty: access_ctx.expected_type.unwrap_or(ERROR_IDX),
+                        ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
                         span: expr.span,
                     })
                 }
@@ -4269,7 +4459,7 @@ impl Builder<'_> {
 
                 Ok(Expression {
                     kind: ExprKind::Error,
-                    ty: access_ctx.expected_type.unwrap_or(ERROR_IDX),
+                    ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
                     span: expr.span,
                 })
             }
@@ -4340,7 +4530,7 @@ impl Builder<'_> {
         match operator.inner {
             ast::UnaryOp::InvertSign | ast::UnaryOp::BitNot => {
                 let ty_val = self.type_pool.get(operand.ty);
-                if ty_val.is_primitive() || operand.ty == UNKNOWN_IDX {
+                if ty_val.is_primitive() || operand.ty == Type::UNKNOWN_IDX {
                     let ty = operand.ty;
                     Ok(Expression {
                         kind: ExprKind::Unary {
@@ -4355,23 +4545,23 @@ impl Builder<'_> {
                 }
             }
             ast::UnaryOp::Not => {
-                if operand.ty == BOOL_IDX {
+                if operand.ty == Type::BOOL_IDX {
                     Ok(Expression {
                         kind: ExprKind::Unary {
                             operator,
                             operand: Box::new(operand),
                         },
-                        ty: BOOL_IDX,
+                        ty: Type::BOOL_IDX,
                         span: expr.span,
                     })
-                } else if operand.ty == UNKNOWN_IDX {
-                    _ = self.coerce_untyped_expr(&mut operand, BOOL_IDX);
+                } else if operand.ty == Type::UNKNOWN_IDX {
+                    _ = self.coerce_untyped_expr(&mut operand, Type::BOOL_IDX);
                     Ok(Expression {
                         kind: ExprKind::Unary {
                             operator,
                             operand: Box::new(operand),
                         },
-                        ty: BOOL_IDX,
+                        ty: Type::BOOL_IDX,
                         span: expr.span,
                     })
                 } else {
@@ -4392,7 +4582,7 @@ impl Builder<'_> {
                             operator,
                             operand: Box::new(operand),
                         },
-                        ty: BOOL_IDX,
+                        ty: Type::BOOL_IDX,
                         span: expr.span,
                     })
                 }
@@ -4419,13 +4609,13 @@ impl Builder<'_> {
             ctx,
             left,
             AccessContext {
-                expected_type: Some(BOOL_IDX),
+                expected_type: Some(Type::BOOL_IDX),
                 access_kind: AccessKind::Read,
             },
         )?;
-        if left.ty == ERROR_IDX {
+        if left.ty == Type::ERROR_IDX {
             // Error already reported
-        } else if left.ty == UNKNOWN_IDX {
+        } else if left.ty == Type::UNKNOWN_IDX {
             self.diagnostics.push(
                 TypeAnnotationRequiredDiagnostic {
                     file_id: self.file_id,
@@ -4433,11 +4623,11 @@ impl Builder<'_> {
                 }
                 .report(),
             );
-        } else if left.ty != BOOL_IDX {
+        } else if left.ty != Type::BOOL_IDX {
             self.diagnostics.push(
                 TypeMistmatchDiagnostic {
                     file_id: self.file_id,
-                    expected_type: BOOL_IDX,
+                    expected_type: Type::BOOL_IDX,
                     actual_type: left.ty,
                     span: left.span,
                 }
@@ -4448,13 +4638,13 @@ impl Builder<'_> {
             ctx,
             right,
             AccessContext {
-                expected_type: Some(BOOL_IDX),
+                expected_type: Some(Type::BOOL_IDX),
                 access_kind: AccessKind::Read,
             },
         )?;
-        if right.ty == ERROR_IDX {
+        if right.ty == Type::ERROR_IDX {
             // Error already reported
-        } else if right.ty == UNKNOWN_IDX {
+        } else if right.ty == Type::UNKNOWN_IDX {
             self.diagnostics.push(
                 TypeAnnotationRequiredDiagnostic {
                     file_id: self.file_id,
@@ -4462,11 +4652,11 @@ impl Builder<'_> {
                 }
                 .report(),
             );
-        } else if right.ty != BOOL_IDX {
+        } else if right.ty != Type::BOOL_IDX {
             self.diagnostics.push(
                 TypeMistmatchDiagnostic {
                     file_id: self.file_id,
-                    expected_type: BOOL_IDX,
+                    expected_type: Type::BOOL_IDX,
                     actual_type: right.ty,
                     span: right.span,
                 }
@@ -4480,7 +4670,7 @@ impl Builder<'_> {
                 left: Box::new(left),
                 right: Box::new(right),
             },
-            ty: BOOL_IDX,
+            ty: Type::BOOL_IDX,
             span: expr.span,
         })
     }
@@ -4517,57 +4707,61 @@ impl Builder<'_> {
 
         match (left.ty, right.ty) {
             // Allow operations with Error type (error already reported elsewhere)
-            (l, r) if l == ERROR_IDX || r == ERROR_IDX => Ok(Expression {
+            (l, r) if l == Type::ERROR_IDX || r == Type::ERROR_IDX => Ok(Expression {
                 kind: ExprKind::Binary {
                     operator,
                     left: Box::new(left),
                     right: Box::new(right),
                 },
-                ty: access_ctx.expected_type.unwrap_or(ERROR_IDX),
+                ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
                 span: expr.span,
             }),
-            (l, r) if l == UNKNOWN_IDX && r == UNKNOWN_IDX => match access_ctx.expected_type {
-                Some(expected_type) => {
-                    self.coerce_untyped_expr(&mut left, expected_type)?;
-                    self.coerce_untyped_expr(&mut right, expected_type)?;
+            (l, r) if l == Type::UNKNOWN_IDX && r == Type::UNKNOWN_IDX => {
+                match access_ctx.expected_type {
+                    Some(expected_type) => {
+                        self.coerce_untyped_expr(&mut left, expected_type)?;
+                        self.coerce_untyped_expr(&mut right, expected_type)?;
 
-                    if !self.type_pool.get(expected_type).is_integer() {
-                        self.diagnostics.push(
-                            BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.file_id,
-                                operator: operator.clone(),
-                                operand: Spanned {
-                                    inner: expected_type,
-                                    span: left.span,
-                                },
-                            }
-                            .report(&self),
-                        );
-                    }
-
-                    Ok(Expression {
-                        kind: ExprKind::Binary {
-                            operator,
-                            left: Box::new(left),
-                            right: Box::new(right),
-                        },
-                        ty: expected_type,
-                        span: expr.span,
-                    })
-                }
-                None => {
-                    self.diagnostics.push(
-                        TypeAnnotationRequiredDiagnostic {
-                            file_id: self.file_id,
-                            span: expr.span,
+                        let ty = self.type_pool.get(expected_type);
+                        if !ty.is_integer() && *ty != Type::Bool {
+                            self.diagnostics.push(
+                                BinaryOperatorCannotBeAppliedDiagnostic {
+                                    file_id: self.file_id,
+                                    operator: operator.clone(),
+                                    operand: Spanned {
+                                        inner: expected_type,
+                                        span: left.span,
+                                    },
+                                }
+                                .report(&self),
+                            );
                         }
-                        .report(),
-                    );
-                    Err(())
+
+                        Ok(Expression {
+                            kind: ExprKind::Binary {
+                                operator,
+                                left: Box::new(left),
+                                right: Box::new(right),
+                            },
+                            ty: expected_type,
+                            span: expr.span,
+                        })
+                    }
+                    None => {
+                        self.diagnostics.push(
+                            TypeAnnotationRequiredDiagnostic {
+                                file_id: self.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
                 }
-            },
-            (l, right_type) if l == UNKNOWN_IDX => {
-                if !self.type_pool.get(right_type).is_integer() {
+            }
+            (l, right_type) if l == Type::UNKNOWN_IDX => {
+                let ty = self.type_pool.get(right_type);
+                if !ty.is_integer() && *ty != Type::Bool {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
                             file_id: self.file_id,
@@ -4592,8 +4786,9 @@ impl Builder<'_> {
                     span: expr.span,
                 })
             }
-            (left_type, r) if r == UNKNOWN_IDX => {
-                if !self.type_pool.get(left_type).is_integer() {
+            (left_type, r) if r == Type::UNKNOWN_IDX => {
+                let ty = self.type_pool.get(left_type);
+                if !ty.is_integer() && *ty != Type::Bool {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
                             file_id: self.file_id,
@@ -4619,7 +4814,9 @@ impl Builder<'_> {
                 })
             }
             (left_type, right_type)
-                if left_type == right_type && self.type_pool.get(left_type).is_integer() =>
+                if left_type == right_type
+                    && (self.type_pool.get(left_type).is_integer()
+                        || *self.type_pool.get(left_type) == Type::Bool) =>
             {
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -4654,7 +4851,7 @@ impl Builder<'_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: access_ctx.expected_type.unwrap_or(UNKNOWN_IDX),
+                    ty: access_ctx.expected_type.unwrap_or(Type::UNKNOWN_IDX),
                     span: expr.span,
                 })
             }
@@ -4695,16 +4892,16 @@ impl Builder<'_> {
 
         match (left.ty, right.ty) {
             // Allow operations with Error type (error already reported elsewhere)
-            (l, r) if l == ERROR_IDX || r == ERROR_IDX => Ok(Expression {
+            (l, r) if l == Type::ERROR_IDX || r == Type::ERROR_IDX => Ok(Expression {
                 kind: ExprKind::Binary {
                     operator,
                     left: Box::new(left),
                     right: Box::new(right),
                 },
-                ty: BOOL_IDX,
+                ty: Type::BOOL_IDX,
                 span: expr.span,
             }),
-            (l, r) if l == UNKNOWN_IDX && r == UNKNOWN_IDX => {
+            (l, r) if l == Type::UNKNOWN_IDX && r == Type::UNKNOWN_IDX => {
                 self.diagnostics.push(
                     ComparisonTypeAnnotationRequiredDiagnostic {
                         file_id: self.file_id,
@@ -4720,11 +4917,11 @@ impl Builder<'_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: BOOL_IDX,
+                    ty: Type::BOOL_IDX,
                     span: expr.span,
                 })
             }
-            (l, ty) if l == UNKNOWN_IDX => {
+            (l, ty) if l == Type::UNKNOWN_IDX => {
                 self.coerce_untyped_expr(&mut left, ty)?;
 
                 Ok(Expression {
@@ -4733,11 +4930,11 @@ impl Builder<'_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: BOOL_IDX,
+                    ty: Type::BOOL_IDX,
                     span: expr.span,
                 })
             }
-            (ty, r) if r == UNKNOWN_IDX => {
+            (ty, r) if r == Type::UNKNOWN_IDX => {
                 self.coerce_untyped_expr(&mut right, ty)?;
 
                 Ok(Expression {
@@ -4746,17 +4943,17 @@ impl Builder<'_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: BOOL_IDX,
+                    ty: Type::BOOL_IDX,
                     span: expr.span,
                 })
             }
-            (l, r) if l == BOOL_IDX && r == BOOL_IDX => Ok(Expression {
+            (l, r) if l == Type::BOOL_IDX && r == Type::BOOL_IDX => Ok(Expression {
                 kind: ExprKind::Binary {
                     operator,
                     left: Box::new(left),
                     right: Box::new(right),
                 },
-                ty: BOOL_IDX,
+                ty: Type::BOOL_IDX,
                 span: expr.span,
             }),
             (left_type, right_type)
@@ -4768,13 +4965,12 @@ impl Builder<'_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: BOOL_IDX,
+                    ty: Type::BOOL_IDX,
                     span: expr.span,
                 })
             }
-            // TODO: compare namespace variants
-            // (Type::Namespace { namespace_index }, Type::Namespace { namespace_index })
-            //     if enum_index_1 == enum_index_2 =>
+            // TODO: compare enum variants
+            // (Type::Enum { enum_index: e1 }, Type::Enum { enum_index: e2 }) if e1 == e2 =>
             // {
             //     Ok(Expression {
             //         kind: ExprKind::Binary {
@@ -4809,7 +5005,7 @@ impl Builder<'_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: BOOL_IDX,
+                    ty: Type::BOOL_IDX,
                     span: expr.span,
                 })
             }
@@ -4879,7 +5075,7 @@ impl Builder<'_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                if right.ty == UNKNOWN_IDX {
+                if right.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right, local_type)?;
                 } else if !self.type_pool.coercible_to(right.ty, local_type) {
                     self.diagnostics.push(
@@ -4905,7 +5101,7 @@ impl Builder<'_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: UNIT_IDX,
+                    ty: Type::UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -4933,7 +5129,7 @@ impl Builder<'_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                if right.ty == UNKNOWN_IDX {
+                if right.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right, global_type)?;
                 } else if !self.type_pool.coercible_to(right.ty, global_type) {
                     self.diagnostics.push(
@@ -4959,7 +5155,7 @@ impl Builder<'_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: UNIT_IDX,
+                    ty: Type::UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -4972,7 +5168,7 @@ impl Builder<'_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                if right.ty == UNKNOWN_IDX {
+                if right.ty == Type::UNKNOWN_IDX {
                     self.diagnostics.push(
                         TypeAnnotationRequiredDiagnostic {
                             file_id: self.file_id,
@@ -4994,7 +5190,7 @@ impl Builder<'_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: UNIT_IDX,
+                    ty: Type::UNIT_IDX,
                     span: expr.span,
                 });
             }
@@ -5009,7 +5205,7 @@ impl Builder<'_> {
 
                 Ok(Expression {
                     kind: ExprKind::Error,
-                    ty: UNIT_IDX,
+                    ty: Type::UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -5057,12 +5253,12 @@ impl Builder<'_> {
                     }
                 };
                 // Allow operations with Error type (error already reported elsewhere)
-                if local.ty == ERROR_IDX {
+                if local.ty == Type::ERROR_IDX {
                     let right = self.build_expression(
                         ctx,
                         right,
                         AccessContext {
-                            expected_type: Some(ERROR_IDX),
+                            expected_type: Some(Type::ERROR_IDX),
                             access_kind: AccessKind::Read,
                         },
                     )?;
@@ -5072,7 +5268,7 @@ impl Builder<'_> {
                             left: Box::new(left),
                             right: Box::new(right),
                         },
-                        ty: UNIT_IDX,
+                        ty: Type::UNIT_IDX,
                         span: expr.span,
                     });
                 }
@@ -5110,7 +5306,7 @@ impl Builder<'_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                if right.ty == UNKNOWN_IDX {
+                if right.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right, local_type)?;
                 } else if !self.type_pool.coercible_to(right.ty, local_type) {
                     self.diagnostics.push(
@@ -5136,7 +5332,7 @@ impl Builder<'_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: UNIT_IDX,
+                    ty: Type::UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -5181,7 +5377,7 @@ impl Builder<'_> {
                         access_kind: AccessKind::Read,
                     },
                 )?;
-                if right.ty == UNKNOWN_IDX {
+                if right.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right, global_type)?;
                 } else if !self.type_pool.coercible_to(right.ty, global_type) {
                     self.diagnostics.push(
@@ -5207,7 +5403,7 @@ impl Builder<'_> {
                         operator,
                         right: Box::new(right),
                     },
-                    ty: UNIT_IDX,
+                    ty: Type::UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -5222,7 +5418,7 @@ impl Builder<'_> {
 
                 Ok(Expression {
                     kind: ExprKind::Error,
-                    ty: UNIT_IDX,
+                    ty: Type::UNIT_IDX,
                     span: expr.span,
                 })
             }
@@ -5253,7 +5449,7 @@ impl Builder<'_> {
                     let scope = ctx.frame.scopes.get_mut(0).unwrap();
                     let inferred_type = self.infer_block_type(scope, &value)?;
                     scope.inferred_type = Some(inferred_type);
-                    if value.ty == UNKNOWN_IDX {
+                    if value.ty == Type::UNKNOWN_IDX {
                         self.coerce_untyped_expr(&mut value, inferred_type)?;
                     }
 
@@ -5279,19 +5475,19 @@ impl Builder<'_> {
                         kind: ExprKind::Return {
                             value: Some(Box::new(value)),
                         },
-                        ty: NEVER_IDX,
+                        ty: Type::NEVER_IDX,
                         span: expr.span,
                     })
                 })
                 .unwrap_or(Expression {
                     kind: ExprKind::Unreachable,
-                    ty: NEVER_IDX,
+                    ty: Type::NEVER_IDX,
                     span: expr.span,
                 })),
             None => {
                 let scope = ctx.frame.scopes.get_mut(ctx.scope_index as usize).unwrap();
 
-                let inferred_type = scope.inferred_type.unwrap_or(UNIT_IDX);
+                let inferred_type = scope.inferred_type.unwrap_or(Type::UNIT_IDX);
                 scope.inferred_type = Some(inferred_type);
 
                 match scope.expected_type {
@@ -5314,7 +5510,7 @@ impl Builder<'_> {
 
                 Ok(Expression {
                     kind: ExprKind::Return { value: None },
-                    ty: NEVER_IDX,
+                    ty: Type::NEVER_IDX,
                     span: expr.span,
                 })
             }
@@ -5359,28 +5555,30 @@ impl Builder<'_> {
         )?;
 
         match (left.ty, right.ty) {
-            (l, r) if l == UNKNOWN_IDX && r == UNKNOWN_IDX => match access_ctx.expected_type {
-                Some(_) => Ok(Expression {
-                    kind: ExprKind::Binary {
-                        operator,
-                        left: Box::new(left),
-                        right: Box::new(right),
-                    },
-                    ty: UNKNOWN_IDX,
-                    span: expr.span,
-                }),
-                None => {
-                    self.diagnostics.push(
-                        TypeAnnotationRequiredDiagnostic {
-                            file_id: self.file_id,
-                            span: expr.span,
-                        }
-                        .report(),
-                    );
-                    Err(())
+            (l, r) if l == Type::UNKNOWN_IDX && r == Type::UNKNOWN_IDX => {
+                match access_ctx.expected_type {
+                    Some(_) => Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        ty: Type::UNKNOWN_IDX,
+                        span: expr.span,
+                    }),
+                    None => {
+                        self.diagnostics.push(
+                            TypeAnnotationRequiredDiagnostic {
+                                file_id: self.file_id,
+                                span: expr.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
                 }
-            },
-            (l, ty) if l == UNKNOWN_IDX => {
+            }
+            (l, ty) if l == Type::UNKNOWN_IDX => {
                 if !self.type_pool.get(ty).is_primitive() {
                     self.diagnostics.push(
                         BinaryOperatorCannotBeAppliedDiagnostic {
@@ -5400,7 +5598,7 @@ impl Builder<'_> {
                             left: Box::new(left),
                             right: Box::new(right),
                         },
-                        ty: access_ctx.expected_type.unwrap_or(UNKNOWN_IDX),
+                        ty: access_ctx.expected_type.unwrap_or(Type::UNKNOWN_IDX),
                         span: expr.span,
                     });
                 }
@@ -5416,7 +5614,7 @@ impl Builder<'_> {
                     span: expr.span,
                 })
             }
-            (ty, r) if r == UNKNOWN_IDX => {
+            (ty, r) if r == Type::UNKNOWN_IDX => {
                 // TODO: check if primitive
                 self.coerce_untyped_expr(&mut right, ty)?;
 
@@ -5430,7 +5628,7 @@ impl Builder<'_> {
                     span: expr.span,
                 })
             }
-            (l, _) if l == NEVER_IDX => {
+            (l, _) if l == Type::NEVER_IDX => {
                 self.diagnostics.push(
                     UnreachableCodeDiagnostic {
                         file_id: self.file_id,
@@ -5441,7 +5639,7 @@ impl Builder<'_> {
 
                 Ok(left)
             }
-            (_, r) if r == NEVER_IDX => {
+            (_, r) if r == Type::NEVER_IDX => {
                 self.diagnostics.push(
                     UnreachableCodeDiagnostic {
                         file_id: self.file_id,
@@ -5520,7 +5718,7 @@ impl Builder<'_> {
                 )?;
 
                 if let Some(expected_type) = expected_type {
-                    if argument.ty == UNKNOWN_IDX {
+                    if argument.ty == Type::UNKNOWN_IDX {
                         self.coerce_untyped_expr(&mut argument, expected_type)?;
                     } else if !self.type_pool.coercible_to(argument.ty, expected_type) {
                         self.diagnostics.push(
@@ -5575,7 +5773,7 @@ impl Builder<'_> {
                         callee: Box::new(callee),
                         arguments: Box::new([]),
                     },
-                    ty: ERROR_IDX,
+                    ty: Type::ERROR_IDX,
                     span: expr.span,
                 });
             }
@@ -5592,6 +5790,12 @@ impl Builder<'_> {
                     .copied()
                 {
                     Some(ImplEntry::Method(func_index)) => {
+                        if let Some(access) = self.declared_functions[func_index as usize]
+                            .accesses
+                            .last_mut()
+                        {
+                            access.kind = FunctionAccessKind::DirectCall;
+                        }
                         let params = &params_all[1..];
                         if arguments.len() != params.len() {
                             self.diagnostics.push(
@@ -5638,6 +5842,15 @@ impl Builder<'_> {
                     );
                 }
 
+                if let ExprKind::Function { func_index } = callee.kind {
+                    if let Some(access) = self.declared_functions[func_index as usize]
+                        .accesses
+                        .last_mut()
+                    {
+                        access.kind = FunctionAccessKind::DirectCall;
+                    }
+                }
+
                 let arguments = self.build_call_arguments(ctx, arguments, params)?;
 
                 Ok(Expression {
@@ -5682,7 +5895,7 @@ impl Builder<'_> {
         )?;
 
         let ty: TypeIndex = match (value.ty, expected_type) {
-            (v, None) if v == UNKNOWN_IDX => {
+            (v, None) if v == Type::UNKNOWN_IDX => {
                 self.diagnostics.push(
                     TypeAnnotationRequiredDiagnostic {
                         file_id: self.file_id,
@@ -5692,10 +5905,10 @@ impl Builder<'_> {
                 );
                 // Use Error type for recovery - this allows later references to work
                 // without cascading "undeclared identifier" errors
-                ERROR_IDX
+                Type::ERROR_IDX
             }
             (ty, None) => ty,
-            (v, Some(expected_type)) if v == UNKNOWN_IDX => {
+            (v, Some(expected_type)) if v == Type::UNKNOWN_IDX => {
                 self.coerce_untyped_expr(&mut value, expected_type)?;
                 expected_type
             }
@@ -5731,7 +5944,11 @@ impl Builder<'_> {
                 local_index,
                 value: Box::new(value),
             },
-            ty: if ty == NEVER_IDX { NEVER_IDX } else { UNIT_IDX },
+            ty: if ty == Type::NEVER_IDX {
+                Type::NEVER_IDX
+            } else {
+                Type::UNIT_IDX
+            },
             span: stmt.inner.span,
         })
     }
@@ -5764,135 +5981,135 @@ impl Builder<'_> {
             _ => unreachable!(),
         };
 
-        if target_idx == I32_IDX {
+        if target_idx == Type::I32_IDX {
             if value > i32::MAX as i64 || value < i32::MIN as i64 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: I32_IDX,
+                        ty: Type::I32_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = I32_IDX;
+            expr.ty = Type::I32_IDX;
             Ok(())
-        } else if target_idx == I64_IDX {
+        } else if target_idx == Type::I64_IDX {
             if value > i64::MAX || value < i64::MIN {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: I64_IDX,
+                        ty: Type::I64_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = I64_IDX;
+            expr.ty = Type::I64_IDX;
             Ok(())
-        } else if target_idx == U32_IDX {
+        } else if target_idx == Type::U32_IDX {
             if value > u32::MAX as i64 || value < 0 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: U32_IDX,
+                        ty: Type::U32_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = U32_IDX;
+            expr.ty = Type::U32_IDX;
             Ok(())
-        } else if target_idx == U64_IDX {
+        } else if target_idx == Type::U64_IDX {
             // i64 is at most i64::MAX which always fits in u64; only negative values are
             // invalid
             if value < 0 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: U64_IDX,
+                        ty: Type::U64_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = U64_IDX;
+            expr.ty = Type::U64_IDX;
             Ok(())
-        } else if target_idx == U8_IDX {
+        } else if target_idx == Type::U8_IDX {
             if value < 0 || value > u8::MAX as i64 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: U8_IDX,
+                        ty: Type::U8_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = U8_IDX;
+            expr.ty = Type::U8_IDX;
             Ok(())
-        } else if target_idx == I8_IDX {
+        } else if target_idx == Type::I8_IDX {
             if value < i8::MIN as i64 || value > i8::MAX as i64 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: I8_IDX,
+                        ty: Type::I8_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = I8_IDX;
+            expr.ty = Type::I8_IDX;
             Ok(())
-        } else if target_idx == U16_IDX {
+        } else if target_idx == Type::U16_IDX {
             if value < 0 || value > u16::MAX as i64 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: U16_IDX,
+                        ty: Type::U16_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = U16_IDX;
+            expr.ty = Type::U16_IDX;
             Ok(())
-        } else if target_idx == I16_IDX {
+        } else if target_idx == Type::I16_IDX {
             if value < i16::MIN as i64 || value > i16::MAX as i64 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: I16_IDX,
+                        ty: Type::I16_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = I16_IDX;
+            expr.ty = Type::I16_IDX;
             Ok(())
-        } else if target_idx == CHAR_IDX {
+        } else if target_idx == Type::CHAR_IDX {
             if value < 0 || value > u32::MAX as i64 {
                 self.diagnostics.push(
                     IntegerLiteralOutOfRangeDiagnostic {
                         file_id: self.file_id,
-                        ty: CHAR_IDX,
+                        ty: Type::CHAR_IDX,
                         value,
                         span: expr.span,
                     }
                     .report(&self),
                 );
             }
-            expr.ty = CHAR_IDX;
+            expr.ty = Type::CHAR_IDX;
             Ok(())
-        } else if target_idx == F32_IDX || target_idx == F64_IDX {
+        } else if target_idx == Type::F32_IDX || target_idx == Type::F64_IDX {
             self.diagnostics.push(
                 IntegerLiteralForFloatTypeDiagnostic {
                     file_id: self.file_id,
@@ -5919,13 +6136,13 @@ impl Builder<'_> {
         expr: &mut Expression,
         target_idx: TypeIndex,
     ) -> Result<(), ()> {
-        if target_idx == F32_IDX {
+        if target_idx == Type::F32_IDX {
             // TODO: add a diagnostic if the literal is out of range
-            expr.ty = F32_IDX;
+            expr.ty = Type::F32_IDX;
             Ok(())
-        } else if target_idx == F64_IDX {
+        } else if target_idx == Type::F64_IDX {
             // TODO: add a diagnostic if the literal is out of range
-            expr.ty = F64_IDX;
+            expr.ty = Type::F64_IDX;
             Ok(())
         } else {
             self.diagnostics.push(
@@ -5952,7 +6169,7 @@ impl Builder<'_> {
 
         match operator {
             ast::UnaryOp::BitNot | ast::UnaryOp::InvertSign => {
-                let is_valid = target_idx == I32_IDX || target_idx == I64_IDX;
+                let is_valid = target_idx == Type::I32_IDX || target_idx == Type::I64_IDX;
                 if !is_valid {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
@@ -6001,10 +6218,10 @@ impl Builder<'_> {
                 }
             }
             operator if operator.is_bitwise() => {
-                let is_integer = target_idx == I32_IDX
-                    || target_idx == I64_IDX
-                    || target_idx == U32_IDX
-                    || target_idx == U64_IDX;
+                let is_integer = target_idx == Type::I32_IDX
+                    || target_idx == Type::I64_IDX
+                    || target_idx == Type::U32_IDX
+                    || target_idx == Type::U64_IDX;
                 if !is_integer {
                     self.diagnostics.push(
                         UnableToCoerceDiagnostic {
@@ -6044,7 +6261,7 @@ impl Builder<'_> {
             .get(&(SymbolNamespace::Type, name.inner))
             .cloned()
         {
-            Some(GlobalValue::Struct { struct_index }) => struct_index,
+            Some(SymbolKind::Struct { struct_index }) => struct_index,
             Some(_) => {
                 self.diagnostics.push(
                     NotAStructTypeDiagnostic {
@@ -6148,7 +6365,7 @@ impl Builder<'_> {
                 Err(_) => continue,
             };
 
-            if field_expr.ty == UNKNOWN_IDX {
+            if field_expr.ty == Type::UNKNOWN_IDX {
                 match self.coerce_untyped_expr(&mut field_expr, expected_ty) {
                     Ok(_) => {}
                     Err(_) => continue,
@@ -6236,25 +6453,23 @@ impl TypePool {
             lookup: HashMap::new(),
         };
         // Order MUST match the IDX constants defined at the top of this file.
-        p.intern_raw(Type::Error); // 0 = ERROR_IDX
-        p.intern_raw(Type::Unit); // 1 = UNIT_IDX
-        p.intern_raw(Type::Never); // 2 = NEVER_IDX
-        p.intern_raw(Type::Unknown); // 3 = UNKNOWN_IDX
-        p.intern_raw(Type::I32); // 4 = I32_IDX
-        p.intern_raw(Type::I64); // 5 = I64_IDX
-        p.intern_raw(Type::F32); // 6 = F32_IDX
-        p.intern_raw(Type::F64); // 7 = F64_IDX
-        p.intern_raw(Type::U32); // 8 = U32_IDX
-        p.intern_raw(Type::U64); // 9 = U64_IDX
-        p.intern_raw(Type::Bool); // 10 = BOOL_IDX
-        p.intern_raw(Type::Char); // 11 = CHAR_IDX
-        p.intern_raw(Type::Struct {
-            struct_index: BUILTIN_STRING_STRUCT,
-        }); // 12 = STRING_IDX
-        p.intern_raw(Type::U8); // 13 = U8_IDX
-        p.intern_raw(Type::I8); // 14 = I8_IDX
-        p.intern_raw(Type::U16); // 15 = U16_IDX
-        p.intern_raw(Type::I16); // 16 = I16_IDX
+        p.intern_raw(Type::Error);
+        p.intern_raw(Type::Unit);
+        p.intern_raw(Type::Never);
+        p.intern_raw(Type::Unknown);
+        p.intern_raw(Type::U8);
+        p.intern_raw(Type::I8);
+        p.intern_raw(Type::U16);
+        p.intern_raw(Type::I16);
+        p.intern_raw(Type::U32);
+        p.intern_raw(Type::I32);
+        p.intern_raw(Type::U64);
+        p.intern_raw(Type::I64);
+        p.intern_raw(Type::F32);
+        p.intern_raw(Type::F64);
+        p.intern_raw(Type::Bool);
+        p.intern_raw(Type::Char);
+
         p
     }
 
@@ -6282,7 +6497,7 @@ impl TypePool {
 
     /// Returns `true` if a value of type `a` can be coerced to type `b`.
     pub fn coercible_to(&self, a: TypeIndex, b: TypeIndex) -> bool {
-        a == b || a == NEVER_IDX || a == ERROR_IDX || b == ERROR_IDX
+        a == b || a == Type::NEVER_IDX || a == Type::ERROR_IDX || b == Type::ERROR_IDX
     }
 
     /// Unified type of `a` and `b`, or `Err` if they are incompatible.
@@ -6290,14 +6505,14 @@ impl TypePool {
         if a == b {
             return Ok(a);
         }
-        if a == NEVER_IDX {
+        if a == Type::NEVER_IDX {
             return Ok(b);
         }
-        if b == NEVER_IDX {
+        if b == Type::NEVER_IDX {
             return Ok(a);
         }
-        if a == ERROR_IDX || b == ERROR_IDX {
-            return Ok(ERROR_IDX);
+        if a == Type::ERROR_IDX || b == Type::ERROR_IDX {
+            return Ok(Type::ERROR_IDX);
         }
         Err(())
     }
@@ -6333,8 +6548,11 @@ pub struct TIR {
     pub defined_functions: HashMap<FunctionIndex, Function>,
     #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
     pub defined_globals: HashMap<GlobalIndex, Global>,
-    pub namespaces: Vec<Namespace>,
-    pub exports: Vec<ExportItem>,
+    pub import_modules: Vec<ImportModule>,
+    pub enums: Vec<Enum>,
+    pub modules: Vec<Module>,
+    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    pub exports: HashMap<SymbolU32, ExportItem>,
     pub declared_functions: Vec<DeclaredFunction>,
     pub declared_globals: Vec<DeclaredGlobal>,
     pub diagnostics: Vec<Diagnostic<FileId>>,
@@ -6375,18 +6593,12 @@ impl Layout {
     }
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
-pub enum Namespace {
-    Enum(Enum),
-    ImportModule(ImportModule),
-}
-
 /// Compute the memory layout (size and alignment) of a type.
 ///
 /// Struct fields are laid out in declaration order with C-style alignment
 /// padding, and the struct's total size is rounded up to its own alignment.
 ///
-/// Panics on `Error`, `Unknown`, `Namespace`, or `Function` — these have no
+/// Panics on `Error`, `Unknown`, `ImportModule`, `Enum`, or `Function` — these have no
 /// runtime representation.
 pub fn compute_layout(
     types: &[Type],
@@ -6423,13 +6635,6 @@ pub fn compute_layout(
         }
         Type::Struct { struct_index } => {
             let si = *struct_index;
-            if si == BUILTIN_STRING_STRUCT {
-                let p = ptr_size as u32;
-                return Layout {
-                    size: p * 2,
-                    align: p,
-                };
-            }
             let field_types: Box<[TypeIndex]> = structs[si as usize]
                 .fields
                 .iter()
@@ -6438,7 +6643,7 @@ pub fn compute_layout(
             compute_aggregate_layout(types, structs, &field_types, ptr_size)
         }
         Type::Function { .. } => Layout::ptr(ptr_size),
-        Type::Error | Type::Unknown | Type::Namespace { .. } => {
+        Type::Error | Type::Unknown | Type::ImportModule { .. } | Type::Enum { .. } => {
             panic!("compute_layout called on non-value type")
         }
     }
@@ -6492,22 +6697,22 @@ impl TIR {
         let mut symbol_lookup = HashMap::new();
         symbol_lookup.insert(
             (SymbolNamespace::Value, interner.get_or_intern("_")),
-            GlobalValue::Placeholder,
+            SymbolKind::Placeholder,
         );
         symbol_lookup.insert(
             (SymbolNamespace::Value, interner.get_or_intern("true")),
-            GlobalValue::True,
+            SymbolKind::True,
         );
         symbol_lookup.insert(
             (SymbolNamespace::Value, interner.get_or_intern("false")),
-            GlobalValue::False,
+            SymbolKind::False,
         );
         symbol_lookup.insert(
             (
                 SymbolNamespace::Value,
                 interner.get_or_intern("unreachable"),
             ),
-            GlobalValue::Unreachable,
+            SymbolKind::Unreachable,
         );
 
         let mut builder = Builder {
@@ -6521,7 +6726,10 @@ impl TIR {
             declared_globals: Vec::new(),
             declared_consts: Vec::new(),
             const_pool: Vec::new(),
-            namespaces: Vec::new(),
+            import_modules: Vec::new(),
+            enums: Vec::new(),
+            modules: Vec::new(),
+            module_scope: Vec::new(),
             type_pool: TypePool::new(),
             symbol_lookup,
             impl_members: HashMap::new(),
@@ -6535,14 +6743,6 @@ impl TIR {
                 let _ = builder.define_item(&item.inner.inner);
             }
         }
-
-        // Validate that stdlib defined the built-in types at the expected indices.
-        assert_eq!(
-            builder.structs.get(BUILTIN_STRING_STRUCT as usize).map(|s| s.name.inner),
-            Some(builder.interner.get_or_intern("string")),
-            "stdlib must define `string` as the first struct (BUILTIN_STRING_STRUCT = {})",
-            BUILTIN_STRING_STRUCT,
-        );
 
         for ast in asts.iter() {
             builder.file_id = ast.file_id;
@@ -6559,8 +6759,10 @@ impl TIR {
             type_pool: builder.type_pool.pool,
             defined_functions: builder.defined_functions,
             defined_globals: builder.defined_globals,
-            namespaces: builder.namespaces,
-            exports: builder.exports.into_values().collect(),
+            import_modules: builder.import_modules,
+            enums: builder.enums,
+            modules: builder.modules,
+            exports: builder.exports,
             declared_functions: builder.declared_functions,
             declared_globals: builder.declared_globals,
             diagnostics: builder.diagnostics,
@@ -6571,790 +6773,4 @@ impl TIR {
 }
 
 #[cfg(test)]
-mod tests {
-    use indoc::indoc;
-
-    use super::*;
-    use crate::ast::{AST, Files};
-
-    #[allow(unused)]
-    struct TestCase {
-        interner: ast::StringInterner,
-        files: Files,
-        ast: AST,
-        tir: TIR,
-    }
-
-    impl<'case> TestCase {
-        fn new(source: &str) -> Self {
-            let mut interner = ast::StringInterner::new();
-            let mut files = Files::new();
-
-            let stdlib_id = files
-                .add(crate::STDLIB_FILENAME.to_string(), crate::STDLIB_SOURCE.to_string())
-                .unwrap();
-            let stdlib_ast = ast::Parser::parse(
-                stdlib_id,
-                &files.get(stdlib_id).unwrap().source,
-                &mut interner,
-            );
-
-            let file_id = files
-                .add("main.wx".to_string(), source.to_string())
-                .unwrap();
-            let ast =
-                ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-
-            let tir = TIR::build(&[&stdlib_ast, &ast], &mut interner);
-
-            TestCase {
-                interner,
-                files,
-                ast,
-                tir,
-            }
-        }
-    }
-
-    #[test]
-    fn test_unescape_string() {
-        assert_eq!(unescape_string(r#""hello""#), "hello");
-        assert_eq!(unescape_string(r#""hello\nworld""#), "hello\nworld");
-        assert_eq!(unescape_string(r#""tab\tthere""#), "tab\tthere");
-        assert_eq!(unescape_string(r#""quote\"here""#), "quote\"here");
-        assert_eq!(unescape_string(r#""backslash\\here""#), "backslash\\here");
-        assert_eq!(unescape_string(r#""null\0byte""#), "null\0byte");
-        assert_eq!(unescape_string(r#""carriage\rreturn""#), "carriage\rreturn");
-        // Multiple escapes
-        assert_eq!(
-            unescape_string(r#""line1\nline2\nline3""#),
-            "line1\nline2\nline3"
-        );
-        // No quotes (should return as-is)
-        assert_eq!(unescape_string("hello"), "hello");
-    }
-
-    #[test]
-    fn test_duplicate_export() {
-        let case = TestCase::new(indoc! {"
-            fn foo() -> i32 { 42 }
-            fn bar() -> i32 { 43 }
-            
-            export {
-                foo as \"add\",
-                bar as \"add\",
-            }
-        "});
-
-        // Should have a duplicate export diagnostic (but not duplicate definition)
-        assert!(!case.tir.diagnostics.is_empty());
-
-        // Check that we have a duplicate export diagnostic
-        let has_duplicate_export = case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("exported multiple times"));
-        assert!(has_duplicate_export, "Expected duplicate export diagnostic");
-    }
-
-    #[test]
-    fn test_duplicate_export_with_alias() {
-        let case = TestCase::new(indoc! {"
-            fn foo() -> i32 { 42 }
-            fn bar() -> i32 { 43 }
-            
-            export {
-                foo,
-                bar as \"foo\",
-            }
-        "});
-
-        // Should have a duplicate export diagnostic (but not duplicate definition)
-        assert!(!case.tir.diagnostics.is_empty());
-
-        // Check that we have a duplicate export diagnostic
-        let has_duplicate_export = case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("exported multiple times"));
-        assert!(has_duplicate_export, "Expected duplicate export diagnostic");
-    }
-
-    #[test]
-    fn test_parse_simple_addition() {
-        let case = TestCase::new(indoc! {"
-            fn add(a: i32, b: i32) -> i32 { a + b }
-            
-            export { add, add as \"plus\" }
-        "});
-        insta::assert_yaml_snapshot!(case.tir);
-    }
-
-    #[test]
-    fn test_parse_import_with_alias() {
-        let case = TestCase::new(indoc! {"
-            import \"console\" as console {
-                fn log(ptr: u32, len: u32) -> unit;
-            }
-
-            fn main() -> unit {
-                console::log(0, 0);
-            }
-
-            export { main }
-        "});
-        insta::assert_yaml_snapshot!(case.tir);
-    }
-
-    #[test]
-    fn test_local_variable_used_in_import_call() {
-        let case = TestCase::new(indoc! {"
-            import \"console\" {
-                fn log(ptr: u32, len: u32);
-            }
-
-            fn main() {
-                local length = \"test\".len();
-                console::log(0, length);
-            }
-
-            export { main }
-        "});
-        insta::assert_yaml_snapshot!(case.tir);
-    }
-
-    fn has_error_code(tir: &TIR, code: &str) -> bool {
-        tir.diagnostics.iter().any(|d| {
-            d.code
-                .as_ref()
-                .map(|c| c.to_string().contains(code))
-                .unwrap_or(false)
-        })
-    }
-
-    // ── coerce_untyped_int_expr ──────────────────────────────────────────────
-
-    #[test]
-    fn test_coerce_int_to_i32() {
-        let case = TestCase::new("fn f() -> i32 { 42 } export { f }");
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "{:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_int_to_i64() {
-        let case = TestCase::new("fn f() -> i64 { 9999999999 } export { f }");
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "{:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_int_to_u32() {
-        let case = TestCase::new("fn f() -> u32 { 100 } export { f }");
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "{:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_int_to_u64() {
-        let case = TestCase::new("fn f() -> u64 { 0 } export { f }");
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "{:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_int_overflow_i32() {
-        // i32::MAX + 1 = 2147483648 overflows i32
-        let case = TestCase::new("fn f() -> i32 { 2147483648 } export { f }");
-        assert!(
-            has_error_code(&case.tir, "E1004"),
-            "expected E1004 (out of range), got: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_int_negative_for_u32() {
-        let case = TestCase::new("fn f() -> u32 { -1 } export { f }");
-        // -1 can't fit in u32 — expect out-of-range OR unable-to-coerce error
-        assert!(
-            !case.tir.diagnostics.is_empty(),
-            "expected a diagnostic for negative u32 literal"
-        );
-    }
-
-    #[test]
-    fn test_coerce_int_literal_for_float_type_errors() {
-        // An untyped integer literal cannot be coerced to f32 (must write 1.0)
-        let case = TestCase::new("fn f() -> f32 { 1 } export { f }");
-        assert!(
-            has_error_code(&case.tir, "E1006"),
-            "expected E1006 (int literal for float type), got: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_int_to_bool_errors() {
-        let case = TestCase::new("fn f() -> bool { 1 } export { f }");
-        // int literal is not coercible to bool — expect E1005 (unable to coerce)
-        assert!(
-            has_error_code(&case.tir, "E1005"),
-            "expected E1005 (unable to coerce), got: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    // ── coerce_untyped_float_expr ────────────────────────────────────────────
-
-    #[test]
-    fn test_coerce_float_to_f32() {
-        let case = TestCase::new("fn f() -> f32 { 3.14 } export { f }");
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "{:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_float_to_f64() {
-        let case = TestCase::new("fn f() -> f64 { 2.718 } export { f }");
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "{:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_float_to_i32_errors() {
-        let case = TestCase::new("fn f() -> i32 { 1.5 } export { f }");
-        assert!(
-            has_error_code(&case.tir, "E1005"),
-            "expected E1005 (unable to coerce float to i32), got: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    // ── binary arithmetic coercion ───────────────────────────────────────────
-
-    #[test]
-    fn test_coerce_binary_arithmetic_i32() {
-        let case = TestCase::new("fn f() -> i32 { 1 + 2 } export { f }");
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "{:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn test_coerce_binary_bitwise_i32() {
-        let case = TestCase::new("fn f() -> i32 { 10 & 12 } export { f }");
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "{:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    // ── struct definition & initialization ──────────────────────────────────
-
-    /// Basic valid struct definition and initialization.
-    #[test]
-    fn test_struct_valid_init() {
-        let case = TestCase::new(indoc! {"
-            struct Point {
-                pub x: i32,
-                pub y: i32,
-            }
-
-            fn make() -> Point {
-                Point::{ x: 1, y: 2 }
-            }
-
-            export { make }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-        insta::assert_yaml_snapshot!(case.tir);
-    }
-
-    /// Shorthand field init `{ x }` should behave like `{ x: x }`.
-    #[test]
-    fn test_struct_shorthand_init() {
-        let case = TestCase::new(indoc! {"
-            struct Point {
-                pub x: i32,
-                pub y: i32,
-            }
-
-            fn make(x: i32, y: i32) -> Point {
-                Point::{ x, y }
-            }
-
-            export { make }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    /// Fields may be provided in any order.
-    #[test]
-    fn test_struct_init_out_of_order() {
-        let case = TestCase::new(indoc! {"
-            struct Point {
-                pub x: i32,
-                pub y: i32,
-            }
-
-            fn make() -> Point {
-                Point::{ y: 2, x: 1 }
-            }
-
-            export { make }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    /// Duplicate field in the struct *definition* should produce E1022.
-    #[test]
-    fn test_struct_duplicate_field_definition() {
-        let case = TestCase::new(indoc! {"
-            struct Bad {
-                pub x: i32,
-                pub x: i32,
-            }
-
-            export { }
-        "});
-        assert!(
-            has_error_code(&case.tir, "E1022"),
-            "expected E1022 (duplicate struct field), got: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    /// Using an undeclared name in struct init position should produce an
-    /// error.
-    #[test]
-    fn test_struct_init_undeclared_name() {
-        let case = TestCase::new(indoc! {"
-            fn main() {
-                Unknown::{ }
-            }
-
-            export { main }
-        "});
-        assert!(
-            !case.tir.diagnostics.is_empty(),
-            "expected an error for unknown struct name"
-        );
-    }
-
-    /// Unknown field name in struct init should produce E1025.
-    #[test]
-    fn test_struct_init_unknown_field() {
-        let case = TestCase::new(indoc! {"
-            struct Point {
-                pub x: i32,
-                pub y: i32,
-            }
-
-            fn make() -> Point {
-                Point::{ x: 1, y: 2, z: 3 }
-            }
-
-            export { make }
-        "});
-        assert!(
-            has_error_code(&case.tir, "E1025"),
-            "expected E1025 (unknown struct field), got: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    /// Specifying the same field twice in init should produce E1026 but NOT
-    /// E1027 (the field was mentioned, just duplicated — it should not
-    /// appear as missing).
-    #[test]
-    fn test_struct_init_duplicate_field() {
-        let case = TestCase::new(indoc! {"
-            struct Point {
-                pub x: i32,
-                pub y: i32,
-            }
-
-            fn make() -> Point {
-                Point::{ x: 1, y: 2, x: 3 }
-            }
-
-            export { make }
-        "});
-        assert!(
-            has_error_code(&case.tir, "E1026"),
-            "expected E1026 (duplicate field in init), got: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-        // x was mentioned (just duplicated) — must NOT also appear as missing
-        assert!(
-            !has_error_code(&case.tir, "E1027"),
-            "E1027 must not fire for a duplicated field (it was mentioned)"
-        );
-    }
-
-    /// Omitting required fields in init should produce E1027.
-    #[test]
-    fn test_struct_init_missing_fields() {
-        let case = TestCase::new(indoc! {"
-            struct Point {
-                pub x: i32,
-                pub y: i32,
-            }
-
-            fn make() -> Point {
-                Point::{ x: 1 }
-            }
-
-            export { make }
-        "});
-        assert!(
-            has_error_code(&case.tir, "E1027"),
-            "expected E1027 (missing fields), got: {:?}",
-            case.tir
-                .diagnostics
-                .iter()
-                .map(|d| &d.message)
-                .collect::<Vec<_>>()
-        );
-    }
-
-    /// A field whose value fails type-checking should NOT cause that field to
-    /// appear in the missing-fields list (E1027).
-    #[test]
-    fn test_struct_init_errored_field_not_reported_as_missing() {
-        let case = TestCase::new(indoc! {"
-            struct Point {
-                pub x: i32,
-                pub y: i32,
-            }
-
-            fn make() -> Point {
-                Point::{ x: true, y: 2 }
-            }
-
-            export { make }
-        "});
-        // Should have a type mismatch error for `x`…
-        assert!(
-            !case.tir.diagnostics.is_empty(),
-            "expected a type-mismatch diagnostic"
-        );
-        // …but must NOT report `x` as a missing field
-        let missing_x = case.tir.diagnostics.iter().any(|d| {
-            d.code
-                .as_ref()
-                .map(|c| c.to_string().contains("E1027"))
-                .unwrap_or(false)
-                && d.message.contains('x')
-        });
-        assert!(
-            !missing_x,
-            "errored field `x` must not be reported as missing"
-        );
-    }
-
-    /// Snapshot test for the duplicate-field-in-init case to lock in diagnostic
-    /// details.
-    #[test]
-    fn test_structs() {
-        let case = TestCase::new(indoc! {"
-            struct str {
-                pub ptr: u32,
-                pub len: u32,
-            }
-
-            fn main() -> str {
-                str::{ ptr: 0, ptr: 10 }
-            }
-
-            export { main }
-        "});
-        insta::assert_yaml_snapshot!(case.tir);
-    }
-
-    // ── Multi-file / stdlib integration tests ────────────────────────────────
-
-    /// `string` and `char` defined in std.wx must be available in user code.
-    #[test]
-    fn test_stdlib_types_available() {
-        let case = TestCase::new(indoc! {"
-            fn is_lower(c: char) -> bool {
-                c >= 'a' && c <= 'z'
-            }
-
-            export { is_lower }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-
-    /// char is a primitive type — arithmetic on chars should resolve correctly.
-    #[test]
-    fn test_stdlib_struct_field_access() {
-        let case = TestCase::new(indoc! {"
-            fn shift(c: char) -> char {
-                c - 32
-            }
-
-            export { shift }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-
-    /// `pub fn` methods defined in std.wx must be callable from user code
-    /// without producing unused-function warnings.
-    #[test]
-    fn test_stdlib_method_callable() {
-        let case = TestCase::new(indoc! {"
-            fn uppercase(c: char) -> char {
-                c.to_ascii_uppercase()
-            }
-
-            export { uppercase }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-
-    /// `u32::SIZE` and `u32::ALIGN` are auto-generated associated constants.
-    #[test]
-    fn test_size_align_constants() {
-        let case = TestCase::new(indoc! {"
-            fn sizes() -> u32 {
-                u32::SIZE
-            }
-
-            fn aligns() -> u32 {
-                u32::ALIGN
-            }
-
-            export { sizes, aligns }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-        // u32 is 4 bytes, aligned to 4
-        let size_sym = case.interner.get("SIZE").unwrap();
-        let align_sym = case.interner.get("ALIGN").unwrap();
-        let u32_idx = crate::tir::U32_IDX;
-        let members = case.tir.impl_members.get(&u32_idx).unwrap();
-        assert!(matches!(members[&size_sym], ImplEntry::AssociatedConst { value: 4, .. }));
-        assert!(matches!(members[&align_sym], ImplEntry::AssociatedConst { value: 4, .. }));
-    }
-
-    /// `pub fn` on a user-defined function suppresses the unused warning.
-    #[test]
-    fn test_pub_fn_no_unused_warning() {
-        let case = TestCase::new(indoc! {"
-            pub fn helper() -> i32 {
-                42
-            }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "expected no diagnostics for pub fn, got: {:?}",
-            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-
-    /// Struct fields are reordered for optimal memory layout.
-    /// `struct Mixed { a: bool, b: i64, c: u32, d: f64 }` declared in that order
-    /// has C-layout size 28B; after reordering (i64, f64, u32, bool) it is 24B.
-    #[test]
-    fn test_struct_field_reorder_reduces_size() {
-        let case = TestCase::new(indoc! {"
-            struct Mixed {
-                a: bool,
-                b: i64,
-                c: u32,
-                d: f64,
-            }
-
-            fn dummy(m: Mixed) -> Mixed { m }
-            export { dummy }
-        "});
-        assert!(case.tir.diagnostics.is_empty());
-
-        let mixed_sym = case.interner.get("Mixed").unwrap();
-        let mixed_ti = case.tir.type_pool.iter().position(|t| {
-            if let crate::tir::Type::Struct { struct_index } = t {
-                case.tir.structs[*struct_index as usize].name.inner == mixed_sym
-            } else {
-                false
-            }
-        }).unwrap() as u32;
-
-        let layout = case.tir.layout_of(mixed_ti, crate::tir::PointerSize::P32);
-        // Optimal order: i64(8), f64(8), u32(4), bool(1) + 3B padding = 24B
-        assert_eq!(layout.size, 24, "expected 24B after reordering, got {}", layout.size);
-        assert_eq!(layout.align, 8);
-
-        // Verify physical field order in the struct
-        let struct_index = case.tir.type_pool.iter().find_map(|t| {
-            if let crate::tir::Type::Struct { struct_index } = t {
-                if case.tir.structs[*struct_index as usize].name.inner == mixed_sym {
-                    Some(*struct_index)
-                } else { None }
-            } else { None }
-        }).unwrap();
-        let s = &case.tir.structs[struct_index as usize];
-        let field_names: Vec<&str> = s.fields.iter()
-            .map(|f| case.interner.resolve(f.name.inner).unwrap())
-            .collect();
-        // Largest alignment (8B: i64, f64) first, then 4B (u32), then 1B (bool)
-        assert_eq!(field_names, vec!["b", "d", "c", "a"]);
-    }
-
-    /// A non-pub function that is never called should still produce a warning.
-    #[test]
-    fn test_non_pub_fn_unused_warning() {
-        let case = TestCase::new(indoc! {"
-            fn unused() -> i32 {
-                42
-            }
-        "});
-        assert!(
-            case.tir.diagnostics.iter().any(|d| d.message == "function `unused` is never used"),
-            "expected unused-function diagnostic"
-        );
-    }
-
-    /// User-defined struct with `pub struct` should not warn as unused.
-    #[test]
-    fn test_pub_struct_no_unused_warning() {
-        // Structs don't currently emit unused warnings; this test just
-        // verifies that `pub struct` parses and compiles without error.
-        let case = TestCase::new(indoc! {"
-            pub struct Point {
-                pub x: i32,
-                pub y: i32,
-            }
-        "});
-        assert!(
-            case.tir.diagnostics.is_empty(),
-            "unexpected diagnostics: {:?}",
-            case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
-        );
-    }
-
-}
+mod tests;
