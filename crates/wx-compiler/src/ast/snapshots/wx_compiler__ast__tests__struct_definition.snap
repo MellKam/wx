@@ -1,0 +1,72 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Struct:
+          pub_span: ~
+          name:
+            inner: 1
+            span:
+              start: 7
+              end: 12
+          fields:
+            open:
+              start: 13
+              end: 14
+            inner:
+              - inner:
+                  inner:
+                    pub_span:
+                      start: 19
+                      end: 22
+                    name:
+                      inner: 2
+                      span:
+                        start: 23
+                        end: 24
+                    ty:
+                      inner:
+                        Identifier:
+                          symbol: 3
+                      span:
+                        start: 26
+                        end: 29
+                  span:
+                    start: 19
+                    end: 29
+                separator:
+                  start: 29
+                  end: 30
+              - inner:
+                  inner:
+                    pub_span: ~
+                    name:
+                      inner: 4
+                      span:
+                        start: 35
+                        end: 36
+                    ty:
+                      inner:
+                        Identifier:
+                          symbol: 3
+                      span:
+                        start: 38
+                        end: 41
+                  span:
+                    start: 35
+                    end: 41
+                separator:
+                  start: 41
+                  end: 42
+            close:
+              start: 43
+              end: 44
+      span:
+        start: 0
+        end: 44
+    separator: ~

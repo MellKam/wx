@@ -1,0 +1,161 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 4
+            params:
+              open:
+                start: 4
+                end: 5
+              inner:
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 2
+                        span:
+                          start: 5
+                          end: 6
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 8
+                          end: 13
+                    span:
+                      start: 5
+                      end: 13
+                  separator: ~
+              close:
+                start: 13
+                end: 14
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 15
+                    end: 16
+                  inner:
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 4
+                              span:
+                                start: 27
+                                end: 28
+                            ty: ~
+                            value:
+                              inner:
+                                ObjectAccess:
+                                  object:
+                                    inner:
+                                      ObjectAccess:
+                                        object:
+                                          inner:
+                                            Identifier:
+                                              symbol: 2
+                                          span:
+                                            start: 31
+                                            end: 32
+                                        member:
+                                          inner: 5
+                                          span:
+                                            start: 33
+                                            end: 34
+                                    span:
+                                      start: 31
+                                      end: 34
+                                  member:
+                                    inner: 6
+                                    span:
+                                      start: 35
+                                      end: 36
+                              span:
+                                start: 31
+                                end: 36
+                        span:
+                          start: 21
+                          end: 36
+                      separator:
+                        start: 36
+                        end: 37
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 7
+                              span:
+                                start: 48
+                                end: 49
+                            ty: ~
+                            value:
+                              inner:
+                                ObjectAccess:
+                                  object:
+                                    inner:
+                                      Call:
+                                        callee:
+                                          inner:
+                                            ObjectAccess:
+                                              object:
+                                                inner:
+                                                  Identifier:
+                                                    symbol: 2
+                                                span:
+                                                  start: 52
+                                                  end: 53
+                                              member:
+                                                inner: 8
+                                                span:
+                                                  start: 54
+                                                  end: 57
+                                          span:
+                                            start: 52
+                                            end: 57
+                                        arguments: []
+                                    span:
+                                      start: 52
+                                      end: 59
+                                  member:
+                                    inner: 9
+                                    span:
+                                      start: 60
+                                      end: 61
+                              span:
+                                start: 52
+                                end: 61
+                        span:
+                          start: 42
+                          end: 61
+                      separator:
+                        start: 61
+                        end: 62
+                  close:
+                    start: 63
+                    end: 64
+            span:
+              start: 15
+              end: 64
+      span:
+        start: 0
+        end: 64
+    separator: ~

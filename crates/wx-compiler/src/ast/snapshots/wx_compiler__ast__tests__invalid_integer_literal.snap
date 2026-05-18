@@ -1,0 +1,75 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics:
+  - severity: Error
+    code: E0005
+    message: invalid integer literal
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 20
+          end: 40
+        message: ""
+    notes: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 4
+            params:
+              open:
+                start: 4
+                end: 5
+              inner: []
+              close:
+                start: 5
+                end: 6
+            result:
+              inner:
+                Identifier:
+                  symbol: 2
+              span:
+                start: 10
+                end: 13
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 14
+                    end: 15
+                  inner:
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Int:
+                                value: 0
+                            span:
+                              start: 20
+                              end: 40
+                        span:
+                          start: 20
+                          end: 40
+                      separator: ~
+                  close:
+                    start: 41
+                    end: 42
+            span:
+              start: 14
+              end: 42
+      span:
+        start: 0
+        end: 42
+    separator: ~

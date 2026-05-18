@@ -1,0 +1,179 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics:
+  - severity: Error
+    code: E0007
+    message: comparison operators cannot be chained
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 45
+          end: 46
+        message: ""
+      - style: Primary
+        file_id: 0
+        range:
+          start: 49
+          end: 50
+        message: ""
+    notes:
+      - "consider using logical operator like `&&` or `||` to split the comparisons or use parentheses to group them"
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 4
+            params:
+              open:
+                start: 4
+                end: 5
+              inner:
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 2
+                        span:
+                          start: 5
+                          end: 6
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 8
+                          end: 11
+                    span:
+                      start: 5
+                      end: 11
+                  separator:
+                    start: 11
+                    end: 12
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 4
+                        span:
+                          start: 13
+                          end: 14
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 16
+                          end: 19
+                    span:
+                      start: 13
+                      end: 19
+                  separator:
+                    start: 19
+                    end: 20
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 5
+                        span:
+                          start: 21
+                          end: 22
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 24
+                          end: 27
+                    span:
+                      start: 21
+                      end: 27
+                  separator: ~
+              close:
+                start: 27
+                end: 28
+            result:
+              inner:
+                Identifier:
+                  symbol: 6
+              span:
+                start: 32
+                end: 36
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 37
+                    end: 38
+                  inner:
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Binary:
+                                left:
+                                  inner:
+                                    Binary:
+                                      left:
+                                        inner:
+                                          Identifier:
+                                            symbol: 2
+                                        span:
+                                          start: 43
+                                          end: 44
+                                      operator:
+                                        inner: Less
+                                        span:
+                                          start: 45
+                                          end: 46
+                                      right:
+                                        inner:
+                                          Identifier:
+                                            symbol: 4
+                                        span:
+                                          start: 47
+                                          end: 48
+                                  span:
+                                    start: 43
+                                    end: 48
+                                operator:
+                                  inner: Less
+                                  span:
+                                    start: 49
+                                    end: 50
+                                right:
+                                  inner:
+                                    Identifier:
+                                      symbol: 5
+                                  span:
+                                    start: 51
+                                    end: 52
+                            span:
+                              start: 43
+                              end: 52
+                        span:
+                          start: 43
+                          end: 52
+                      separator: ~
+                  close:
+                    start: 53
+                    end: 54
+            span:
+              start: 37
+              end: 54
+      span:
+        start: 0
+        end: 54
+    separator: ~

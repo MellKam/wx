@@ -1,0 +1,71 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Import:
+          module:
+            inner: 1
+            span:
+              start: 7
+              end: 12
+          alias: ~
+          entries:
+            open:
+              start: 13
+              end: 14
+            inner:
+              - inner:
+                  inner:
+                    external_name: ~
+                    declaration:
+                      Function:
+                        signature:
+                          name:
+                            inner: 2
+                            span:
+                              start: 22
+                              end: 25
+                          params:
+                            open:
+                              start: 25
+                              end: 26
+                            inner:
+                              - inner:
+                                  inner:
+                                    mut_span: ~
+                                    name:
+                                      inner: 3
+                                      span:
+                                        start: 26
+                                        end: 33
+                                    ty:
+                                      inner:
+                                        Identifier:
+                                          symbol: 4
+                                      span:
+                                        start: 35
+                                        end: 41
+                                  span:
+                                    start: 26
+                                    end: 41
+                                separator: ~
+                            close:
+                              start: 41
+                              end: 42
+                          result: ~
+                  span:
+                    start: 19
+                    end: 42
+                separator: ~
+            close:
+              start: 43
+              end: 44
+      span:
+        start: 0
+        end: 44
+    separator: ~

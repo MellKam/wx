@@ -3,7 +3,7 @@ source: crates/wx-compiler/src/mir.rs
 expression: case.mir
 ---
 functions:
-  - signature_index: 3
+  - signature_index: 1
     scopes:
       - kind: Block
         parent: ~
@@ -51,7 +51,7 @@ functions:
               ty: Bool
       ty: Bool
     inline: true
-  - signature_index: 3
+  - signature_index: 1
     scopes:
       - kind: Block
         parent: ~
@@ -99,7 +99,7 @@ functions:
               ty: Bool
       ty: Bool
     inline: true
-  - signature_index: 5
+  - signature_index: 3
     scopes:
       - kind: Block
         parent: ~
@@ -138,15 +138,6 @@ functions:
     inline: false
 signatures:
   - items:
-      - Tuple:
-          tuple_index: 0
-      - U32
-    params_count: 1
-  - items:
-      - F32
-      - F32
-    params_count: 1
-  - items:
       - U32
       - U32
     params_count: 1
@@ -166,16 +157,16 @@ globals: []
 exports:
   - Function:
       func_index: 3
-      name: 59
+      name: 49
 imports:
   - name: console
     items:
       - Function:
-          name: 57
+          name: 46
           func_index: 0
-          signature_index: 22
+          signature_index: 20
 tuples:
   - fields:
       - I32
 strings:
-  - 67
+  - 57

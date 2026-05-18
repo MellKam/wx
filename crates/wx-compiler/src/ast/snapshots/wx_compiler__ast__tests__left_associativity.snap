@@ -1,0 +1,161 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 4
+            params:
+              open:
+                start: 4
+                end: 5
+              inner:
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 2
+                        span:
+                          start: 5
+                          end: 6
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 8
+                          end: 11
+                    span:
+                      start: 5
+                      end: 11
+                  separator:
+                    start: 11
+                    end: 12
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 4
+                        span:
+                          start: 13
+                          end: 14
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 16
+                          end: 19
+                    span:
+                      start: 13
+                      end: 19
+                  separator:
+                    start: 19
+                    end: 20
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 5
+                        span:
+                          start: 21
+                          end: 22
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 24
+                          end: 27
+                    span:
+                      start: 21
+                      end: 27
+                  separator: ~
+              close:
+                start: 27
+                end: 28
+            result:
+              inner:
+                Identifier:
+                  symbol: 3
+              span:
+                start: 32
+                end: 35
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 36
+                    end: 37
+                  inner:
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Binary:
+                                left:
+                                  inner:
+                                    Binary:
+                                      left:
+                                        inner:
+                                          Identifier:
+                                            symbol: 2
+                                        span:
+                                          start: 42
+                                          end: 43
+                                      operator:
+                                        inner: Sub
+                                        span:
+                                          start: 44
+                                          end: 45
+                                      right:
+                                        inner:
+                                          Identifier:
+                                            symbol: 4
+                                        span:
+                                          start: 46
+                                          end: 47
+                                  span:
+                                    start: 42
+                                    end: 47
+                                operator:
+                                  inner: Sub
+                                  span:
+                                    start: 48
+                                    end: 49
+                                right:
+                                  inner:
+                                    Identifier:
+                                      symbol: 5
+                                  span:
+                                    start: 50
+                                    end: 51
+                            span:
+                              start: 42
+                              end: 51
+                        span:
+                          start: 42
+                          end: 51
+                      separator: ~
+                  close:
+                    start: 52
+                    end: 53
+            span:
+              start: 36
+              end: 53
+      span:
+        start: 0
+        end: 53
+    separator: ~

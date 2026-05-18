@@ -305,9 +305,7 @@ define_diagnostic_codes! {
         ReservedIdentifier => "E0008",
         InvalidItem => "E0009",
         MissingInitializer => "E0010",
-        SelfInNonAssociatedFunction => "E0011",
-        SelfNotFirstParam => "E0012",
-        InvalidAttribute => "E0013",
+        InvalidAttribute => "E0012",
     }
 }
 
@@ -492,40 +490,6 @@ impl ReservedIdentifierDiagnostic {
             .with_code(DiagnosticCode::ReservedIdentifier.code())
             .with_message("cannot use keyword as identifier")
             .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct SelfInNonAssociatedFunctionDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl SelfInNonAssociatedFunctionDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::SelfInNonAssociatedFunction.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("`self` parameter is only allowed in associated functions")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("associated functions are those in `impl` blocks")
-    }
-}
-
-pub struct SelfNotFirstParamDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl SelfNotFirstParamDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::SelfNotFirstParam.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("unexpected `self` parameter in function")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("`self` must be the first parameter of an associated function")
     }
 }
 
@@ -1500,6 +1464,7 @@ pub enum Item {
     },
     Memory {
         name: Spanned<SymbolU32>,
+        kind: Box<Spanned<TypeExpression>>,
     },
     Const {
         name: Spanned<SymbolU32>,
@@ -1845,6 +1810,9 @@ impl<'input> Parser<'input> {
             match item_handler(&mut parser) {
                 Ok(mut item) => {
                     if let Item::Function {
+                        ref mut attributes, ..
+                    }
+                    | Item::FunctionDeclaration {
                         ref mut attributes, ..
                     } = item.inner
                     {
@@ -3204,15 +3172,26 @@ impl<'input> Parser<'input> {
             span: name_span,
         };
 
-        let ty = match parser.lexer.peek().inner {
-            Token::Colon => {
-                let type_expr = parser.parse_type_expression()?;
-                Some(Box::new(type_expr))
-            }
-            _ => None,
+        let ty = match parser.lexer.next_if(Token::Colon) {
+            Some(_) => Some(Box::new(parser.parse_type_expression()?)),
+            None => None,
         };
-        let _ = parser.next_expect(Token::Eq)?;
-        let value = parser.parse_expression(BindingPower::Default)?;
+
+        let value = parser
+            .lexer
+            .next_if(Token::Eq)
+            .ok_or(())
+            .and_then(|_| parser.parse_expression(BindingPower::Default))
+            .map_err(|_| {
+                let token = parser.lexer.peek();
+                parser.ast.diagnostics.push(
+                    MissingGlobalInitializerDiagnostic {
+                        file_id: parser.ast.file_id,
+                        span: token.span,
+                    }
+                    .report(),
+                );
+            })?;
 
         let span = TextSpan::merge(global_keyword.span, value.span);
         Ok(Spanned {
@@ -3473,19 +3452,6 @@ impl<'input> Parser<'input> {
                         }
                         .parse(parser)?;
 
-                        let self_symbol = parser.interner.get_or_intern("self");
-                        for param in params.inner.iter().skip(1) {
-                            if param.inner.inner.name.inner == self_symbol {
-                                parser.ast.diagnostics.push(
-                                    SelfNotFirstParamDiagnostic {
-                                        file_id: parser.ast.file_id,
-                                        span: param.inner.inner.name.span,
-                                    }
-                                    .report(),
-                                );
-                            }
-                        }
-
                         let result = parser
                             .lexer
                             .next_if(Token::MinusRightArrow)
@@ -3656,9 +3622,12 @@ impl<'input> Parser<'input> {
             span: name_span,
         };
 
-        let span = TextSpan::merge(memory_span, name_span);
+        parser.next_expect(Token::Colon)?;
+        let kind = parser.parse_type_expression()?;
+
+        let span = TextSpan::merge(memory_span, kind.span);
         Ok(Spanned {
-            inner: Item::Memory { name },
+            inner: Item::Memory { name, kind: Box::new(kind) },
             span,
         })
     }
@@ -3827,7 +3796,6 @@ impl<'input> Parser<'input> {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests;

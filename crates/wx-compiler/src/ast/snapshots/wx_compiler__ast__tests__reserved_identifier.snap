@@ -1,0 +1,79 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics:
+  - severity: Error
+    code: E0008
+    message: cannot use keyword as identifier
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 19
+          end: 21
+        message: ""
+    notes: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 4
+            params:
+              open:
+                start: 4
+                end: 5
+              inner: []
+              close:
+                start: 5
+                end: 6
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 7
+                    end: 8
+                  inner:
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 2
+                              span:
+                                start: 19
+                                end: 21
+                            ty: ~
+                            value:
+                              inner:
+                                Int:
+                                  value: 1
+                              span:
+                                start: 24
+                                end: 25
+                        span:
+                          start: 13
+                          end: 25
+                      separator:
+                        start: 25
+                        end: 26
+                  close:
+                    start: 27
+                    end: 28
+            span:
+              start: 7
+              end: 28
+      span:
+        start: 0
+        end: 28
+    separator: ~

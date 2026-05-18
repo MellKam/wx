@@ -1,0 +1,91 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics:
+  - severity: Error
+    code: E0004
+    message: unclosed delimiter
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 29
+          end: 29
+        message: "consider adding `}` here"
+      - style: Secondary
+        file_id: 0
+        range:
+          start: 7
+          end: 8
+        message: unclosed delimiter
+    notes: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 4
+            params:
+              open:
+                start: 4
+                end: 5
+              inner: []
+              close:
+                start: 5
+                end: 6
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 7
+                    end: 8
+                  inner:
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 2
+                              span:
+                                start: 19
+                                end: 20
+                            ty:
+                              inner:
+                                Identifier:
+                                  symbol: 3
+                              span:
+                                start: 22
+                                end: 25
+                            value:
+                              inner:
+                                Int:
+                                  value: 1
+                              span:
+                                start: 28
+                                end: 29
+                        span:
+                          start: 13
+                          end: 29
+                      separator:
+                        start: 29
+                        end: 30
+                  close:
+                    start: 29
+                    end: 29
+            span:
+              start: 7
+              end: 29
+      span:
+        start: 0
+        end: 29
+    separator: ~

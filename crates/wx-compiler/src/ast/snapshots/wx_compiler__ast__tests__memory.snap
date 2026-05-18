@@ -1,0 +1,28 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Memory:
+          name:
+            inner: 1
+            span:
+              start: 7
+              end: 10
+          kind:
+            inner:
+              Identifier:
+                symbol: 2
+            span:
+              start: 12
+              end: 20
+      span:
+        start: 0
+        end: 20
+    separator:
+      start: 20
+      end: 21

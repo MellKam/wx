@@ -170,6 +170,19 @@ pub enum ExprKind {
     Neg {
         value: Box<Expression>,
     },
+    /// `i32.const <data_section_end>` — byte offset of the first writable memory region.
+    MemoryOffset {
+        memory_index: u32,
+    },
+    /// `memory.size <memory_index>` — current size of a linear memory in pages.
+    MemorySize {
+        memory_index: u32,
+    },
+    /// `memory.grow <memory_index>` — grow linear memory by N pages; pushes old size or -1.
+    MemoryGrow {
+        memory_index: u32,
+        delta: Box<Expression>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -375,7 +388,7 @@ fn build_index_remap_filtered<T>(
             // Dead defined items get no MIR slot; sentinel value is never accessed.
             tir::ItemSource::Defined => u32::MAX,
             // Built-in items (compiler intrinsics) get no MIR slot.
-            tir::ItemSource::Buildin => u32::MAX,
+            tir::ItemSource::Intrinsic => u32::MAX,
         };
     }
 
@@ -650,6 +663,7 @@ impl<'tir> Builder<'tir> {
             | tir::Type::Error
             | tir::Type::ImportModule { .. }
             | tir::Type::Enum { .. }
+            | tir::Type::Memory { .. }
             | tir::Type::Pointer { .. }
             | tir::Type::Array { .. }
             | tir::Type::Slice { .. }
@@ -727,7 +741,9 @@ impl<'tir> Builder<'tir> {
         use crate::ast::{BinaryOp, UnaryOp};
 
         match &expr.kind {
-            tir::ExprKind::Error | tir::ExprKind::Placeholder => unreachable!(),
+            tir::ExprKind::Error | tir::ExprKind::Placeholder | tir::ExprKind::Memory { .. } => {
+                unreachable!("memory handle should only appear as object of a member access")
+            }
             tir::ExprKind::Unreachable => Expression {
                 kind: ExprKind::Unreachable,
                 ty: Type::Never,
@@ -809,6 +825,34 @@ impl<'tir> Builder<'tir> {
                 self.lower_expression(func_ctx, &variant.value, sink)
             }
             tir::ExprKind::Call { callee, arguments } => {
+                // Detect memory intrinsic calls: `MEM.grow(n)` / `MEM.size()`.
+                if let tir::ExprKind::ObjectAccess { object, member } = &callee.kind {
+                    if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty as usize] {
+                        let member_name = self.interner.resolve(member.inner).unwrap_or("");
+                        let memory_index = match &object.kind {
+                            tir::ExprKind::Memory { memory_index } => *memory_index,
+                            _ => unreachable!("memory method call on non-memory expression"),
+                        };
+                        let result_ty = self.lower_type_index(expr.ty);
+                        return match member_name {
+                            "size" => Expression {
+                                kind: ExprKind::MemorySize { memory_index },
+                                ty: result_ty,
+                            },
+                            "grow" => {
+                                let delta = Box::new(
+                                    self.lower_expression(func_ctx, &arguments[0], sink),
+                                );
+                                Expression {
+                                    kind: ExprKind::MemoryGrow { memory_index, delta },
+                                    ty: result_ty,
+                                }
+                            }
+                            _ => unreachable!("unknown memory intrinsic method: {}", member_name),
+                        };
+                    }
+                }
+
                 let callee = Box::new(self.lower_expression(func_ctx, callee, sink));
                 let arguments = arguments
                     .iter()
@@ -885,16 +929,46 @@ impl<'tir> Builder<'tir> {
                             .and_then(|m| m.get(&member.inner))
                             .expect("unresolved impl member in MIR lowering");
                         match entry {
-                            tir::ImplEntry::AssociatedConst { value, .. } => Expression {
-                                kind: ExprKind::Int { value: *value },
-                                ty: self.lower_type_index(expr.ty),
-                            },
+                            tir::ImplEntry::AssociatedConst { .. } => {
+                                let member_name = self.interner.resolve(member.inner).unwrap_or("");
+                                let layout = tir::compute_layout(
+                                    self.tir.type_pool.as_slice(),
+                                    &self.tir.structs,
+                                    ty.inner,
+                                    tir::PointerSize::P32,
+                                );
+                                let value = match member_name {
+                                    "SIZE" => layout.size as i64,
+                                    "ALIGN" => layout.align as i64,
+                                    _ => todo!("unknown associated const: {}", member_name),
+                                };
+                                Expression {
+                                    kind: ExprKind::Int { value },
+                                    ty: self.lower_type_index(expr.ty),
+                                }
+                            }
                             _ => todo!("non-const impl member in namespace access"),
                         }
                     }
                 }
             }
             tir::ExprKind::ObjectAccess { object, member } => {
+                // Memory member access — OFFSET constant; grow/size appear only as call callees.
+                if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty as usize] {
+                    let member_name = self.interner.resolve(member.inner).unwrap_or("");
+                    let memory_index = match &object.kind {
+                        tir::ExprKind::Memory { memory_index } => *memory_index,
+                        _ => unreachable!("memory member access on non-memory expression"),
+                    };
+                    return match member_name {
+                        "OFFSET" => Expression {
+                            kind: ExprKind::MemoryOffset { memory_index },
+                            ty: self.lower_type_index(expr.ty),
+                        },
+                        _ => unreachable!("unexpected memory member in non-call position: {}", member_name),
+                    };
+                }
+
                 let struct_index = match &self.tir.type_pool[object.ty as usize] {
                     tir::Type::Struct { struct_index } => *struct_index,
                     _ => unreachable!("ObjectAccess on non-struct type"),
@@ -1425,6 +1499,10 @@ fn rewrite_body(
             left: rw_box(left),
             right: rw_box(right),
         },
+        ExprKind::MemoryGrow { memory_index, delta } => ExprKind::MemoryGrow {
+            memory_index,
+            delta: rw_box(delta),
+        },
         // Leaf variants — nothing to rewrite.
         k @ (ExprKind::Noop
         | ExprKind::Bool { .. }
@@ -1433,7 +1511,9 @@ fn rewrite_body(
         | ExprKind::Float { .. }
         | ExprKind::StringIndex { .. }
         | ExprKind::Global { .. }
-        | ExprKind::Unreachable) => k,
+        | ExprKind::Unreachable
+        | ExprKind::MemoryOffset { .. }
+        | ExprKind::MemorySize { .. }) => k,
     };
     Expression { kind, ty }
 }
@@ -1559,6 +1639,7 @@ fn inline_expr(expr: &mut Expression, caller_scopes: &mut Vec<BlockScope>, funct
             inline_expr(left, caller_scopes, functions);
             inline_expr(right, caller_scopes, functions);
         }
+        ExprKind::MemoryGrow { delta, .. } => inline_expr(delta, caller_scopes, functions),
         // Leaf variants — nothing to recurse into.
         ExprKind::Noop
         | ExprKind::Bool { .. }
@@ -1570,7 +1651,9 @@ fn inline_expr(expr: &mut Expression, caller_scopes: &mut Vec<BlockScope>, funct
         | ExprKind::Unreachable
         | ExprKind::LocalGet { .. }
         | ExprKind::PackedFieldGet { .. }
-        | ExprKind::Continue { .. } => {}
+        | ExprKind::Continue { .. }
+        | ExprKind::MemoryOffset { .. }
+        | ExprKind::MemorySize { .. } => {}
     }
 
     // After children are processed, check if this node is an inlinable call.

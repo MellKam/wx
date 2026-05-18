@@ -209,3 +209,4 @@ declared_globals: []
 diagnostics: []
 structs: []
 impl_members: {}
+declared_memories: []

@@ -175,7 +175,7 @@ impl Builder {
                     items.push(Node::Text("}".to_string()));
                     Node::Concat(items)
                 }
-                Item::Memory { name } => {
+                Item::Memory { name, .. } => {
                     Node::Text(format!("memory {}", interner.resolve(name.inner).unwrap()))
                 }
                 Item::Enum { .. } => todo!("fmt for enum items"),

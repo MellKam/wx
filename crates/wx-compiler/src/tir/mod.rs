@@ -6,148 +6,6 @@ use string_interner::symbol::SymbolU32;
 
 use crate::ast::{self, FileId, Separated, Spanned, TextSpan};
 
-/// Serializes a HashMap with keys sorted for deterministic snapshot output.
-#[cfg(test)]
-fn serialize_sorted_map<K, V, S>(map: &HashMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
-where
-    K: Ord + serde::Serialize,
-    V: serde::Serialize,
-    S: serde::Serializer,
-{
-    use serde::ser::SerializeMap;
-    let mut pairs: Vec<_> = map.iter().collect();
-    pairs.sort_by_key(|(k, _)| *k);
-    let mut ser = serializer.serialize_map(Some(pairs.len()))?;
-    for (k, v) in pairs {
-        ser.serialize_entry(k, v)?;
-    }
-    ser.end()
-}
-
-/// Serializes a `HashMap<K, HashMap<K2, V>>` with both levels of keys sorted.
-#[cfg(test)]
-fn serialize_sorted_nested_map<K, K2, V, S>(
-    map: &HashMap<K, HashMap<K2, V>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    K: Ord + serde::Serialize,
-    K2: Ord + serde::Serialize,
-    V: serde::Serialize,
-    S: serde::Serializer,
-{
-    use serde::ser::SerializeMap;
-    let mut outer: Vec<_> = map.iter().collect();
-    outer.sort_by_key(|(k, _)| *k);
-    let mut ser = serializer.serialize_map(Some(outer.len()))?;
-    for (k, inner_map) in outer {
-        let mut inner: Vec<_> = inner_map.iter().collect();
-        inner.sort_by_key(|(k2, _)| *k2);
-        ser.serialize_entry(k, &SortedMapRef(&inner))?;
-    }
-    ser.end()
-}
-
-#[cfg(test)]
-struct SortedMapRef<'a, K, V>(&'a Vec<(&'a K, &'a V)>);
-
-#[cfg(test)]
-impl<K: serde::Serialize, V: serde::Serialize> serde::Serialize for SortedMapRef<'_, K, V> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut ser = serializer.serialize_map(Some(self.0.len()))?;
-        for (k, v) in self.0 {
-            ser.serialize_entry(k, v)?;
-        }
-        ser.end()
-    }
-}
-
-/// Unescape a string literal, removing quotes and handling escape sequences.
-/// Supports basic Rust-like escape sequences: \n, \r, \t, \\, \", \'
-pub fn unescape_string(s: &str) -> String {
-    // Remove surrounding quotes
-    let s = if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-        &s[1..s.len() - 1]
-    } else {
-        s
-    };
-
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.next() {
-                Some('n') => result.push('\n'),
-                Some('r') => result.push('\r'),
-                Some('t') => result.push('\t'),
-                Some('\\') => result.push('\\'),
-                Some('"') => result.push('"'),
-                Some('0') => result.push('\0'),
-                // If we encounter an unknown escape, keep the backslash and the character
-                Some(c) => {
-                    result.push('\\');
-                    result.push(c);
-                }
-                None => result.push('\\'),
-            }
-        } else {
-            result.push(ch);
-        }
-    }
-
-    result
-}
-
-/// Parses a char literal (e.g. `'a'`, `'\n'`) and returns the single character
-/// it represents, or `None` if it contains more than one logical character.
-pub enum CharLiteralError {
-    Empty,
-    TooLong,
-}
-
-pub fn parse_char_literal(s: &str) -> Result<char, CharLiteralError> {
-    let content = if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
-        &s[1..s.len() - 1]
-    } else {
-        s
-    };
-
-    let mut chars = content.chars();
-    let value = match chars.next() {
-        None => return Err(CharLiteralError::Empty),
-        Some('\\') => match chars.next() {
-            None => return Err(CharLiteralError::Empty),
-            Some('n') => '\n',
-            Some('r') => '\r',
-            Some('t') => '\t',
-            Some('\\') => '\\',
-            Some('\'') => '\'',
-            Some('0') => '\0',
-            Some('x') => {
-                let hi = chars.next().and_then(|c| c.to_digit(16));
-                let lo = chars.next().and_then(|c| c.to_digit(16));
-                match (hi, lo) {
-                    (Some(h), Some(l)) => {
-                        let codepoint = h * 16 + l;
-                        char::from_u32(codepoint).unwrap()
-                    }
-                    _ => return Err(CharLiteralError::TooLong),
-                }
-            }
-            Some(c) => c,
-        },
-        Some(c) => c,
-    };
-
-    if chars.next().is_some() {
-        return Err(CharLiteralError::TooLong);
-    }
-
-    Ok(value)
-}
-
 pub type TypeIndex = u32;
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -199,6 +57,10 @@ pub enum Type {
     },
     Enum {
         enum_index: u32,
+    },
+    Memory {
+        kind: MemoryKind,
+        memory_index: u32,
     },
 }
 
@@ -428,6 +290,10 @@ pub enum ExprKind {
         struct_index: u32,
         fields: Box<[Expression]>,
     },
+    /// A linear memory handle — carries identity but has no runtime representation.
+    Memory {
+        memory_index: u32,
+    },
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -583,7 +449,7 @@ pub struct Enum {
     pub name: ast::Spanned<SymbolU32>,
     pub ty: TypeIndex,
     pub variants: Box<[EnumVariant]>,
-    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
 }
 
@@ -607,11 +473,12 @@ pub struct DeclaredGlobal {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum SymbolKind {
-    // Types
+    // Types / namespaces
     ImportModule { module_index: u32 },
     Enum { enum_index: u32 },
     Struct { struct_index: u32 },
     Module { module_index: u32 },
+    Memory { memory_index: u32, kind: MemoryKind },
     // Values
     Global { global_index: GlobalIndex },
     Function { func_index: FunctionIndex },
@@ -632,7 +499,7 @@ pub enum ImportValue {
 pub struct Module {
     pub name: ast::Spanned<SymbolU32>,
     pub pub_span: Option<ast::TextSpan>,
-    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
 }
 
@@ -640,7 +507,7 @@ pub struct Module {
 pub struct ImportModule {
     pub external_name: ast::Spanned<SymbolU32>,
     pub internal_name: Option<ast::Spanned<SymbolU32>>,
-    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, ImportValue>,
 }
 
@@ -658,7 +525,7 @@ pub enum SymbolNamespace {
 pub enum ItemSource {
     Defined,
     Imported,
-    Buildin,
+    Intrinsic,
 }
 
 /// Classifies a source file for diagnostic purposes.
@@ -670,12 +537,27 @@ pub enum FileKind {
     Module,
 }
 
-#[derive(Clone, Copy)]
+/// The address width of a declared linear memory.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum MemoryKind {
+    /// 32-bit addressing — `memory.grow`/`memory.size` use `i32` operands.
+    Memory32,
+    /// 64-bit addressing — `memory.grow`/`memory.size` use `i64` operands.
+    Memory64,
+}
+
+
+#[derive(Clone)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImplEntry {
     Method(FunctionIndex),
     AssociatedFn(FunctionIndex),
-    AssociatedConst { ty: TypeIndex, value: i64 },
+    /// Compile-time constant; value is computed during MIR/codegen from the type layout.
+    AssociatedConst { ty: TypeIndex },
+    /// Compiler-built-in method with no real function entry (e.g. memory intrinsics).
+    IntrinsicMethod { result_ty: TypeIndex, param_tys: Box<[TypeIndex]> },
 }
 
 impl PartialOrd for ItemSource {
@@ -798,6 +680,92 @@ impl FunctionContext {
     }
 }
 
+/// Unescape a string literal, removing quotes and handling escape sequences.
+/// Supports basic Rust-like escape sequences: \n, \r, \t, \\, \", \'
+pub fn unescape_string(s: &str) -> String {
+    // Remove surrounding quotes
+    let s = if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('\\') => result.push('\\'),
+                Some('"') => result.push('"'),
+                Some('0') => result.push('\0'),
+                // If we encounter an unknown escape, keep the backslash and the character
+                Some(c) => {
+                    result.push('\\');
+                    result.push(c);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+/// Parses a char literal (e.g. `'a'`, `'\n'`) and returns the single character
+/// it represents, or `None` if it contains more than one logical character.
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub enum CharLiteralError {
+    Empty,
+    TooLong,
+}
+
+pub fn parse_char_literal(s: &str) -> Result<char, CharLiteralError> {
+    let content = if s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2 {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    };
+
+    let mut chars = content.chars();
+    let value = match chars.next() {
+        None => return Err(CharLiteralError::Empty),
+        Some('\\') => match chars.next() {
+            None => return Err(CharLiteralError::Empty),
+            Some('n') => '\n',
+            Some('r') => '\r',
+            Some('t') => '\t',
+            Some('\\') => '\\',
+            Some('\'') => '\'',
+            Some('0') => '\0',
+            Some('x') => {
+                let hi = chars.next().and_then(|c| c.to_digit(16));
+                let lo = chars.next().and_then(|c| c.to_digit(16));
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        let codepoint = h * 16 + l;
+                        char::from_u32(codepoint).unwrap()
+                    }
+                    _ => return Err(CharLiteralError::TooLong),
+                }
+            }
+            Some(c) => c,
+        },
+        Some(c) => c,
+    };
+
+    if chars.next().is_some() {
+        return Err(CharLiteralError::TooLong);
+    }
+
+    Ok(value)
+}
+
 macro_rules! define_diagnostic_codes {
     (
         $(#[$meta:meta])*
@@ -874,6 +842,24 @@ define_diagnostic_codes! {
         UnreachableCode => "W1003",
         UnusedItem => "W1004",
         MissingImportParamName => "W1005",
+        MissingFunctionBody => "E1028",
+        InvalidMemoryKind => "E1029",
+        NamespaceUsedAsValue => "E1030",
+    }
+}
+
+struct MissingFunctionBodyDiagnostic {
+    file_id: FileId,
+    span: ast::TextSpan,
+}
+
+impl MissingFunctionBodyDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::MissingFunctionBody.code())
+            .with_message("free function without a body")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("provide a definition for the function: `{ <body> }`")
     }
 }
 
@@ -1166,6 +1152,21 @@ impl UndeclaredIdentifierDiagnostic {
             .with_code(DiagnosticCode::UndeclaredIdentifier.code())
             .with_message("undeclared identifier")
             .with_label(Label::primary(self.file_id, self.span))
+    }
+}
+
+struct NamespaceUsedAsValueDiagnostic {
+    file_id: FileId,
+    span: ast::TextSpan,
+}
+
+impl NamespaceUsedAsValueDiagnostic {
+    pub fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::NamespaceUsedAsValue.code())
+            .with_message("expected a value, found a namespace")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("use `::` to access members of this namespace")
     }
 }
 
@@ -1543,7 +1544,7 @@ pub struct StructField {
 pub struct Struct {
     pub name: ast::Spanned<SymbolU32>,
     pub fields: Box<[StructField]>,
-    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, usize>,
 }
 
@@ -1690,6 +1691,7 @@ struct Builder<'interner> {
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
     impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
     structs: Vec<Struct>,
+    declared_memories: Vec<MemoryKind>,
     ptr_size: PointerSize,
 }
 
@@ -1731,6 +1733,9 @@ impl Builder<'_> {
                         self.type_pool.intern(Type::ImportModule {
                             module_index: *module_index,
                         })
+                    }
+                    Some(SymbolKind::Memory { kind, memory_index }) => {
+                        self.type_pool.intern(Type::Memory { kind: *kind, memory_index: *memory_index })
                     }
                     Some(SymbolKind::Enum { enum_index }) => self.type_pool.intern(Type::Enum {
                         enum_index: *enum_index,
@@ -1916,6 +1921,10 @@ impl Builder<'_> {
                 let enum_ = &self.enums[*enum_index as usize];
                 self.interner.resolve(enum_.name.inner).unwrap().to_string()
             }
+            Type::Memory { kind, .. } => match kind {
+                MemoryKind::Memory32 => "Memory32".to_string(),
+                MemoryKind::Memory64 => "Memory64".to_string(),
+            },
             Type::Function {
                 items,
                 params_count,
@@ -2010,10 +2019,41 @@ impl Builder<'_> {
                 Ok(())
             }
             ast::Item::FunctionDeclaration {
-                pub_span,
                 attributes,
                 signature,
-            } => Ok(()),
+                ..
+            } => {
+                let has_intrinsic = attributes
+                    .iter()
+                    .any(|a| self.interner.resolve(a.name.inner) == Some("intrinsic"));
+
+                if !has_intrinsic {
+                    self.diagnostics.push(
+                        MissingFunctionBodyDiagnostic {
+                            file_id: self.file_id,
+                            span: signature.name.span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
+                }
+
+                // #[intrinsic]: register the function so callers can resolve it.
+                // TODO: enforce stdlib-only once file-kind tracking is in place.
+                let (params, result) = self.build_function_signature(signature);
+                let func_index = self.declare_function(
+                    signature.name.clone(),
+                    params,
+                    result,
+                    ItemSource::Intrinsic,
+                );
+                self.insert_symbol(
+                    SymbolNamespace::Value,
+                    signature.name.inner,
+                    SymbolKind::Function { func_index },
+                );
+                Ok(())
+            }
             ast::Item::Global {
                 mut_span, name, ty, ..
             } => {
@@ -2367,8 +2407,45 @@ impl Builder<'_> {
 
                 if has_error { Err(()) } else { Ok(()) }
             }
-            ast::Item::Memory { .. } => {
-                // TODO: lower memory items in TIR
+            ast::Item::Memory { name, kind: kind_expr } => {
+                let kind = match &kind_expr.inner {
+                    ast::TypeExpression::Identifier { symbol } => {
+                        match self.interner.resolve(*symbol) {
+                            Some("Memory32") => MemoryKind::Memory32,
+                            Some("Memory64") => MemoryKind::Memory64,
+                            _ => {
+                                self.diagnostics.push(
+                                    Diagnostic::error()
+                                        .with_code(DiagnosticCode::TypeMistmatch.code())
+                                        .with_message("invalid memory kind")
+                                        .with_label(
+                                            Label::primary(self.file_id, kind_expr.span)
+                                                .with_message("expected `Memory32` or `Memory64`"),
+                                        ),
+                                );
+                                return Err(());
+                            }
+                        }
+                    }
+                    _ => {
+                        self.diagnostics.push(
+                            Diagnostic::error()
+                                .with_code(DiagnosticCode::TypeMistmatch.code())
+                                .with_message("invalid memory kind")
+                                .with_label(
+                                    Label::primary(self.file_id, kind_expr.span)
+                                        .with_message("expected `Memory32` or `Memory64`"),
+                                ),
+                        );
+                        return Err(());
+                    }
+                };
+
+                let memory_index = self.declared_memories.len() as u32;
+                self.declared_memories.push(kind);
+                let sym = SymbolKind::Memory { memory_index, kind };
+                self.insert_symbol(SymbolNamespace::Type, name.inner, sym.clone());
+                self.insert_symbol(SymbolNamespace::Value, name.inner, sym);
                 Ok(())
             }
             ast::Item::Module {
@@ -2429,12 +2506,10 @@ impl Builder<'_> {
                                 Ok(v) => v,
                                 Err(()) => continue,
                             };
+                            let _ = const_value;
                             self.impl_members.entry(self_type).or_default().insert(
                                 name.inner,
-                                ImplEntry::AssociatedConst {
-                                    ty: resolved_ty,
-                                    value: const_value,
-                                },
+                                ImplEntry::AssociatedConst { ty: resolved_ty },
                             );
                         }
                         ast::ImplItem::Method { signature: sig, .. } => {
@@ -2882,7 +2957,7 @@ impl Builder<'_> {
                         .and_then(|m| m.get(&sig.name.inner))
                     {
                         Some(ImplEntry::Method(i) | ImplEntry::AssociatedFn(i)) => *i,
-                        Some(ImplEntry::AssociatedConst { .. }) => continue,
+                        Some(ImplEntry::AssociatedConst { .. } | ImplEntry::IntrinsicMethod { .. }) => continue,
                         None => continue,
                     };
                     let tir_attrs = self.resolve_function_attributes(attrs);
@@ -3684,12 +3759,11 @@ impl Builder<'_> {
     ) -> Result<Expression, ()> {
         let object = self.build_expression(func_ctx, object_expr, access_ctx)?;
         let entry = self
-            .impl_members
-            .get(&object.ty)
-            .and_then(|members| members.get(&member.inner));
+            .ensure_impl_members(object.ty)
+            .get(&member.inner)
+            .cloned();
         match entry {
             Some(ImplEntry::Method(func_index)) => {
-                let func_index = *func_index;
                 let func = &mut self.declared_functions[func_index as usize];
                 func.accesses.push(FunctionAccess {
                     caller: Some(func_ctx.func_index),
@@ -3710,12 +3784,27 @@ impl Builder<'_> {
                 // TODO: emit "this is an associated function, use Type::name()
                 // syntax" diagnostic
             }
-            Some(ImplEntry::AssociatedConst { ty, value }) => {
-                // For now, we only support associated constants for enums, so we can directly
-                // resolve the value here without needing to create a separate expression kind for it
+            Some(ImplEntry::AssociatedConst { ty }) => {
                 return Ok(Expression {
-                    kind: ExprKind::Int { value: *value },
-                    ty: *ty,
+                    kind: ExprKind::ObjectAccess {
+                        object: Box::new(object),
+                        member: member.clone(),
+                    },
+                    ty,
+                    span: ast::TextSpan::merge(object_expr.span, member.span),
+                });
+            }
+            Some(ImplEntry::IntrinsicMethod { result_ty, param_tys }) => {
+                let fn_ty = self.type_pool.intern(Type::Function {
+                    items: param_tys.iter().copied().chain(Some(result_ty)).collect(),
+                    params_count: param_tys.len(),
+                });
+                return Ok(Expression {
+                    kind: ExprKind::ObjectAccess {
+                        object: Box::new(object),
+                        member: member.clone(),
+                    },
+                    ty: fn_ty,
                     span: ast::TextSpan::merge(object_expr.span, member.span),
                 });
             }
@@ -3770,32 +3859,47 @@ impl Builder<'_> {
                     | Type::ImportModule { .. }
                     | Type::Enum { .. }
                     | Type::Function { .. }
+                    | Type::Memory { .. }
             );
             if is_sized {
                 let align_sym = self.interner.get_or_intern("ALIGN");
-                let layout =
-                    compute_layout(self.type_pool.as_slice(), &self.structs, ty, self.ptr_size);
                 let result_ty = match self.ptr_size {
                     PointerSize::P32 => Type::U32_IDX,
                     PointerSize::P64 => Type::U64_IDX,
                 };
                 let members = self.impl_members.entry(ty).or_default();
-                members.insert(
-                    size_sym,
-                    ImplEntry::AssociatedConst {
-                        ty: result_ty,
-                        value: layout.size as i64,
-                    },
-                );
-                members.insert(
-                    align_sym,
-                    ImplEntry::AssociatedConst {
-                        ty: result_ty,
-                        value: layout.align as i64,
-                    },
-                );
+                members.insert(size_sym, ImplEntry::AssociatedConst { ty: result_ty });
+                members.insert(align_sym, ImplEntry::AssociatedConst { ty: result_ty });
             }
         }
+
+        // Seed intrinsic methods for memory types.
+        if let Type::Memory { kind } = *self.type_pool.get(ty) {
+            let (operand_ty, result_ty) = match kind {
+                MemoryKind::Memory32 => (Type::U32_IDX, Type::U32_IDX),
+                MemoryKind::Memory64 => (Type::U64_IDX, Type::U64_IDX),
+            };
+            let offset_sym = self.interner.get_or_intern("OFFSET");
+            let size_method_sym = self.interner.get_or_intern("size");
+            let grow_sym = self.interner.get_or_intern("grow");
+            let members = self.impl_members.entry(ty).or_default();
+            members.insert(offset_sym, ImplEntry::AssociatedConst { ty: operand_ty });
+            members.insert(
+                size_method_sym,
+                ImplEntry::IntrinsicMethod {
+                    result_ty,
+                    param_tys: Box::new([]),
+                },
+            );
+            members.insert(
+                grow_sym,
+                ImplEntry::IntrinsicMethod {
+                    result_ty,
+                    param_tys: Box::new([operand_ty]),
+                },
+            );
+        }
+
         self.impl_members.entry(ty).or_default()
     }
 
@@ -3815,10 +3919,10 @@ impl Builder<'_> {
         let entry = self
             .ensure_impl_members(namespace_ty)
             .get(&member.inner)
-            .copied();
+            .cloned();
         if let Some(entry) = entry {
             match entry {
-                ImplEntry::AssociatedConst { ty, value: _ } => {
+                ImplEntry::AssociatedConst { ty } => {
                     return Ok(Expression {
                         kind: ExprKind::NamespaceAccess {
                             ty: ast::Spanned {
@@ -3831,8 +3935,10 @@ impl Builder<'_> {
                         span: full_span,
                     });
                 }
-                ImplEntry::AssociatedFn(_) | ImplEntry::Method(_) => {
-                    // TODO: emit a diagnostic — use Type::fn() call syntax
+                ImplEntry::IntrinsicMethod { .. }
+                | ImplEntry::AssociatedFn(_)
+                | ImplEntry::Method(_) => {
+                    // TODO: emit a diagnostic — use `.method()` call syntax
                 }
             }
         }
@@ -4427,10 +4533,31 @@ impl Builder<'_> {
                         }),
                     }
                 }
-                // these must be handled in the namespace access expression
+                SymbolKind::Memory { memory_index, kind } => {
+                    let ty = self.type_pool.intern(Type::Memory { kind });
+                    return Ok(Expression {
+                        kind: ExprKind::Memory { memory_index },
+                        ty,
+                        span: expr.span,
+                    });
+                }
+                // these are namespace-only; a bare identifier resolving to one is an error
                 SymbolKind::ImportModule { .. }
                 | SymbolKind::Enum { .. }
-                | SymbolKind::Module { .. } => todo!(),
+                | SymbolKind::Module { .. } => {
+                    self.diagnostics.push(
+                        NamespaceUsedAsValueDiagnostic {
+                            file_id: self.file_id,
+                            span: expr.span,
+                        }
+                        .report(),
+                    );
+                    return Ok(Expression {
+                        kind: ExprKind::Error,
+                        ty: Type::ERROR_IDX,
+                        span: expr.span,
+                    });
+                }
                 SymbolKind::Unreachable => unreachable!(),
                 // Struct names are type-namespace values, not usable as expressions
                 SymbolKind::Struct { .. } => {
@@ -5787,7 +5914,7 @@ impl Builder<'_> {
                     .impl_members
                     .get(&object.ty)
                     .and_then(|m| m.get(&member.inner))
-                    .copied()
+                    .cloned()
                 {
                     Some(ImplEntry::Method(func_index)) => {
                         if let Some(access) = self.declared_functions[func_index as usize]
@@ -5817,6 +5944,34 @@ impl Builder<'_> {
                                 object,
                                 arguments,
                                 func_index,
+                            },
+                            ty: result_ty,
+                            span: expr.span,
+                        })
+                    }
+                    Some(ImplEntry::IntrinsicMethod { param_tys, .. }) => {
+                        let param_tys = param_tys.clone();
+                        if arguments.len() != param_tys.len() {
+                            self.diagnostics.push(
+                                ArgumentCountMismatchDiagnostic {
+                                    file_id: self.file_id,
+                                    actual_count: arguments.len(),
+                                    params: &params_all[..],
+                                    call_span: callee.span,
+                                    is_method: true,
+                                }
+                                .report(&self),
+                            );
+                        }
+                        let arguments = self.build_call_arguments(ctx, arguments, &param_tys)?;
+                        Ok(Expression {
+                            kind: ExprKind::Call {
+                                callee: Box::new(Expression {
+                                    kind: ExprKind::ObjectAccess { object, member },
+                                    ty: callee.ty,
+                                    span: callee.span,
+                                }),
+                                arguments,
                             },
                             ty: result_ty,
                             span: expr.span,
@@ -6544,21 +6699,25 @@ impl TypePool {
 pub struct TIR {
     pub file_id: ast::FileId,
     pub type_pool: Vec<Type>,
-    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub defined_functions: HashMap<FunctionIndex, Function>,
-    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub defined_globals: HashMap<GlobalIndex, Global>,
     pub import_modules: Vec<ImportModule>,
     pub enums: Vec<Enum>,
     pub modules: Vec<Module>,
-    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_map"))]
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub exports: HashMap<SymbolU32, ExportItem>,
     pub declared_functions: Vec<DeclaredFunction>,
     pub declared_globals: Vec<DeclaredGlobal>,
     pub diagnostics: Vec<Diagnostic<FileId>>,
     pub structs: Vec<Struct>,
-    #[cfg_attr(test, serde(serialize_with = "serialize_sorted_nested_map"))]
+    #[cfg_attr(
+        test,
+        serde(serialize_with = "crate::testing::serialize_sorted_nested_map")
+    )]
     pub impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
+    pub declared_memories: Vec<MemoryKind>,
 }
 
 #[derive(Clone, Copy)]
@@ -6643,7 +6802,11 @@ pub fn compute_layout(
             compute_aggregate_layout(types, structs, &field_types, ptr_size)
         }
         Type::Function { .. } => Layout::ptr(ptr_size),
-        Type::Error | Type::Unknown | Type::ImportModule { .. } | Type::Enum { .. } => {
+        Type::Error
+        | Type::Unknown
+        | Type::ImportModule { .. }
+        | Type::Enum { .. }
+        | Type::Memory { .. } => {
             panic!("compute_layout called on non-value type")
         }
     }
@@ -6735,6 +6898,7 @@ impl TIR {
             impl_members: HashMap::new(),
             ptr_size: PointerSize::P32,
             structs: Vec::new(),
+            declared_memories: Vec::new(),
         };
 
         for ast in asts.iter() {
@@ -6768,6 +6932,7 @@ impl TIR {
             diagnostics: builder.diagnostics,
             structs: builder.structs,
             impl_members: builder.impl_members,
+            declared_memories: builder.declared_memories,
         }
     }
 }

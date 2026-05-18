@@ -223,3 +223,4 @@ structs:
       2: 0
 impl_members:
   20: {}
+declared_memories: []

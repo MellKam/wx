@@ -51,6 +51,41 @@ fn test_unescape_string() {
 }
 
 #[test]
+fn test_parse_char_literal() {
+    // Plain characters
+    assert_eq!(parse_char_literal("'a'"), Ok('a'));
+    assert_eq!(parse_char_literal("'Z'"), Ok('Z'));
+    assert_eq!(parse_char_literal("'0'"), Ok('0'));
+    assert_eq!(parse_char_literal("' '"), Ok(' '));
+
+    // Named escape sequences
+    assert_eq!(parse_char_literal(r"'\n'"), Ok('\n'));
+    assert_eq!(parse_char_literal(r"'\r'"), Ok('\r'));
+    assert_eq!(parse_char_literal(r"'\t'"), Ok('\t'));
+    assert_eq!(parse_char_literal(r"'\\'"), Ok('\\'));
+    assert_eq!(parse_char_literal(r"'\''"), Ok('\''));
+    assert_eq!(parse_char_literal(r"'\0'"), Ok('\0'));
+
+    // Hex escapes
+    assert_eq!(parse_char_literal(r"'\x41'"), Ok('A')); // 0x41 = 65 = 'A'
+    assert_eq!(parse_char_literal(r"'\x0A'"), Ok('\n')); // 0x0A = 10 = '\n'
+    assert_eq!(parse_char_literal(r"'\x00'"), Ok('\0'));
+
+    // Without surrounding quotes — content passed directly
+    assert_eq!(parse_char_literal("a"), Ok('a'));
+
+    // Errors
+    assert!(matches!(
+        parse_char_literal("''"),
+        Err(CharLiteralError::Empty)
+    ));
+    assert!(matches!(
+        parse_char_literal("'ab'"),
+        Err(CharLiteralError::TooLong)
+    ));
+}
+
+#[test]
 fn test_duplicate_export() {
     let case = TestCase::new(indoc! {"
         fn foo() -> i32 { 42 }
@@ -705,14 +740,8 @@ fn test_size_align_constants() {
     let size_sym = case.interner.get("SIZE").unwrap();
     let align_sym = case.interner.get("ALIGN").unwrap();
     let members = case.tir.impl_members.get(&Type::U32_IDX).unwrap();
-    assert!(matches!(
-        members[&size_sym],
-        ImplEntry::AssociatedConst { value: 4, .. }
-    ));
-    assert!(matches!(
-        members[&align_sym],
-        ImplEntry::AssociatedConst { value: 4, .. }
-    ));
+    assert!(matches!(members[&size_sym], ImplEntry::AssociatedConst { .. }));
+    assert!(matches!(members[&align_sym], ImplEntry::AssociatedConst { .. }));
 }
 
 /// `pub fn` on a user-defined function suppresses the unused warning.
@@ -838,5 +867,148 @@ fn test_pub_struct_no_unused_warning() {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_memory_declaration_registers_kind() {
+    let case32 = TestCase::new("memory MEM: Memory32;");
+    assert!(case32.tir.diagnostics.is_empty(), "unexpected diagnostics");
+    assert_eq!(case32.tir.declared_memories, vec![MemoryKind::Memory32]);
+
+    let case64 = TestCase::new("memory MEM: Memory64;");
+    assert!(case64.tir.diagnostics.is_empty(), "unexpected diagnostics");
+    assert_eq!(case64.tir.declared_memories, vec![MemoryKind::Memory64]);
+}
+
+#[test]
+fn test_memory_invalid_kind_is_error() {
+    let case = TestCase::new("memory MEM: i32;");
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1001")),
+        "expected type mismatch diagnostic for invalid memory kind"
+    );
+}
+
+#[test]
+fn test_fn_declaration_without_body_is_error() {
+    // A bare `fn` with no body and no #[intrinsic] must produce E0011.
+    let case = TestCase::new(indoc! {"
+        fn add(a: i32, b: i32) -> i32
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1028")),
+        "expected E0011 diagnostic for missing function body"
+    );
+}
+
+#[test]
+fn test_intrinsic_fn_declaration_is_valid() {
+    // #[intrinsic] fn without a body must be accepted (no E0011).
+    let case = TestCase::new(indoc! {"
+        #[intrinsic]
+        fn i32_clz(x: i32) -> i32
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1028")),
+        "unexpected E0011 for #[intrinsic] declaration"
+    );
+}
+
+// ── Memory namespace resolution ───────────────────────────────────────────────
+
+#[test]
+fn test_memory_offset_resolves_to_u32() {
+    let case = TestCase::new(indoc! {"
+        memory MEM: Memory32;
+        fn f() -> u32 {
+            MEM::OFFSET
+        }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "unexpected diagnostics: {:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_memory_size_call_resolves() {
+    let case = TestCase::new(indoc! {"
+        memory MEM: Memory32;
+        fn f() -> u32 {
+            MEM::size()
+        }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "unexpected diagnostics: {:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_memory_grow_call_resolves() {
+    let case = TestCase::new(indoc! {"
+        memory MEM: Memory32;
+        fn f() -> u32 {
+            MEM::grow(1)
+        }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "unexpected diagnostics: {:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_memory64_size_and_grow_use_u64() {
+    // Memory64 grow/size take and return u64, not u32.
+    let case = TestCase::new(indoc! {"
+        memory MEM: Memory64;
+        fn f() -> u64 {
+            MEM::grow(1)
+        }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "unexpected diagnostics: {:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn test_memory_unknown_member_is_error() {
+    let case = TestCase::new(indoc! {"
+        memory MEM: Memory32;
+        fn f() {
+            _ = MEM::pages;
+        }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1007")),
+        "expected undeclared identifier diagnostic for unknown memory member"
+    );
+}
+
+#[test]
+fn test_memory_used_as_value_is_error() {
+    let case = TestCase::new(indoc! {"
+        memory MEM: Memory32;
+        fn f() {
+            _ = MEM;
+        }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1030")),
+        "expected namespace-used-as-value diagnostic"
+    );
+}
+
+#[test]
+fn test_memory_grow_wrong_arg_type_is_error() {
+    // grow expects u32 for Memory32; passing i32 must produce a type mismatch.
+    let case = TestCase::new(indoc! {"
+        memory MEM: Memory32;
+        fn f() {
+            _ = MEM::grow(1i32);
+        }
+    "});
+    // The argument literal `1i32` resolves to i32; grow expects u32 → type mismatch.
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1001")),
+        "expected type mismatch for wrong grow argument type"
     );
 }

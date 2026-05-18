@@ -1,0 +1,254 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 7
+            params:
+              open:
+                start: 7
+                end: 8
+              inner:
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 2
+                        span:
+                          start: 8
+                          end: 9
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 11
+                          end: 14
+                    span:
+                      start: 8
+                      end: 14
+                  separator:
+                    start: 14
+                    end: 15
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 4
+                        span:
+                          start: 16
+                          end: 17
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 19
+                          end: 22
+                    span:
+                      start: 16
+                      end: 22
+                  separator: ~
+              close:
+                start: 22
+                end: 23
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 24
+                    end: 25
+                  inner:
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 5
+                              span:
+                                start: 36
+                                end: 40
+                            ty: ~
+                            value:
+                              inner:
+                                StructInit:
+                                  name:
+                                    inner: 6
+                                    span:
+                                      start: 44
+                                      end: 49
+                                  fields:
+                                    open:
+                                      start: 51
+                                      end: 52
+                                    inner:
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 2
+                                              span:
+                                                start: 53
+                                                end: 54
+                                            value:
+                                              inner:
+                                                Identifier:
+                                                  symbol: 2
+                                              span:
+                                                start: 56
+                                                end: 57
+                                          span:
+                                            start: 53
+                                            end: 57
+                                        separator:
+                                          start: 57
+                                          end: 58
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 4
+                                              span:
+                                                start: 59
+                                                end: 60
+                                            value:
+                                              inner:
+                                                Identifier:
+                                                  symbol: 4
+                                              span:
+                                                start: 62
+                                                end: 63
+                                          span:
+                                            start: 59
+                                            end: 63
+                                        separator: ~
+                                    close:
+                                      start: 64
+                                      end: 65
+                              span:
+                                start: 44
+                                end: 65
+                        span:
+                          start: 30
+                          end: 65
+                      separator:
+                        start: 65
+                        end: 66
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 7
+                              span:
+                                start: 77
+                                end: 82
+                            ty: ~
+                            value:
+                              inner:
+                                StructInit:
+                                  name:
+                                    inner: 6
+                                    span:
+                                      start: 85
+                                      end: 90
+                                  fields:
+                                    open:
+                                      start: 92
+                                      end: 93
+                                    inner:
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 2
+                                              span:
+                                                start: 94
+                                                end: 95
+                                            value: ~
+                                          span:
+                                            start: 94
+                                            end: 95
+                                        separator:
+                                          start: 95
+                                          end: 96
+                                      - inner:
+                                          inner:
+                                            name:
+                                              inner: 4
+                                              span:
+                                                start: 97
+                                                end: 98
+                                            value: ~
+                                          span:
+                                            start: 97
+                                            end: 98
+                                        separator: ~
+                                    close:
+                                      start: 99
+                                      end: 100
+                              span:
+                                start: 85
+                                end: 100
+                        span:
+                          start: 71
+                          end: 100
+                      separator:
+                        start: 100
+                        end: 101
+                    - inner:
+                        inner:
+                          LocalDefinition:
+                            mut_span: ~
+                            name:
+                              inner: 8
+                              span:
+                                start: 112
+                                end: 117
+                            ty: ~
+                            value:
+                              inner:
+                                StructInit:
+                                  name:
+                                    inner: 9
+                                    span:
+                                      start: 120
+                                      end: 124
+                                  fields:
+                                    open:
+                                      start: 126
+                                      end: 127
+                                    inner: []
+                                    close:
+                                      start: 127
+                                      end: 128
+                              span:
+                                start: 120
+                                end: 128
+                        span:
+                          start: 106
+                          end: 128
+                      separator:
+                        start: 128
+                        end: 129
+                  close:
+                    start: 130
+                    end: 131
+            span:
+              start: 24
+              end: 131
+      span:
+        start: 0
+        end: 131
+    separator: ~

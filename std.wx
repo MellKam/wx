@@ -3,6 +3,52 @@ pub struct string {
 }
 
 const ASCII_CASE_MASK: u8 = 0b0010_0000;
+const PAGE_SIZE: u32 = 65536;
+
+pub trait Sized {
+  const SIZE: u32;
+  const ALIGN: u32;
+}
+
+module wasm {
+  #[intrinsic]
+  fn memory64_grow(mem: Memory64, delta: u64) -> u64;
+  #[intrinsic]
+  fn memory64_size(mem: Memory64) -> u64;
+
+  #[intrinsic]
+  fn memory32_grow(mem: Memory32, delta: u32) -> u32;
+  #[intrinsic]
+  fn memory32_size(mem: Memory32) -> u32;
+}
+
+memory heap: Memory32;
+
+trait Memory32 {
+  const OFFSET: u32;
+  const MEMORY_INDEX: u32;
+
+  #[inline]
+  fn grow(self, delta: u32) -> u32 {
+    wasm::memory32_grow(self, delta)
+  }
+
+  #[inline]
+  fn size(self) -> u32 {
+    wasm::memory32_size(self)
+  }
+}
+
+// compiler does this internally
+impl Memory32 for heap {
+  const OFFSET: u32 = 0;
+  const MEMORY_INDEX: u32 = 0;
+}
+
+fn main() {
+  heap.grow(1); // unwraps to wasm::memory32_grow(heap, 1)
+  heap::OFFSET;
+}
 
 impl char {
   #[inline]

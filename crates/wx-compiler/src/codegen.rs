@@ -1317,6 +1317,15 @@ impl Builder {
                     _ => unreachable!(),
                 });
             }
+            mir::ExprKind::MemoryOffset { .. } => {
+                todo!("codegen: MemoryOffset")
+            }
+            mir::ExprKind::MemorySize { .. } => {
+                todo!("codegen: MemorySize")
+            }
+            mir::ExprKind::MemoryGrow { .. } => {
+                todo!("codegen: MemoryGrow")
+            }
         }
     }
 }
