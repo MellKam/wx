@@ -1136,6 +1136,15 @@ impl Clone for Spanned<UnaryOp> {
     }
 }
 
+impl Clone for Spanned<u32> {
+    fn clone(&self) -> Self {
+        Spanned {
+            inner: self.inner,
+            span: self.span,
+        }
+    }
+}
+
 /// Represents content enclosed by matching delimiter tokens.
 ///
 /// Used for parenthesized expressions `(expr)`, function parameter lists `(a,
@@ -1323,6 +1332,10 @@ pub enum TypeExpression {
     Tuple {
         elements: Box<[Spanned<TypeExpression>]>,
     },
+    /// `impl Trait`
+    ImplTrait {
+        name: Spanned<SymbolU32>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1385,6 +1398,29 @@ impl ImplItem {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+pub enum TraitItem {
+    /// A method with an optional default body.
+    Method {
+        pub_span: Option<TextSpan>,
+        attributes: Box<[Attribute]>,
+        signature: FunctionSignature,
+        /// `None` = abstract (must be provided by impl); `Some` = default implementation.
+        body: Option<Box<Spanned<Expression>>>,
+    },
+    /// An associated constant declaration (type only, no value — value comes from impl).
+    Const {
+        name: Spanned<SymbolU32>,
+        ty: Box<Spanned<TypeExpression>>,
+    },
+}
+
+impl TraitItem {
+    pub fn is_block_like(&self) -> bool {
+        matches!(self, TraitItem::Method { body: Some(_), .. })
+    }
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionSignature {
     pub name: Spanned<SymbolU32>,
     pub params: Grouped<Box<[Separated<Spanned<FunctionParam>>]>>,
@@ -1406,6 +1442,10 @@ pub enum ImportDeclaration {
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
         ty: Box<Spanned<TypeExpression>>,
+    },
+    Memory {
+        name: Spanned<SymbolU32>,
+        kind: Box<Spanned<TypeExpression>>,
     },
 }
 
@@ -1476,6 +1516,11 @@ pub enum Item {
         name: Spanned<SymbolU32>,
         items: Grouped<Box<[Separated<Spanned<Item>>]>>,
     },
+    Trait {
+        pub_span: Option<TextSpan>,
+        name: Spanned<SymbolU32>,
+        items: Grouped<Box<[Separated<Spanned<TraitItem>>]>>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1498,7 +1543,8 @@ impl Item {
             | Item::Enum { .. }
             | Item::Impl { .. }
             | Item::Struct { .. }
-            | Item::Module { .. } => true,
+            | Item::Module { .. }
+            | Item::Trait { .. } => true,
         }
     }
 }
@@ -1591,6 +1637,7 @@ pub enum Keyword {
     Memory,
     Const,
     Module,
+    Trait,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1620,6 +1667,7 @@ impl TryFrom<&str> for Keyword {
             "memory" => Ok(Keyword::Memory),
             "const" => Ok(Keyword::Const),
             "module" => Ok(Keyword::Module),
+            "trait" => Ok(Keyword::Trait),
             _ => Err(()),
         }
     }
@@ -1897,6 +1945,7 @@ impl<'input> Parser<'input> {
             Some(Keyword::Const) => Ok(Parser::parse_const_item),
             Some(Keyword::Module) => Ok(Parser::parse_module_item),
             Some(Keyword::Pub) => Ok(Parser::parse_pub_item),
+            Some(Keyword::Trait) => Ok(Parser::parse_trait_item),
             _ => return Err(()),
         }
     }
@@ -2157,6 +2206,18 @@ impl<'input> Parser<'input> {
             Token::Identifier => {
                 match Keyword::try_from(token.span.extract_str(self.source)) {
                     Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
+                    Ok(Keyword::Impl) => {
+                        let impl_span = self.lexer.next().span;
+                        let name_token = self.next_expect(Token::Identifier)?;
+                        let name_symbol = self.intern_identifier(name_token.span);
+                        let span = TextSpan::merge(impl_span, name_token.span);
+                        return Ok(Spanned {
+                            inner: TypeExpression::ImplTrait {
+                                name: Spanned { inner: name_symbol, span: name_token.span },
+                            },
+                            span,
+                        });
+                    }
                     _ => {}
                 }
                 let token = self.lexer.next();
@@ -3504,6 +3565,122 @@ impl<'input> Parser<'input> {
         })
     }
 
+    fn parse_trait_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let trait_span = parser.lexer.next().span;
+
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name = Spanned {
+            inner: parser.intern_identifier(name_span),
+            span: name_span,
+        };
+
+        let items = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::SemiColon,
+            item_handler: |parser: &mut Parser| -> Result<Spanned<TraitItem>, ()> {
+                let attrs = Parser::parse_attributes(parser)?;
+
+                let token = parser.lexer.peek();
+                let keyword = match token.inner {
+                    Token::Identifier => {
+                        Keyword::try_from(token.span.extract_str(parser.source)).ok()
+                    }
+                    _ => None,
+                };
+
+                let pub_span = if matches!(keyword, Some(Keyword::Pub)) {
+                    parser.lexer.next();
+                    Some(parser.lexer.peek().span)
+                } else {
+                    None
+                };
+
+                let keyword = if pub_span.is_some() {
+                    match parser.lexer.peek().inner {
+                        Token::Identifier => {
+                            Keyword::try_from(parser.lexer.peek().span.extract_str(parser.source))
+                                .ok()
+                        }
+                        _ => None,
+                    }
+                } else {
+                    keyword
+                };
+
+                match keyword {
+                    Some(Keyword::Const) => {
+                        let const_span = parser.lexer.next().span;
+                        let name_span = parser.next_expect(Token::Identifier)?.span;
+                        let name_symbol = parser.intern_identifier(name_span);
+                        parser.next_expect(Token::Colon)?;
+                        let ty = parser.parse_type_expression()?;
+                        let span = TextSpan::merge(const_span, ty.span);
+                        Ok(Spanned {
+                            inner: TraitItem::Const {
+                                name: Spanned {
+                                    inner: name_symbol,
+                                    span: name_span,
+                                },
+                                ty: Box::new(ty),
+                            },
+                            span,
+                        })
+                    }
+                    Some(Keyword::Fn) => {
+                        let signature = parser.parse_function_signature()?;
+                        let body = if parser.lexer.peek().inner == Token::OpenBrace {
+                            Some(Box::new(Parser::parse_block_expression(parser)?))
+                        } else {
+                            None
+                        };
+                        let span = TextSpan::merge(
+                            signature.span,
+                            match &body {
+                                Some(body) => body.span,
+                                None => signature.span,
+                            },
+                        );
+
+                        Ok(Spanned {
+                            inner: TraitItem::Method {
+                                pub_span,
+                                attributes: attrs,
+                                signature: signature.inner,
+                                body,
+                            },
+                            span,
+                        })
+                    }
+                    _ => {
+                        let token = parser.lexer.next();
+                        parser.ast.diagnostics.push(
+                            UnexpectedTokenDiagnostic {
+                                file_id: parser.ast.file_id,
+                                received: token,
+                                expected: Token::Identifier,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
+            },
+            should_warn_missing_separator: Some(TraitItem::is_block_like),
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::merge(trait_span, items.close);
+        Ok(Spanned {
+            inner: Item::Trait {
+                pub_span: None,
+                name,
+                items,
+            },
+            span,
+        })
+    }
+
     fn parse_struct_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let struct_span = parser.lexer.next().span;
 
@@ -3600,6 +3777,17 @@ impl<'input> Parser<'input> {
                 }
                 Ok(item)
             }
+            Some(Keyword::Trait) => {
+                let mut item = Parser::parse_trait_item(parser)?;
+                if let Item::Trait {
+                    pub_span: ref mut ps,
+                    ..
+                } = item.inner
+                {
+                    *ps = Some(pub_span);
+                }
+                Ok(item)
+            }
             _ => {
                 parser.ast.diagnostics.push(
                     InvalidItemDiagnostic {
@@ -3627,7 +3815,10 @@ impl<'input> Parser<'input> {
 
         let span = TextSpan::merge(memory_span, kind.span);
         Ok(Spanned {
-            inner: Item::Memory { name, kind: Box::new(kind) },
+            inner: Item::Memory {
+                name,
+                kind: Box::new(kind),
+            },
             span,
         })
     }
@@ -3661,6 +3852,25 @@ impl<'input> Parser<'input> {
         })
     }
 
+    fn parse_memory_import_declaration(&mut self) -> Result<Spanned<ImportDeclaration>, ()> {
+        let keyword_span = self.lexer.next().span;
+        let name_span = self.next_expect(Token::Identifier)?.span;
+        let name = Spanned {
+            inner: self.intern_identifier(name_span),
+            span: name_span,
+        };
+        let _ = self.next_expect(Token::Colon)?;
+        let kind = self.parse_type_expression()?;
+        let span = TextSpan::merge(keyword_span, kind.span);
+        Ok(Spanned {
+            inner: ImportDeclaration::Memory {
+                name,
+                kind: Box::new(kind),
+            },
+            span,
+        })
+    }
+
     fn parse_import_entry(parser: &mut Parser) -> Result<Spanned<ImportEntry>, ()> {
         let token = parser.lexer.peek();
         let keyword = match token.inner {
@@ -3686,6 +3896,15 @@ impl<'input> Parser<'input> {
                     },
                     span: decl.span,
                 }),
+            Some(Keyword::Memory) => parser
+                .parse_memory_import_declaration()
+                .map(|decl| Spanned {
+                    inner: ImportEntry {
+                        external_name: None,
+                        declaration: decl.inner,
+                    },
+                    span: decl.span,
+                }),
             _ => {
                 parser.ast.diagnostics.push(
                     InvalidItemDiagnostic {
@@ -3700,9 +3919,18 @@ impl<'input> Parser<'input> {
     }
 
     fn parse_module_body_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let item_attrs = Parser::parse_attributes(parser).unwrap_or_default();
         let token = parser.lexer.peek();
         match parser.get_item_handler(token.clone()) {
-            Ok(handler) => handler(parser),
+            Ok(handler) => {
+                let mut item = handler(parser)?;
+                if let Item::Function { ref mut attributes, .. }
+                | Item::FunctionDeclaration { ref mut attributes, .. } = item.inner
+                {
+                    *attributes = item_attrs;
+                }
+                Ok(item)
+            }
             Err(()) => {
                 parser.ast.diagnostics.push(
                     InvalidItemDiagnostic {

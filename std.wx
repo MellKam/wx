@@ -12,17 +12,15 @@ pub trait Sized {
 
 module wasm {
   #[intrinsic]
-  fn memory64_grow(mem: Memory64, delta: u64) -> u64;
+  fn memory64_grow(mem: impl Memory64, delta: u64) -> u64;
   #[intrinsic]
-  fn memory64_size(mem: Memory64) -> u64;
+  fn memory64_size(mem: impl Memory64) -> u64;
 
   #[intrinsic]
-  fn memory32_grow(mem: Memory32, delta: u32) -> u32;
+  fn memory32_grow(mem: impl Memory32, delta: u32) -> u32;
   #[intrinsic]
-  fn memory32_size(mem: Memory32) -> u32;
+  fn memory32_size(mem: impl Memory32) -> u32;
 }
-
-memory heap: Memory32;
 
 trait Memory32 {
   const OFFSET: u32;
@@ -39,14 +37,10 @@ trait Memory32 {
   }
 }
 
-// compiler does this internally
-impl Memory32 for heap {
-  const OFFSET: u32 = 0;
-  const MEMORY_INDEX: u32 = 0;
-}
+memory heap: Memory32;
 
 fn main() {
-  heap.grow(1); // unwraps to wasm::memory32_grow(heap, 1)
+  heap.grow(1);
   heap::OFFSET;
 }
 
@@ -130,4 +124,36 @@ impl char {
   pub fn is_ascii_graphic(self) -> bool {
     self >= '!' && self <= '~'
   }
+}
+
+struct Vec2 {
+  x: f32,
+  y: f32,
+}
+
+trait Add {
+  fn add(self, other: Self) -> Self {
+    self + other
+  };
+}
+
+impl Add for u32 {}
+
+impl Add for Vec2 {
+  fn add(self, other: Self) -> Self {
+    Vec2 {
+      x: self.x + other.x,
+      y: self.y + other.y,
+    }
+  }
+}
+
+fn test() {
+  let a: u32 = 5;
+  let b: u32 = 10;
+  let c = a.add(b);
+
+  let v1 = Vec2 { x: 1.0, y: 2.0 };
+  let v2 = Vec2 { x: 3.0, y: 4.0 };
+  let v3 = v1.add(v2);
 }

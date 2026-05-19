@@ -1,0 +1,116 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Trait:
+          pub_span: ~
+          name:
+            inner: 1
+            span:
+              start: 6
+              end: 11
+          items:
+            open:
+              start: 12
+              end: 13
+            inner:
+              - inner:
+                  inner:
+                    Const:
+                      name:
+                        inner: 2
+                        span:
+                          start: 24
+                          end: 28
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 30
+                          end: 33
+                  span:
+                    start: 18
+                    end: 33
+                separator:
+                  start: 33
+                  end: 34
+              - inner:
+                  inner:
+                    Const:
+                      name:
+                        inner: 4
+                        span:
+                          start: 45
+                          end: 50
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 3
+                        span:
+                          start: 52
+                          end: 55
+                  span:
+                    start: 39
+                    end: 55
+                separator:
+                  start: 55
+                  end: 56
+              - inner:
+                  inner:
+                    Method:
+                      pub_span: ~
+                      attributes: []
+                      signature:
+                        name:
+                          inner: 5
+                          span:
+                            start: 64
+                            end: 71
+                        params:
+                          open:
+                            start: 71
+                            end: 72
+                          inner:
+                            - inner:
+                                inner:
+                                  mut_span: ~
+                                  name:
+                                    inner: 6
+                                    span:
+                                      start: 72
+                                      end: 76
+                                  ty: ~
+                                span:
+                                  start: 72
+                                  end: 76
+                              separator: ~
+                          close:
+                            start: 76
+                            end: 77
+                        result:
+                          inner:
+                            Identifier:
+                              symbol: 3
+                          span:
+                            start: 81
+                            end: 84
+                      body: ~
+                  span:
+                    start: 61
+                    end: 84
+                separator:
+                  start: 84
+                  end: 85
+            close:
+              start: 86
+              end: 87
+      span:
+        start: 0
+        end: 87
+    separator: ~

@@ -210,3 +210,4 @@ diagnostics: []
 structs: []
 impl_members: {}
 declared_memories: []
+declared_traits: []

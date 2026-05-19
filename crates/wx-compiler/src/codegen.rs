@@ -62,7 +62,7 @@ impl From<mir::FunctionSignature> for FunctionSignature {
         let mut param_results = Vec::new();
         for param in ty.params().iter().copied() {
             match param {
-                mir::Type::Tuple { .. } => {
+                mir::Type::Aggregate { .. } => {
                     param_results.push(ValueType::I32);
                     param_results.push(ValueType::I32);
                 }
@@ -77,7 +77,7 @@ impl From<mir::FunctionSignature> for FunctionSignature {
         }
         let param_count = param_results.len();
         match ty.result() {
-            mir::Type::Tuple { .. } => {
+            mir::Type::Aggregate { .. } => {
                 param_results.push(ValueType::I32);
                 param_results.push(ValueType::I32);
             }
@@ -340,6 +340,9 @@ pub enum ImportDesc {
         ty: ValueType,
         mutability: Mutability,
     },
+    Memory {
+        memory_type: MemoryType,
+    },
 }
 
 #[derive(Clone)]
@@ -413,7 +416,7 @@ struct FunctionContext<'mir> {
     locals: Box<[Local]>,
     scope_offsets: Box<[usize]>,
     scopes: &'mir Vec<mir::BlockScope>,
-    tuples: &'mir [mir::Tuple],
+    tuples: &'mir [mir::Aggregate],
     scope_index: mir::ScopeIndex,
 }
 
@@ -435,8 +438,8 @@ impl FunctionContext<'_> {
         loop {
             let scope = &self.scopes[index as usize];
             depth += match scope.kind {
-                tir::BlockKind::Loop => depth + 2,
-                tir::BlockKind::Block => depth + 1,
+                tir::BlockKind::Loop => 2,
+                tir::BlockKind::Block => 1,
             };
 
             if index == target_scope {
@@ -567,6 +570,15 @@ impl Builder {
                             },
                         });
                     }
+                    mir::ImportModuleItem::Memory { name, .. } => {
+                        imports.push(Import {
+                            module: import_module.name.clone(),
+                            name: interner.resolve(*name).unwrap().to_string(),
+                            desc: ImportDesc::Memory {
+                                memory_type: MemoryType::Unbounded { initial: 0 },
+                            },
+                        });
+                    }
                 }
             }
         }
@@ -606,15 +618,23 @@ impl Builder {
                     name: interner.resolve(*name).unwrap().to_string(),
                     func_index: FuncIndex(builder.mir_to_wasm[*func_index as usize]),
                 },
+                mir::ExportItem::Memory { memory_index, name } => ExportItem::Memory {
+                    memory_index: *memory_index,
+                    name: interner.resolve(*name).unwrap().to_string(),
+                },
             })
-            .chain(if required_pages > 0 {
-                Some(ExportItem::Memory {
-                    memory_index: 0,
-                    name: "memory".to_string(),
-                })
-            } else {
-                None
-            })
+            .chain(
+                if required_pages > 0
+                    && !mir.exports.iter().any(|e| matches!(e, mir::ExportItem::Memory { .. }))
+                {
+                    Some(ExportItem::Memory {
+                        memory_index: 0,
+                        name: "memory".to_string(),
+                    })
+                } else {
+                    None
+                },
+            )
             .collect();
 
         let mut functions = Vec::<FunctionBody>::with_capacity(mir.functions.len());
@@ -651,11 +671,13 @@ impl Builder {
             for scope in &func.scopes {
                 for local in scope.locals.iter().cloned() {
                     match local.ty {
-                        mir::Type::Tuple { tuple_index } => {
-                            let tuple = &mir.tuples[tuple_index as usize];
+                        mir::Type::Aggregate {
+                            aggregate_index: tuple_index,
+                        } => {
+                            let tuple = &mir.aggregates[tuple_index as usize];
                             local_offsets
-                                .push(local_offsets.last().copied().unwrap() + tuple.fields.len());
-                            for field in tuple.fields.iter().copied() {
+                                .push(local_offsets.last().copied().unwrap() + tuple.values.len());
+                            for field in tuple.values.iter().copied() {
                                 locals.push(Local {
                                     ty: ValueType::try_from(field).unwrap(),
                                 });
@@ -677,7 +699,7 @@ impl Builder {
                 local_offsets: local_offsets.into_boxed_slice(),
                 scope_index: 0 as tir::ScopeIndex,
                 scopes: &func.scopes,
-                tuples: &mir.tuples,
+                tuples: &mir.aggregates,
             };
 
             let mut sink = Vec::new();
@@ -859,7 +881,7 @@ impl Builder {
                 local_index,
                 scope_index,
             } => match expr.ty {
-                mir::Type::Tuple { .. } => {
+                mir::Type::Aggregate { .. } => {
                     let start = ctx.get_flat_index(*scope_index, *local_index);
                     let width = ctx.get_local_width(*scope_index, *local_index);
                     for i in 0..width {
@@ -877,7 +899,7 @@ impl Builder {
                 scope_index,
                 value,
             } => match value.ty {
-                mir::Type::Tuple { .. } => {
+                mir::Type::Aggregate { .. } => {
                     let start = ctx.get_flat_index(*scope_index, *local_index);
                     let width = ctx.get_local_width(*scope_index, *local_index);
                     self.build_expression(ctx, value, sink);
@@ -915,9 +937,9 @@ impl Builder {
             mir::ExprKind::Drop { value } => {
                 self.build_expression(ctx, value, sink);
                 let drop_count = match value.ty {
-                    mir::Type::Tuple { tuple_index } => {
-                        ctx.tuples[tuple_index as usize].fields.len()
-                    }
+                    mir::Type::Aggregate {
+                        aggregate_index: tuple_index,
+                    } => ctx.tuples[tuple_index as usize].values.len(),
                     _ => 1,
                 };
                 for _ in 0..drop_count {
@@ -1018,16 +1040,16 @@ impl Builder {
                 sink.push(Instruction::I32Const as u8);
                 (ptr as i32).encode(sink);
             }
-            mir::ExprKind::PackedFieldGet {
+            mir::ExprKind::AggregateGet {
                 scope_index,
                 local_index,
-                field_index,
+                value_index: field_index,
             } => {
                 let local_index = ctx.get_flat_index(*scope_index, *local_index) + *field_index;
                 sink.push(Instruction::LocalGet as u8);
                 local_index.encode(sink);
             }
-            mir::ExprKind::Packed { fields } => {
+            mir::ExprKind::Aggregate { values: fields } => {
                 for field in fields.iter() {
                     self.build_expression(ctx, field, sink);
                 }
@@ -1682,6 +1704,10 @@ impl Encode for ImportSection {
                         Mutability::Mutable => section_sink.push(0x01),
                     }
                 }
+                ImportDesc::Memory { memory_type } => {
+                    section_sink.push(0x02); // Memory import kind
+                    memory_type.encode(&mut section_sink);
+                }
             }
         }
 
@@ -1986,6 +2012,7 @@ pub struct MemorySection {
     pub memories: Box<[MemoryType]>,
 }
 
+#[derive(Clone)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum MemoryType {
     /// Only initial size specified (can grow up to 2^16 pages)
@@ -2623,6 +2650,11 @@ mod tests {
     #[test]
     fn test_imports() {
         let case = TestCase::new(indoc! {"
+            pub struct string {
+                ptr: u32,
+                len: u32,
+            }
+
             import \"console\" {
                 fn log(value: string) -> unit;
             }
@@ -2633,6 +2665,8 @@ mod tests {
                 console::log(x);
                 console::log(y);
             }
+
+            export { main }
         "});
 
         insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());

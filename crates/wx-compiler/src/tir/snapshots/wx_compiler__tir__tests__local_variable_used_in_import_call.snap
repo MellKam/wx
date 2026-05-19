@@ -222,5 +222,13 @@ structs:
     lookup:
       2: 0
 impl_members:
+  17:
+    18:
+      AssociatedConst:
+        ty: 8
+    19:
+      AssociatedConst:
+        ty: 8
   20: {}
 declared_memories: []
+declared_traits: []

@@ -147,6 +147,12 @@ impl Builder {
                                         entry_nodes
                                             .push(Self::build_type_expression(interner, &ty.inner));
                                     }
+                                    crate::ast::ImportDeclaration::Memory { name, kind } => {
+                                        let mem_name = interner.resolve(name.inner).unwrap();
+                                        entry_nodes.push(Node::Text(format!("memory {}: ", mem_name)));
+                                        entry_nodes
+                                            .push(Self::build_type_expression(interner, &kind.inner));
+                                    }
                                 }
 
                                 if entry.separator.is_some() {
@@ -182,6 +188,7 @@ impl Builder {
                 Item::Impl { .. } => todo!("fmt for impl items"),
                 Item::Const { .. } => todo!("fmt for const items"),
                 Item::Module { .. } => todo!("fmt for module items"),
+                Item::Trait { .. } => todo!("fmt for trait items"),
                 Item::Struct {
                     name,
                     fields,
@@ -842,6 +849,9 @@ impl Builder {
 
                 items.push(Node::Text(")".to_string()));
                 Node::Group(Box::new(Node::Concat(items)))
+            }
+            TypeExpression::ImplTrait { name } => {
+                Node::Text(format!("impl {}", interner.resolve(name.inner).unwrap()))
             }
         }
     }

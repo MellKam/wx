@@ -195,3 +195,4 @@ structs: []
 impl_members:
   18: {}
 declared_memories: []
+declared_traits: []

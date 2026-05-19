@@ -148,3 +148,4 @@ structs:
       4: 1
 impl_members: {}
 declared_memories: []
+declared_traits: []

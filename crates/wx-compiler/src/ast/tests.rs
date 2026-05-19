@@ -58,6 +58,17 @@ fn test_fn_pointer_param() {
 }
 
 #[test]
+fn test_impl_trait_param() {
+    // `impl Trait` as a parameter type and return type
+    let case = TestCase::new(indoc! {"
+        fn grow(mem: impl Memory32, delta: u32) -> u32 {
+            delta
+        }
+    "});
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
 fn test_memory() {
     let case = TestCase::new(indoc! {"
         memory MEM: Memory32;
@@ -110,6 +121,35 @@ fn test_impl() {
             #[inline]
             pub fn double(self) -> i32 {
                 self * 2
+            }
+        }
+    "});
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_trait_abstract() {
+    // trait with const declarations and an abstract method (no default body)
+    let case = TestCase::new(indoc! {"
+        trait Sized {
+            const SIZE: u32;
+            const ALIGN: u32;
+            fn measure(self) -> u32;
+        }
+    "});
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_trait_default_method() {
+    // trait method with a default implementation and an attribute
+    let case = TestCase::new(indoc! {"
+        trait Memory32 {
+            const OFFSET: u32;
+
+            #[inline]
+            fn grow(self, delta: u32) -> u32 {
+                delta
             }
         }
     "});

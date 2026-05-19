@@ -740,8 +740,14 @@ fn test_size_align_constants() {
     let size_sym = case.interner.get("SIZE").unwrap();
     let align_sym = case.interner.get("ALIGN").unwrap();
     let members = case.tir.impl_members.get(&Type::U32_IDX).unwrap();
-    assert!(matches!(members[&size_sym], ImplEntry::AssociatedConst { .. }));
-    assert!(matches!(members[&align_sym], ImplEntry::AssociatedConst { .. }));
+    assert!(matches!(
+        members[&size_sym],
+        ImplEntry::AssociatedConst { .. }
+    ));
+    assert!(matches!(
+        members[&align_sym],
+        ImplEntry::AssociatedConst { .. }
+    ));
 }
 
 /// `pub fn` on a user-defined function suppresses the unused warning.
@@ -874,19 +880,28 @@ fn test_pub_struct_no_unused_warning() {
 fn test_memory_declaration_registers_kind() {
     let case32 = TestCase::new("memory MEM: Memory32;");
     assert!(case32.tir.diagnostics.is_empty(), "unexpected diagnostics");
-    assert_eq!(case32.tir.declared_memories, vec![MemoryKind::Memory32]);
+    assert_eq!(
+        case32.tir.declared_memories.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        vec![MemoryKind::Memory32]
+    );
 
     let case64 = TestCase::new("memory MEM: Memory64;");
     assert!(case64.tir.diagnostics.is_empty(), "unexpected diagnostics");
-    assert_eq!(case64.tir.declared_memories, vec![MemoryKind::Memory64]);
+    assert_eq!(
+        case64.tir.declared_memories.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        vec![MemoryKind::Memory64]
+    );
 }
 
 #[test]
 fn test_memory_invalid_kind_is_error() {
     let case = TestCase::new("memory MEM: i32;");
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1001")),
-        "expected type mismatch diagnostic for invalid memory kind"
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1029")),
+        "expected invalid memory kind diagnostic"
     );
 }
 
@@ -923,60 +938,94 @@ fn test_intrinsic_fn_declaration_is_valid() {
 }
 
 // ── Memory namespace resolution ───────────────────────────────────────────────
+//
+// Memory32/Memory64 must now be declared as traits before use. These preamble
+// definitions are the minimal form (abstract methods, no default bodies) for
+// testing purposes.
+
+const MEMORY32_TRAIT: &str = indoc! {"
+    trait Memory32 {
+        const OFFSET: u32;
+        const MEMORY_INDEX: u32;
+        fn size(self) -> u32;
+        fn grow(self, delta: u32) -> u32;
+    }
+"};
+
+const MEMORY64_TRAIT: &str = indoc! {"
+    trait Memory64 {
+        const OFFSET: u64;
+        const MEMORY_INDEX: u64;
+        fn size(self) -> u64;
+        fn grow(self, delta: u64) -> u64;
+    }
+"};
 
 #[test]
 fn test_memory_offset_resolves_to_u32() {
-    let case = TestCase::new(indoc! {"
+    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
         memory MEM: Memory32;
-        fn f() -> u32 {
-            MEM::OFFSET
-        }
+        pub fn f() -> u32 { MEM::OFFSET }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "unexpected diagnostics: {:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    let case = TestCase::new(&src);
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_memory_size_call_resolves() {
-    let case = TestCase::new(indoc! {"
+    // Method-call syntax: MEM is a value; size is a method from the Memory32 trait.
+    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
         memory MEM: Memory32;
-        fn f() -> u32 {
-            MEM::size()
-        }
+        pub fn f() -> u32 { MEM.size() }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "unexpected diagnostics: {:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    let case = TestCase::new(&src);
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_memory_grow_call_resolves() {
-    let case = TestCase::new(indoc! {"
+    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
         memory MEM: Memory32;
-        fn f() -> u32 {
-            MEM::grow(1)
-        }
+        pub fn f() -> u32 { MEM.grow(1) }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "unexpected diagnostics: {:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    let case = TestCase::new(&src);
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_memory64_size_and_grow_use_u64() {
     // Memory64 grow/size take and return u64, not u32.
-    let case = TestCase::new(indoc! {"
+    let src = format!("{MEMORY64_TRAIT}\n{}", indoc! {"
         memory MEM: Memory64;
-        fn f() -> u64 {
-            MEM::grow(1)
-        }
+        pub fn f() -> u64 { MEM.grow(1) }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "unexpected diagnostics: {:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    let case = TestCase::new(&src);
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_memory_unknown_member_is_error() {
-    let case = TestCase::new(indoc! {"
+    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
         memory MEM: Memory32;
-        fn f() {
-            _ = MEM::pages;
-        }
+        fn f() { _ = MEM::pages; }
     "});
+    let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1007")),
         "expected undeclared identifier diagnostic for unknown memory member"
@@ -984,31 +1033,104 @@ fn test_memory_unknown_member_is_error() {
 }
 
 #[test]
-fn test_memory_used_as_value_is_error() {
-    let case = TestCase::new(indoc! {"
+fn test_memory_as_value_in_expression() {
+    // Memory identifiers are valid value expressions (for method calls like MEM.grow(1)).
+    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
         memory MEM: Memory32;
-        fn f() {
-            _ = MEM;
-        }
+        fn f() { _ = MEM; }
     "});
+    let case = TestCase::new(&src);
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1030")),
-        "expected namespace-used-as-value diagnostic"
+        !case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1030")),
+        "memory identifier should be usable as a value expression"
     );
 }
 
 #[test]
 fn test_memory_grow_wrong_arg_type_is_error() {
     // grow expects u32 for Memory32; passing i32 must produce a type mismatch.
-    let case = TestCase::new(indoc! {"
+    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
         memory MEM: Memory32;
-        fn f() {
-            _ = MEM::grow(1i32);
-        }
+        fn f(delta: i32) { _ = MEM.grow(delta); }
     "});
-    // The argument literal `1i32` resolves to i32; grow expects u32 → type mismatch.
+    let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1001")),
         "expected type mismatch for wrong grow argument type"
+    );
+}
+
+// ── impl Trait errors ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_impl_struct_is_error() {
+    // Using a struct in `impl` position must emit E1031.
+    let case = TestCase::new(indoc! {"
+        struct S {}
+        fn f(x: impl S) -> i32 { 5 }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1031")),
+        "expected E1031 for struct used in impl position"
+    );
+}
+
+#[test]
+fn test_impl_undeclared_type_is_error() {
+    // A name that doesn't resolve at all should emit E1021.
+    let case = TestCase::new(indoc! {"
+        fn f(x: impl Unknown) -> i32 { 5 }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1021")),
+        "expected E1021 for undeclared name in impl position"
+    );
+}
+
+// ── wasm module intrinsics ────────────────────────────────────────────────────
+
+#[test]
+fn test_wasm_module_intrinsics_declare_cleanly() {
+    // Mirrors the wasm module in std.wx. The trait must be declared before the
+    // module because define_item resolves types eagerly (no forward references).
+    let case = TestCase::new(indoc! {"
+        trait Memory32 {
+            const OFFSET: u32;
+            const MEMORY_INDEX: u32;
+            fn size(self) -> u32;
+            fn grow(self, delta: u32) -> u32;
+        }
+
+        module wasm {
+            #[intrinsic]
+            fn memory32_grow(mem: impl Memory32, delta: u32) -> u32;
+            #[intrinsic]
+            fn memory32_size(mem: impl Memory32) -> u32;
+        }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_wasm_module_intrinsics_forward_ref_is_error() {
+    // Declaring the module before the trait produces E1021 because define_item
+    // resolves impl-trait types eagerly without forward references.
+    let case = TestCase::new(indoc! {"
+        module wasm {
+            #[intrinsic]
+            fn memory32_grow(mem: impl Memory32, delta: u32) -> u32;
+        }
+
+        trait Memory32 {
+            fn grow(self, delta: u32) -> u32;
+        }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1021")),
+        "expected E1021 for forward-referenced trait in impl position"
     );
 }
