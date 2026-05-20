@@ -42,6 +42,7 @@ items:
   - inner:
       inner:
         Function:
+          id: 0
           pub_span: ~
           attributes: []
           signature:
@@ -86,6 +87,7 @@ items:
   - inner:
       inner:
         Function:
+          id: 1
           pub_span: ~
           attributes: []
           signature:

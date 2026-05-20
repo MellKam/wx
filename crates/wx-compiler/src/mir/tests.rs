@@ -213,9 +213,8 @@ const WASM_MODULE: &str = indoc! {"
 
 #[test]
 fn test_struct_method_call() {
-    // A non-inlined method call on a built-in type stays as a Call node.
-    // (to_ascii_uppercase is marked #[inline] here so it WILL be substituted —
-    // see test_inline_method_is_substituted for the snapshot asserting that.)
+    // Both #[inline] methods get substituted into `to_upper`; the snapshot
+    // shows only the arithmetic body with no Call nodes remaining.
     let case = TestCase::new(&format!("{CHAR_ASCII_METHODS}\n{}", indoc! {"
         fn to_upper(c: char) -> char {
             c.to_ascii_uppercase()
@@ -300,4 +299,106 @@ fn test_memory_index_lowers_to_int() {
         export { f }
     "}));
     insta::assert_yaml_snapshot!(case.mir);
+}
+
+// ── call graph / DCE ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_dead_function_removed_by_dce() {
+    // `unused` is never exported or called — DCE must eliminate it.
+    let case = TestCase::new(indoc! {"
+        fn used(x: u32) -> u32 { x + 1 }
+        fn unused(x: u32) -> u32 { x * 2 }
+
+        export { used }
+    "});
+    assert_eq!(case.mir.functions.len(), 1);
+    let ExportItem::Function { id, .. } = case.mir.exports[0] else { panic!() };
+    assert_eq!(case.mir.functions[0].id, id);
+}
+
+#[test]
+fn test_non_inline_callee_survives_dce() {
+    // `helper` is called by `entry` but is not marked `#[inline]`, so it must
+    // remain in mir.functions as a call target rather than being folded away.
+    let case = TestCase::new(indoc! {"
+        fn helper(x: u32) -> u32 { x + 1 }
+        fn entry(x: u32) -> u32 { helper(x) }
+
+        export { entry }
+    "});
+    insta::assert_yaml_snapshot!(case.mir);
+}
+
+#[test]
+fn test_inline_chain_collapses_to_single_function() {
+    // Three `#[inline]` functions chained: the entire chain folds into `main`
+    // and the inline helpers are removed by DCE. Only one function survives.
+    let case = TestCase::new(indoc! {"
+        #[inline]
+        fn add_one(x: u32) -> u32 { x + 1 }
+
+        #[inline]
+        fn add_two(x: u32) -> u32 { add_one(add_one(x)) }
+
+        fn main(x: u32) -> u32 { add_two(x) }
+
+        export { main }
+    "});
+    assert_eq!(case.mir.functions.len(), 1);
+}
+
+#[test]
+fn test_multiple_exports_protect_their_callees() {
+    // `f` calls `double`, `g` calls `triple`; `orphan` is called by nobody.
+    // Both export roots must protect their own callees; only `orphan` is DCE'd.
+    let case = TestCase::new(indoc! {"
+        fn double(x: u32) -> u32 { x * 2 }
+        fn triple(x: u32) -> u32 { x * 3 }
+        fn orphan(x: u32) -> u32 { x * 4 }
+
+        fn f(x: u32) -> u32 { double(x) }
+        fn g(x: u32) -> u32 { triple(x) }
+
+        export { f, g }
+    "});
+    assert_eq!(case.mir.functions.len(), 4); // f, g, double, triple — not orphan
+    assert_eq!(case.mir.exports.len(), 2);
+}
+
+/// `struct Mixed { a: bool, b: i64, c: u32, d: f64 }` naively laid out takes
+/// 28B; after sorting by alignment descending the optimal order is i64, f64,
+/// u32, bool — 24B.
+#[test]
+fn test_struct_layout_is_alignment_sorted() {
+    let case = TestCase::new(indoc! {"
+        struct Mixed {
+            a: bool,
+            b: i64,
+            c: u32,
+            d: f64,
+        }
+
+        fn dummy(m: Mixed) -> Mixed { m }
+        export { dummy }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+
+    let mixed_sym = case.interner.get("Mixed").unwrap();
+    let mixed_ti = case.tir.type_pool.iter().position(|t| {
+        if let tir::Type::Struct { struct_index } = t {
+            case.tir.structs[*struct_index as usize].name.inner == mixed_sym
+        } else {
+            false
+        }
+    }).unwrap() as u32;
+
+    let layout = compute_layout(
+        &case.tir.type_pool,
+        &case.tir.structs,
+        mixed_ti,
+        PointerSize::Memory32,
+    );
+    assert_eq!(layout.size, 24);
+    assert_eq!(layout.align, 8);
 }

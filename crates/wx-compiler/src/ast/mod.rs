@@ -1333,9 +1333,7 @@ pub enum TypeExpression {
         elements: Box<[Spanned<TypeExpression>]>,
     },
     /// `impl Trait`
-    ImplTrait {
-        name: Spanned<SymbolU32>,
-    },
+    ImplTrait { name: Spanned<SymbolU32> },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1376,6 +1374,7 @@ pub struct Attribute {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImplItem {
     Method {
+        id: DefId,
         pub_span: Option<TextSpan>,
         attributes: Box<[Attribute]>,
         signature: FunctionSignature,
@@ -1400,7 +1399,8 @@ impl ImplItem {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum TraitItem {
     /// A method with an optional default body.
-    Method {
+    Function {
+        id: DefId,
         pub_span: Option<TextSpan>,
         attributes: Box<[Attribute]>,
         signature: FunctionSignature,
@@ -1409,6 +1409,7 @@ pub enum TraitItem {
     },
     /// An associated constant declaration (type only, no value — value comes from impl).
     Const {
+        id: DefId,
         name: Spanned<SymbolU32>,
         ty: Box<Spanned<TypeExpression>>,
     },
@@ -1416,7 +1417,7 @@ pub enum TraitItem {
 
 impl TraitItem {
     pub fn is_block_like(&self) -> bool {
-        matches!(self, TraitItem::Method { body: Some(_), .. })
+        matches!(self, TraitItem::Function { body: Some(_), .. })
     }
 }
 
@@ -1436,14 +1437,17 @@ pub struct ExportEntry {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImportDeclaration {
     Function {
+        id: DefId,
         signature: FunctionSignature,
     },
     Global {
+        id: DefId,
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
         ty: Box<Spanned<TypeExpression>>,
     },
     Memory {
+        id: DefId,
         name: Spanned<SymbolU32>,
         kind: Box<Spanned<TypeExpression>>,
     },
@@ -1462,19 +1466,27 @@ pub struct EnumVariant {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+pub struct DefId(u32);
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum Item {
     Function {
+        id: DefId,
         pub_span: Option<TextSpan>,
         attributes: Box<[Attribute]>,
         signature: FunctionSignature,
         block: Box<Spanned<Expression>>,
     },
     FunctionDeclaration {
+        id: DefId,
         pub_span: Option<TextSpan>,
         attributes: Box<[Attribute]>,
         signature: FunctionSignature,
     },
     Global {
+        id: DefId,
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
         ty: Option<Box<Spanned<TypeExpression>>>,
@@ -1503,10 +1515,12 @@ pub enum Item {
         fields: Grouped<Box<[Separated<Spanned<StructField>>]>>,
     },
     Memory {
+        id: DefId,
         name: Spanned<SymbolU32>,
         kind: Box<Spanned<TypeExpression>>,
     },
     Const {
+        id: DefId,
         name: Spanned<SymbolU32>,
         ty: Option<Box<Spanned<TypeExpression>>>,
         value: Box<Spanned<Expression>>,
@@ -1681,6 +1695,7 @@ pub struct Parser<'input> {
     lexer: Lexer<'input>,
     interner: &'input mut StringInterner,
     ast: AST,
+    next_def_id: DefId,
 }
 
 struct SeparatedGroup<T> {
@@ -1829,6 +1844,7 @@ impl<'input> Parser<'input> {
                 diagnostics: Vec::new(),
                 items: Vec::new(),
             },
+            next_def_id: DefId(0),
         };
 
         loop {
@@ -2143,6 +2159,13 @@ impl<'input> Parser<'input> {
         })
     }
 
+    #[inline]
+    fn get_id(&mut self) -> DefId {
+        let id = self.next_def_id;
+        self.next_def_id.0 += 1;
+        id
+    }
+
     fn parse_function_definition_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let signature = Parser::parse_function_signature(parser)?;
         let block = Parser::parse_block_expression(parser).ok().map(Box::new);
@@ -2160,11 +2183,13 @@ impl<'input> Parser<'input> {
                     attributes: Box::new([]),
                     signature: signature.inner,
                     block,
+                    id: parser.get_id(),
                 },
                 None => Item::FunctionDeclaration {
                     pub_span: None,
                     attributes: Box::new([]),
                     signature: signature.inner,
+                    id: parser.get_id(),
                 },
             },
             span,
@@ -2213,7 +2238,10 @@ impl<'input> Parser<'input> {
                         let span = TextSpan::merge(impl_span, name_token.span);
                         return Ok(Spanned {
                             inner: TypeExpression::ImplTrait {
-                                name: Spanned { inner: name_symbol, span: name_token.span },
+                                name: Spanned {
+                                    inner: name_symbol,
+                                    span: name_token.span,
+                                },
                             },
                             span,
                         });
@@ -3173,14 +3201,8 @@ impl<'input> Parser<'input> {
 
         let ty = match parser.lexer.next_if(Token::Colon) {
             Some(_) => {
-                let token = parser.lexer.peek();
-                match token.inner {
-                    Token::Identifier => {
-                        let ty = parser.parse_type_expression()?;
-                        Some(Box::new(ty))
-                    }
-                    _ => None,
-                }
+                let ty = parser.parse_type_expression()?;
+                Some(Box::new(ty))
             }
             None => None,
         };
@@ -3261,6 +3283,7 @@ impl<'input> Parser<'input> {
                 name,
                 ty,
                 value: Box::new(value),
+                id: parser.get_id(),
             },
             span,
         })
@@ -3283,6 +3306,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(const_span, value.span);
         Ok(Spanned {
             inner: Item::Const {
+                id: parser.get_id(),
                 name: Spanned {
                     inner: name_symbol,
                     span: name_span,
@@ -3525,6 +3549,7 @@ impl<'input> Parser<'input> {
                         let method_span = TextSpan::merge(fn_span, block.span);
                         Ok(Spanned {
                             inner: ImplItem::Method {
+                                id: parser.get_id(),
                                 pub_span,
                                 attributes: attrs,
                                 signature: FunctionSignature {
@@ -3618,6 +3643,7 @@ impl<'input> Parser<'input> {
                         let span = TextSpan::merge(const_span, ty.span);
                         Ok(Spanned {
                             inner: TraitItem::Const {
+                                id: parser.get_id(),
                                 name: Spanned {
                                     inner: name_symbol,
                                     span: name_span,
@@ -3643,7 +3669,8 @@ impl<'input> Parser<'input> {
                         );
 
                         Ok(Spanned {
-                            inner: TraitItem::Method {
+                            inner: TraitItem::Function {
+                                id: parser.get_id(),
                                 pub_span,
                                 attributes: attrs,
                                 signature: signature.inner,
@@ -3818,6 +3845,7 @@ impl<'input> Parser<'input> {
             inner: Item::Memory {
                 name,
                 kind: Box::new(kind),
+                id: parser.get_id(),
             },
             span,
         })
@@ -3847,6 +3875,7 @@ impl<'input> Parser<'input> {
                 mut_span,
                 name,
                 ty: Box::new(type_expr),
+                id: self.get_id(),
             },
             span,
         })
@@ -3866,6 +3895,7 @@ impl<'input> Parser<'input> {
             inner: ImportDeclaration::Memory {
                 name,
                 kind: Box::new(kind),
+                id: self.get_id(),
             },
             span,
         })
@@ -3883,6 +3913,7 @@ impl<'input> Parser<'input> {
                     external_name: None,
                     declaration: ImportDeclaration::Function {
                         signature: signature.inner,
+                        id: parser.get_id(),
                     },
                 },
                 span: signature.span,
@@ -3924,8 +3955,12 @@ impl<'input> Parser<'input> {
         match parser.get_item_handler(token.clone()) {
             Ok(handler) => {
                 let mut item = handler(parser)?;
-                if let Item::Function { ref mut attributes, .. }
-                | Item::FunctionDeclaration { ref mut attributes, .. } = item.inner
+                if let Item::Function {
+                    ref mut attributes, ..
+                }
+                | Item::FunctionDeclaration {
+                    ref mut attributes, ..
+                } = item.inner
                 {
                     *attributes = item_attrs;
                 }

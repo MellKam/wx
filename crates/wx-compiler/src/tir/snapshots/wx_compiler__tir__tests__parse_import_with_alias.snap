@@ -21,117 +21,25 @@ type_pool:
   - Bool
   - Char
   - Function:
-      items:
-        - 8
-        - 8
-        - 1
-      params_count: 2
+      signature:
+        items:
+          - 8
+          - 8
+          - 1
+        params_count: 2
   - Function:
-      items:
-        - 1
-      params_count: 0
+      signature:
+        items:
+          - 1
+        params_count: 0
   - ImportModule:
       module_index: 0
-defined_functions:
-  1:
-    name:
-      inner: 8
-      span:
-        start: 76
-        end: 80
-    params: []
-    result_span:
-      start: 86
-      end: 90
-    signature_index: 17
-    stack:
-      scopes:
-        - kind: Block
-          label: ~
-          parent: ~
-          locals: []
-          inferred_type: 1
-          expected_type: 1
-    block:
-      kind:
-        Block:
-          scope_index: 0
-          expressions:
-            - kind:
-                Call:
-                  callee:
-                    kind:
-                      NamespaceAccess:
-                        ty:
-                          inner: 18
-                          span:
-                            start: 97
-                            end: 104
-                        member:
-                          inner: 3
-                          span:
-                            start: 106
-                            end: 109
-                    ty: 16
-                    span:
-                      start: 97
-                      end: 109
-                  arguments:
-                    - kind:
-                        Int:
-                          value: 0
-                      ty: 8
-                      span:
-                        start: 110
-                        end: 111
-                    - kind:
-                        Int:
-                          value: 0
-                      ty: 8
-                      span:
-                        start: 113
-                        end: 114
-              ty: 1
-              span:
-                start: 97
-                end: 115
-          result: ~
-      ty: 1
-      span:
-        start: 91
-        end: 118
+functions:
+  - id: 0
     pub_span: ~
-    attributes: []
-defined_globals: {}
-import_modules:
-  - external_name:
-      inner: 2
-      span:
-        start: 7
-        end: 16
-    internal_name:
-      inner: 2
-      span:
-        start: 20
-        end: 27
-    lookup:
-      3:
-        Function:
-          func_index: 0
-enums: []
-modules: []
-exports:
-  8:
-    Function:
-      internal_name:
-        inner: 8
-        span:
-          start: 129
-          end: 133
-      external_name: ~
-      func_index: 1
-declared_functions:
-  - source: Imported
+    source: External
+    origin: Free
+    type_params: []
     signature_index: 16
     name:
       inner: 3
@@ -139,7 +47,8 @@ declared_functions:
         start: 37
         end: 40
     params:
-      - name:
+      - mut_span: ~
+        name:
           inner: 4
           span:
             start: 41
@@ -149,7 +58,8 @@ declared_functions:
           span:
             start: 46
             end: 49
-      - name:
+      - mut_span: ~
+        name:
           inner: 6
           span:
             start: 51
@@ -170,7 +80,13 @@ declared_functions:
         span:
           start: 106
           end: 109
-  - source: Defined
+    attributes: []
+    body: ~
+  - id: 1
+    pub_span: ~
+    source: Internal
+    origin: Free
+    type_params: []
     signature_index: 17
     name:
       inner: 8
@@ -189,10 +105,95 @@ declared_functions:
         span:
           start: 129
           end: 133
-declared_globals: []
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals: []
+            inferred_type: 1
+            expected_type: 1
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions:
+              - kind:
+                  Call:
+                    callee:
+                      kind:
+                        NamespaceAccess:
+                          ty:
+                            inner: 18
+                            span:
+                              start: 97
+                              end: 104
+                          member:
+                            inner: 3
+                            span:
+                              start: 106
+                              end: 109
+                      ty: 16
+                      span:
+                        start: 97
+                        end: 109
+                    arguments:
+                      - kind:
+                          Int:
+                            value: 0
+                        ty: 8
+                        span:
+                          start: 110
+                          end: 111
+                      - kind:
+                          Int:
+                            value: 0
+                        ty: 8
+                        span:
+                          start: 113
+                          end: 114
+                ty: 1
+                span:
+                  start: 97
+                  end: 115
+            result: ~
+        ty: 1
+        span:
+          start: 91
+          end: 118
+globals: []
+import_modules:
+  - external_name:
+      inner: 2
+      span:
+        start: 7
+        end: 16
+    internal_name:
+      inner: 2
+      span:
+        start: 20
+        end: 27
+    lookup:
+      3:
+        Function:
+          id: 0
+enums: []
+modules: []
+exports:
+  8:
+    Function:
+      internal_name:
+        inner: 8
+        span:
+          start: 129
+          end: 133
+      external_name: ~
+      id: 1
 diagnostics: []
 structs: []
 impl_members:
   18: {}
-declared_memories: []
-declared_traits: []
+memories: []
+traits: []

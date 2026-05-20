@@ -24,6 +24,7 @@ items:
                     external_name: ~
                     declaration:
                       Function:
+                        id: 0
                         signature:
                           name:
                             inner: 2

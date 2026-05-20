@@ -25,6 +25,7 @@ items:
   - inner:
       inner:
         Function:
+          id: 0
           pub_span: ~
           attributes: []
           signature:

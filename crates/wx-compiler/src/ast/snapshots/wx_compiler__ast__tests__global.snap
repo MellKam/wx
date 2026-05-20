@@ -8,6 +8,7 @@ items:
   - inner:
       inner:
         Global:
+          id: 0
           mut_span:
             start: 7
             end: 10

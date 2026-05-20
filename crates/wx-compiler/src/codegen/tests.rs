@@ -1,0 +1,793 @@
+use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
+use codespan_reporting::term::{self};
+use indoc::indoc;
+
+use super::*;
+use crate::{ast, mir, tir};
+
+#[allow(unused)]
+struct TestCase {
+    interner: ast::StringInterner,
+    files: ast::Files,
+    ast: ast::AST,
+    tir: tir::TIR,
+    mir: mir::MIR,
+    wasm: WasmModule,
+    bytecode: Vec<u8>,
+}
+
+impl<'case> TestCase {
+    fn new(source: &str) -> Self {
+        let mut interner = ast::StringInterner::new();
+        let mut files = ast::Files::new();
+        let file_id = files
+            .add("main.wx".to_string(), source.to_string())
+            .unwrap();
+        let ast = ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+        if ast.diagnostics.len() > 0
+            && ast
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
+        {
+            let writer = StandardStream::stderr(ColorChoice::Always);
+            let config = codespan_reporting::term::Config::default();
+
+            for diagnostic in ast.diagnostics.iter() {
+                term::emit_to_io_write(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+            }
+            std::process::exit(1);
+        }
+        let tir = tir::TIR::build(&[&ast], &mut interner);
+        if tir.diagnostics.len() > 0
+            && tir
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
+        {
+            let writer = StandardStream::stderr(ColorChoice::Always);
+            let config = codespan_reporting::term::Config::default();
+
+            for diagnostic in tir.diagnostics.iter() {
+                term::emit_to_io_write(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+            }
+            std::process::exit(1);
+        }
+        let mir = mir::MIR::build(&tir, &interner);
+        let wasm = Builder::build(&mir, &interner).unwrap();
+        let bytecode = wasm.encode();
+
+        TestCase {
+            interner,
+            files,
+            ast,
+            tir,
+            mir,
+            wasm,
+            bytecode,
+        }
+    }
+}
+
+#[test]
+fn test_parse_simple_addition() {
+    let case = TestCase::new(indoc! {"
+        fn add(mut a: i32, b: i32) -> i32 { a += b; a }
+
+        export { add }
+    "});
+    // insta::assert_yaml_snapshot!(case.bytecode);
+
+    // Execute the wasm bytecode using wasmtime to verify it works
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("Failed to create module");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance =
+        wasmtime::Instance::new(&mut store, &module, &[]).expect("Failed to instantiate");
+
+    let add = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "add")
+        .expect("Failed to get add function");
+
+    // Test: 5 + 3 = 8
+    let result = add
+        .call(&mut store, (5, 3))
+        .expect("Failed to call add function");
+    assert_eq!(result, 8, "add(5, 3) should return 8");
+
+    // Test: 10 + 20 = 30
+    let result = add
+        .call(&mut store, (10, 20))
+        .expect("Failed to call add function");
+    assert_eq!(result, 30, "add(10, 20) should return 30");
+
+    // Test: -5 + 3 = -2
+    let result = add
+        .call(&mut store, (-5, 3))
+        .expect("Failed to call add function");
+    assert_eq!(result, -2, "add(-5, 3) should return -2");
+}
+
+#[test]
+fn test_arithmetic_operations() {
+    let case = TestCase::new(indoc! {"
+        fn sub(a: i32, b: i32) -> i32 { a - b }
+        fn mul(a: i32, b: i32) -> i32 { a * b }
+        fn div(a: i32, b: i32) -> i32 { a / b }
+        fn rem(a: i32, b: i32) -> i32 { a % b }
+
+        export {
+            sub,
+            mul,
+            div,
+            rem
+        }
+    "});
+
+    println!("{}", wasmprinter::print_bytes(&case.bytecode).unwrap());
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let sub = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "sub")
+        .unwrap();
+    assert_eq!(sub.call(&mut store, (10, 3)).unwrap(), 7);
+    assert_eq!(sub.call(&mut store, (5, 10)).unwrap(), -5);
+
+    let mul = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "mul")
+        .unwrap();
+    assert_eq!(mul.call(&mut store, (6, 7)).unwrap(), 42);
+    assert_eq!(mul.call(&mut store, (-3, 4)).unwrap(), -12);
+
+    let div = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "div")
+        .unwrap();
+    assert_eq!(div.call(&mut store, (20, 4)).unwrap(), 5);
+    assert_eq!(div.call(&mut store, (15, 4)).unwrap(), 3);
+
+    let rem = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "rem")
+        .unwrap();
+    assert_eq!(rem.call(&mut store, (10, 3)).unwrap(), 1);
+    assert_eq!(rem.call(&mut store, (20, 7)).unwrap(), 6);
+}
+
+#[test]
+fn test_comparison_operations() {
+    let case = TestCase::new(indoc! {"
+        fn lt(a: i32, b: i32) -> i32 {
+            if a < b { 1 } else { 0 }
+        }
+        fn gt(a: i32, b: i32) -> i32 {
+            if a > b { 1 } else { 0 }
+        }
+        fn eq(a: i32, b: i32) -> i32 {
+            if a == b { 1 } else { 0 }
+        }
+        fn ne(a: i32, b: i32) -> i32 {
+            if a != b { 1 } else { 0 }
+        }
+
+        export {
+            lt,
+            gt,
+            eq,
+            ne
+        }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let lt = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "lt")
+        .unwrap();
+    assert_eq!(lt.call(&mut store, (5, 10)).unwrap(), 1);
+    assert_eq!(lt.call(&mut store, (10, 5)).unwrap(), 0);
+
+    let gt = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "gt")
+        .unwrap();
+    assert_eq!(gt.call(&mut store, (10, 5)).unwrap(), 1);
+    assert_eq!(gt.call(&mut store, (5, 10)).unwrap(), 0);
+
+    let eq = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "eq")
+        .unwrap();
+    assert_eq!(eq.call(&mut store, (5, 5)).unwrap(), 1);
+    assert_eq!(eq.call(&mut store, (5, 10)).unwrap(), 0);
+
+    let ne = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "ne")
+        .unwrap();
+    assert_eq!(ne.call(&mut store, (5, 10)).unwrap(), 1);
+    assert_eq!(ne.call(&mut store, (5, 5)).unwrap(), 0);
+}
+
+#[test]
+fn test_conditional_expression() {
+    let case = TestCase::new(indoc! {"
+        fn max(a: i32, b: i32) -> i32 {
+            if a > b { a } else { b }
+        }
+        fn abs(a: i32) -> i32 {
+            if a < 0 { -a } else { a }
+        }
+
+        export {
+            max,
+            abs
+        }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let max = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "max")
+        .unwrap();
+    assert_eq!(max.call(&mut store, (5, 10)).unwrap(), 10);
+    assert_eq!(max.call(&mut store, (10, 5)).unwrap(), 10);
+    assert_eq!(max.call(&mut store, (7, 7)).unwrap(), 7);
+
+    let abs = instance
+        .get_typed_func::<i32, i32>(&mut store, "abs")
+        .unwrap();
+    assert_eq!(abs.call(&mut store, 5).unwrap(), 5);
+    assert_eq!(abs.call(&mut store, -5).unwrap(), 5);
+    assert_eq!(abs.call(&mut store, 0).unwrap(), 0);
+}
+
+#[test]
+fn test_loops() {
+    let case = TestCase::new(indoc! {"
+        fn factorial(n: i32) -> i32 {
+            local mut result: i32 = 1;
+            local mut i: i32 = 1;
+            loop {
+                if i > n { break result };
+                result *= i;
+                i += 1;
+            }
+        }
+        fn sum_to_n(n: i32) -> i32 {
+            local mut sum: i32 = 0;
+            local mut i: i32 = 1;
+            loop {
+                if i > n { break };
+                sum += i;
+                i += 1;
+            };
+            sum
+        }
+
+        export {
+            factorial,
+            sum_to_n
+        }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let factorial = instance
+        .get_typed_func::<i32, i32>(&mut store, "factorial")
+        .unwrap();
+    assert_eq!(factorial.call(&mut store, 5).unwrap(), 120);
+    assert_eq!(factorial.call(&mut store, 6).unwrap(), 720);
+    assert_eq!(factorial.call(&mut store, 0).unwrap(), 1);
+
+    let sum_to_n = instance
+        .get_typed_func::<i32, i32>(&mut store, "sum_to_n")
+        .unwrap();
+    assert_eq!(sum_to_n.call(&mut store, 10).unwrap(), 55);
+    assert_eq!(sum_to_n.call(&mut store, 100).unwrap(), 5050);
+}
+
+#[test]
+fn test_i64_operations() {
+    let case = TestCase::new(indoc! {"
+        fn add64(a: i64, b: i64) -> i64 { a + b }
+        fn mul64(a: i64, b: i64) -> i64 { a * b }
+
+        export {
+            add64,
+            mul64
+        }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let add64 = instance
+        .get_typed_func::<(i64, i64), i64>(&mut store, "add64")
+        .unwrap();
+    assert_eq!(
+        add64.call(&mut store, (1000000000, 2000000000)).unwrap(),
+        3000000000
+    );
+    assert_eq!(add64.call(&mut store, (-500, 1000)).unwrap(), 500);
+
+    let mul64 = instance
+        .get_typed_func::<(i64, i64), i64>(&mut store, "mul64")
+        .unwrap();
+    assert_eq!(
+        mul64.call(&mut store, (1000000, 1000000)).unwrap(),
+        1000000000000
+    );
+}
+
+#[test]
+fn test_f32_operations() {
+    let case = TestCase::new(indoc! {"
+        fn add_f32(a: f32, b: f32) -> f32 { a + b }
+        fn mul_f32(a: f32, b: f32) -> f32 { a * b }
+        fn div_f32(a: f32, b: f32) -> f32 { a / b }
+
+        export {
+            add_f32,
+            mul_f32,
+            div_f32
+        }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let add_f32 = instance
+        .get_typed_func::<(f32, f32), f32>(&mut store, "add_f32")
+        .unwrap();
+    assert!((add_f32.call(&mut store, (1.5, 2.5)).unwrap() - 4.0).abs() < 0.001);
+
+    let mul_f32 = instance
+        .get_typed_func::<(f32, f32), f32>(&mut store, "mul_f32")
+        .unwrap();
+    assert!((mul_f32.call(&mut store, (2.5, 4.0)).unwrap() - 10.0).abs() < 0.001);
+
+    let div_f32 = instance
+        .get_typed_func::<(f32, f32), f32>(&mut store, "div_f32")
+        .unwrap();
+    assert!((div_f32.call(&mut store, (10.0, 4.0)).unwrap() - 2.5).abs() < 0.001);
+}
+
+#[test]
+fn test_f64_operations() {
+    let case = TestCase::new(indoc! {"
+        fn add_f64(a: f64, b: f64) -> f64 { a + b }
+        fn sub_f64(a: f64, b: f64) -> f64 { a - b }
+
+        export {
+            add_f64,
+            sub_f64
+        }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let add_f64 = instance
+        .get_typed_func::<(f64, f64), f64>(&mut store, "add_f64")
+        .unwrap();
+    assert!((add_f64.call(&mut store, (1.5, 2.5)).unwrap() - 4.0).abs() < 0.0001);
+
+    let sub_f64 = instance
+        .get_typed_func::<(f64, f64), f64>(&mut store, "sub_f64")
+        .unwrap();
+    assert!((sub_f64.call(&mut store, (10.5, 3.5)).unwrap() - 7.0).abs() < 0.0001);
+}
+
+#[test]
+fn test_bitwise_operations() {
+    let case = TestCase::new(indoc! {"
+        fn bit_and(a: i32, b: i32) -> i32 { a & b }
+        fn bit_or(a: i32, b: i32) -> i32 { a | b }
+        fn bit_xor(a: i32, b: i32) -> i32 { a ^ b }
+        fn left_shift(a: i32, b: i32) -> i32 { a << b }
+        fn right_shift(a: i32, b: i32) -> i32 { a >> b }
+
+        export {
+            bit_and,
+            bit_or,
+            bit_xor,
+            left_shift,
+            right_shift
+        }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let bit_and = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "bit_and")
+        .unwrap();
+    assert_eq!(bit_and.call(&mut store, (0b1100, 0b1010)).unwrap(), 0b1000);
+
+    let bit_or = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "bit_or")
+        .unwrap();
+    assert_eq!(bit_or.call(&mut store, (0b1100, 0b1010)).unwrap(), 0b1110);
+
+    let bit_xor = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "bit_xor")
+        .unwrap();
+    assert_eq!(bit_xor.call(&mut store, (0b1100, 0b1010)).unwrap(), 0b0110);
+
+    let left_shift = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "left_shift")
+        .unwrap();
+    assert_eq!(left_shift.call(&mut store, (5, 2)).unwrap(), 20);
+
+    let right_shift = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "right_shift")
+        .unwrap();
+    assert_eq!(right_shift.call(&mut store, (20, 2)).unwrap(), 5);
+}
+
+#[test]
+fn test_logical_operations() {
+    let case = TestCase::new(indoc! {"
+        fn and(a: i32, b: i32) -> i32 { ((a != 0) && (b != 0)) as i32 }
+        fn or(a: i32, b: i32) -> i32 { ((a != 0) || (b != 0)) as i32 }
+
+        export { and, or }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let and = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "and")
+        .unwrap();
+    assert_eq!(and.call(&mut store, (1, 1)).unwrap(), 1);
+    assert_eq!(and.call(&mut store, (1, 0)).unwrap(), 0);
+    assert_eq!(and.call(&mut store, (0, 1)).unwrap(), 0);
+    assert_eq!(and.call(&mut store, (0, 0)).unwrap(), 0);
+
+    let or = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "or")
+        .unwrap();
+    assert_eq!(or.call(&mut store, (1, 1)).unwrap(), 1);
+    assert_eq!(or.call(&mut store, (1, 0)).unwrap(), 1);
+    assert_eq!(or.call(&mut store, (0, 1)).unwrap(), 1);
+    assert_eq!(or.call(&mut store, (0, 0)).unwrap(), 0);
+}
+
+#[test]
+fn test_global_variables() {
+    let case = TestCase::new(indoc! {"
+        global mut global_counter: i32 = 0
+
+        fn increment() -> i32 {
+            global_counter += 1;
+            global_counter
+        }
+
+        fn get_counter() -> i32 {
+            global_counter
+        }
+
+        export {
+            increment,
+            get_counter
+        }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let increment = instance
+        .get_typed_func::<(), i32>(&mut store, "increment")
+        .unwrap();
+    let get_counter = instance
+        .get_typed_func::<(), i32>(&mut store, "get_counter")
+        .unwrap();
+
+    assert_eq!(get_counter.call(&mut store, ()).unwrap(), 0);
+    assert_eq!(increment.call(&mut store, ()).unwrap(), 1);
+    assert_eq!(increment.call(&mut store, ()).unwrap(), 2);
+    assert_eq!(get_counter.call(&mut store, ()).unwrap(), 2);
+    assert_eq!(increment.call(&mut store, ()).unwrap(), 3);
+    assert_eq!(get_counter.call(&mut store, ()).unwrap(), 3);
+}
+
+#[test]
+fn test_fibonacci() {
+    let case = TestCase::new(indoc! {"
+        fn fibonacci(n: i32) -> i32 {
+            if n <= 1 { return n };
+            local mut a: i32 = 0;
+            local mut b: i32 = 1;
+            local mut i: i32 = 2;
+            loop {
+                if i > n { break };
+                local temp = a + b;
+                a = b;
+                b = temp;
+                i += 1;
+            };
+            b
+        }
+
+        export { fibonacci }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let fibonacci = instance
+        .get_typed_func::<i32, i32>(&mut store, "fibonacci")
+        .unwrap();
+    assert_eq!(fibonacci.call(&mut store, 0).unwrap(), 0);
+    assert_eq!(fibonacci.call(&mut store, 1).unwrap(), 1);
+    assert_eq!(fibonacci.call(&mut store, 2).unwrap(), 1);
+    assert_eq!(fibonacci.call(&mut store, 3).unwrap(), 2);
+    assert_eq!(fibonacci.call(&mut store, 4).unwrap(), 3);
+    assert_eq!(fibonacci.call(&mut store, 5).unwrap(), 5);
+    assert_eq!(fibonacci.call(&mut store, 10).unwrap(), 55);
+}
+
+#[test]
+fn test_imports() {
+    let case = TestCase::new(indoc! {"
+        pub struct string {
+            ptr: u32,
+            len: u32,
+        }
+
+        import \"console\" {
+            fn log(value: string) -> unit;
+        }
+
+        fn main() -> unit {
+            local y = \"Hello World!\";
+            local x = \"Hello World!\";
+            console::log(x);
+            console::log(y);
+        }
+
+        export { main }
+    "});
+
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut linker = wasmtime::Linker::new(&engine);
+
+    linker
+        .func_wrap(
+            "console",
+            "log",
+            |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
+                let memory = match caller.get_export("memory") {
+                    Some(wasmtime::Extern::Memory(mem)) => mem,
+                    _ => panic!("Failed to find memory export"),
+                };
+                let data = memory
+                    .data(&caller)
+                    .get(ptr as usize..(ptr + len) as usize)
+                    .expect("Failed to read string from memory");
+                let message = std::str::from_utf8(data).expect("Invalid UTF-8 string");
+                println!("console.log: {}", message);
+            },
+        )
+        .unwrap();
+
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+
+    let main = instance
+        .get_typed_func::<(), ()>(&mut store, "main")
+        .unwrap();
+    main.call(&mut store, ()).unwrap();
+}
+
+// ── WAT snapshots ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_globals_wat() {
+    // global.get / global.set should use the correct wasm indices.
+    let case = TestCase::new(indoc! {"
+        global mut counter: i32 = 0
+
+        fn increment() -> i32 {
+            counter += 1;
+            counter
+        }
+
+        export { increment }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_inline_expansion_wat() {
+    // An #[inline] function must be fully substituted into its caller —
+    // the WAT must contain exactly one `func` and no `call` instruction.
+    let case = TestCase::new(indoc! {"
+        #[inline]
+        fn double(x: i32) -> i32 { x * 2 }
+
+        fn quad(x: i32) -> i32 { double(double(x)) }
+
+        export { quad }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_struct_init_wat() {
+    // StructCreate lowers to pushing each field value in declaration order.
+    // The WAT must show the struct fields as multi-value results (both params
+    // passed through as the return tuple).
+    let case = TestCase::new(indoc! {"
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        fn make_point(x: i32, y: i32) -> Point {
+            Point::{ x: x, y: y }
+        }
+
+        export { make_point }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_struct_field_access_wat() {
+    // A struct is flattened to individual wasm params; field access lowers to
+    // local.get on the corresponding slot index.
+    let case = TestCase::new(indoc! {"
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        fn sum(p: Point) -> i32 {
+            p.x + p.y
+        }
+
+        export { sum }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_non_inline_call_wat() {
+    // A non-inline callee must appear as a separate `func` in the binary and
+    // be referenced via a `call` instruction — not inlined.
+    let case = TestCase::new(indoc! {"
+        fn double(x: i32) -> i32 { x * 2 }
+
+        fn apply_twice(x: i32) -> i32 { double(double(x)) }
+
+        export { apply_twice }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_lerp() {
+    let case = TestCase::new(indoc! {"
+        fn lerp(a: f32, b: f32, t: f32) -> f32 {
+            a + (b - a) * t
+        }
+
+        fn main() -> f32 {
+            local x: f32 = lerp(0.0, 100.0, 0.5);
+            if x != 50.0 { unreachable } else { x }
+        }
+
+        export { main }
+    "});
+
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let linker = wasmtime::Linker::new(&engine);
+
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = linker.instantiate(&mut store, &module).unwrap();
+    let main = instance
+        .get_typed_func::<(), f32>(&mut store, "main")
+        .unwrap();
+    let result = main.call(&mut store, ()).unwrap();
+    assert!(result == 50.0, "Expected main() to return 50.0");
+}
+
+// ── tuples ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_tuple_return_wat() {
+    // A function returning a tuple must produce a multi-value wasm signature
+    // `(result i32 i32)` and the body must push both values.
+    let case = TestCase::new(indoc! {"
+        fn make_pair(a: i32, b: i32) -> (i32, i32) {
+            (a, b)
+        }
+
+        export { make_pair }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_tuple_field_access_wat() {
+    // `.0` / `.1` on a tuple local must map to the correct `local.get` slots.
+    let case = TestCase::new(indoc! {"
+        fn swap(a: i32, b: i32) -> (i32, i32) {
+            local t: (i32, i32) = (a, b);
+            (t.1, t.0)
+        }
+
+        export { swap }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_tuple_block_result_wat() {
+    // A block whose result is a tuple must use a multi-value block type
+    // referencing a type-section entry, not a single-value type.
+    let case = TestCase::new(indoc! {"
+        fn make_pair(x: i32) -> (i32, i32) {
+            local t: (i32, i32) = {
+                (x, x + 1)
+            };
+            t
+        }
+
+        export { make_pair }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_tuple_roundtrip() {
+    // Execution test: swap(3, 7) must return (7, 3).
+    let case = TestCase::new(indoc! {"
+        fn swap(a: i32, b: i32) -> (i32, i32) {
+            (b, a)
+        }
+
+        export { swap }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let swap = instance
+        .get_typed_func::<(i32, i32), (i32, i32)>(&mut store, "swap")
+        .unwrap();
+    assert_eq!(swap.call(&mut store, (3, 7)).unwrap(), (7, 3));
+    assert_eq!(swap.call(&mut store, (0, 1)).unwrap(), (1, 0));
+}

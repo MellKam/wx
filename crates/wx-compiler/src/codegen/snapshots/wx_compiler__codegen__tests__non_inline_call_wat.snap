@@ -1,0 +1,18 @@
+---
+source: crates/wx-compiler/src/codegen/tests.rs
+expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
+---
+(module
+  (type (;0;) (func (param i32) (result i32)))
+  (export "apply_twice" (func 1))
+  (func (;0;) (type 0) (param i32) (result i32)
+    local.get 0
+    i32.const 2
+    i32.mul
+  )
+  (func (;1;) (type 0) (param i32) (result i32)
+    local.get 0
+    call 0
+    call 0
+  )
+)

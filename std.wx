@@ -22,6 +22,8 @@ module wasm {
   fn memory32_size(mem: impl Memory32) -> u32;
 }
 
+memory 
+
 trait Memory32 {
   const OFFSET: u32;
   const MEMORY_INDEX: u32;

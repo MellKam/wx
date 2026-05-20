@@ -750,6 +750,79 @@ fn test_size_align_constants() {
     ));
 }
 
+/// impl methods and associated functions are registered in `impl_members` under
+/// the correct type key with the correct `ImplEntry` variant.
+#[test]
+fn test_impl_members_registered() {
+    let case = TestCase::new(indoc! {"
+        impl i32 {
+            pub fn abs(self) -> i32 {
+                if self < 0 { -self } else { self }
+            }
+
+            pub fn from_bool(b: bool) -> i32 {
+                if b { 1 } else { 0 }
+            }
+        }
+
+        fn use_them(x: i32, b: bool) -> i32 {
+            x.abs() + i32::from_bool(b)
+        }
+
+        export { use_them }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let members = case
+        .tir
+        .impl_members
+        .get(&Type::I32_IDX)
+        .expect("impl_members should have an entry for i32");
+
+    let abs_sym = case.interner.get("abs").expect("symbol `abs` not interned");
+    let from_bool_sym = case
+        .interner
+        .get("from_bool")
+        .expect("symbol `from_bool` not interned");
+
+    // `abs` takes `self` → Method; `from_bool` has no receiver → AssociatedFn
+    let abs_entry = members.get(&abs_sym).expect("`abs` missing from impl_members");
+    let from_bool_entry = members
+        .get(&from_bool_sym)
+        .expect("`from_bool` missing from impl_members");
+
+    assert!(
+        matches!(abs_entry, ImplEntry::Method(_)),
+        "`abs` should be ImplEntry::Method, got {:?}",
+        abs_entry
+    );
+    assert!(
+        matches!(from_bool_entry, ImplEntry::AssociatedFn(_)),
+        "`from_bool` should be ImplEntry::AssociatedFn, got {:?}",
+        from_bool_entry
+    );
+
+    // Both entries must point to valid function indices
+    let &ImplEntry::Method(abs_idx) = abs_entry else { unreachable!() };
+    let &ImplEntry::AssociatedFn(from_bool_idx) = from_bool_entry else { unreachable!() };
+    assert!(
+        (abs_idx as usize) < case.tir.functions.len(),
+        "abs func_index out of bounds"
+    );
+    assert!(
+        (from_bool_idx as usize) < case.tir.functions.len(),
+        "from_bool func_index out of bounds"
+    );
+}
+
 /// `pub fn` on a user-defined function suppresses the unused warning.
 #[test]
 fn test_pub_fn_no_unused_warning() {
@@ -769,11 +842,10 @@ fn test_pub_fn_no_unused_warning() {
     );
 }
 
-/// Struct fields are reordered for optimal memory layout.
-/// `struct Mixed { a: bool, b: i64, c: u32, d: f64 }` declared in that order
-/// has C-layout size 28B; after reordering (i64, f64, u32, bool) it is 24B.
+/// TIR preserves struct fields in declaration order; physical reordering for
+/// optimal memory layout is a MIR concern (tested in mir::tests).
 #[test]
-fn test_struct_field_reorder_reduces_size() {
+fn test_struct_fields_kept_in_declaration_order() {
     let case = TestCase::new(indoc! {"
         struct Mixed {
             a: bool,
@@ -788,29 +860,6 @@ fn test_struct_field_reorder_reduces_size() {
     assert!(case.tir.diagnostics.is_empty());
 
     let mixed_sym = case.interner.get("Mixed").unwrap();
-    let mixed_ti = case
-        .tir
-        .type_pool
-        .iter()
-        .position(|t| {
-            if let Type::Struct { struct_index } = t {
-                case.tir.structs[*struct_index as usize].name.inner == mixed_sym
-            } else {
-                false
-            }
-        })
-        .unwrap() as u32;
-
-    let layout = case.tir.layout_of(mixed_ti, PointerSize::P32);
-    // Optimal order: i64(8), f64(8), u32(4), bool(1) + 3B padding = 24B
-    assert_eq!(
-        layout.size, 24,
-        "expected 24B after reordering, got {}",
-        layout.size
-    );
-    assert_eq!(layout.align, 8);
-
-    // Verify physical field order in the struct
     let struct_index = case
         .tir
         .type_pool
@@ -827,14 +876,12 @@ fn test_struct_field_reorder_reduces_size() {
             }
         })
         .unwrap();
-    let s = &case.tir.structs[struct_index as usize];
-    let field_names: Vec<&str> = s
+    let field_names: Vec<&str> = case.tir.structs[struct_index as usize]
         .fields
         .iter()
         .map(|f| case.interner.resolve(f.name.inner).unwrap())
         .collect();
-    // Largest alignment (8B: i64, f64) first, then 4B (u32), then 1B (bool)
-    assert_eq!(field_names, vec!["b", "d", "c", "a"]);
+    assert_eq!(field_names, vec!["a", "b", "c", "d"]);
 }
 
 /// A non-pub function that is never called should still produce a warning.
@@ -851,6 +898,31 @@ fn test_non_pub_fn_unused_warning() {
             .iter()
             .any(|d| d.message == "function `unused` is never used"),
         "expected unused-function diagnostic"
+    );
+}
+
+/// Functions declared inside a `module` block are intrinsics/imports and must
+/// not trigger an unused-function warning even if they are never called.
+#[test]
+fn test_module_fn_no_unused_warning() {
+    let case = TestCase::new(indoc! {"
+        module math {
+            #[intrinsic]
+            fn add(a: i32, b: i32) -> i32;
+        }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("is never used")),
+        "module functions should not warn as unused, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -878,17 +950,37 @@ fn test_pub_struct_no_unused_warning() {
 
 #[test]
 fn test_memory_declaration_registers_kind() {
-    let case32 = TestCase::new("memory MEM: Memory32;");
+    let case32 = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory MEM: Memory32;
+    "}
+    ));
     assert!(case32.tir.diagnostics.is_empty(), "unexpected diagnostics");
     assert_eq!(
-        case32.tir.declared_memories.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        case32
+            .tir
+            .memories
+            .iter()
+            .map(|m| m.kind)
+            .collect::<Vec<_>>(),
         vec![MemoryKind::Memory32]
     );
 
-    let case64 = TestCase::new("memory MEM: Memory64;");
+    let case64 = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory MEM: Memory64;
+    "}
+    ));
     assert!(case64.tir.diagnostics.is_empty(), "unexpected diagnostics");
     assert_eq!(
-        case64.tir.declared_memories.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        case64
+            .tir
+            .memories
+            .iter()
+            .map(|m| m.kind)
+            .collect::<Vec<_>>(),
         vec![MemoryKind::Memory64]
     );
 }
@@ -943,91 +1035,149 @@ fn test_intrinsic_fn_declaration_is_valid() {
 // definitions are the minimal form (abstract methods, no default bodies) for
 // testing purposes.
 
-const MEMORY32_TRAIT: &str = indoc! {"
+const STD: &str = indoc! {"
     trait Memory32 {
         const OFFSET: u32;
         const MEMORY_INDEX: u32;
-        fn size(self) -> u32;
-        fn grow(self, delta: u32) -> u32;
-    }
-"};
 
-const MEMORY64_TRAIT: &str = indoc! {"
+        #[inline]
+        fn size(self) -> u32 {
+            wasm::memory32_size(self)
+        }
+        #[inline]
+        fn grow(self, delta: u32) -> u32 {
+            wasm::memory32_grow(self, delta)
+        }
+    }
+
     trait Memory64 {
         const OFFSET: u64;
         const MEMORY_INDEX: u64;
-        fn size(self) -> u64;
-        fn grow(self, delta: u64) -> u64;
+
+        #[inline]
+        fn size(self) -> u64 {
+            wasm::memory64_size(self)
+        }
+        #[inline]
+        fn grow(self, delta: u64) -> u64 {
+            wasm::memory64_grow(self, delta)
+        }
+    }
+
+    module wasm {
+        #[intrinsic]
+        pub fn memory64_grow(mem: impl Memory64, delta: u64) -> u64;
+        #[intrinsic]
+        pub fn memory64_size(mem: impl Memory64) -> u64;
+
+        #[intrinsic]
+        pub fn memory32_grow(mem: impl Memory32, delta: u32) -> u32;
+        #[intrinsic]
+        pub fn memory32_size(mem: impl Memory32) -> u32;
     }
 "};
 
 #[test]
 fn test_memory_offset_resolves_to_u32() {
-    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory MEM: Memory32;
         pub fn f() -> u32 { MEM::OFFSET }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn test_memory_size_call_resolves() {
     // Method-call syntax: MEM is a value; size is a method from the Memory32 trait.
-    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory MEM: Memory32;
         pub fn f() -> u32 { MEM.size() }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn test_memory_grow_call_resolves() {
-    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory MEM: Memory32;
         pub fn f() -> u32 { MEM.grow(1) }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn test_memory64_size_and_grow_use_u64() {
     // Memory64 grow/size take and return u64, not u32.
-    let src = format!("{MEMORY64_TRAIT}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory MEM: Memory64;
         pub fn f() -> u64 { MEM.grow(1) }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn test_memory_unknown_member_is_error() {
-    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory MEM: Memory32;
         fn f() { _ = MEM::pages; }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1007")),
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1007")),
         "expected undeclared identifier diagnostic for unknown memory member"
     );
 }
@@ -1035,13 +1185,20 @@ fn test_memory_unknown_member_is_error() {
 #[test]
 fn test_memory_as_value_in_expression() {
     // Memory identifiers are valid value expressions (for method calls like MEM.grow(1)).
-    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory MEM: Memory32;
         fn f() { _ = MEM; }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     assert!(
-        !case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1030")),
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1030")),
         "memory identifier should be usable as a value expression"
     );
 }
@@ -1049,13 +1206,19 @@ fn test_memory_as_value_in_expression() {
 #[test]
 fn test_memory_grow_wrong_arg_type_is_error() {
     // grow expects u32 for Memory32; passing i32 must produce a type mismatch.
-    let src = format!("{MEMORY32_TRAIT}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory MEM: Memory32;
         fn f(delta: i32) { _ = MEM.grow(delta); }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1001")),
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1001")),
         "expected type mismatch for wrong grow argument type"
     );
 }
@@ -1070,7 +1233,10 @@ fn test_impl_struct_is_error() {
         fn f(x: impl S) -> i32 { 5 }
     "});
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1031")),
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1031")),
         "expected E1031 for struct used in impl position"
     );
 }
@@ -1082,7 +1248,10 @@ fn test_impl_undeclared_type_is_error() {
         fn f(x: impl Unknown) -> i32 { 5 }
     "});
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1021")),
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1021")),
         "expected E1021 for undeclared name in impl position"
     );
 }
@@ -1111,7 +1280,11 @@ fn test_wasm_module_intrinsics_declare_cleanly() {
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1130,7 +1303,10 @@ fn test_wasm_module_intrinsics_forward_ref_is_error() {
         }
     "});
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1021")),
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1021")),
         "expected E1021 for forward-referenced trait in impl position"
     );
 }

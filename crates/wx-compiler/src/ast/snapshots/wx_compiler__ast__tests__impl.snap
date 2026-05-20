@@ -23,6 +23,7 @@ items:
               - inner:
                   inner:
                     Method:
+                      id: 0
                       pub_span:
                         start: 33
                         end: 35

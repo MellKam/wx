@@ -20,7 +20,7 @@ pub enum ValueType {
 pub enum BlockResult {
     Empty,
     SingleValue(ValueType),
-    // TODO: MultiValue
+    MultiValue(SignatureIndex),
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -57,46 +57,6 @@ impl FunctionSignature {
     }
 }
 
-impl From<mir::FunctionSignature> for FunctionSignature {
-    fn from(ty: mir::FunctionSignature) -> Self {
-        let mut param_results = Vec::new();
-        for param in ty.params().iter().copied() {
-            match param {
-                mir::Type::Aggregate { .. } => {
-                    param_results.push(ValueType::I32);
-                    param_results.push(ValueType::I32);
-                }
-                mir::Type::Pointer | mir::Type::I32 | mir::Type::U32 => {
-                    param_results.push(ValueType::I32)
-                }
-                mir::Type::I64 | mir::Type::U64 => param_results.push(ValueType::I64),
-                mir::Type::F32 => param_results.push(ValueType::F32),
-                mir::Type::F64 => param_results.push(ValueType::F64),
-                _ => unreachable!("Unsupported parameter type in function signature"),
-            }
-        }
-        let param_count = param_results.len();
-        match ty.result() {
-            mir::Type::Aggregate { .. } => {
-                param_results.push(ValueType::I32);
-                param_results.push(ValueType::I32);
-            }
-            mir::Type::Pointer | mir::Type::I32 | mir::Type::U32 | mir::Type::Bool => {
-                param_results.push(ValueType::I32)
-            }
-            mir::Type::I64 | mir::Type::U64 => param_results.push(ValueType::I64),
-            mir::Type::F32 => param_results.push(ValueType::F32),
-            mir::Type::F64 => param_results.push(ValueType::F64),
-            mir::Type::Unit | mir::Type::Never => {}
-            _ => unreachable!("Unsupported result type in function signature"),
-        }
-
-        FunctionSignature {
-            param_count,
-            param_results: param_results.into_boxed_slice(),
-        }
-    }
-}
 
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -375,9 +335,15 @@ pub struct WasmModule {
 pub struct Builder {
     table: Vec<FuncIndex>,
     string_pool: StringPool,
-    /// Maps MIR func_index → WASM func_index. Inline functions are absent from
-    /// WASM, so their slots hold u32::MAX (never accessed during emit).
-    mir_to_wasm: Box<[u32]>,
+    /// Maps every function DefId (imported or defined) to its wasm function index.
+    /// Imported functions occupy indices 0..import_func_count; defined functions follow.
+    func_wasm_index: HashMap<ast::DefId, u32>,
+    /// Maps every global DefId (imported or defined) to its wasm global index.
+    /// Imported globals occupy indices 0..import_global_count; defined globals follow.
+    global_wasm_index: HashMap<ast::DefId, u32>,
+    /// Deduplicated function-type entries for the wasm type section.
+    /// Shared between function signatures and multi-value block types.
+    signatures: HashMap<FunctionSignature, SignatureIndex>,
 }
 
 impl TryFrom<mir::Type> for ValueType {
@@ -402,14 +368,6 @@ impl TryFrom<mir::Type> for ValueType {
     }
 }
 
-impl From<mir::Type> for BlockResult {
-    fn from(ty: mir::Type) -> Self {
-        match ty {
-            mir::Type::Unit | mir::Type::Never => BlockResult::Empty,
-            ty => BlockResult::SingleValue(ValueType::try_from(ty).unwrap()),
-        }
-    }
-}
 
 struct FunctionContext<'mir> {
     local_offsets: Box<[usize]>,
@@ -503,6 +461,64 @@ impl StringPool {
 }
 
 impl Builder {
+    /// Recursively expand a MIR type into its flat wasm `ValueType`s.
+    /// Unit/Never produce zero slots; Aggregate recurses into its fields.
+    fn flatten_type(ty: mir::Type, aggregates: &[mir::Aggregate]) -> Vec<ValueType> {
+        match ty {
+            mir::Type::Unit | mir::Type::Never => vec![],
+            mir::Type::Aggregate { aggregate_index } => aggregates[aggregate_index as usize]
+                .values
+                .iter()
+                .flat_map(|&f| Self::flatten_type(f, aggregates))
+                .collect(),
+            t => vec![ValueType::try_from(t).unwrap()],
+        }
+    }
+
+    /// Intern a function signature built from a MIR signature + the aggregate pool,
+    /// correctly flattening any aggregate params/results into individual wasm types.
+    fn register_signature(
+        &mut self,
+        sig: &mir::FunctionSignature,
+        aggregates: &[mir::Aggregate],
+    ) -> SignatureIndex {
+        let mut param_results = Vec::new();
+        for &param in sig.params() {
+            param_results.extend(Self::flatten_type(param, aggregates));
+        }
+        let param_count = param_results.len();
+        param_results.extend(Self::flatten_type(sig.result(), aggregates));
+        let signature = FunctionSignature {
+            param_count,
+            param_results: param_results.into_boxed_slice(),
+        };
+        let next = SignatureIndex(self.signatures.len() as u32);
+        *self.signatures.entry(signature).or_insert(next)
+    }
+
+    /// Return the `BlockResult` for a MIR type. For aggregate types, a multi-value
+    /// function type `(func (result t1 t2 ...))` is registered in the type section.
+    fn block_result_for(&mut self, ty: mir::Type, aggregates: &[mir::Aggregate]) -> BlockResult {
+        match ty {
+            mir::Type::Unit | mir::Type::Never => BlockResult::Empty,
+            mir::Type::Aggregate { aggregate_index } => {
+                let fields: Box<[ValueType]> = aggregates[aggregate_index as usize]
+                    .values
+                    .iter()
+                    .flat_map(|&f| Self::flatten_type(f, aggregates))
+                    .collect();
+                let signature = FunctionSignature {
+                    param_count: 0,
+                    param_results: fields,
+                };
+                let next = SignatureIndex(self.signatures.len() as u32);
+                let idx = *self.signatures.entry(signature).or_insert(next);
+                BlockResult::MultiValue(idx)
+            }
+            t => BlockResult::SingleValue(ValueType::try_from(t).unwrap()),
+        }
+    }
+
     pub fn build<'interner>(
         mir: &mir::MIR,
         interner: &'interner ast::StringInterner,
@@ -510,7 +526,9 @@ impl Builder {
         let mut builder = Builder {
             table: Vec::new(),
             string_pool: StringPool::new(),
-            mir_to_wasm: Box::new([]),
+            func_wasm_index: HashMap::new(),
+            global_wasm_index: HashMap::new(),
+            signatures: HashMap::new(),
         };
 
         for symbol in mir.strings.iter().copied() {
@@ -525,28 +543,23 @@ impl Builder {
                 .max(1)
         };
 
-        let mut signatures = HashMap::<FunctionSignature, SignatureIndex>::new();
-
-        // Process imports first to build signatures for imported functions
+        // Process imports: build the wasm Import list and assign wasm indices.
+        // Imports come first in the wasm binary, so their indices are assigned here.
         let mut imports = Vec::<Import>::new();
+        let mut next_func_idx: u32 = 0;
+        let mut next_global_idx: u32 = 0;
         for import_module in &mir.imports {
             for item in &import_module.items {
                 match item {
                     mir::ImportModuleItem::Function {
                         name,
-                        func_index: _,
+                        id,
                         signature_index,
                     } => {
-                        // Get the signature from MIR and ensure it's in the signatures map
-                        let signature = FunctionSignature::from(
-                            mir.signatures[*signature_index as usize].clone(),
+                        let sig_index = builder.register_signature(
+                            &mir.signatures[*signature_index as usize],
+                            &mir.aggregates,
                         );
-                        let next_signature_index = SignatureIndex(signatures.len() as u32);
-                        let sig_index = signatures
-                            .entry(signature)
-                            .or_insert(next_signature_index)
-                            .clone();
-
                         imports.push(Import {
                             module: import_module.name.clone(),
                             name: interner.resolve(*name).unwrap().to_string(),
@@ -554,13 +567,11 @@ impl Builder {
                                 signature_index: sig_index,
                             },
                         });
+                        builder.func_wasm_index.insert(*id, next_func_idx);
+                        next_func_idx += 1;
                     }
-                    mir::ImportModuleItem::Global {
-                        name,
-                        global_index: _,
-                    } => {
-                        // For now, assume imported globals are i32 and immutable
-                        // TODO: Get actual type from the MIR
+                    mir::ImportModuleItem::Global { name, id } => {
+                        // TODO: get actual type from the MIR once global types are tracked
                         imports.push(Import {
                             module: import_module.name.clone(),
                             name: interner.resolve(*name).unwrap().to_string(),
@@ -569,6 +580,8 @@ impl Builder {
                                 mutability: Mutability::Immutable,
                             },
                         });
+                        builder.global_wasm_index.insert(*id, next_global_idx);
+                        next_global_idx += 1;
                     }
                     mir::ImportModuleItem::Memory { name, .. } => {
                         imports.push(Import {
@@ -582,41 +595,28 @@ impl Builder {
                 }
             }
         }
-
-        // Build the MIR→WASM function index map now that `imports` is complete.
-        // Imported functions occupy indices 0..import_func_count; defined
-        // non-inline functions follow. Inline functions have no WASM slot.
-        let import_func_count = imports
-            .iter()
-            .filter(|i| matches!(i.desc, ImportDesc::Function { .. }))
-            .count() as u32;
-        builder.mir_to_wasm = {
-            let mut map = vec![u32::MAX; import_func_count as usize + mir.functions.len()];
-            for i in 0..import_func_count as usize {
-                map[i] = i as u32;
-            }
-            let mut wasm_idx = import_func_count;
-            for (i, func) in mir.functions.iter().enumerate() {
-                if !func.inline {
-                    map[import_func_count as usize + i] = wasm_idx;
-                    wasm_idx += 1;
-                }
-            }
-            map.into_boxed_slice()
-        };
+        // Defined functions follow all imports; defined globals follow all imported globals.
+        for func in &mir.functions {
+            builder.func_wasm_index.insert(func.id, next_func_idx);
+            next_func_idx += 1;
+        }
+        for global in &mir.globals {
+            builder.global_wasm_index.insert(global.id, next_global_idx);
+            next_global_idx += 1;
+        }
 
         let mut function_signatures = Vec::<SignatureIndex>::with_capacity(mir.functions.len());
         let exports: Box<_> = mir
             .exports
             .iter()
             .map(|item| match item {
-                mir::ExportItem::Global { global_index, name } => ExportItem::Global {
+                mir::ExportItem::Global { id, name } => ExportItem::Global {
                     name: interner.resolve(*name).unwrap().to_string(),
-                    global_index: GlobalIndex(*global_index),
+                    global_index: GlobalIndex(builder.global_wasm_index[id]),
                 },
-                mir::ExportItem::Function { func_index, name } => ExportItem::Function {
+                mir::ExportItem::Function { id, name } => ExportItem::Function {
                     name: interner.resolve(*name).unwrap().to_string(),
-                    func_index: FuncIndex(builder.mir_to_wasm[*func_index as usize]),
+                    func_index: FuncIndex(builder.func_wasm_index[id]),
                 },
                 mir::ExportItem::Memory { memory_index, name } => ExportItem::Memory {
                     memory_index: *memory_index,
@@ -625,7 +625,10 @@ impl Builder {
             })
             .chain(
                 if required_pages > 0
-                    && !mir.exports.iter().any(|e| matches!(e, mir::ExportItem::Memory { .. }))
+                    && !mir
+                        .exports
+                        .iter()
+                        .any(|e| matches!(e, mir::ExportItem::Memory { .. }))
                 {
                     Some(ExportItem::Memory {
                         memory_index: 0,
@@ -638,14 +641,11 @@ impl Builder {
             .collect();
 
         let mut functions = Vec::<FunctionBody>::with_capacity(mir.functions.len());
-        for func in mir.functions.iter().filter(|f| !f.inline) {
-            let signature =
-                FunctionSignature::from(mir.signatures[func.signature_index as usize].clone());
-            let next_signature_index = SignatureIndex(signatures.len() as u32);
-            let signature_index = signatures
-                .entry(signature)
-                .or_insert(next_signature_index)
-                .clone();
+        for func in mir.functions.iter() {
+            let signature_index = builder.register_signature(
+                &mir.signatures[func.signature_index as usize],
+                &mir.aggregates,
+            );
             function_signatures.push(signature_index);
 
             let expressions = match &func.block.kind {
@@ -731,7 +731,7 @@ impl Builder {
         Ok(WasmModule {
             types: TypeSection {
                 signatures: {
-                    let mut sorted_types: Vec<_> = signatures.into_iter().collect();
+                    let mut sorted_types: Vec<_> = builder.signatures.drain().collect();
                     sorted_types.sort_by_key(|&(_, index)| index);
                     sorted_types
                         .into_iter()
@@ -844,8 +844,8 @@ impl Builder {
                 }
                 _ => unreachable!(),
             },
-            mir::ExprKind::Function { func_index } => {
-                let wasm_index = self.mir_to_wasm[*func_index as usize];
+            mir::ExprKind::Function { id } => {
+                let wasm_index = self.func_wasm_index[id];
                 let table_index = self.table.len() as i32;
                 self.table.push(FuncIndex(wasm_index));
                 sink.push(Instruction::I32Const as u8);
@@ -862,9 +862,9 @@ impl Builder {
                 }
 
                 match callee.kind {
-                    mir::ExprKind::Function { func_index } => {
+                    mir::ExprKind::Function { id } => {
                         sink.push(Instruction::Call as u8);
-                        self.mir_to_wasm[func_index as usize].encode(sink);
+                        self.func_wasm_index[&id].encode(sink);
                     }
                     _ => match callee.ty {
                         mir::Type::Function { signature_index } => {
@@ -915,17 +915,14 @@ impl Builder {
                     ctx.get_flat_index(*scope_index, *local_index).encode(sink);
                 }
             },
-            mir::ExprKind::Global { global_index } => {
+            mir::ExprKind::Global { id } => {
                 sink.push(Instruction::GlobalGet as u8);
-                (*global_index).encode(sink);
+                self.global_wasm_index[id].encode(sink);
             }
-            mir::ExprKind::GlobalSet {
-                global_index,
-                value,
-            } => {
+            mir::ExprKind::GlobalSet { id, value } => {
                 self.build_expression(ctx, value, sink);
                 sink.push(Instruction::GlobalSet as u8);
-                (*global_index).encode(sink);
+                self.global_wasm_index[id].encode(sink);
             }
             mir::ExprKind::Return { value } => {
                 match value {
@@ -951,7 +948,8 @@ impl Builder {
                 scope_index,
             } => {
                 sink.push(Instruction::Block as u8);
-                BlockResult::from(expr.ty).encode(sink);
+                let tuples = ctx.tuples;
+                self.block_result_for(expr.ty, tuples).encode(sink);
                 for expr in expressions.iter() {
                     ctx.scope_index = *scope_index;
                     self.build_expression(ctx, expr, sink);
@@ -960,7 +958,9 @@ impl Builder {
             }
             mir::ExprKind::Loop { scope_index, block } => {
                 sink.push(Instruction::Block as u8);
-                BlockResult::from(ctx.scopes[*scope_index as usize].result).encode(sink);
+                let loop_result = ctx.scopes[*scope_index as usize].result;
+                let tuples = ctx.tuples;
+                self.block_result_for(loop_result, tuples).encode(sink);
                 // Inner loop
                 sink.push(Instruction::Loop as u8);
                 BlockResult::Empty.encode(sink);
@@ -1001,7 +1001,8 @@ impl Builder {
             } => {
                 self.build_expression(ctx, condition, sink);
                 sink.push(Instruction::If as u8);
-                BlockResult::from(expr.ty).encode(sink);
+                let tuples = ctx.tuples;
+                self.block_result_for(expr.ty, tuples).encode(sink);
 
                 match &then_block.kind {
                     mir::ExprKind::Block {
@@ -1632,12 +1633,11 @@ impl Encode for ValueType {
 impl Encode for BlockResult {
     fn encode(&self, sink: &mut Vec<u8>) {
         match self {
-            BlockResult::Empty => {
-                sink.push(0x40);
-            }
-            BlockResult::SingleValue(ty) => {
-                ty.encode(sink);
-            }
+            BlockResult::Empty => sink.push(0x40),
+            BlockResult::SingleValue(ty) => ty.encode(sink),
+            // Multi-value block types are encoded as a type-section index (s33).
+            // Type indices are always small positive integers, so s33 == u32 LEB128.
+            BlockResult::MultiValue(idx) => idx.0.encode(sink),
         }
     }
 }
@@ -2100,636 +2100,4 @@ impl WasmModule {
 }
 
 #[cfg(test)]
-mod tests {
-    use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-    use codespan_reporting::term::{self};
-    use indoc::indoc;
-
-    use super::*;
-    use crate::{ast, mir, tir};
-
-    #[allow(unused)]
-    struct TestCase {
-        interner: ast::StringInterner,
-        files: ast::Files,
-        ast: ast::AST,
-        tir: tir::TIR,
-        mir: mir::MIR,
-        wasm: WasmModule,
-        bytecode: Vec<u8>,
-    }
-
-    impl<'case> TestCase {
-        fn new(source: &str) -> Self {
-            let mut interner = ast::StringInterner::new();
-            let mut files = ast::Files::new();
-            let file_id = files
-                .add("main.wx".to_string(), source.to_string())
-                .unwrap();
-            let ast =
-                ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-            if ast.diagnostics.len() > 0 {
-                let writer = StandardStream::stderr(ColorChoice::Always);
-                let config = codespan_reporting::term::Config::default();
-
-                for diagnostic in ast.diagnostics.iter() {
-                    term::emit_to_io_write(&mut writer.lock(), &config, &files, diagnostic)
-                        .unwrap();
-                }
-                std::process::exit(1);
-            }
-            let tir = tir::TIR::build(&[&ast], &mut interner);
-            if tir.diagnostics.len() > 0 {
-                let writer = StandardStream::stderr(ColorChoice::Always);
-                let config = codespan_reporting::term::Config::default();
-
-                for diagnostic in tir.diagnostics.iter() {
-                    term::emit_to_io_write(&mut writer.lock(), &config, &files, diagnostic)
-                        .unwrap();
-                }
-                std::process::exit(1);
-            }
-            let mir = mir::MIR::build(&tir, &interner);
-            let wasm = Builder::build(&mir, &interner).unwrap();
-            let bytecode = wasm.encode();
-
-            TestCase {
-                interner,
-                files,
-                ast,
-                tir,
-                mir,
-                wasm,
-                bytecode,
-            }
-        }
-    }
-
-    #[test]
-    fn test_parse_simple_addition() {
-        let case = TestCase::new(indoc! {"
-            fn add(mut a: i32, b: i32) -> i32 { a += b; a }
-
-            export { add }
-        "});
-        // insta::assert_yaml_snapshot!(case.bytecode);
-
-        // Execute the wasm bytecode using wasmtime to verify it works
-        let engine = wasmtime::Engine::default();
-        let module =
-            wasmtime::Module::new(&engine, &case.bytecode).expect("Failed to create module");
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance =
-            wasmtime::Instance::new(&mut store, &module, &[]).expect("Failed to instantiate");
-
-        let add = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "add")
-            .expect("Failed to get add function");
-
-        // Test: 5 + 3 = 8
-        let result = add
-            .call(&mut store, (5, 3))
-            .expect("Failed to call add function");
-        assert_eq!(result, 8, "add(5, 3) should return 8");
-
-        // Test: 10 + 20 = 30
-        let result = add
-            .call(&mut store, (10, 20))
-            .expect("Failed to call add function");
-        assert_eq!(result, 30, "add(10, 20) should return 30");
-
-        // Test: -5 + 3 = -2
-        let result = add
-            .call(&mut store, (-5, 3))
-            .expect("Failed to call add function");
-        assert_eq!(result, -2, "add(-5, 3) should return -2");
-    }
-
-    #[test]
-    fn test_arithmetic_operations() {
-        let case = TestCase::new(indoc! {"
-            fn sub(a: i32, b: i32) -> i32 { a - b }
-            fn mul(a: i32, b: i32) -> i32 { a * b }
-            fn div(a: i32, b: i32) -> i32 { a / b }
-            fn rem(a: i32, b: i32) -> i32 { a % b }
-
-            export {
-                sub,
-                mul,
-                div,
-                rem
-            }
-        "});
-
-        println!("{}", wasmprinter::print_bytes(&case.bytecode).unwrap());
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let sub = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "sub")
-            .unwrap();
-        assert_eq!(sub.call(&mut store, (10, 3)).unwrap(), 7);
-        assert_eq!(sub.call(&mut store, (5, 10)).unwrap(), -5);
-
-        let mul = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "mul")
-            .unwrap();
-        assert_eq!(mul.call(&mut store, (6, 7)).unwrap(), 42);
-        assert_eq!(mul.call(&mut store, (-3, 4)).unwrap(), -12);
-
-        let div = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "div")
-            .unwrap();
-        assert_eq!(div.call(&mut store, (20, 4)).unwrap(), 5);
-        assert_eq!(div.call(&mut store, (15, 4)).unwrap(), 3);
-
-        let rem = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "rem")
-            .unwrap();
-        assert_eq!(rem.call(&mut store, (10, 3)).unwrap(), 1);
-        assert_eq!(rem.call(&mut store, (20, 7)).unwrap(), 6);
-    }
-
-    #[test]
-    fn test_comparison_operations() {
-        let case = TestCase::new(indoc! {"
-            fn lt(a: i32, b: i32) -> i32 { 
-                if a < b { 1 } else { 0 }
-            }
-            fn gt(a: i32, b: i32) -> i32 { 
-                if a > b { 1 } else { 0 }
-            }
-            fn eq(a: i32, b: i32) -> i32 { 
-                if a == b { 1 } else { 0 }
-            }
-            fn ne(a: i32, b: i32) -> i32 { 
-                if a != b { 1 } else { 0 }
-            }
-
-            export {
-                lt,
-                gt,
-                eq,
-                ne
-            }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let lt = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "lt")
-            .unwrap();
-        assert_eq!(lt.call(&mut store, (5, 10)).unwrap(), 1);
-        assert_eq!(lt.call(&mut store, (10, 5)).unwrap(), 0);
-
-        let gt = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "gt")
-            .unwrap();
-        assert_eq!(gt.call(&mut store, (10, 5)).unwrap(), 1);
-        assert_eq!(gt.call(&mut store, (5, 10)).unwrap(), 0);
-
-        let eq = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "eq")
-            .unwrap();
-        assert_eq!(eq.call(&mut store, (5, 5)).unwrap(), 1);
-        assert_eq!(eq.call(&mut store, (5, 10)).unwrap(), 0);
-
-        let ne = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "ne")
-            .unwrap();
-        assert_eq!(ne.call(&mut store, (5, 10)).unwrap(), 1);
-        assert_eq!(ne.call(&mut store, (5, 5)).unwrap(), 0);
-    }
-
-    #[test]
-    fn test_conditional_expression() {
-        let case = TestCase::new(indoc! {"
-            fn max(a: i32, b: i32) -> i32 {
-                if a > b { a } else { b }
-            }
-            fn abs(a: i32) -> i32 {
-                if a < 0 { -a } else { a }
-            }
-
-            export {
-                max,
-                abs
-            }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let max = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "max")
-            .unwrap();
-        assert_eq!(max.call(&mut store, (5, 10)).unwrap(), 10);
-        assert_eq!(max.call(&mut store, (10, 5)).unwrap(), 10);
-        assert_eq!(max.call(&mut store, (7, 7)).unwrap(), 7);
-
-        let abs = instance
-            .get_typed_func::<i32, i32>(&mut store, "abs")
-            .unwrap();
-        assert_eq!(abs.call(&mut store, 5).unwrap(), 5);
-        assert_eq!(abs.call(&mut store, -5).unwrap(), 5);
-        assert_eq!(abs.call(&mut store, 0).unwrap(), 0);
-    }
-
-    #[test]
-    fn test_loops() {
-        let case = TestCase::new(indoc! {"
-            fn factorial(n: i32) -> i32 {
-                local mut result: i32 = 1;
-                local mut i: i32 = 1;
-                loop {
-                    if i > n { break result };
-                    result *= i;
-                    i += 1;
-                }
-            }
-            fn sum_to_n(n: i32) -> i32 {
-                local mut sum: i32 = 0;
-                local mut i: i32 = 1;
-                loop {
-                    if i > n { break };
-                    sum += i;
-                    i += 1;
-                };
-                sum
-            }
-
-            export {
-                factorial,
-                sum_to_n
-            }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let factorial = instance
-            .get_typed_func::<i32, i32>(&mut store, "factorial")
-            .unwrap();
-        assert_eq!(factorial.call(&mut store, 5).unwrap(), 120);
-        assert_eq!(factorial.call(&mut store, 6).unwrap(), 720);
-        assert_eq!(factorial.call(&mut store, 0).unwrap(), 1);
-
-        let sum_to_n = instance
-            .get_typed_func::<i32, i32>(&mut store, "sum_to_n")
-            .unwrap();
-        assert_eq!(sum_to_n.call(&mut store, 10).unwrap(), 55);
-        assert_eq!(sum_to_n.call(&mut store, 100).unwrap(), 5050);
-    }
-
-    #[test]
-    fn test_i64_operations() {
-        let case = TestCase::new(indoc! {"
-            fn add64(a: i64, b: i64) -> i64 { a + b }
-            fn mul64(a: i64, b: i64) -> i64 { a * b }
-
-            export {
-                add64,
-                mul64
-            }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let add64 = instance
-            .get_typed_func::<(i64, i64), i64>(&mut store, "add64")
-            .unwrap();
-        assert_eq!(
-            add64.call(&mut store, (1000000000, 2000000000)).unwrap(),
-            3000000000
-        );
-        assert_eq!(add64.call(&mut store, (-500, 1000)).unwrap(), 500);
-
-        let mul64 = instance
-            .get_typed_func::<(i64, i64), i64>(&mut store, "mul64")
-            .unwrap();
-        assert_eq!(
-            mul64.call(&mut store, (1000000, 1000000)).unwrap(),
-            1000000000000
-        );
-    }
-
-    #[test]
-    fn test_f32_operations() {
-        let case = TestCase::new(indoc! {"
-            fn add_f32(a: f32, b: f32) -> f32 { a + b }
-            fn mul_f32(a: f32, b: f32) -> f32 { a * b }
-            fn div_f32(a: f32, b: f32) -> f32 { a / b }
-
-            export {
-                add_f32,
-                mul_f32,
-                div_f32
-            }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let add_f32 = instance
-            .get_typed_func::<(f32, f32), f32>(&mut store, "add_f32")
-            .unwrap();
-        assert!((add_f32.call(&mut store, (1.5, 2.5)).unwrap() - 4.0).abs() < 0.001);
-
-        let mul_f32 = instance
-            .get_typed_func::<(f32, f32), f32>(&mut store, "mul_f32")
-            .unwrap();
-        assert!((mul_f32.call(&mut store, (2.5, 4.0)).unwrap() - 10.0).abs() < 0.001);
-
-        let div_f32 = instance
-            .get_typed_func::<(f32, f32), f32>(&mut store, "div_f32")
-            .unwrap();
-        assert!((div_f32.call(&mut store, (10.0, 4.0)).unwrap() - 2.5).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_f64_operations() {
-        let case = TestCase::new(indoc! {"
-            fn add_f64(a: f64, b: f64) -> f64 { a + b }
-            fn sub_f64(a: f64, b: f64) -> f64 { a - b }
-
-            export {
-                add_f64,
-                sub_f64
-            }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let add_f64 = instance
-            .get_typed_func::<(f64, f64), f64>(&mut store, "add_f64")
-            .unwrap();
-        assert!((add_f64.call(&mut store, (1.5, 2.5)).unwrap() - 4.0).abs() < 0.0001);
-
-        let sub_f64 = instance
-            .get_typed_func::<(f64, f64), f64>(&mut store, "sub_f64")
-            .unwrap();
-        assert!((sub_f64.call(&mut store, (10.5, 3.5)).unwrap() - 7.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_bitwise_operations() {
-        let case = TestCase::new(indoc! {"
-            fn bit_and(a: i32, b: i32) -> i32 { a & b }
-            fn bit_or(a: i32, b: i32) -> i32 { a | b }
-            fn bit_xor(a: i32, b: i32) -> i32 { a ^ b }
-            fn left_shift(a: i32, b: i32) -> i32 { a << b }
-            fn right_shift(a: i32, b: i32) -> i32 { a >> b }
-
-            export {
-                bit_and,
-                bit_or,
-                bit_xor,
-                left_shift,
-                right_shift
-            }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let bit_and = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "bit_and")
-            .unwrap();
-        assert_eq!(bit_and.call(&mut store, (0b1100, 0b1010)).unwrap(), 0b1000);
-
-        let bit_or = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "bit_or")
-            .unwrap();
-        assert_eq!(bit_or.call(&mut store, (0b1100, 0b1010)).unwrap(), 0b1110);
-
-        let bit_xor = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "bit_xor")
-            .unwrap();
-        assert_eq!(bit_xor.call(&mut store, (0b1100, 0b1010)).unwrap(), 0b0110);
-
-        let left_shift = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "left_shift")
-            .unwrap();
-        assert_eq!(left_shift.call(&mut store, (5, 2)).unwrap(), 20);
-
-        let right_shift = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "right_shift")
-            .unwrap();
-        assert_eq!(right_shift.call(&mut store, (20, 2)).unwrap(), 5);
-    }
-
-    #[test]
-    fn test_logical_operations() {
-        let case = TestCase::new(indoc! {"
-            fn and(a: i32, b: i32) -> i32 { ((a != 0) && (b != 0)) as i32 }
-            fn or(a: i32, b: i32) -> i32 { ((a != 0) || (b != 0)) as i32 }
-
-            export { and, or }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let and = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "and")
-            .unwrap();
-        assert_eq!(and.call(&mut store, (1, 1)).unwrap(), 1);
-        assert_eq!(and.call(&mut store, (1, 0)).unwrap(), 0);
-        assert_eq!(and.call(&mut store, (0, 1)).unwrap(), 0);
-        assert_eq!(and.call(&mut store, (0, 0)).unwrap(), 0);
-
-        let or = instance
-            .get_typed_func::<(i32, i32), i32>(&mut store, "or")
-            .unwrap();
-        assert_eq!(or.call(&mut store, (1, 1)).unwrap(), 1);
-        assert_eq!(or.call(&mut store, (1, 0)).unwrap(), 1);
-        assert_eq!(or.call(&mut store, (0, 1)).unwrap(), 1);
-        assert_eq!(or.call(&mut store, (0, 0)).unwrap(), 0);
-    }
-
-    #[test]
-    fn test_global_variables() {
-        let case = TestCase::new(indoc! {"
-            global mut global_counter: i32 = 0
-            
-            fn increment() -> i32 {
-                global_counter += 1;
-                global_counter
-            }
-            
-            fn get_counter() -> i32 {
-                global_counter
-            }
-
-            export {
-                increment,
-                get_counter
-            }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let increment = instance
-            .get_typed_func::<(), i32>(&mut store, "increment")
-            .unwrap();
-        let get_counter = instance
-            .get_typed_func::<(), i32>(&mut store, "get_counter")
-            .unwrap();
-
-        assert_eq!(get_counter.call(&mut store, ()).unwrap(), 0);
-        assert_eq!(increment.call(&mut store, ()).unwrap(), 1);
-        assert_eq!(increment.call(&mut store, ()).unwrap(), 2);
-        assert_eq!(get_counter.call(&mut store, ()).unwrap(), 2);
-        assert_eq!(increment.call(&mut store, ()).unwrap(), 3);
-        assert_eq!(get_counter.call(&mut store, ()).unwrap(), 3);
-    }
-
-    #[test]
-    fn test_fibonacci() {
-        let case = TestCase::new(indoc! {"
-            fn fibonacci(n: i32) -> i32 {
-                if n <= 1 { return n };
-                local mut a: i32 = 0;
-                local mut b: i32 = 1;
-                local mut i: i32 = 2;
-                loop {
-                    if i > n { break };
-                    local temp = a + b;
-                    a = b;
-                    b = temp;
-                    i += 1;
-                };
-                b
-            }
-
-            export { fibonacci }
-        "});
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-
-        let fibonacci = instance
-            .get_typed_func::<i32, i32>(&mut store, "fibonacci")
-            .unwrap();
-        assert_eq!(fibonacci.call(&mut store, 0).unwrap(), 0);
-        assert_eq!(fibonacci.call(&mut store, 1).unwrap(), 1);
-        assert_eq!(fibonacci.call(&mut store, 2).unwrap(), 1);
-        assert_eq!(fibonacci.call(&mut store, 3).unwrap(), 2);
-        assert_eq!(fibonacci.call(&mut store, 4).unwrap(), 3);
-        assert_eq!(fibonacci.call(&mut store, 5).unwrap(), 5);
-        assert_eq!(fibonacci.call(&mut store, 10).unwrap(), 55);
-    }
-
-    #[test]
-    fn test_imports() {
-        let case = TestCase::new(indoc! {"
-            pub struct string {
-                ptr: u32,
-                len: u32,
-            }
-
-            import \"console\" {
-                fn log(value: string) -> unit;
-            }
-
-            fn main() -> unit {
-                local y = \"Hello World!\";
-                local x = \"Hello World!\";
-                console::log(x);
-                console::log(y);
-            }
-
-            export { main }
-        "});
-
-        insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let mut linker = wasmtime::Linker::new(&engine);
-
-        linker
-            .func_wrap(
-                "console",
-                "log",
-                |mut caller: wasmtime::Caller<'_, ()>, ptr: i32, len: i32| {
-                    let memory = match caller.get_export("memory") {
-                        Some(wasmtime::Extern::Memory(mem)) => mem,
-                        _ => panic!("Failed to find memory export"),
-                    };
-                    let data = memory
-                        .data(&caller)
-                        .get(ptr as usize..(ptr + len) as usize)
-                        .expect("Failed to read string from memory");
-                    let message = std::str::from_utf8(data).expect("Invalid UTF-8 string");
-                    println!("console.log: {}", message);
-                },
-            )
-            .unwrap();
-
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = linker.instantiate(&mut store, &module).unwrap();
-
-        let main = instance
-            .get_typed_func::<(), ()>(&mut store, "main")
-            .unwrap();
-        main.call(&mut store, ()).unwrap();
-    }
-
-    #[test]
-    fn test_lerp() {
-        let case = TestCase::new(indoc! {"
-            fn lerp(a: f32, b: f32, t: f32) -> f32 {
-                a + (b - a) * t
-            }
-
-            fn main() -> f32 {
-                local x: f32 = lerp(0.0, 100.0, 0.5);
-                if x != 50.0 { unreachable } else { x }
-            }
-
-            export { main }
-        "});
-
-        insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
-
-        let engine = wasmtime::Engine::default();
-        let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-        let linker = wasmtime::Linker::new(&engine);
-
-        let mut store = wasmtime::Store::new(&engine, ());
-        let instance = linker.instantiate(&mut store, &module).unwrap();
-        let main = instance
-            .get_typed_func::<(), f32>(&mut store, "main")
-            .unwrap();
-        let result = main.call(&mut store, ()).unwrap();
-        assert!(result == 50.0, "Expected main() to return 50.0");
-    }
-}
+mod tests;

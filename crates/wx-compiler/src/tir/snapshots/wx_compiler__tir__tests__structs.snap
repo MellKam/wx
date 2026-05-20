@@ -23,65 +23,16 @@ type_pool:
   - Struct:
       struct_index: 0
   - Function:
-      items:
-        - 16
-      params_count: 0
-defined_functions:
-  0:
-    name:
-      inner: 5
-      span:
-        start: 55
-        end: 59
-    params: []
-    result_span:
-      start: 65
-      end: 68
-    signature_index: 17
-    stack:
-      scopes:
-        - kind: Block
-          label: ~
-          parent: ~
-          locals: []
-          inferred_type: 16
-          expected_type: 16
-    block:
-      kind:
-        Block:
-          scope_index: 0
-          expressions: []
-          result:
-            kind:
-              StructInit:
-                struct_index: 0
-                fields: []
-            ty: 16
-            span:
-              start: 75
-              end: 99
-      ty: 16
-      span:
-        start: 69
-        end: 101
+      signature:
+        items:
+          - 16
+        params_count: 0
+functions:
+  - id: 0
     pub_span: ~
-    attributes: []
-defined_globals: {}
-import_modules: []
-enums: []
-modules: []
-exports:
-  5:
-    Function:
-      internal_name:
-        inner: 5
-        span:
-          start: 112
-          end: 116
-      external_name: ~
-      func_index: 0
-declared_functions:
-  - source: Defined
+    source: Internal
+    origin: Free
+    type_params: []
     signature_index: 17
     name:
       inner: 5
@@ -100,7 +51,48 @@ declared_functions:
         span:
           start: 112
           end: 116
-declared_globals: []
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals: []
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                StructInit:
+                  struct_index: 0
+                  fields: []
+              ty: 16
+              span:
+                start: 75
+                end: 99
+        ty: 16
+        span:
+          start: 69
+          end: 101
+globals: []
+import_modules: []
+enums: []
+modules: []
+exports:
+  5:
+    Function:
+      internal_name:
+        inner: 5
+        span:
+          start: 112
+          end: 116
+      external_name: ~
+      id: 0
 diagnostics:
   - severity: Error
     code: E1026
@@ -161,5 +153,5 @@ structs:
       2: 0
       4: 1
 impl_members: {}
-declared_memories: []
-declared_traits: []
+memories: []
+traits: []

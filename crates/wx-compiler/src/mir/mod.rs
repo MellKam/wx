@@ -1,7 +1,7 @@
 /// the role of MIR is to desugar the syntax like x += 1 into x = x + 1 and
 /// lower the concepts like enums into primitive constants, convert labels from
 /// symbols in interner into numeric indices
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use string_interner::symbol::SymbolU32;
 
@@ -23,7 +23,7 @@ pub enum ExprKind {
         value: bool,
     },
     Function {
-        func_index: FunctionIndex,
+        id: ast::DefId,
     },
     Int {
         value: i64,
@@ -52,10 +52,10 @@ pub enum ExprKind {
         value_index: u32,
     },
     Global {
-        global_index: GlobalIndex,
+        id: ast::DefId,
     },
     GlobalSet {
-        global_index: GlobalIndex,
+        id: ast::DefId,
         value: Box<Expression>,
     },
     Add {
@@ -230,6 +230,8 @@ impl std::hash::Hash for Aggregate {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct MIR {
     pub functions: Vec<Function>,
+    #[cfg_attr(test, serde(skip))]
+    pub inline_functions: HashSet<ast::DefId>,
     pub signatures: Vec<FunctionSignature>,
     pub globals: Vec<Global>,
     pub exports: Vec<ExportItem>,
@@ -249,12 +251,12 @@ pub struct ImportModule {
 pub enum ImportModuleItem {
     Function {
         name: SymbolU32,
-        func_index: FunctionIndex,
+        id: ast::DefId,
         signature_index: SignatureIndex,
     },
     Global {
         name: SymbolU32,
-        global_index: GlobalIndex,
+        id: ast::DefId,
     },
     Memory {
         name: SymbolU32,
@@ -265,11 +267,11 @@ pub enum ImportModuleItem {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ExportItem {
     Function {
-        func_index: FunctionIndex,
+        id: ast::DefId,
         name: SymbolU32,
     },
     Global {
-        global_index: GlobalIndex,
+        id: ast::DefId,
         name: SymbolU32,
     },
     Memory {
@@ -321,14 +323,19 @@ impl FunctionSignature {
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Clone)]
 pub struct Function {
+    pub id: ast::DefId,
     pub signature_index: SignatureIndex,
     pub scopes: Vec<BlockScope>,
     pub block: Expression,
-    pub inline: bool,
+    /// DefIds of functions that call this function, derived from TIR accesses.
+    /// Used to build the call graph without re-walking MIR expressions.
+    #[cfg_attr(test, serde(skip))]
+    pub callers: Box<[ast::DefId]>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Global {
+    pub id: ast::DefId,
     pub ty: Type,
     pub mutability: Mutability,
     pub value: Expression,
@@ -364,86 +371,216 @@ impl AggregatePool {
     }
 }
 
-fn build_index_remap<T>(
-    import_count: u32,
-    items: &[T],
-    get_source: fn(&T) -> tir::ItemSource,
-) -> Box<[u32]> {
-    build_index_remap_filtered(import_count, items, get_source, |_| true)
+/// Memory layout of a type: size in bytes and required alignment in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Layout {
+    pub size: u32,
+    pub align: u32,
 }
 
-fn build_index_remap_filtered<T>(
-    import_count: u32,
-    items: &[T],
-    get_source: fn(&T) -> tir::ItemSource,
-    is_live: impl Fn(usize) -> bool,
-) -> Box<[u32]> {
-    let mut tir_to_mir = vec![u32::MAX; items.len()];
-    let mut next_imported = 0u32;
-    let mut next_defined = import_count;
-
-    for (tir_index, item) in items.iter().enumerate() {
-        tir_to_mir[tir_index] = match get_source(item) {
-            tir::ItemSource::Imported => {
-                let i = next_imported;
-                next_imported += 1;
-                i
-            }
-            tir::ItemSource::Defined if is_live(tir_index) => {
-                let i = next_defined;
-                next_defined += 1;
-                i
-            }
-            // Dead defined items get no MIR slot; sentinel value is never accessed.
-            tir::ItemSource::Defined => u32::MAX,
-            // Built-in items (compiler intrinsics) get no MIR slot.
-            tir::ItemSource::Intrinsic => u32::MAX,
-        };
+impl Layout {
+    fn ptr(ptr_size: PointerSize) -> Layout {
+        let n = ptr_size as u32;
+        Layout { size: n, align: n }
     }
 
-    tir_to_mir.into_boxed_slice()
+    fn pad_to_align(self) -> Self {
+        Layout {
+            size: (self.size + self.align - 1) & !(self.align - 1),
+            align: self.align,
+        }
+    }
 }
 
-/// A function is live if it has at least one access recorded in TIR.
-/// TIR pushes an access whenever a function is called, referenced, or exported,
-/// so `accesses.is_empty()` reliably identifies dead code.
-fn is_function_live(decl: &tir::DeclaredFunction) -> bool {
-    !decl.accesses.is_empty()
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub enum PointerSize {
+    Memory32 = 4,
+    Memory64 = 8,
+}
+
+/// Compute the memory layout of a type.
+///
+/// Fields of structs and tuples are sorted by alignment descending before
+/// computing padding, giving optimal (minimal) struct sizes.
+///
+/// Panics on `Error`, `Unknown`, `ImportModule`, `Enum`, or non-value types.
+pub fn compute_layout(
+    types: &[tir::Type],
+    structs: &[tir::Struct],
+    idx: tir::TypeIndex,
+    ptr_size: PointerSize,
+) -> Layout {
+    match &types[idx as usize] {
+        tir::Type::Unit | tir::Type::Never => Layout { size: 0, align: 1 },
+        tir::Type::I32 | tir::Type::U32 | tir::Type::F32 | tir::Type::Char => {
+            Layout { size: 4, align: 4 }
+        }
+        tir::Type::U8 | tir::Type::I8 => Layout { size: 1, align: 1 },
+        tir::Type::U16 | tir::Type::I16 => Layout { size: 2, align: 2 },
+        tir::Type::Bool => Layout { size: 1, align: 1 },
+        tir::Type::I64 | tir::Type::U64 | tir::Type::F64 => Layout { size: 8, align: 8 },
+        tir::Type::Pointer { .. } => Layout::ptr(ptr_size),
+        tir::Type::Slice { .. } => {
+            let p = ptr_size as u32;
+            Layout {
+                size: p * 2,
+                align: p,
+            }
+        }
+        tir::Type::Array { of, size, .. } => {
+            let elem = compute_layout(types, structs, *of, ptr_size).pad_to_align();
+            Layout {
+                size: elem.size * size,
+                align: elem.align,
+            }
+        }
+        tir::Type::Tuple { elements } => {
+            let mut indexed: Vec<(tir::TypeIndex, u32)> = elements
+                .iter()
+                .map(|&ty| (ty, compute_layout(types, structs, ty, ptr_size).align))
+                .collect();
+            indexed.sort_by(|a, b| b.1.cmp(&a.1));
+            let sorted: Vec<tir::TypeIndex> = indexed.into_iter().map(|(ty, _)| ty).collect();
+            aggregate_layout(types, structs, &sorted, ptr_size)
+        }
+        tir::Type::Struct { struct_index } => {
+            let si = *struct_index as usize;
+            let mut indexed: Vec<(tir::TypeIndex, u32)> = structs[si]
+                .fields
+                .iter()
+                .map(|f| {
+                    let align = compute_layout(types, structs, f.ty.inner, ptr_size).align;
+                    (f.ty.inner, align)
+                })
+                .collect();
+            indexed.sort_by(|a, b| b.1.cmp(&a.1));
+            let sorted: Vec<tir::TypeIndex> = indexed.into_iter().map(|(ty, _)| ty).collect();
+            aggregate_layout(types, structs, &sorted, ptr_size)
+        }
+        tir::Type::Function { .. } => Layout::ptr(ptr_size),
+        tir::Type::Error
+        | tir::Type::Unknown
+        | tir::Type::ImportModule { .. }
+        | tir::Type::Module { .. }
+        | tir::Type::Enum { .. }
+        | tir::Type::Memory { .. }
+        | tir::Type::Trait { .. } => panic!("compute_layout called on non-value type"),
+    }
+}
+
+/// C-style layout for an ordered sequence of field types.
+fn aggregate_layout(
+    types: &[tir::Type],
+    structs: &[tir::Struct],
+    fields: &[tir::TypeIndex],
+    ptr_size: PointerSize,
+) -> Layout {
+    let mut size: u32 = 0;
+    let mut align: u32 = 1;
+    for &field_idx in fields {
+        let field = compute_layout(types, structs, field_idx, ptr_size);
+        size = (size + field.align - 1) & !(field.align - 1);
+        size += field.size;
+        align = align.max(field.align);
+    }
+    size = (size + align - 1) & !(align - 1);
+    Layout { size, align }
+}
+
+/// Describes the permutation between an aggregate type's declaration order and
+/// its physical (alignment-sorted, padding-minimised) storage order.
+struct AggregateLayout {
+    /// `decl_to_phys[decl_index]` = physical slot index.
+    decl_to_phys: Box<[u32]>,
+    /// `phys_to_decl[phys_index]` = declaration index.
+    phys_to_decl: Box<[u32]>,
+}
+
+/// Compute the `AggregateLayout` for a struct or tuple type.
+///
+/// Fields/elements are sorted by alignment descending (stable, so equal-
+/// alignment fields keep their declaration order) to minimise padding.
+fn compute_field_order(
+    type_index: tir::TypeIndex,
+    types: &[tir::Type],
+    structs: &[tir::Struct],
+) -> AggregateLayout {
+    let decl_types: Box<[tir::TypeIndex]> = match &types[type_index as usize] {
+        tir::Type::Tuple { elements } => elements.clone(),
+        tir::Type::Struct { struct_index } => structs[*struct_index as usize]
+            .fields
+            .iter()
+            .map(|f| f.ty.inner)
+            .collect(),
+        _ => unreachable!("compute_layout called on non-aggregate type"),
+    };
+
+    let mut indexed: Vec<(u32, u32)> = decl_types
+        .iter()
+        .enumerate()
+        .map(|(decl, &ty)| {
+            let align = compute_layout(types, structs, ty, PointerSize::Memory32).align;
+            (decl as u32, align)
+        })
+        .collect();
+    indexed.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let phys_to_decl: Box<[u32]> = indexed.iter().map(|(decl, _)| *decl).collect();
+    let mut decl_to_phys = vec![0u32; decl_types.len()];
+    for (phys, &decl) in phys_to_decl.iter().enumerate() {
+        decl_to_phys[decl as usize] = phys as u32;
+    }
+
+    AggregateLayout {
+        decl_to_phys: decl_to_phys.into_boxed_slice(),
+        phys_to_decl,
+    }
+}
+
+struct LayoutCache {
+    map: HashMap<tir::TypeIndex, AggregateLayout>,
+}
+
+impl LayoutCache {
+    fn new() -> Self {
+        LayoutCache {
+            map: HashMap::new(),
+        }
+    }
+
+    fn get_or_compute(
+        &mut self,
+        type_index: tir::TypeIndex,
+        types: &[tir::Type],
+        structs: &[tir::Struct],
+    ) -> &AggregateLayout {
+        self.map
+            .entry(type_index)
+            .or_insert_with(|| compute_field_order(type_index, types, structs))
+    }
 }
 
 impl MIR {
     pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
-        let import_count = tir
-            .declared_functions
-            .iter()
-            .filter(|f| f.source == tir::ItemSource::Imported)
-            .count() as u32;
-        let func_index_remap = build_index_remap_filtered(
-            import_count,
-            &tir.declared_functions,
-            |f| f.source,
-            |tir_index| is_function_live(&tir.declared_functions[tir_index]),
-        );
-        let global_index_remap = build_index_remap(
-            (tir.declared_globals.len() - tir.defined_globals.len()) as u32,
-            &tir.declared_globals,
-            |g| g.source,
-        );
 
-        // TODO: check why are there dublicated signatures after building MIR
-        // Signatures live in the type pool as Type::Function variants.
-        // Build the remap first so lower_function/lower_type_index can use it.
-        let sig_type_indices: Vec<u32> = {
-            let mut entries: Vec<u32> = tir
-                .type_pool
-                .iter()
-                .enumerate()
-                .filter(|(_, ty)| matches!(ty, tir::Type::Function { .. }))
-                .map(|(i, _)| i as u32)
-                .collect();
-            entries.sort_unstable();
-            entries
-        };
+        // Memory index remap: each memory's DefId → its position in tir.memories
+        // which equals the WebAssembly linear-memory index.
+        let memory_id_remap: HashMap<ast::DefId, u32> = tir
+            .memories
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.id, i as u32))
+            .collect();
+
+        // Signatures live in the type pool as Type::Function entries.
+        let sig_type_indices: Vec<u32> = tir
+            .type_pool
+            .iter()
+            .enumerate()
+            .filter(|(_, ty)| matches!(ty, tir::Type::Function { .. }))
+            .map(|(i, _)| i as u32)
+            .collect();
         let sig_index_remap: HashMap<u32, u32> = sig_type_indices
             .iter()
             .enumerate()
@@ -455,81 +592,59 @@ impl MIR {
             interner,
             string_pool: StringPool::new(),
             aggregate_pool: AggregatePool::new(),
-            func_index_remap,
-            global_index_remap,
+            layout_cache: LayoutCache::new(),
+            memory_id_remap,
             sig_index_remap,
             current_substitutions: Box::new([]),
         };
 
-        // Only lower functions whose body was successfully built (body compilation
-        // can fail if TIR encountered errors, leaving them in declared_functions
-        // Only lower live functions (dead code elimination via TIR access tracking).
-        // Also skip functions whose body failed to compile (present in
-        // declared_functions as Defined but absent from defined_functions).
-        let functions = tir
-            .declared_functions
-            .iter()
-            .enumerate()
-            .filter(|(_, decl)| decl.source == tir::ItemSource::Defined && is_function_live(decl))
-            .filter_map(
-                |(tir_index, _)| match tir.defined_functions.get(&(tir_index as u32))? {
-                    tir::DefinedFunction::Concrete(func) => {
-                        let mut mir_func = builder.lower_function(func);
-                        mir_func.inline = func.is_inline();
-                        Some(mir_func)
-                    }
-                    tir::DefinedFunction::Template {
-                        template_func,
-                        substitutions,
-                    } => {
-                        let template_func = *template_func;
-                        builder.current_substitutions = substitutions.clone();
-                        let func = match tir.defined_functions.get(&template_func)? {
-                            tir::DefinedFunction::Concrete(f) => f,
-                            _ => return None,
-                        };
-                        let mut mir_func = builder.lower_function(func);
-                        mir_func.inline = true;
-                        builder.current_substitutions = Box::new([]);
-                        Some(mir_func)
-                    }
-                },
-            )
-            .collect();
+        // MIR functions: live defined (Internal) functions only.
+        // Wasm index ordering (imports first) is codegen's responsibility.
+        let mut functions: Vec<Function> = Vec::new();
+        let mut inline_functions: HashSet<ast::DefId> = HashSet::new();
+        for func in &tir.functions {
+            if func.source == tir::ItemSource::Internal
+                && func.body.is_some()
+                && !func.accesses.is_empty()
+                && func.origin != tir::FunctionOrigin::Trait
+            {
+                if func
+                    .attributes
+                    .iter()
+                    .any(|a| *a == tir::FunctionAttribute::Inline)
+                {
+                    inline_functions.insert(func.id);
+                }
+                functions.push(builder.lower_function(func));
+            }
+        }
 
-        let globals = tir
-            .declared_globals
+        let globals: Vec<Global> = tir
+            .globals
             .iter()
-            .enumerate()
-            .filter(|(_, decl)| decl.source == tir::ItemSource::Defined)
-            .map(|(tir_index, _)| {
-                let global = tir.defined_globals.get(&(tir_index as u32)).unwrap();
-                builder.lower_global(global)
-            })
+            .filter(|g| g.source == tir::ItemSource::Internal && g.value.is_some())
+            .map(|g| builder.lower_global(g))
             .collect();
 
         let signatures = sig_type_indices
             .iter()
-            .map(|&type_idx| match tir.type_pool[type_idx as usize].clone() {
-                tir::Type::Function {
-                    items,
-                    params_count,
-                } => {
-                    let lowered_items = items
+            .map(|&type_idx| match &tir.type_pool[type_idx as usize] {
+                tir::Type::Function { signature } => FunctionSignature {
+                    items: signature
+                        .params()
                         .iter()
+                        .chain(std::iter::once(&signature.result()))
                         .map(|&idx| builder.lower_type_index(idx))
-                        .collect();
-                    FunctionSignature {
-                        items: lowered_items,
-                        params_count,
-                    }
-                }
+                        .collect(),
+                    params_count: signature.params().len(),
+                },
                 _ => unreachable!(),
             })
             .collect();
 
         let mut mir = MIR {
             functions,
+            inline_functions,
             globals,
             strings: builder.string_pool.strings.into_boxed_slice(),
             signatures,
@@ -546,32 +661,33 @@ impl MIR {
                         .lookup
                         .iter()
                         .map(|(symbol, value)| match value {
-                            tir::ImportValue::Function { func_index } => {
-                                let tir_sig_index =
-                                    tir.declared_functions[*func_index as usize].signature_index;
-                                let signature_index = builder.sig_index_remap[&tir_sig_index];
+                            tir::ImportValue::Function { id } => {
+                                let tir_idx = tir.function_index_lookup[id];
+                                let tir_func = &tir.functions[tir_idx as usize];
+                                let signature_index =
+                                    builder.sig_index_remap[&tir_func.signature_index];
                                 ImportModuleItem::Function {
                                     name: *symbol,
-                                    func_index: builder.func_index_remap[*func_index as usize],
+                                    id: *id,
                                     signature_index,
                                 }
                             }
-                            tir::ImportValue::Global { global_index } => ImportModuleItem::Global {
+                            tir::ImportValue::Global { id } => ImportModuleItem::Global {
                                 name: *symbol,
-                                global_index: builder.global_index_remap[*global_index as usize],
+                                id: *id,
                             },
-                            tir::ImportValue::Memory { memory_index } => ImportModuleItem::Memory {
+                            tir::ImportValue::Memory { id } => ImportModuleItem::Memory {
                                 name: *symbol,
-                                memory_index: *memory_index,
+                                memory_index: builder.memory_id_remap[id],
                             },
                         })
                         .collect(),
                 })
                 .collect(),
             memories: tir
-                .declared_memories
+                .memories
                 .iter()
-                .filter(|m| m.source == tir::ItemSource::Defined)
+                .filter(|m| m.source == tir::ItemSource::Internal)
                 .map(|m| m.kind)
                 .collect(),
             exports: {
@@ -580,33 +696,33 @@ impl MIR {
                     .values()
                     .map(|export| match export {
                         tir::ExportItem::Function {
-                            func_index,
+                            id,
                             external_name,
                             internal_name,
                         } => ExportItem::Function {
-                            func_index: builder.func_index_remap[*func_index as usize],
+                            id: *id,
                             name: external_name
                                 .clone()
                                 .map(|n| n.inner)
                                 .unwrap_or(internal_name.inner),
                         },
                         tir::ExportItem::Global {
-                            global_index,
+                            id,
                             external_name,
                             internal_name,
                         } => ExportItem::Global {
-                            global_index: builder.global_index_remap[*global_index as usize],
+                            id: *id,
                             name: external_name
                                 .clone()
                                 .map(|n| n.inner)
                                 .unwrap_or(internal_name.inner),
                         },
                         tir::ExportItem::Memory {
-                            memory_index,
+                            id,
                             external_name,
                             internal_name,
                         } => ExportItem::Memory {
-                            memory_index: *memory_index,
+                            memory_index: builder.memory_id_remap[id],
                             name: external_name
                                 .clone()
                                 .map(|n| n.inner)
@@ -658,8 +774,9 @@ struct Builder<'tir> {
     interner: &'tir ast::StringInterner,
     string_pool: StringPool,
     aggregate_pool: AggregatePool,
-    func_index_remap: Box<[u32]>,
-    global_index_remap: Box<[u32]>,
+    layout_cache: LayoutCache,
+    /// DefId → index in tir.memories (= WebAssembly memory index).
+    memory_id_remap: HashMap<ast::DefId, u32>,
     sig_index_remap: HashMap<tir::TypeIndex, SignatureIndex>,
     current_substitutions: Box<[(tir::TypeIndex, tir::TypeIndex)]>,
 }
@@ -705,18 +822,35 @@ impl<'tir> Builder<'tir> {
             }
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index } => {
-                let fields: Box<[Type]> = self.tir.structs[struct_index as usize]
+                let si = struct_index as usize;
+                let decl_types: Vec<tir::TypeIndex> = self.tir.structs[si]
                     .fields
                     .iter()
-                    .map(|f| self.lower_type_index(f.ty.inner))
+                    .map(|f| f.ty.inner)
+                    .collect();
+                let phys_to_decl = self
+                    .layout_cache
+                    .get_or_compute(type_idx, &self.tir.type_pool, &self.tir.structs)
+                    .phys_to_decl
+                    .to_vec();
+                let fields: Box<[Type]> = phys_to_decl
+                    .iter()
+                    .map(|&decl| self.lower_type_index(decl_types[decl as usize]))
                     .collect();
                 let aggregate_index = self.aggregate_pool.add(Aggregate { values: fields });
                 Type::Aggregate { aggregate_index }
             }
             tir::Type::Tuple { elements } => {
-                let fields: Box<[Type]> = elements
+                let elements = elements.to_vec();
+                let phys_to_decl = self
+                    .layout_cache
+                    .get_or_compute(type_idx, &self.tir.type_pool, &self.tir.structs)
+                    .phys_to_decl
+                    .to_vec();
+
+                let fields: Box<[Type]> = phys_to_decl
                     .iter()
-                    .map(|&elem_idx| self.lower_type_index(elem_idx))
+                    .map(|&decl| self.lower_type_index(elements[decl as usize]))
                     .collect();
                 let aggregate_index = self.aggregate_pool.add(Aggregate { values: fields });
                 Type::Aggregate { aggregate_index }
@@ -733,13 +867,17 @@ impl<'tir> Builder<'tir> {
             .map(|(_, to)| *to)
             .unwrap_or(type_idx);
         match self.tir.type_pool[resolved as usize] {
-            tir::Type::Memory { memory_index, .. } => memory_index,
+            tir::Type::Memory { id, .. } => self.memory_id_remap[&id],
             _ => unreachable!("intrinsic argument is not a Memory type"),
         }
     }
 
     fn lower_function(&mut self, func: &tir::Function) -> Function {
-        let frame = func
+        let body = func
+            .body
+            .as_ref()
+            .expect("lower_function called on bodyless function");
+        let frame = body
             .stack
             .scopes
             .iter()
@@ -772,13 +910,22 @@ impl<'tir> Builder<'tir> {
         };
 
         let mut top_sink = Vec::new();
-        let block = self.lower_expression(&mut ctx, &func.block, &mut top_sink);
+        let block = self.lower_expression(&mut ctx, &body.block, &mut top_sink);
+
+        let callers: Box<[ast::DefId]> = func
+            .accesses
+            .iter()
+            .filter_map(|a| a.caller)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
 
         Function {
+            id: func.id,
             signature_index: self.sig_index_remap[&func.signature_index],
             scopes: ctx.frame,
             block,
-            inline: false,
+            callers,
         }
     }
 
@@ -787,15 +934,20 @@ impl<'tir> Builder<'tir> {
             frame: Vec::new(),
             current_scope_index: 0,
         };
+        let value_expr = global
+            .value
+            .as_ref()
+            .expect("lower_global called on global without value");
 
         Global {
+            id: global.id,
             ty: self.lower_type_index(global.ty.inner),
             mutability: if global.mut_span.is_some() {
                 Mutability::Mutable
             } else {
                 Mutability::Immutable
             },
-            value: self.lower_expression(&mut dummy_ctx, &global.value.inner, &mut Vec::new()),
+            value: self.lower_expression(&mut dummy_ctx, &value_expr.inner, &mut Vec::new()),
         }
     }
 
@@ -827,9 +979,9 @@ impl<'tir> Builder<'tir> {
                 kind: ExprKind::Bool { value: *value },
                 ty: Type::Bool,
             },
-            tir::ExprKind::Global { global_index } => Expression {
+            tir::ExprKind::Global { id } => Expression {
                 kind: ExprKind::Global {
-                    global_index: self.global_index_remap[*global_index as usize],
+                    id: *id,
                 },
                 ty: self.lower_type_index(expr.ty),
             },
@@ -843,10 +995,8 @@ impl<'tir> Builder<'tir> {
                 },
                 ty: self.lower_type_index(expr.ty),
             },
-            tir::ExprKind::Function { func_index } => Expression {
-                kind: ExprKind::Function {
-                    func_index: self.func_index_remap[*func_index as usize],
-                },
+            tir::ExprKind::Function { id } => Expression {
+                kind: ExprKind::Function { id: *id },
                 ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Char { value } => Expression {
@@ -893,30 +1043,34 @@ impl<'tir> Builder<'tir> {
             }
             tir::ExprKind::Call { callee, arguments } => {
                 // Detect calls to intrinsic functions (e.g. wasm::memory32_grow).
-                // TIR resolves module::fn directly to ExprKind::Function { func_index }.
-                if let tir::ExprKind::Function { func_index } = &callee.kind {
-                    let decl = &self.tir.declared_functions[*func_index as usize];
-                    if decl.source == tir::ItemSource::Intrinsic {
-                        // `interner` and `tir` live for `'tir`, so these refs outlive &mut self borrows below.
-                        let intrinsic_name = self.interner.resolve(decl.name.inner).unwrap();
+                // TIR resolves module::fn directly to ExprKind::Function { id }.
+                if let tir::ExprKind::Function { id } = &callee.kind {
+                    let tir_idx = self.tir.function_index_lookup[id];
+                    let tir_func = &self.tir.functions[tir_idx as usize];
+                    if tir_func
+                        .attributes
+                        .iter()
+                        .any(|a| *a == tir::FunctionAttribute::Intrinsic)
+                    {
+                        let intrinsic_name = self.interner.resolve(tir_func.name.inner).unwrap();
                         let result_ty = self.lower_type_index(expr.ty);
                         return match intrinsic_name {
                             "memory32_size" => {
-                                let memory_index =
-                                    self.memory_index_from_arg(arguments[0].ty);
+                                let memory_index = self.memory_index_from_arg(arguments[0].ty);
                                 Expression {
                                     kind: ExprKind::MemorySize { memory_index },
                                     ty: result_ty,
                                 }
                             }
                             "memory32_grow" => {
-                                let memory_index =
-                                    self.memory_index_from_arg(arguments[0].ty);
-                                let delta = Box::new(
-                                    self.lower_expression(func_ctx, &arguments[1], sink),
-                                );
+                                let memory_index = self.memory_index_from_arg(arguments[0].ty);
+                                let delta =
+                                    Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
                                 Expression {
-                                    kind: ExprKind::MemoryGrow { memory_index, delta },
+                                    kind: ExprKind::MemoryGrow {
+                                        memory_index,
+                                        delta,
+                                    },
                                     ty: result_ty,
                                 }
                             }
@@ -938,16 +1092,17 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::MethodCall {
                 object,
                 arguments,
-                func_index,
+                id,
             } => {
                 if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty as usize] {
                     let memory_index = match &object.kind {
-                        tir::ExprKind::Memory { memory_index } => *memory_index,
+                        tir::ExprKind::Memory { id } => self.memory_id_remap[id],
                         _ => unreachable!("memory method call on non-memory expression"),
                     };
+                    let tir_idx = self.tir.function_index_lookup[id];
                     let method_name = self
                         .interner
-                        .resolve(self.tir.declared_functions[*func_index as usize].name.inner)
+                        .resolve(self.tir.functions[tir_idx as usize].name.inner)
                         .unwrap_or("");
                     let result_ty = self.lower_type_index(expr.ty);
                     return match method_name {
@@ -970,10 +1125,10 @@ impl<'tir> Builder<'tir> {
                     };
                 }
 
+                let tir_idx = self.tir.function_index_lookup[id];
+                let tir_func = &self.tir.functions[tir_idx as usize];
                 let callee = Box::new(Expression {
-                    kind: ExprKind::Function {
-                        func_index: self.func_index_remap[*func_index as usize],
-                    },
+                    kind: ExprKind::Function { id: tir_func.id },
                     ty: self.lower_type_index(expr.ty),
                 });
                 let object = self.lower_expression(func_ctx, object, sink);
@@ -1009,15 +1164,13 @@ impl<'tir> Builder<'tir> {
                             .get(&member.inner)
                             .expect("unknown import member")
                         {
-                            tir::ImportValue::Function { func_index } => Expression {
-                                kind: ExprKind::Function {
-                                    func_index: self.func_index_remap[*func_index as usize],
-                                },
+                            tir::ImportValue::Function { id } => Expression {
+                                kind: ExprKind::Function { id: *id },
                                 ty: self.lower_type_index(expr.ty),
                             },
-                            tir::ImportValue::Global { global_index } => Expression {
+                            tir::ImportValue::Global { id } => Expression {
                                 kind: ExprKind::Global {
-                                    global_index: *global_index,
+                                    id: *id,
                                 },
                                 ty: self.lower_type_index(expr.ty),
                             },
@@ -1028,8 +1181,8 @@ impl<'tir> Builder<'tir> {
                             }
                         }
                     }
-                    tir::Type::Memory { memory_index, .. } => {
-                        let memory_index = *memory_index;
+                    tir::Type::Memory { id, .. } => {
+                        let memory_index = self.memory_id_remap[id];
                         let member_name = self.interner.resolve(member.inner).unwrap();
                         let result_ty = self.lower_type_index(expr.ty);
                         match member_name {
@@ -1055,12 +1208,12 @@ impl<'tir> Builder<'tir> {
                             .expect("unresolved impl member in MIR lowering");
                         match entry {
                             tir::ImplEntry::AssociatedConst { .. } => {
-                                let member_name = self.interner.resolve(member.inner).unwrap_or("");
-                                let layout = tir::compute_layout(
-                                    self.tir.type_pool.as_slice(),
+                                let member_name = self.interner.resolve(member.inner).unwrap();
+                                let layout = compute_layout(
+                                    &self.tir.type_pool,
                                     &self.tir.structs,
                                     ty.inner,
-                                    tir::PointerSize::P32,
+                                    PointerSize::Memory32,
                                 );
                                 let value = match member_name {
                                     "SIZE" => layout.size as i64,
@@ -1082,7 +1235,7 @@ impl<'tir> Builder<'tir> {
                 if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty as usize] {
                     let member_name = self.interner.resolve(member.inner).unwrap_or("");
                     let memory_index = match &object.kind {
-                        tir::ExprKind::Memory { memory_index } => *memory_index,
+                        tir::ExprKind::Memory { id } => self.memory_id_remap[id],
                         _ => unreachable!("memory member access on non-memory expression"),
                     };
                     return match member_name {
@@ -1101,8 +1254,11 @@ impl<'tir> Builder<'tir> {
                     tir::Type::Struct { struct_index } => *struct_index,
                     _ => unreachable!("ObjectAccess on non-struct type"),
                 };
-                let field_index =
-                    self.tir.structs[struct_index as usize].lookup[&member.inner] as u32;
+                let decl_index = self.tir.structs[struct_index as usize].lookup[&member.inner];
+                let phys_index = self
+                    .layout_cache
+                    .get_or_compute(object.ty, &self.tir.type_pool, &self.tir.structs)
+                    .decl_to_phys[decl_index];
                 let field_ty = self.lower_type_index(expr.ty);
 
                 match &object.kind {
@@ -1113,7 +1269,7 @@ impl<'tir> Builder<'tir> {
                         kind: ExprKind::AggregateGet {
                             scope_index: *scope_index,
                             local_index: *local_index,
-                            value_index: field_index,
+                            value_index: phys_index,
                         },
                         ty: field_ty,
                     },
@@ -1140,7 +1296,7 @@ impl<'tir> Builder<'tir> {
                             kind: ExprKind::AggregateGet {
                                 scope_index: 0,
                                 local_index: temp_idx,
-                                value_index: field_index,
+                                value_index: phys_index,
                             },
                             ty: field_ty,
                         }
@@ -1148,13 +1304,89 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::StructInit { fields, .. } => {
-                let mir_fields: Box<[Expression]> = fields
-                    .iter()
-                    .map(|f| self.lower_expression(func_ctx, f, sink))
-                    .collect();
+                // TIR stores fields in declaration order; permute to physical order.
+                let decl_to_phys = self
+                    .layout_cache
+                    .get_or_compute(expr.ty, &self.tir.type_pool, &self.tir.structs)
+                    .decl_to_phys
+                    .to_vec();
+                let mut phys_slots: Vec<Option<Expression>> =
+                    (0..fields.len()).map(|_| None).collect();
+                for (decl, field) in fields.iter().enumerate() {
+                    let phys = decl_to_phys[decl] as usize;
+                    phys_slots[phys] = Some(self.lower_expression(func_ctx, field, sink));
+                }
+                let mir_fields: Box<[Expression]> =
+                    phys_slots.into_iter().map(|e| e.unwrap()).collect();
                 Expression {
                     kind: ExprKind::Aggregate { values: mir_fields },
                     ty: self.lower_type_index(expr.ty),
+                }
+            }
+            tir::ExprKind::TupleInit { elements } => {
+                // Same reordering as StructInit: declaration order → physical (alignment-sorted) order.
+                let decl_to_phys = self
+                    .layout_cache
+                    .get_or_compute(expr.ty, &self.tir.type_pool, &self.tir.structs)
+                    .decl_to_phys
+                    .to_vec();
+                let mut phys_slots: Vec<Option<Expression>> =
+                    (0..elements.len()).map(|_| None).collect();
+                for (decl, elem) in elements.iter().enumerate() {
+                    let phys = decl_to_phys[decl] as usize;
+                    phys_slots[phys] = Some(self.lower_expression(func_ctx, elem, sink));
+                }
+                let mir_elems: Box<[Expression]> =
+                    phys_slots.into_iter().map(|e| e.unwrap()).collect();
+                Expression {
+                    kind: ExprKind::Aggregate { values: mir_elems },
+                    ty: self.lower_type_index(expr.ty),
+                }
+            }
+            tir::ExprKind::TupleFieldAccess { object, field_index } => {
+                let phys_index = self
+                    .layout_cache
+                    .get_or_compute(object.ty, &self.tir.type_pool, &self.tir.structs)
+                    .decl_to_phys[*field_index as usize];
+                let field_ty = self.lower_type_index(expr.ty);
+
+                match &object.kind {
+                    tir::ExprKind::Local { scope_index, local_index } => Expression {
+                        kind: ExprKind::AggregateGet {
+                            scope_index: *scope_index,
+                            local_index: *local_index,
+                            value_index: phys_index,
+                        },
+                        ty: field_ty,
+                    },
+                    _ => {
+                        let object_ty = self.lower_type_index(object.ty);
+                        let object_lowered = self.lower_expression(func_ctx, object, sink);
+
+                        let temp_idx = func_ctx.frame[0].locals.len() as u32;
+                        func_ctx.frame[0].locals.push(Local {
+                            ty: object_ty,
+                            mutability: Mutability::Immutable,
+                        });
+
+                        sink.push(Expression {
+                            kind: ExprKind::LocalSet {
+                                scope_index: 0,
+                                local_index: temp_idx,
+                                value: Box::new(object_lowered),
+                            },
+                            ty: Type::Unit,
+                        });
+
+                        Expression {
+                            kind: ExprKind::AggregateGet {
+                                scope_index: 0,
+                                local_index: temp_idx,
+                                value_index: phys_index,
+                            },
+                            ty: field_ty,
+                        }
+                    }
                 }
             }
             tir::ExprKind::IfElse {
@@ -1375,8 +1607,8 @@ impl<'tir> Builder<'tir> {
                 local_index: *local_index,
                 value: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
-            tir::ExprKind::Global { global_index } => ExprKind::GlobalSet {
-                global_index: self.global_index_remap[*global_index as usize],
+            tir::ExprKind::Global { id } => ExprKind::GlobalSet {
+                id: *id,
                 value: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
             _ => unreachable!(),
@@ -1443,8 +1675,8 @@ impl<'tir> Builder<'tir> {
                 local_index: *local_index,
                 value: Box::new(binary_expr),
             },
-            tir::ExprKind::Global { global_index } => ExprKind::GlobalSet {
-                global_index: self.global_index_remap[*global_index as usize],
+            tir::ExprKind::Global { id } => ExprKind::GlobalSet {
+                id: *id,
                 value: Box::new(binary_expr),
             },
             _ => unreachable!(),
@@ -1532,11 +1764,8 @@ fn rewrite_body(
         ExprKind::Eqz { value } => ExprKind::Eqz {
             value: rw_box(value),
         },
-        ExprKind::GlobalSet {
-            global_index,
-            value,
-        } => ExprKind::GlobalSet {
-            global_index,
+        ExprKind::GlobalSet { id, value } => ExprKind::GlobalSet {
+            id,
             value: rw_box(value),
         },
         ExprKind::Aggregate { values: fields } => ExprKind::Aggregate {
@@ -1652,7 +1881,7 @@ fn rewrite_body(
 /// Substitutes a direct call at the call site with the callee's body inlined
 /// into the caller. Appends the required scopes to `caller_scopes`.
 fn inline_call(
-    callee: Function,
+    callee: &Function,
     arguments: Box<[Expression]>,
     caller_scopes: &mut Vec<BlockScope>,
 ) -> Expression {
@@ -1669,7 +1898,7 @@ fn inline_call(
 
     // Callee's scopes follow the wrapper.  Offset their parent pointers.
     let body_scope_offset = caller_scopes.len() as ScopeIndex;
-    for scope in callee.scopes {
+    for scope in callee.scopes.iter().cloned() {
         caller_scopes.push(BlockScope {
             parent: scope.parent.map(|p| p + body_scope_offset),
             ..scope
@@ -1692,7 +1921,7 @@ fn inline_call(
         })
         .collect();
 
-    exprs.push(rewrite_body(callee.block, body_scope_offset, wrapper_scope));
+    exprs.push(rewrite_body(callee.block.clone(), body_scope_offset, wrapper_scope));
 
     Expression {
         ty: result_ty,
@@ -1703,9 +1932,14 @@ fn inline_call(
     }
 }
 
-/// Walks `expr` in-place (post-order) and replaces every direct call to an
-/// `#[inline]` function with its inlined body.
-fn inline_expr(expr: &mut Expression, caller_scopes: &mut Vec<BlockScope>, functions: &[Function]) {
+/// Walks `expr` in-place (post-order) and replaces every direct call to
+/// `inline_id` with `inline_body` inlined at the call site.
+fn inline_expr(
+    expr: &mut Expression,
+    caller_scopes: &mut Vec<BlockScope>,
+    inline_id: ast::DefId,
+    inline_body: &Function,
+) {
     // Recurse into all children first.
     match &mut expr.kind {
         ExprKind::LocalSet { value, .. }
@@ -1713,23 +1947,23 @@ fn inline_expr(expr: &mut Expression, caller_scopes: &mut Vec<BlockScope>, funct
         | ExprKind::Drop { value }
         | ExprKind::Neg { value }
         | ExprKind::BitNot { value }
-        | ExprKind::Eqz { value } => inline_expr(value, caller_scopes, functions),
+        | ExprKind::Eqz { value } => inline_expr(value, caller_scopes, inline_id, inline_body),
 
         ExprKind::Aggregate { values: fields } => {
             for e in fields.iter_mut() {
-                inline_expr(e, caller_scopes, functions);
+                inline_expr(e, caller_scopes, inline_id, inline_body);
             }
         }
         ExprKind::Block { expressions, .. } => {
             for e in expressions.iter_mut() {
-                inline_expr(e, caller_scopes, functions);
+                inline_expr(e, caller_scopes, inline_id, inline_body);
             }
         }
-        ExprKind::Loop { block, .. } => inline_expr(block, caller_scopes, functions),
+        ExprKind::Loop { block, .. } => inline_expr(block, caller_scopes, inline_id, inline_body),
 
         ExprKind::Break { value, .. } | ExprKind::Return { value } => {
             if let Some(v) = value {
-                inline_expr(v, caller_scopes, functions);
+                inline_expr(v, caller_scopes, inline_id, inline_body);
             }
         }
         ExprKind::IfElse {
@@ -1737,16 +1971,16 @@ fn inline_expr(expr: &mut Expression, caller_scopes: &mut Vec<BlockScope>, funct
             then_block,
             else_block,
         } => {
-            inline_expr(condition, caller_scopes, functions);
-            inline_expr(then_block, caller_scopes, functions);
+            inline_expr(condition, caller_scopes, inline_id, inline_body);
+            inline_expr(then_block, caller_scopes, inline_id, inline_body);
             if let Some(e) = else_block {
-                inline_expr(e, caller_scopes, functions);
+                inline_expr(e, caller_scopes, inline_id, inline_body);
             }
         }
         ExprKind::Call { callee, arguments } => {
-            inline_expr(callee, caller_scopes, functions);
+            inline_expr(callee, caller_scopes, inline_id, inline_body);
             for a in arguments.iter_mut() {
-                inline_expr(a, caller_scopes, functions);
+                inline_expr(a, caller_scopes, inline_id, inline_body);
             }
         }
         ExprKind::Add { left, right }
@@ -1767,10 +2001,12 @@ fn inline_expr(expr: &mut Expression, caller_scopes: &mut Vec<BlockScope>, funct
         | ExprKind::BitXor { left, right }
         | ExprKind::LeftShift { left, right }
         | ExprKind::RightShift { left, right } => {
-            inline_expr(left, caller_scopes, functions);
-            inline_expr(right, caller_scopes, functions);
+            inline_expr(left, caller_scopes, inline_id, inline_body);
+            inline_expr(right, caller_scopes, inline_id, inline_body);
         }
-        ExprKind::MemoryGrow { delta, .. } => inline_expr(delta, caller_scopes, functions),
+        ExprKind::MemoryGrow { delta, .. } => {
+            inline_expr(delta, caller_scopes, inline_id, inline_body)
+        }
         // Leaf variants — nothing to recurse into.
         ExprKind::Noop
         | ExprKind::Bool { .. }
@@ -1787,48 +2023,142 @@ fn inline_expr(expr: &mut Expression, caller_scopes: &mut Vec<BlockScope>, funct
         | ExprKind::MemorySize { .. } => {}
     }
 
-    // After children are processed, check if this node is an inlinable call.
-    let func_index = match &expr.kind {
-        ExprKind::Call { callee, .. } => match callee.kind {
-            ExprKind::Function { func_index } => func_index,
+    // After children are processed, check if this node is a call to inline_id.
+    let id = match &expr.kind {
+        ExprKind::Call { callee, .. } => match &callee.kind {
+            ExprKind::Function { id } => *id,
             _ => return,
         },
         _ => return,
     };
-    let f = func_index as usize;
-    if f >= functions.len() || !functions[f].inline {
+    if id != inline_id {
         return;
     }
 
-    // Extract the arguments, then replace the expression with the inlined body.
     let arguments = match std::mem::replace(&mut expr.kind, ExprKind::Noop) {
         ExprKind::Call { arguments, .. } => arguments,
         _ => unreachable!(),
     };
-    *expr = inline_call(functions[f].clone(), arguments, caller_scopes);
+    *expr = inline_call(inline_body, arguments, caller_scopes);
 }
 
-/// Runs one shallow inlining pass over all function bodies in `mir`.
-/// Every direct call to a function marked `#[inline]` is replaced with that
-/// function's body (one level deep — calls within the inlined body are not
-/// further expanded).
-pub fn run_inlining_pass(mir: &mut MIR) {
-    let placeholder = Function {
-        signature_index: 0,
-        scopes: vec![],
-        block: Expression {
-            kind: ExprKind::Noop,
-            ty: Type::Unit,
-        },
-        inline: false,
-    };
-    for i in 0..mir.functions.len() {
-        // Swap the function out so we can borrow the rest of `mir.functions`
-        // immutably for reading callee bodies while mutating this function.
-        let mut func = std::mem::replace(&mut mir.functions[i], placeholder.clone());
-        inline_expr(&mut func.block, &mut func.scopes, &mir.functions);
-        mir.functions[i] = func;
+/// Directed call graph over MIR function `DefId`s.
+///
+/// Built from the `callers` field on each `Function` (derived from TIR
+/// accesses during lowering) — no expression-tree walk required.
+struct CallGraph {
+    /// `callees[A]` = functions that A calls.
+    callees: HashMap<ast::DefId, HashSet<ast::DefId>>,
+    /// `callers[A]` = functions that call A.
+    callers: HashMap<ast::DefId, HashSet<ast::DefId>>,
+}
+
+impl CallGraph {
+    fn build(functions: &[Function]) -> Self {
+        let mut callees: HashMap<ast::DefId, HashSet<ast::DefId>> =
+            HashMap::with_capacity(functions.len());
+        let mut callers: HashMap<ast::DefId, HashSet<ast::DefId>> =
+            HashMap::with_capacity(functions.len());
+        for f in functions {
+            callees.insert(f.id, HashSet::new());
+            callers.insert(f.id, HashSet::new());
+        }
+
+        for func in functions {
+            for &caller_id in func.callers.iter() {
+                if let Some(caller_callees) = callees.get_mut(&caller_id) {
+                    caller_callees.insert(func.id);
+                    callers.get_mut(&func.id).unwrap().insert(caller_id);
+                }
+            }
+        }
+
+        CallGraph { callees, callers }
     }
+}
+
+/// Inlines all `#[inline]` functions in topological order, then removes
+/// unreachable functions via dead code elimination from export roots.
+pub fn run_inlining_pass(mir: &mut MIR) {
+    let mut graph = CallGraph::build(&mir.functions);
+
+    // DefId → index in mir.functions for O(1) mutation during inlining.
+    let func_idx: HashMap<ast::DefId, usize> = mir
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.id, i))
+        .collect();
+
+    // Kahn's algorithm on the inline subgraph:
+    // in-degree = number of inline callees not yet processed.
+    let mut inline_callee_count: HashMap<ast::DefId, usize> = mir
+        .inline_functions
+        .iter()
+        .map(|&id| {
+            let count = graph.callees[&id]
+                .iter()
+                .filter(|c| mir.inline_functions.contains(c))
+                .count();
+            (id, count)
+        })
+        .collect();
+
+    let mut queue: VecDeque<ast::DefId> = inline_callee_count
+        .iter()
+        .filter(|(_, n)| **n == 0)
+        .map(|(&id, _)| id)
+        .collect();
+
+    while let Some(f_id) = queue.pop_front() {
+        // f's body is clean: all of its inline callees were processed first.
+        // Clone once here; inline_call will clone scopes+block again per call site.
+        let f_body = mir.functions[func_idx[&f_id]].clone();
+
+        let caller_ids: Vec<ast::DefId> = graph.callers[&f_id].iter().copied().collect();
+        for caller_id in caller_ids {
+            let ci = func_idx[&caller_id];
+            let caller_func = &mut mir.functions[ci];
+            inline_expr(&mut caller_func.block, &mut caller_func.scopes, f_id, &f_body);
+
+            // Update graph: remove caller → f, propagate f's callees to caller.
+            graph.callees.get_mut(&caller_id).unwrap().remove(&f_id);
+            graph.callers.get_mut(&f_id).unwrap().remove(&caller_id);
+            let f_callees: Vec<ast::DefId> = graph.callees[&f_id].iter().copied().collect();
+            for callee_id in f_callees {
+                graph.callees.get_mut(&caller_id).unwrap().insert(callee_id);
+                graph.callers.get_mut(&callee_id).unwrap().insert(caller_id);
+            }
+
+            // If caller is also inline, one of its pending inline callees is done.
+            if let Some(count) = inline_callee_count.get_mut(&caller_id) {
+                *count -= 1;
+                if *count == 0 {
+                    queue.push_back(caller_id);
+                }
+            }
+        }
+        // graph.callers[f_id] is now empty — f is dead.
+    }
+
+    // Dead code elimination: BFS from exported function roots.
+    let mut live: HashSet<ast::DefId> = mir
+        .exports
+        .iter()
+        .filter_map(|e| match e {
+            ExportItem::Function { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let mut dce_queue: VecDeque<ast::DefId> = live.iter().copied().collect();
+    while let Some(id) = dce_queue.pop_front() {
+        for &callee_id in graph.callees.get(&id).into_iter().flatten() {
+            if live.insert(callee_id) {
+                dce_queue.push_back(callee_id);
+            }
+        }
+    }
+    mir.functions.retain(|f| live.contains(&f.id));
 }
 
 #[cfg(test)]

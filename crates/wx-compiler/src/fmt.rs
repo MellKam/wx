@@ -50,6 +50,7 @@ impl Builder {
                     block,
                     attributes,
                     pub_span,
+                    ..
                 } => {
                     let mut items = Vec::new();
                     Builder::build_attributes(&mut items, interner, attributes);
@@ -64,6 +65,7 @@ impl Builder {
                     pub_span,
                     attributes,
                     signature,
+                    ..
                 } => {
                     let mut items = Vec::new();
                     Builder::build_attributes(&mut items, interner, attributes);
@@ -79,6 +81,7 @@ impl Builder {
                     name,
                     ty: type_annotation,
                     value,
+                    ..
                 } => Self::build_global_definition(
                     interner,
                     source,
@@ -125,17 +128,15 @@ impl Builder {
 
                                 // Declaration
                                 match &entry.inner.inner.declaration {
-                                    crate::ast::ImportDeclaration::Function { signature } => {
+                                    ImportDeclaration::Function { signature, .. } => {
                                         Builder::build_function_signature(
                                             &mut entry_nodes,
                                             interner,
                                             signature,
                                         );
                                     }
-                                    crate::ast::ImportDeclaration::Global {
-                                        mut_span,
-                                        name,
-                                        ty,
+                                    ImportDeclaration::Global {
+                                        mut_span, name, ty, ..
                                     } => {
                                         let mut_prefix =
                                             if mut_span.is_some() { "mut " } else { "" };
@@ -147,11 +148,14 @@ impl Builder {
                                         entry_nodes
                                             .push(Self::build_type_expression(interner, &ty.inner));
                                     }
-                                    crate::ast::ImportDeclaration::Memory { name, kind } => {
+                                    ImportDeclaration::Memory { name, kind, .. } => {
                                         let mem_name = interner.resolve(name.inner).unwrap();
-                                        entry_nodes.push(Node::Text(format!("memory {}: ", mem_name)));
                                         entry_nodes
-                                            .push(Self::build_type_expression(interner, &kind.inner));
+                                            .push(Node::Text(format!("memory {}: ", mem_name)));
+                                        entry_nodes.push(Self::build_type_expression(
+                                            interner,
+                                            &kind.inner,
+                                        ));
                                     }
                                 }
 

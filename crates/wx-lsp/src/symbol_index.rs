@@ -401,7 +401,7 @@ fn index_expression(index: &mut SymbolIndex, func_idx: Option<FunctionIndex>, ex
                 usage: SymbolUsage::Reference,
             });
         }
-        ExprKind::Global { global_index } => {
+        ExprKind::Global { id: global_index } => {
             index.add(SpanInfo {
                 span: expr.span,
                 kind: SymbolKind::GlobalVariable {
@@ -410,7 +410,7 @@ fn index_expression(index: &mut SymbolIndex, func_idx: Option<FunctionIndex>, ex
                 usage: SymbolUsage::Reference,
             });
         }
-        ExprKind::Function { func_index } => {
+        ExprKind::Function { id: func_index } => {
             index.add(SpanInfo {
                 span: expr.span,
                 kind: SymbolKind::Function {
