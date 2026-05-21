@@ -754,13 +754,44 @@ impl Builder {
                 },
             },
             memory: MemorySection {
-                memories: if required_pages == 0 {
-                    Box::new([])
-                } else {
-                    Box::new([MemoryType::Bounded {
-                        initial: required_pages,
-                        max: required_pages,
-                    }])
+                // Emit one entry per defined memory from the source.  The first defined
+                // memory (wasm index = number of imported memories) must be large enough
+                // to hold the static data section (string pool), so its initial page count
+                // is at least `required_pages`.  All memories are emitted as unbounded so
+                // that `memory.grow` can succeed at runtime.
+                memories: {
+                    let imported_memory_count = mir
+                        .imports
+                        .iter()
+                        .flat_map(|m| m.items.iter())
+                        .filter(|item| matches!(item, mir::ImportModuleItem::Memory { .. }))
+                        .count() as u32;
+                    if mir.memories.is_empty() {
+                        // No declared memories: emit a synthetic one only if string data
+                        // needs a home.
+                        if required_pages == 0 {
+                            Box::new([])
+                        } else {
+                            Box::new([MemoryType::Unbounded {
+                                initial: required_pages,
+                            }])
+                        }
+                    } else {
+                        mir.memories
+                            .iter()
+                            .enumerate()
+                            .map(|(i, _kind)| {
+                                // The first defined memory (lowest wasm index after imports)
+                                // needs at least `required_pages` to cover static data.
+                                let initial = if i as u32 == 0 && imported_memory_count == 0 {
+                                    required_pages
+                                } else {
+                                    0
+                                };
+                                MemoryType::Unbounded { initial }
+                            })
+                            .collect()
+                    }
                 },
             },
             globals,
@@ -1341,13 +1372,18 @@ impl Builder {
                 });
             }
             mir::ExprKind::MemoryOffset { .. } => {
-                todo!("codegen: MemoryOffset")
+                // Emit the byte offset of the first writable region: end of the data section.
+                sink.push(Instruction::I32Const as u8);
+                (self.string_pool.bytes.len() as i32).encode(sink);
             }
-            mir::ExprKind::MemorySize { .. } => {
-                todo!("codegen: MemorySize")
+            mir::ExprKind::MemorySize { memory_index } => {
+                sink.push(Instruction::MemorySize as u8);
+                (*memory_index).encode(sink);
             }
-            mir::ExprKind::MemoryGrow { .. } => {
-                todo!("codegen: MemoryGrow")
+            mir::ExprKind::MemoryGrow { memory_index, delta } => {
+                self.build_expression(ctx, delta, sink);
+                sink.push(Instruction::MemoryGrow as u8);
+                (*memory_index).encode(sink);
             }
         }
     }
