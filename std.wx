@@ -12,21 +12,38 @@ pub trait Sized {
 
 module wasm {
   #[intrinsic]
-  fn memory64_grow(mem: impl Memory64, delta: u64) -> u64;
+  pub fn memory64_grow<M: Memory64>(mem: Memory64, delta: u64) -> u64;
   #[intrinsic]
-  fn memory64_size(mem: impl Memory64) -> u64;
+  pub memory64_size(mem: impl Memory64) -> u64;
 
   #[intrinsic]
-  fn memory32_grow(mem: impl Memory32, delta: u32) -> u32;
+  pub memory32_grow(mem: impl Memory32, delta: u32) -> u32;
   #[intrinsic]
-  fn memory32_size(mem: impl Memory32) -> u32;
+  pub memory32_size(mem: impl Memory32) -> u32;
+
+  #[intrinsic]
+  pub i32_load<M: Memory>(offset: *memory(M) i32) -> i32; 
+  #[intrinsic]
+  pub i32_load8_u<M: Memory>(offset: *memory(M) i32) -> u8;
+  #[intrinsic]
+  pub i32_load8_s<M: Memory>(offset: *memory(M) i32) -> i8;
+  #[intrinsic]
+  pub i32_load16_u<M: Memory>(offset: *memory(M) i32) -> u16;
+  #[intrinsic]
+  pub i32_load16_s<M: Memory>(offset: *memory(M) i32) -> i16;
+  #[intrinsic]
+  pub i32_store8<M: Memory>(offset: *memory(M) mut i32, value: u8);
+
+  #[intrinsic]
+  pub i32_store<M: Memory>(offset: *memory(M) mut i32, value: i32);
 }
 
-memory 
-
-trait Memory32 {
-  const OFFSET: u32;
+trait Memory {
   const MEMORY_INDEX: u32;
+}
+
+trait Memory32: Memory {
+  const STATIC_BASE: *memory(Self) mut u8;
 
   #[inline]
   fn grow(self, delta: u32) -> u32 {
@@ -39,11 +56,74 @@ trait Memory32 {
   }
 }
 
+trait Memory64: Memory {
+  const STATIC_BASE: *memory(Self) mut u8;
+
+  #[inline]
+  fn grow(self, delta: u64) -> u64 {
+    wasm::memory64_grow(self, delta)
+  }
+
+  #[inline]
+  fn size(self) -> u64 {
+    wasm::memory64_size(self)
+  }
+}
+
+import "env" {
+  memory data: Memory64;
+}
+
+memory heap: Memory32 {
+  initial: 1,
+  maximum: 10,
+};
+
+fn main() {
+  local initial_pages = heap.size() / PAGE_SIZE;
+  local new_pages = heap.grow(10);
+
+  _ = env::data.grow(20);
+}
+
+export { heap };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+struct heap;
+impl Memory for heap {
+  const INDEX: u32 = 0;
+}
+impl Memory32<heap> for heap {
+  const OFFSET: *memory(heap) mut u8 = 0 as *memory(heap) mut u8;
+}
+const heap = heap::{};
+
 memory heap: Memory32;
 
 fn main() {
-  heap.grow(1);
-  heap::OFFSET;
+  let initial_pages = heap.size() / PAGE_SIZE;
+  let new_pages = heap.grow(10);
 }
 
 impl char {
