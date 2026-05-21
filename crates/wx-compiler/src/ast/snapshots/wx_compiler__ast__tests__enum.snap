@@ -8,6 +8,7 @@ items:
   - inner:
       inner:
         Enum:
+          id: 0
           repr: ~
           name:
             inner: 1

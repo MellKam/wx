@@ -194,6 +194,7 @@ impl Builder {
                 Item::Module { .. } => todo!("fmt for module items"),
                 Item::Trait { .. } => todo!("fmt for trait items"),
                 Item::Struct {
+                    id: _,
                     name,
                     fields,
                     pub_span,

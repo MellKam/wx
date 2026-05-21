@@ -28,7 +28,7 @@ type_pool:
           - 16
         params_count: 0
 functions:
-  - id: 0
+  - id: 1
     pub_span: ~
     source: Internal
     origin: Free
@@ -92,7 +92,7 @@ exports:
           start: 112
           end: 116
       external_name: ~
-      id: 0
+      id: 1
 diagnostics:
   - severity: Error
     code: E1026

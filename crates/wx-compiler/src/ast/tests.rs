@@ -17,7 +17,11 @@ impl TestCase {
             .add("main.wx".to_string(), source.to_string())
             .unwrap();
         let ast = Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-        TestCase { interner, files, ast }
+        TestCase {
+            interner,
+            files,
+            ast,
+        }
     }
 }
 
@@ -324,7 +328,12 @@ fn test_missing_semicolon_warns_but_parses() {
             y
         }
     "});
-    assert!(case.ast.diagnostics.iter().any(|d| d.code.as_deref() == Some("E0003")));
+    assert!(
+        case.ast
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0003"))
+    );
     insta::assert_yaml_snapshot!(case.ast);
 }
 
@@ -336,7 +345,12 @@ fn test_unclosed_delimiter() {
         fn f() {
             local x: i32 = 1;
     "});
-    assert!(case.ast.diagnostics.iter().any(|d| d.code.as_deref() == Some("E0004")));
+    assert!(
+        case.ast
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0004"))
+    );
     insta::assert_yaml_snapshot!(case.ast);
 }
 
@@ -348,7 +362,12 @@ fn test_invalid_integer_literal() {
             99999999999999999999
         }
     "});
-    assert!(case.ast.diagnostics.iter().any(|d| d.code.as_deref() == Some("E0005")));
+    assert!(
+        case.ast
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0005"))
+    );
     insta::assert_yaml_snapshot!(case.ast);
 }
 
@@ -359,7 +378,12 @@ fn test_incomplete_expression() {
         fn binary() -> i32 { 1 + }
         fn unary()  -> i32 { -   }
     "});
-    assert!(case.ast.diagnostics.iter().any(|d| d.code.as_deref() == Some("E0006")));
+    assert!(
+        case.ast
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0006"))
+    );
     insta::assert_yaml_snapshot!(case.ast);
 }
 
@@ -371,7 +395,12 @@ fn test_reserved_identifier() {
             local fn = 1;
         }
     "});
-    assert!(case.ast.diagnostics.iter().any(|d| d.code.as_deref() == Some("E0008")));
+    assert!(
+        case.ast
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0008"))
+    );
     insta::assert_yaml_snapshot!(case.ast);
 }
 
@@ -384,10 +413,16 @@ fn test_missing_initializer() {
         }
         global y: i32
     "});
-    let e0010_count = case.ast.diagnostics.iter()
+    let e0010_count = case
+        .ast
+        .diagnostics
+        .iter()
         .filter(|d| d.code.as_deref() == Some("E0010"))
         .count();
-    assert_eq!(e0010_count, 2, "expected one E0010 for local and one for global");
+    assert_eq!(
+        e0010_count, 2,
+        "expected one E0010 for local and one for global"
+    );
     insta::assert_yaml_snapshot!(case.ast);
 }
 
@@ -399,6 +434,11 @@ fn test_chained_comparison_error() {
             a < b < c
         }
     "});
-    assert!(case.ast.diagnostics.iter().any(|d| d.code.as_deref() == Some("E0007")));
+    assert!(
+        case.ast
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E0007"))
+    );
     insta::assert_yaml_snapshot!(case.ast);
 }

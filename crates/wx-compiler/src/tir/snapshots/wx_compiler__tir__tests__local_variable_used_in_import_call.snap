@@ -23,8 +23,6 @@ type_pool:
   - Slice:
       of: 4
       mutable: false
-  - Struct:
-      struct_index: 0
   - Function:
       signature:
         items:
@@ -37,15 +35,17 @@ type_pool:
         items:
           - 1
         params_count: 0
+  - Struct:
+      struct_index: 0
   - ImportModule:
       module_index: 0
 functions:
-  - id: 0
+  - id: 1
     pub_span: ~
     source: External
     origin: Free
     type_params: []
-    signature_index: 18
+    signature_index: 17
     name:
       inner: 5
       span:
@@ -76,19 +76,19 @@ functions:
             end: 88
     result: ~
     accesses:
-      - caller: 1
+      - caller: 2
         kind: Reference
         span:
           start: 152
           end: 155
     attributes: []
     body: ~
-  - id: 1
+  - id: 2
     pub_span: ~
     source: Internal
     origin: Free
     type_params: []
-    signature_index: 19
+    signature_index: 18
     name:
       inner: 9
       span:
@@ -132,7 +132,7 @@ functions:
                             span:
                               start: 152
                               end: 155
-                      ty: 18
+                      ty: 17
                       span:
                         start: 143
                         end: 155
@@ -169,7 +169,7 @@ import_modules:
     lookup:
       5:
         Function:
-          id: 0
+          id: 1
 enums: []
 modules: []
 exports:
@@ -181,7 +181,7 @@ exports:
           start: 180
           end: 184
       external_name: ~
-      id: 1
+      id: 2
 diagnostics:
   - severity: Error
     code: E1007
@@ -225,7 +225,7 @@ structs:
     lookup:
       2: 0
 impl_members:
-  17:
+  19:
     18:
       AssociatedConst:
         ty: 8

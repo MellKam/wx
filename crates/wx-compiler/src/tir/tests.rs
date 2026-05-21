@@ -1289,9 +1289,9 @@ fn test_wasm_module_intrinsics_declare_cleanly() {
 }
 
 #[test]
-fn test_wasm_module_intrinsics_forward_ref_is_error() {
-    // Declaring the module before the trait produces E1021 because define_item
-    // resolves impl-trait types eagerly without forward references.
+fn test_wasm_module_intrinsics_forward_ref_resolves() {
+    // The query system resolves trait forward-references on demand, so declaring
+    // a module before the trait it references is now valid.
     let case = TestCase::new(indoc! {"
         module wasm {
             #[intrinsic]
@@ -1303,10 +1303,143 @@ fn test_wasm_module_intrinsics_forward_ref_is_error() {
         }
     "});
     assert!(
-        case.tir
+        !case
+            .tir
             .diagnostics
             .iter()
             .any(|d| d.code.as_deref() == Some("E1021")),
-        "expected E1021 for forward-referenced trait in impl position"
+        "E1021 should not be emitted: the query system resolves traits on demand"
+    );
+}
+
+// ── cyclic type dependency tests ──────────────────────────────────────────────
+
+#[test]
+fn test_struct_direct_cycle_is_error() {
+    // A struct that contains itself by value has infinite size — E1032.
+    let case = TestCase::new(indoc! {"
+        struct A {
+            field: A
+        }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1032")),
+        "expected E1032 for direct self-referential struct"
+    );
+}
+
+#[test]
+fn test_struct_mutual_cycle_is_error() {
+    // A <-> B by value is an infinite-size cycle — E1032.
+    let case = TestCase::new(indoc! {"
+        struct A {
+            b: B
+        }
+        struct B {
+            a: A
+        }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1032")),
+        "expected E1032 for mutually recursive structs"
+    );
+}
+
+#[test]
+fn test_struct_three_way_cycle_is_error() {
+    // A -> B -> C -> A cycle — E1032.
+    let case = TestCase::new(indoc! {"
+        struct A { b: B }
+        struct B { c: C }
+        struct C { a: A }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1032")),
+        "expected E1032 for three-way struct cycle"
+    );
+}
+
+#[test]
+fn test_struct_forward_reference_resolves() {
+    // B used as a field type before B is declared — no cycle, no diagnostic.
+    let case = TestCase::new(indoc! {"
+        struct A { b: B }
+        struct B { val: i32 }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics for valid forward reference: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_struct_forward_reference_reversed_order_resolves() {
+    // Same as above but B declared first — both orderings must work.
+    let case = TestCase::new(indoc! {"
+        struct B { val: i32 }
+        struct A { b: B }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_fn_uses_struct_declared_after_is_ok() {
+    // A function's parameter/return type that references a struct defined later
+    // in the file must resolve cleanly — no type errors.
+    let case = TestCase::new(indoc! {"
+        fn f(x: Point) -> Point { x }
+        struct Point { x: i32, y: i32 }
+    "});
+    let type_errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.code.as_deref().map_or(false, |c| c.starts_with('E')))
+        .collect();
+    assert!(
+        type_errors.is_empty(),
+        "unexpected type errors for forward-referenced struct in function: {:?}",
+        type_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_struct_cycle_does_not_prevent_other_structs_from_resolving() {
+    // Even with a cyclic struct present, independent structs should resolve fine.
+    let case = TestCase::new(indoc! {"
+        struct Bad { bad: Bad }
+        struct Good { val: i32 }
+        fn uses_good(x: Good) -> i32 { x.val }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1032")),
+        "expected E1032 for Bad"
+    );
+    // Good should still be registered; the function should compile without
+    // an undeclared-type error.
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1021")),
+        "Good struct should still resolve despite Bad being cyclic"
     );
 }

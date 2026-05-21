@@ -8,6 +8,7 @@ items:
   - inner:
       inner:
         Struct:
+          id: 0
           pub_span: ~
           name:
             inner: 1

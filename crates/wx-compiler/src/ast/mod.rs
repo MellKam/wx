@@ -1381,6 +1381,7 @@ pub enum ImplItem {
         block: Box<Spanned<Expression>>,
     },
     Const {
+        id: DefId,
         name: Spanned<SymbolU32>,
         ty: Option<Box<Spanned<TypeExpression>>>,
         value: Box<Spanned<Expression>>,
@@ -1404,10 +1405,12 @@ pub enum TraitItem {
         pub_span: Option<TextSpan>,
         attributes: Box<[Attribute]>,
         signature: FunctionSignature,
-        /// `None` = abstract (must be provided by impl); `Some` = default implementation.
+        /// `None` = abstract (must be provided by impl); `Some` = default
+        /// implementation.
         body: Option<Box<Spanned<Expression>>>,
     },
-    /// An associated constant declaration (type only, no value — value comes from impl).
+    /// An associated constant declaration (type only, no value — value comes
+    /// from impl).
     Const {
         id: DefId,
         name: Spanned<SymbolU32>,
@@ -1470,6 +1473,12 @@ pub struct EnumVariant {
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct DefId(u32);
 
+impl DefId {
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum Item {
     Function {
@@ -1501,6 +1510,7 @@ pub enum Item {
         entries: Grouped<Box<[Separated<Spanned<ImportEntry>>]>>,
     },
     Enum {
+        id: DefId,
         repr: Option<Box<Spanned<TypeExpression>>>,
         name: Spanned<SymbolU32>,
         variants: Grouped<Box<[Separated<Spanned<EnumVariant>>]>>,
@@ -1510,6 +1520,7 @@ pub enum Item {
         items: Grouped<Box<[Separated<Spanned<ImplItem>>]>>,
     },
     Struct {
+        id: DefId,
         pub_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
         fields: Grouped<Box<[Separated<Spanned<StructField>>]>>,
@@ -1652,6 +1663,7 @@ pub enum Keyword {
     Const,
     Module,
     Trait,
+    For,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -3447,6 +3459,7 @@ impl<'input> Parser<'input> {
 
         Ok(Spanned {
             inner: Item::Enum {
+                id: parser.get_id(),
                 repr,
                 name: Spanned {
                     inner: name_symbol,
@@ -3514,6 +3527,7 @@ impl<'input> Parser<'input> {
                         let span = TextSpan::merge(const_span, value.span);
                         Ok(Spanned {
                             inner: ImplItem::Const {
+                                id: parser.get_id(),
                                 name: Spanned {
                                     inner: name_symbol,
                                     span: name_span,
@@ -3752,6 +3766,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(struct_span, fields.close);
         Ok(Spanned {
             inner: Item::Struct {
+                id: parser.get_id(),
                 pub_span: None,
                 name: Spanned {
                     inner: name_symbol,

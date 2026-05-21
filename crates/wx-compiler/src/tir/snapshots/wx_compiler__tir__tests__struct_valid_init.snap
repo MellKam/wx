@@ -28,7 +28,7 @@ type_pool:
           - 16
         params_count: 0
 functions:
-  - id: 0
+  - id: 1
     pub_span: ~
     source: Internal
     origin: Free
@@ -106,7 +106,7 @@ exports:
           start: 109
           end: 113
       external_name: ~
-      id: 0
+      id: 1
 diagnostics: []
 structs:
   - name:
