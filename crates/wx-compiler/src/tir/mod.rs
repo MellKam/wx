@@ -2573,6 +2573,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.import_modules.push(import_module_obj);
             }
             ast::Item::Export { .. } => {} // handled during build pass
+            ast::Item::ImplTrait { .. } => {} // handled during build pass
         }
     }
 

@@ -132,6 +132,19 @@ fn test_impl() {
 }
 
 #[test]
+fn test_impl_trait_for_type() {
+    // impl Trait for Type — trait implementation block
+    let case = TestCase::new(indoc! {"
+        impl Drawable for Point {
+            fn draw(self) {
+                draw_point(self.x, self.y)
+            }
+        }
+    "});
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
 fn test_trait_abstract() {
     // trait with const declarations and an abstract method (no default body)
     let case = TestCase::new(indoc! {"

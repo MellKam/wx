@@ -1,0 +1,149 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 144
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        ImplTrait:
+          trait_name:
+            inner:
+              Identifier:
+                symbol: 1
+            span:
+              start: 5
+              end: 13
+          target:
+            inner:
+              Identifier:
+                symbol: 2
+            span:
+              start: 18
+              end: 23
+          items:
+            open:
+              start: 24
+              end: 25
+            inner:
+              - inner:
+                  inner:
+                    Method:
+                      id: 0
+                      pub_span: ~
+                      attributes: []
+                      signature:
+                        name:
+                          inner: 3
+                          span:
+                            start: 33
+                            end: 37
+                        params:
+                          open:
+                            start: 37
+                            end: 38
+                          inner:
+                            - inner:
+                                inner:
+                                  mut_span: ~
+                                  name:
+                                    inner: 4
+                                    span:
+                                      start: 38
+                                      end: 42
+                                  ty: ~
+                                span:
+                                  start: 38
+                                  end: 42
+                              separator: ~
+                          close:
+                            start: 42
+                            end: 43
+                        result: ~
+                      block:
+                        inner:
+                          Block:
+                            statements:
+                              open:
+                                start: 44
+                                end: 45
+                              inner:
+                                - inner:
+                                    inner:
+                                      Expression:
+                                        inner:
+                                          Call:
+                                            callee:
+                                              inner:
+                                                Identifier:
+                                                  symbol: 5
+                                              span:
+                                                start: 54
+                                                end: 64
+                                            arguments:
+                                              - inner:
+                                                  inner:
+                                                    ObjectAccess:
+                                                      object:
+                                                        inner:
+                                                          Identifier:
+                                                            symbol: 4
+                                                        span:
+                                                          start: 65
+                                                          end: 69
+                                                      member:
+                                                        inner: 6
+                                                        span:
+                                                          start: 70
+                                                          end: 71
+                                                  span:
+                                                    start: 65
+                                                    end: 71
+                                                separator:
+                                                  start: 71
+                                                  end: 72
+                                              - inner:
+                                                  inner:
+                                                    ObjectAccess:
+                                                      object:
+                                                        inner:
+                                                          Identifier:
+                                                            symbol: 4
+                                                        span:
+                                                          start: 73
+                                                          end: 77
+                                                      member:
+                                                        inner: 7
+                                                        span:
+                                                          start: 78
+                                                          end: 79
+                                                  span:
+                                                    start: 73
+                                                    end: 79
+                                                separator: ~
+                                        span:
+                                          start: 54
+                                          end: 80
+                                    span:
+                                      start: 54
+                                      end: 80
+                                  separator: ~
+                              close:
+                                start: 85
+                                end: 86
+                        span:
+                          start: 44
+                          end: 86
+                  span:
+                    start: 30
+                    end: 86
+                separator: ~
+            close:
+              start: 87
+              end: 88
+      span:
+        start: 0
+        end: 88
+    separator: ~

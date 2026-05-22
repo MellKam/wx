@@ -190,6 +190,7 @@ impl Builder {
                 }
                 Item::Enum { .. } => todo!("fmt for enum items"),
                 Item::Impl { .. } => todo!("fmt for impl items"),
+                Item::ImplTrait { .. } => todo!("fmt for impl trait items"),
                 Item::Const { .. } => todo!("fmt for const items"),
                 Item::Module { .. } => todo!("fmt for module items"),
                 Item::Trait { .. } => todo!("fmt for trait items"),

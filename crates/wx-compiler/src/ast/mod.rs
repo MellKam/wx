@@ -1420,7 +1420,10 @@ pub enum TraitItem {
 
 impl TraitItem {
     pub fn is_block_like(&self) -> bool {
-        matches!(self, TraitItem::Function { body: Some(_), .. })
+        match self {
+            TraitItem::Function { body, .. } => body.is_some(),
+            TraitItem::Const { .. } => false,
+        }
     }
 }
 
@@ -1519,6 +1522,12 @@ pub enum Item {
         target: Box<Spanned<TypeExpression>>,
         items: Grouped<Box<[Separated<Spanned<ImplItem>>]>>,
     },
+    /// `impl Trait for Type { ... }`
+    ImplTrait {
+        trait_name: Box<Spanned<TypeExpression>>,
+        target: Box<Spanned<TypeExpression>>,
+        items: Grouped<Box<[Separated<Spanned<ImplItem>>]>>,
+    },
     Struct {
         id: DefId,
         pub_span: Option<TextSpan>,
@@ -1567,6 +1576,7 @@ impl Item {
             | Item::Import { .. }
             | Item::Enum { .. }
             | Item::Impl { .. }
+            | Item::ImplTrait { .. }
             | Item::Struct { .. }
             | Item::Module { .. }
             | Item::Trait { .. } => true,
@@ -1694,6 +1704,7 @@ impl TryFrom<&str> for Keyword {
             "const" => Ok(Keyword::Const),
             "module" => Ok(Keyword::Module),
             "trait" => Ok(Keyword::Trait),
+            "for" => Ok(Keyword::For),
             _ => Err(()),
         }
     }
@@ -3471,137 +3482,159 @@ impl<'input> Parser<'input> {
         })
     }
 
+    fn parse_impl_member(parser: &mut Parser) -> Result<Spanned<ImplItem>, ()> {
+        let attrs = Parser::parse_attributes(parser)?;
+
+        let token = parser.lexer.peek();
+        let keyword = match token.inner {
+            Token::Identifier => Keyword::try_from(token.span.extract_str(parser.source)).ok(),
+            _ => None,
+        };
+
+        let pub_span = if matches!(keyword, Some(Keyword::Pub)) {
+            parser.lexer.next();
+            let next = parser.lexer.peek();
+            Some(next.span) // will be consumed below by Keyword::Fn branch
+        } else {
+            None
+        };
+
+        let keyword = if pub_span.is_some() {
+            match parser.lexer.peek().inner {
+                Token::Identifier => {
+                    Keyword::try_from(parser.lexer.peek().span.extract_str(parser.source)).ok()
+                }
+                _ => None,
+            }
+        } else {
+            keyword
+        };
+
+        match keyword {
+            Some(Keyword::Const) => {
+                let const_span = parser.lexer.next().span;
+                let name_span = parser.next_expect(Token::Identifier)?.span;
+                let name_symbol = parser.intern_identifier(name_span);
+
+                let ty = if parser.lexer.next_if(Token::Colon).is_some() {
+                    Some(Box::new(parser.parse_type_expression()?))
+                } else {
+                    None
+                };
+
+                let _ = parser.next_expect(Token::Eq)?;
+                let value = parser.parse_expression(BindingPower::Default)?;
+                let span = TextSpan::merge(const_span, value.span);
+                Ok(Spanned {
+                    inner: ImplItem::Const {
+                        id: parser.get_id(),
+                        name: Spanned {
+                            inner: name_symbol,
+                            span: name_span,
+                        },
+                        ty,
+                        value: Box::new(value),
+                    },
+                    span,
+                })
+            }
+            Some(Keyword::Fn) => {
+                let fn_span = parser.lexer.next().span;
+                let name_span = parser.next_expect(Token::Identifier)?.span;
+                let name_symbol = parser.intern_identifier(name_span);
+                let params = SeparatedGroup {
+                    open_token: Token::OpenParen,
+                    close_token: Token::CloseParen,
+                    separator_token: Token::Comma,
+                    item_handler: Parser::parse_function_param_item,
+                    should_warn_missing_separator: None,
+                }
+                .parse(parser)?;
+
+                let result = parser
+                    .lexer
+                    .next_if(Token::MinusRightArrow)
+                    .ok_or(())
+                    .and_then(|_| Ok(Some(Box::new(Parser::parse_type_expression(parser)?))))
+                    .unwrap_or_else(|_| None);
+                let block = Parser::parse_block_expression(parser)?;
+                let method_span = TextSpan::merge(fn_span, block.span);
+                Ok(Spanned {
+                    inner: ImplItem::Method {
+                        id: parser.get_id(),
+                        pub_span,
+                        attributes: attrs,
+                        signature: FunctionSignature {
+                            name: Spanned {
+                                inner: name_symbol,
+                                span: name_span,
+                            },
+                            params,
+                            result,
+                        },
+                        block: Box::new(block),
+                    },
+                    span: method_span,
+                })
+            }
+            _ => {
+                let token = parser.lexer.next();
+                parser.ast.diagnostics.push(
+                    UnexpectedTokenDiagnostic {
+                        file_id: parser.ast.file_id,
+                        received: token,
+                        expected: Token::Identifier,
+                    }
+                    .report(),
+                );
+                Err(())
+            }
+        }
+    }
+
     fn parse_impl_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let impl_span = parser.lexer.next().span;
-        let target = Box::new(parser.parse_type_expression()?);
+        let first_ty = Box::new(parser.parse_type_expression()?);
+
+        let peeked = parser.lexer.peek();
+        let target = if peeked.inner == Token::Identifier
+            && matches!(
+                Keyword::try_from(peeked.span.extract_str(parser.source)),
+                Ok(Keyword::For)
+            ) {
+            parser.lexer.next(); // consume `for`
+            Some(Box::new(parser.parse_type_expression()?))
+        } else {
+            None
+        };
 
         let items = SeparatedGroup {
             open_token: Token::OpenBrace,
             close_token: Token::CloseBrace,
             separator_token: Token::SemiColon,
-            item_handler: |parser: &mut Parser| -> Result<Spanned<ImplItem>, ()> {
-                let attrs = Parser::parse_attributes(parser)?;
-
-                let token = parser.lexer.peek();
-                let keyword = match token.inner {
-                    Token::Identifier => {
-                        Keyword::try_from(token.span.extract_str(parser.source)).ok()
-                    }
-                    _ => None,
-                };
-
-                let pub_span = if matches!(keyword, Some(Keyword::Pub)) {
-                    parser.lexer.next();
-                    let next = parser.lexer.peek();
-                    Some(next.span) // will be consumed below by Keyword::Fn branch
-                } else {
-                    None
-                };
-
-                let keyword = if pub_span.is_some() {
-                    match parser.lexer.peek().inner {
-                        Token::Identifier => {
-                            Keyword::try_from(parser.lexer.peek().span.extract_str(parser.source))
-                                .ok()
-                        }
-                        _ => None,
-                    }
-                } else {
-                    keyword
-                };
-
-                match keyword {
-                    Some(Keyword::Const) => {
-                        let const_span = parser.lexer.next().span;
-                        let name_span = parser.next_expect(Token::Identifier)?.span;
-                        let name_symbol = parser.intern_identifier(name_span);
-
-                        let ty = if parser.lexer.next_if(Token::Colon).is_some() {
-                            Some(Box::new(parser.parse_type_expression()?))
-                        } else {
-                            None
-                        };
-
-                        let _ = parser.next_expect(Token::Eq)?;
-                        let value = parser.parse_expression(BindingPower::Default)?;
-                        let span = TextSpan::merge(const_span, value.span);
-                        Ok(Spanned {
-                            inner: ImplItem::Const {
-                                id: parser.get_id(),
-                                name: Spanned {
-                                    inner: name_symbol,
-                                    span: name_span,
-                                },
-                                ty,
-                                value: Box::new(value),
-                            },
-                            span,
-                        })
-                    }
-                    Some(Keyword::Fn) => {
-                        let fn_span = parser.lexer.next().span;
-                        let name_span = parser.next_expect(Token::Identifier)?.span;
-                        let name_symbol = parser.intern_identifier(name_span);
-                        let params = SeparatedGroup {
-                            open_token: Token::OpenParen,
-                            close_token: Token::CloseParen,
-                            separator_token: Token::Comma,
-                            item_handler: Parser::parse_function_param_item,
-                            should_warn_missing_separator: None,
-                        }
-                        .parse(parser)?;
-
-                        let result = parser
-                            .lexer
-                            .next_if(Token::MinusRightArrow)
-                            .ok_or(())
-                            .and_then(|_| {
-                                Ok(Some(Box::new(Parser::parse_type_expression(parser)?)))
-                            })
-                            .unwrap_or_else(|_| None);
-                        let block = Parser::parse_block_expression(parser)?;
-                        let method_span = TextSpan::merge(fn_span, block.span);
-                        Ok(Spanned {
-                            inner: ImplItem::Method {
-                                id: parser.get_id(),
-                                pub_span,
-                                attributes: attrs,
-                                signature: FunctionSignature {
-                                    name: Spanned {
-                                        inner: name_symbol,
-                                        span: name_span,
-                                    },
-                                    params,
-                                    result,
-                                },
-                                block: Box::new(block),
-                            },
-                            span: method_span,
-                        })
-                    }
-                    _ => {
-                        let token = parser.lexer.next();
-                        parser.ast.diagnostics.push(
-                            UnexpectedTokenDiagnostic {
-                                file_id: parser.ast.file_id,
-                                received: token,
-                                expected: Token::Identifier,
-                            }
-                            .report(),
-                        );
-                        Err(())
-                    }
-                }
-            },
+            item_handler: Parser::parse_impl_member,
             should_warn_missing_separator: Some(|item: &ImplItem| !item.is_block_like()),
         }
         .parse(parser)?;
 
         let span = TextSpan::merge(impl_span, items.close);
-        Ok(Spanned {
-            inner: Item::Impl { target, items },
-            span,
-        })
+        match target {
+            Some(target) => Ok(Spanned {
+                inner: Item::ImplTrait {
+                    items,
+                    target,
+                    trait_name: first_ty,
+                },
+                span,
+            }),
+            None => Ok(Spanned {
+                inner: Item::Impl {
+                    items,
+                    target: first_ty,
+                },
+                span,
+            }),
+        }
     }
 
     fn parse_trait_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
