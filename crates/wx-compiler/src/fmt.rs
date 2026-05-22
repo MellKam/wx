@@ -472,6 +472,7 @@ impl Builder {
                 Node::Group(Box::new(Node::Concat(items)))
             }
             Expression::Unreachable => Node::Text("unreachable".to_string()),
+            Expression::SelfType => Node::Text("Self".to_string()),
             Expression::IfElse {
                 condition,
                 then_block,
@@ -859,6 +860,7 @@ impl Builder {
             TypeExpression::ImplTrait { name } => {
                 Node::Text(format!("impl {}", interner.resolve(name.inner).unwrap()))
             }
+            TypeExpression::SelfType => Node::Text("Self".to_string()),
         }
     }
 }

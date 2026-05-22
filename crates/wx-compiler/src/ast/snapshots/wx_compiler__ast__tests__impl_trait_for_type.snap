@@ -9,6 +9,7 @@ items:
   - inner:
       inner:
         ImplTrait:
+          id: 1
           trait_name:
             inner:
               Identifier:

@@ -1,0 +1,475 @@
+---
+source: crates/wx-compiler/src/tir/tests.rs
+expression: case.tir
+---
+file_id: 0
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - U8
+  - I8
+  - U16
+  - I16
+  - U32
+  - I32
+  - U64
+  - I64
+  - F32
+  - F64
+  - Bool
+  - Char
+  - Trait:
+      trait_index: 0
+  - Function:
+      signature:
+        items:
+          - 16
+          - 8
+        params_count: 1
+  - Trait:
+      trait_index: 1
+  - Function:
+      signature:
+        items:
+          - 18
+          - 1
+        params_count: 1
+  - Struct:
+      struct_index: 0
+  - Function:
+      signature:
+        items:
+          - 20
+          - 1
+        params_count: 1
+  - Function:
+      signature:
+        items:
+          - 1
+        params_count: 0
+functions:
+  - id: 1
+    pub_span: ~
+    source: Internal
+    origin: Trait
+    type_params:
+      - 16
+    signature_index: 17
+    name:
+      inner: 4
+      span:
+        start: 42
+        end: 46
+    params:
+      - mut_span: ~
+        name:
+          inner: 5
+          span:
+            start: 47
+            end: 51
+        ty:
+          inner: 16
+          span:
+            start: 47
+            end: 51
+    result:
+      inner: 8
+      span:
+        start: 56
+        end: 59
+    accesses:
+      - caller: 8
+        kind: DirectCall
+        span:
+          start: 292
+          end: 296
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 5
+                  span:
+                    start: 47
+                    end: 51
+                ty: 16
+                mut_span: ~
+                accesses: []
+            inferred_type: 8
+            expected_type: 8
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                NamespaceAccess:
+                  ty:
+                    inner: 16
+                    span:
+                      start: 70
+                      end: 74
+                  member:
+                    inner: 2
+                    span:
+                      start: 76
+                      end: 80
+              ty: 8
+              span:
+                start: 70
+                end: 80
+        ty: 8
+        span:
+          start: 60
+          end: 86
+  - id: 3
+    pub_span: ~
+    source: Internal
+    origin: Trait
+    type_params:
+      - 18
+    signature_index: 19
+    name:
+      inner: 7
+      span:
+        start: 121
+        end: 125
+    params:
+      - mut_span: ~
+        name:
+          inner: 5
+          span:
+            start: 126
+            end: 130
+        ty:
+          inner: 18
+          span:
+            start: 126
+            end: 130
+    result: ~
+    accesses: []
+    attributes: []
+    body: ~
+  - id: 8
+    pub_span: ~
+    source: Internal
+    origin:
+      TraitImpl:
+        trait_impl_index: 1
+    type_params: []
+    signature_index: 21
+    name:
+      inner: 7
+      span:
+        start: 262
+        end: 266
+    params:
+      - mut_span: ~
+        name:
+          inner: 5
+          span:
+            start: 267
+            end: 271
+        ty:
+          inner: 20
+          span:
+            start: 267
+            end: 271
+    result: ~
+    accesses:
+      - caller: 10
+        kind: DirectCall
+        span:
+          start: 364
+          end: 368
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 5
+                  span:
+                    start: 267
+                    end: 271
+                ty: 20
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 287
+                      end: 291
+                    kind: Read
+            inferred_type: 1
+            expected_type: 1
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions:
+              - kind:
+                  Binary:
+                    operator:
+                      inner: Assign
+                      span:
+                        start: 285
+                        end: 286
+                    left:
+                      kind: Placeholder
+                      ty: 8
+                      span:
+                        start: 283
+                        end: 284
+                    right:
+                      kind:
+                        MethodCall:
+                          object:
+                            kind:
+                              Local:
+                                scope_index: 0
+                                local_index: 0
+                            ty: 20
+                            span:
+                              start: 287
+                              end: 291
+                          arguments: []
+                          id: 1
+                      ty: 8
+                      span:
+                        start: 287
+                        end: 298
+                ty: 1
+                span:
+                  start: 283
+                  end: 298
+            result: ~
+        ty: 1
+        span:
+          start: 273
+          end: 305
+  - id: 10
+    pub_span: ~
+    source: Internal
+    origin: Free
+    type_params: []
+    signature_index: 22
+    name:
+      inner: 13
+      span:
+        start: 312
+        end: 316
+    params: []
+    result: ~
+    accesses:
+      - caller: ~
+        kind: Reference
+        span:
+          start: 384
+          end: 388
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 14
+                  span:
+                    start: 331
+                    end: 332
+                ty: 20
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 362
+                      end: 363
+                    kind: Read
+            inferred_type: 1
+            expected_type: 1
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions:
+              - kind:
+                  LocalDeclaration:
+                    name:
+                      inner: 14
+                      span:
+                        start: 331
+                        end: 332
+                    scope_index: 0
+                    local_index: 0
+                    value:
+                      kind:
+                        StructInit:
+                          struct_index: 0
+                          fields:
+                            - kind:
+                                Int:
+                                  value: 1
+                              ty: 9
+                              span:
+                                start: 347
+                                end: 348
+                            - kind:
+                                Int:
+                                  value: 2
+                              ty: 9
+                              span:
+                                start: 353
+                                end: 354
+                      ty: 20
+                      span:
+                        start: 335
+                        end: 356
+                ty: 1
+                span:
+                  start: 325
+                  end: 356
+              - kind:
+                  MethodCall:
+                    object:
+                      kind:
+                        Local:
+                          scope_index: 0
+                          local_index: 0
+                      ty: 20
+                      span:
+                        start: 362
+                        end: 363
+                    arguments: []
+                    id: 8
+                ty: 1
+                span:
+                  start: 362
+                  end: 370
+            result: ~
+        ty: 1
+        span:
+          start: 319
+          end: 373
+globals: []
+import_modules: []
+enums: []
+modules: []
+exports:
+  13:
+    Function:
+      internal_name:
+        inner: 13
+        span:
+          start: 384
+          end: 388
+      external_name: ~
+      id: 10
+diagnostics:
+  - severity: Warning
+    code: W1001
+    message: unused variable
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 47
+          end: 51
+        message: ""
+    notes: []
+structs:
+  - name:
+      inner: 8
+      span:
+        start: 143
+        end: 148
+    fields:
+      - name:
+          inner: 9
+          span:
+            start: 155
+            end: 156
+        ty:
+          inner: 9
+          span:
+            start: 158
+            end: 161
+      - name:
+          inner: 11
+          span:
+            start: 167
+            end: 168
+        ty:
+          inner: 9
+          span:
+            start: 170
+            end: 173
+    lookup:
+      9: 0
+      11: 1
+impl_members:
+  16: {}
+  20:
+    2:
+      AssociatedConst:
+        ty: 8
+    4:
+      Method: 0
+    7:
+      Method: 2
+memories: []
+traits:
+  - name:
+      inner: 1
+      span:
+        start: 6
+        end: 11
+    supertraits: []
+    members:
+      2:
+        AssociatedConst:
+          ty: 8
+      4:
+        Method: 0
+  - name:
+      inner: 6
+      span:
+        start: 96
+        end: 104
+    supertraits:
+      - 0
+    members:
+      7:
+        Method: 1
+trait_impls:
+  - trait_index: 0
+    target: 20
+    members:
+      2:
+        AssociatedConst:
+          ty: 8
+  - trait_index: 1
+    target: 20
+    members:
+      7:
+        Method: 2
+trait_impl_lookup:
+  ? - 20
+    - 0
+  : 0
+  ? - 20
+    - 1
+  : 1
+type_trait_impls:
+  20:
+    - 0
+    - 1

@@ -155,3 +155,6 @@ structs:
 impl_members: {}
 memories: []
 traits: []
+trait_impls: []
+trait_impl_lookup: {}
+type_trait_impls: {}

@@ -158,6 +158,28 @@ fn test_trait_abstract() {
 }
 
 #[test]
+fn test_trait_supertrait_single() {
+    // trait X: Y { ... } — one supertrait bound
+    let case = TestCase::new(indoc! {"
+        trait Drawable: Sized {
+            fn draw(self);
+        }
+    "});
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_trait_supertrait_multiple() {
+    // trait X: Y + Z { ... } — two supertrait bounds
+    let case = TestCase::new(indoc! {"
+        trait Widget: Drawable + Sized {
+            fn render(self);
+        }
+    "});
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
 fn test_trait_default_method() {
     // trait method with a default implementation and an attribute
     let case = TestCase::new(indoc! {"

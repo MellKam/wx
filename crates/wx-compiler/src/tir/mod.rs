@@ -90,13 +90,15 @@ pub enum Type {
         trait_index: u32,
     },
     // TODO: maybe add these later
-    // _Self,
     // Generic {
     //     generic_index: u32,
     // },
 }
 
 impl Type {
+    // Pre-allocated indices for primitive types. The `TypePool` reserves these
+    // slots at startup so comparisons like `ty == Type::U32_IDX` work without
+    // a pool lookup.
     pub const ERROR_IDX: TypeIndex = 0;
     pub const UNIT_IDX: TypeIndex = 1;
     pub const NEVER_IDX: TypeIndex = 2;
@@ -209,6 +211,8 @@ pub type MemoryIndex = u32;
 /// in the type pool.
 pub type SignatureIndex = TypeIndex;
 pub type EnumVariantIndex = u32;
+pub type TraitIndex = u32;
+pub type TraitImplIndex = u32;
 
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -229,8 +233,29 @@ pub struct Constant {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Trait {
     pub name: ast::Spanned<SymbolU32>,
-    pub consts: Vec<ConstIndex>,
-    pub functions: Vec<FunctionIndex>,
+    pub supertraits: Vec<TraitIndex>,
+    /// All items declared in the trait body, keyed by name.
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
+    pub members: HashMap<SymbolU32, ImplEntry>,
+    /// `DefId`s of all member items (functions and consts) — used during
+    /// `ensure_signature` to demand-resolve members before reading `members`.
+    #[cfg_attr(test, serde(skip))]
+    pub member_def_ids: Vec<ast::DefId>,
+}
+
+/// A concrete implementation of a trait for a specific type:
+/// `impl Trait for Type { ... }`.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct TraitImpl {
+    pub trait_index: TraitIndex,
+    pub target: TypeIndex,
+    pub members: HashMap<SymbolU32, ImplEntry>,
+    /// Source location of the trait name in the `impl Trait for Type` header,
+    /// used to anchor conformance diagnostics.
+    #[cfg_attr(test, serde(skip))]
+    pub span: TextSpan,
+    #[cfg_attr(test, serde(skip))]
+    pub file_id: FileId,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -654,6 +679,7 @@ pub enum FunctionOrigin {
     Module,
     Impl,
     Trait,
+    TraitImpl { trait_impl_index: TraitImplIndex },
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -918,6 +944,8 @@ define_diagnostic_codes! {
         NamespaceUsedAsValue => "E1030",
         ExpectedTrait => "E1031",
         CyclicTypeDependency => "E1032",
+        MissingTraitImplItem => "E1033",
+        MissingSupertraitImpl => "E1034",
     }
 }
 
@@ -1859,6 +1887,36 @@ enum AstNodeRef<'ast> {
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
+    /// The `impl Trait for Type { ... }` block itself — owns type resolution
+    /// and creates the `TraitImpl` entry.
+    ImplTraitBlock {
+        file_id: ast::FileId,
+        module_path: Box<[ModuleIndex]>,
+        item: &'ast ast::Item,
+    },
+    /// Method inside an `impl Trait for Type` block.
+    ImplTraitMethod {
+        file_id: ast::FileId,
+        module_path: Box<[ModuleIndex]>,
+        /// `DefId` of the parent `ImplTraitBlock` — used to demand-resolve the
+        /// block before inserting into `TraitImpl.members`.
+        parent_id: ast::DefId,
+        item: &'ast ast::ImplItem,
+    },
+    /// Constant inside an `impl Trait for Type` block.
+    ImplTraitConst {
+        file_id: ast::FileId,
+        module_path: Box<[ModuleIndex]>,
+        parent_id: ast::DefId,
+        item: &'ast ast::ImplItem,
+    },
+    /// The `trait Name: Bound { ... }` block itself — owns supertrait resolution.
+    Trait {
+        file_id: ast::FileId,
+        module_path: Box<[ModuleIndex]>,
+        trait_index: TraitIndex,
+        item: &'ast ast::Item,
+    },
     /// Function declared inside an `import` block.
     ImportedFunction {
         file_id: ast::FileId,
@@ -1881,6 +1939,10 @@ impl AstNodeRef<'_> {
             | AstNodeRef::Memory { file_id, .. }
             | AstNodeRef::Const { file_id, .. }
             | AstNodeRef::ImplConst { file_id, .. }
+            | AstNodeRef::ImplTraitBlock { file_id, .. }
+            | AstNodeRef::ImplTraitMethod { file_id, .. }
+            | AstNodeRef::ImplTraitConst { file_id, .. }
+            | AstNodeRef::Trait { file_id, .. }
             | AstNodeRef::ImportedFunction { file_id, .. } => *file_id,
         }
     }
@@ -1897,46 +1959,71 @@ impl AstNodeRef<'_> {
             | AstNodeRef::Memory { module_path, .. }
             | AstNodeRef::Const { module_path, .. }
             | AstNodeRef::ImplConst { module_path, .. }
+            | AstNodeRef::ImplTraitBlock { module_path, .. }
+            | AstNodeRef::ImplTraitMethod { module_path, .. }
+            | AstNodeRef::ImplTraitConst { module_path, .. }
+            | AstNodeRef::Trait { module_path, .. }
             | AstNodeRef::ImportedFunction { module_path, .. } => module_path,
         }
     }
 }
 
 struct Builder<'ast, 'interner> {
+    // ── traversal cursor ──────────────────────────────────────────────────────
+    /// Current file; saved/restored around every `ensure_signature` call.
     file_id: ast::FileId,
+    /// Current module path; saved/restored alongside `file_id`.
+    module_scope: Vec<ModuleIndex>,
+    /// Type that `Self` resolves to; saved/restored alongside `file_id`.
+    current_self_type: Option<TypeIndex>,
+
+    // ── infrastructure ────────────────────────────────────────────────────────
     interner: &'interner mut ast::StringInterner,
     diagnostics: Vec<Diagnostic<FileId>>,
 
-    import_modules: Vec<ImportModule>,
-    modules: Vec<Module>,
-    module_scope: Vec<ModuleIndex>,
-    symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
-    impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
+    // ── type / symbol system ──────────────────────────────────────────────────
+    /// Deduplicating pool for all `Type` values; intern once, compare by index.
     type_pool: TypePool,
+    /// Maps (namespace, symbol) → what it refers to in the current scope.
+    symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
+    /// Method and const members of each type, keyed by name.
+    impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
 
+    // ── item tables ───────────────────────────────────────────────────────────
     functions: Vec<Function>,
+    /// O(1): function index for a given `DefId`.
     function_index_lookup: HashMap<DefId, FunctionIndex>,
 
     globals: Vec<Global>,
+    /// O(1): global index for a given `DefId`.
     global_index_lookup: HashMap<DefId, GlobalIndex>,
 
     memories: Vec<Memory>,
+    /// O(1): memory index for a given `DefId`.
     memory_index_lookup: HashMap<DefId, MemoryIndex>,
 
     structs: Vec<Struct>,
-    traits: Vec<Trait>,
-    exports: HashMap<SymbolU32, ExportItem>,
     enums: Vec<Enum>,
     constants: Vec<Constant>,
+    import_modules: Vec<ImportModule>,
+    modules: Vec<Module>,
+    exports: HashMap<SymbolU32, ExportItem>,
 
-    // ── query system ──────────────────────────────────────────────────────────
-    /// AST node for every `DefId`-bearing item, populated during pre-scan.
+    traits: Vec<Trait>,
+    trait_impls: Vec<TraitImpl>,
+    /// O(1) query: "does type T implement trait X?"
+    trait_impl_lookup: HashMap<(TypeIndex, TraitIndex), TraitImplIndex>,
+    /// O(1) query: "what trait impls does type T have?"
+    type_trait_impls: HashMap<TypeIndex, Vec<TraitImplIndex>>,
+
+    // ── demand-driven resolution ──────────────────────────────────────────────
+    /// AST node for every `DefId`-bearing item, populated in Phase 1.
     ast_nodes: HashMap<ast::DefId, AstNodeRef<'ast>>,
-    /// Signature computation state — `None` = not started.
+    /// Memoization state for `ensure_signature` — prevents re-entrant processing.
     sig_state: HashMap<ast::DefId, ComputeState>,
-    /// `trait_index → [DefId]` for all items belonging to that trait.
-    /// Used to guarantee trait items are fully resolved before memory seeding.
-    trait_def_ids: HashMap<u32, Vec<ast::DefId>>,
+    /// O(1): `TraitImplIndex` for an `impl Trait for Type` block's `DefId`.
+    /// Populated when the block resolves; read by its child methods and consts.
+    trait_impl_block_lookup: HashMap<ast::DefId, TraitImplIndex>,
 }
 
 enum BlockState<T> {
@@ -2087,6 +2174,18 @@ impl<'ast> Builder<'ast, '_> {
                     elements.iter().map(|e| self.resolve_type(e)).collect();
                 self.type_pool.intern(Type::Tuple { elements: elems })
             }
+            ast::TypeExpression::SelfType => match self.current_self_type {
+                Some(ty) => ty,
+                None => {
+                    self.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::UndeclaredType.code())
+                            .with_message("`Self` is only valid inside an impl or trait block")
+                            .with_label(Label::primary(self.file_id, type_expr.span)),
+                    );
+                    Type::ERROR_IDX
+                }
+            },
             ast::TypeExpression::ImplTrait { name } => {
                 // Full APIT support requires monomorphisation; for now we record the
                 // trait type so callers can at least see the constraint.
@@ -2409,21 +2508,33 @@ impl<'ast> Builder<'ast, '_> {
                 self.module_scope.pop();
             }
             ast::Item::Trait {
+                id,
                 name,
                 items,
                 pub_span,
+                ..
             } => {
                 // Traits are structural containers; allocate the slot and register
                 // each item's DefId so ensure_signature can fill it in on demand.
                 let trait_index = self.traits.len() as u32;
                 self.traits.push(Trait {
                     name: name.clone(),
-                    consts: Vec::new(),
-                    functions: Vec::new(),
+                    supertraits: Vec::new(),
+                    members: HashMap::new(),
+                    member_def_ids: Vec::new(),
                 });
                 self.insert_symbol(
                     (SymbolNamespace::Type, name.inner),
                     SymbolKind::Trait { trait_index },
+                );
+                self.ast_nodes.insert(
+                    *id,
+                    AstNodeRef::Trait {
+                        file_id,
+                        module_path: module_path.clone(),
+                        trait_index,
+                        item,
+                    },
                 );
                 let _ = pub_span;
                 let mut ids: Vec<ast::DefId> = Vec::new();
@@ -2463,7 +2574,7 @@ impl<'ast> Builder<'ast, '_> {
                         }
                     }
                 }
-                self.trait_def_ids.insert(trait_index, ids);
+                self.traits[trait_index as usize].member_def_ids = ids;
             }
             ast::Item::Impl { target, items } => {
                 for mi in items.inner.iter() {
@@ -2573,7 +2684,42 @@ impl<'ast> Builder<'ast, '_> {
                 self.import_modules.push(import_module_obj);
             }
             ast::Item::Export { .. } => {} // handled during build pass
-            ast::Item::ImplTrait { .. } => {} // handled during build pass
+            ast::Item::ImplTrait { id, items, .. } => {
+                self.ast_nodes.insert(
+                    *id,
+                    AstNodeRef::ImplTraitBlock {
+                        file_id,
+                        module_path: module_path.clone(),
+                        item,
+                    },
+                );
+                for mi in items.inner.iter() {
+                    match &mi.inner.inner {
+                        ast::ImplItem::Method { id: method_id, .. } => {
+                            self.ast_nodes.insert(
+                                *method_id,
+                                AstNodeRef::ImplTraitMethod {
+                                    file_id,
+                                    module_path: module_path.clone(),
+                                    parent_id: *id,
+                                    item: &mi.inner.inner,
+                                },
+                            );
+                        }
+                        ast::ImplItem::Const { id: const_id, .. } => {
+                            self.ast_nodes.insert(
+                                *const_id,
+                                AstNodeRef::ImplTraitConst {
+                                    file_id,
+                                    module_path: module_path.clone(),
+                                    parent_id: *id,
+                                    item: &mi.inner.inner,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2600,6 +2746,7 @@ impl<'ast> Builder<'ast, '_> {
         // Set up context for this node.
         let saved_file_id = self.file_id;
         let saved_scope = std::mem::replace(&mut self.module_scope, node.module_path().to_vec());
+        let saved_self_type = self.current_self_type;
         self.file_id = node.file_id();
 
         match node.clone() {
@@ -2842,6 +2989,7 @@ impl<'ast> Builder<'ast, '_> {
                 } = item
                 {
                     let self_type = self.resolve_type(impl_target);
+                    self.current_self_type = Some(self_type);
                     let resolved_ty = match ty {
                         Some(te) => self.resolve_type(te),
                         None => Type::UNKNOWN_IDX,
@@ -2860,6 +3008,7 @@ impl<'ast> Builder<'ast, '_> {
                 impl_target, item, ..
             } => {
                 let self_type = self.resolve_type(impl_target);
+                self.current_self_type = Some(self_type);
                 let self_symbol = self.interner.get_or_intern("self");
 
                 // Process this specific method.
@@ -2931,10 +3080,43 @@ impl<'ast> Builder<'ast, '_> {
                 }
             }
 
+            // ── trait block (supertrait resolution) ───────────────────────────
+            AstNodeRef::Trait {
+                trait_index, item, ..
+            } => {
+                let supertraits = match item {
+                    ast::Item::Trait { supertraits, .. } => supertraits,
+                    _ => unreachable!(),
+                };
+
+                let resolved: Vec<TraitIndex> = supertraits
+                    .iter()
+                    .filter_map(|bound| {
+                        let type_idx = self.resolve_type(bound);
+                        match self.type_pool.get(type_idx) {
+                            Type::Trait { trait_index } => Some(*trait_index),
+                            _ if type_idx == Type::ERROR_IDX => None,
+                            _ => {
+                                self.diagnostics.push(
+                                    Diagnostic::error()
+                                        .with_code(DiagnosticCode::ExpectedTrait.code())
+                                        .with_message("expected a trait name")
+                                        .with_label(Label::primary(self.file_id, bound.span)),
+                                );
+                                None
+                            }
+                        }
+                    })
+                    .collect();
+
+                self.traits[trait_index as usize].supertraits = resolved;
+            }
+
             // ── trait function ────────────────────────────────────────────────
             AstNodeRef::TraitFunction {
                 trait_index, item, ..
             } => {
+                self.current_self_type = Some(self.type_pool.intern(Type::Trait { trait_index }));
                 let self_sym = self.interner.get_or_intern("self");
                 if let ast::TraitItem::Function {
                     id,
@@ -2991,7 +3173,9 @@ impl<'ast> Builder<'ast, '_> {
                         attributes: attributes.clone(),
                     });
                     self.function_index_lookup.insert(*id, func_index);
-                    self.traits[trait_index as usize].functions.push(func_index);
+                    self.traits[trait_index as usize]
+                        .members
+                        .insert(signature.name.inner, ImplEntry::Method(func_index));
                 }
             }
 
@@ -2999,6 +3183,7 @@ impl<'ast> Builder<'ast, '_> {
             AstNodeRef::TraitConst {
                 trait_index, item, ..
             } => {
+                self.current_self_type = Some(self.type_pool.intern(Type::Trait { trait_index }));
                 if let ast::TraitItem::Const { id, name, ty } = item {
                     let ty_idx = self.resolve_type(ty);
                     let const_index = self.constants.len() as u32;
@@ -3011,7 +3196,9 @@ impl<'ast> Builder<'ast, '_> {
                         },
                         value: None,
                     });
-                    self.traits[trait_index as usize].consts.push(const_index);
+                    self.traits[trait_index as usize]
+                        .members
+                        .insert(name.inner, ImplEntry::AssociatedConst { ty: ty_idx });
                 }
             }
 
@@ -3097,11 +3284,7 @@ impl<'ast> Builder<'ast, '_> {
                             return;
                         }
                     };
-                    let trait_fn_ids: Vec<ast::DefId> = self
-                        .trait_def_ids
-                        .get(&trait_index)
-                        .cloned()
-                        .unwrap_or_default();
+                    let trait_fn_ids = self.traits[trait_index as usize].member_def_ids.clone();
                     for tid in trait_fn_ids {
                         self.ensure_signature(tid);
                     }
@@ -3260,17 +3443,235 @@ impl<'ast> Builder<'ast, '_> {
                         .insert(signature.name.inner, ImportValue::Function { id: *id });
                 }
             }
+
+            // ── impl trait block ─────────────────────────────────────────────
+            // Resolves the trait and target types, creates the `TraitImpl`
+            // entry, and populates the lookup tables. Methods and consts
+            // demand-drive this arm before inserting into `TraitImpl.members`.
+            AstNodeRef::ImplTraitBlock { item, .. } => {
+                let (block_id, trait_name, target) = match item {
+                    ast::Item::ImplTrait {
+                        id,
+                        trait_name,
+                        target,
+                        ..
+                    } => (id, trait_name, target),
+                    _ => unreachable!(),
+                };
+
+                let trait_type = self.resolve_type(trait_name);
+                let trait_index = match self.type_pool.get(trait_type) {
+                    Type::Trait { trait_index } => *trait_index,
+                    _ if trait_type == Type::ERROR_IDX => return,
+                    _ => {
+                        self.diagnostics.push(
+                            Diagnostic::error()
+                                .with_code(DiagnosticCode::ExpectedTrait.code())
+                                .with_message("expected a trait name")
+                                .with_label(Label::primary(self.file_id, trait_name.span)),
+                        );
+                        return;
+                    }
+                };
+
+                let target_type = self.resolve_type(target);
+                let trait_impl_index = self.trait_impls.len() as TraitImplIndex;
+
+                self.trait_impls.push(TraitImpl {
+                    trait_index,
+                    target: target_type,
+                    members: HashMap::new(),
+                    span: trait_name.span,
+                    file_id: self.file_id,
+                });
+                self.trait_impl_lookup
+                    .insert((target_type, trait_index), trait_impl_index);
+                self.type_trait_impls
+                    .entry(target_type)
+                    .or_default()
+                    .push(trait_impl_index);
+                self.trait_impl_block_lookup
+                    .insert(*block_id, trait_impl_index);
+
+                // Seed default (bodied) trait methods into impl_members so
+                // `self.method()` dispatch finds them without explicit overrides.
+                let trait_fn_ids = self.traits[trait_index as usize].member_def_ids.clone();
+                for &tid in &trait_fn_ids {
+                    self.ensure_signature(tid);
+                }
+                let self_sym = self.interner.get_or_intern("self");
+                let mut default_members: Vec<(SymbolU32, ImplEntry)> = Vec::new();
+                for &tid in &trait_fn_ids {
+                    let fi = match self.function_index_lookup.get(&tid).copied() {
+                        Some(fi) => fi,
+                        None => continue,
+                    };
+                    let node = match self.ast_nodes.get(&tid) {
+                        Some(n) => n,
+                        None => continue,
+                    };
+                    if let AstNodeRef::TraitFunction { item, .. } = node {
+                        if let ast::TraitItem::Function {
+                            signature,
+                            body: Some(_),
+                            ..
+                        } = item
+                        {
+                            let is_method = signature
+                                .params
+                                .inner
+                                .first()
+                                .map(|p| p.inner.inner.name.inner == self_sym)
+                                .unwrap_or(false);
+                            let entry = if is_method {
+                                ImplEntry::Method(fi)
+                            } else {
+                                ImplEntry::AssociatedFn(fi)
+                            };
+                            default_members.push((signature.name.inner, entry));
+                        }
+                    }
+                }
+                // `or_insert`: block DefId < child method DefIds (source order),
+                // so defaults land first; `ImplTraitMethod` overwrites with plain
+                // `insert` later in Phase 2, giving explicit overrides priority.
+                let slot = self.impl_members.entry(target_type).or_default();
+                for (sym, entry) in default_members {
+                    slot.entry(sym).or_insert(entry);
+                }
+            }
+
+            // ── impl trait method ─────────────────────────────────────────────
+            AstNodeRef::ImplTraitMethod {
+                parent_id, item, ..
+            } => {
+                self.ensure_signature(parent_id);
+                let trait_impl_index = match self.trait_impl_block_lookup.get(&parent_id) {
+                    Some(&idx) => idx,
+                    None => return,
+                };
+                let self_type = self.trait_impls[trait_impl_index as usize].target;
+                self.current_self_type = Some(self_type);
+                let self_symbol = self.interner.get_or_intern("self");
+
+                if let ast::ImplItem::Method {
+                    id,
+                    pub_span,
+                    attributes,
+                    signature,
+                    ..
+                } = item
+                {
+                    let params: Box<_> = signature
+                        .params
+                        .inner
+                        .iter()
+                        .map(|p| {
+                            let is_self = p.inner.inner.name.inner == self_symbol;
+                            FunctionParam {
+                                mut_span: p.inner.inner.mut_span,
+                                name: p.inner.inner.name.clone(),
+                                ty: match &p.inner.inner.ty {
+                                    Some(te) => Spanned {
+                                        inner: self.resolve_type(te),
+                                        span: te.span,
+                                    },
+                                    None => Spanned {
+                                        inner: if is_self { self_type } else { Type::ERROR_IDX },
+                                        span: p.inner.inner.name.span,
+                                    },
+                                },
+                            }
+                        })
+                        .collect();
+                    let result = signature.result.as_ref().map(|r| Spanned {
+                        inner: self.resolve_type(r),
+                        span: r.span,
+                    });
+                    let signature_index = self.type_pool.intern_function(&params, result.clone());
+                    let func_index = self.functions.len() as u32;
+                    let is_method = signature
+                        .params
+                        .inner
+                        .first()
+                        .map(|p| p.inner.inner.name.inner == self_symbol)
+                        .unwrap_or(false);
+                    let entry = if is_method {
+                        ImplEntry::Method(func_index)
+                    } else {
+                        ImplEntry::AssociatedFn(func_index)
+                    };
+                    self.functions.push(Function {
+                        id: *id,
+                        body: None,
+                        type_params: Box::new([]),
+                        pub_span: *pub_span,
+                        origin: FunctionOrigin::TraitImpl { trait_impl_index },
+                        source: ItemSource::Internal,
+                        signature_index,
+                        name: signature.name.clone(),
+                        accesses: Vec::new(),
+                        params,
+                        result,
+                        attributes: self.resolve_function_attributes(attributes),
+                    });
+                    self.function_index_lookup.insert(*id, func_index);
+                    self.impl_members
+                        .entry(self_type)
+                        .or_default()
+                        .insert(signature.name.inner, entry.clone());
+                    self.trait_impls[trait_impl_index as usize]
+                        .members
+                        .insert(signature.name.inner, entry);
+                }
+            }
+
+            // ── impl trait const ──────────────────────────────────────────────
+            AstNodeRef::ImplTraitConst {
+                parent_id, item, ..
+            } => {
+                self.ensure_signature(parent_id);
+                let trait_impl_index = match self.trait_impl_block_lookup.get(&parent_id) {
+                    Some(&idx) => idx,
+                    None => return,
+                };
+                let self_type = self.trait_impls[trait_impl_index as usize].target;
+                self.current_self_type = Some(self_type);
+
+                if let ast::ImplItem::Const {
+                    name, ty, value, ..
+                } = item
+                {
+                    let resolved_ty = match ty {
+                        Some(te) => self.resolve_type(te),
+                        None => Type::UNKNOWN_IDX,
+                    };
+                    if let Ok(_v) = self.eval_impl_const_int(value, resolved_ty) {
+                        let entry = ImplEntry::AssociatedConst { ty: resolved_ty };
+                        self.impl_members
+                            .entry(self_type)
+                            .or_default()
+                            .insert(name.inner, entry.clone());
+                        self.trait_impls[trait_impl_index as usize]
+                            .members
+                            .insert(name.inner, entry);
+                    }
+                }
+            }
         }
 
         self.file_id = saved_file_id;
         self.module_scope = saved_scope;
+        self.current_self_type = saved_self_type;
         self.sig_state.insert(def_id, ComputeState::Done);
     }
 
     // ── query: ensure_body ────────────────────────────────────────────────────
 
     /// Resolve the *body* of the item identified by `def_id`.
-    /// Calls `ensure_signature` first.  Idempotent.
+    /// Unlike `ensure_signature`, this is NOT idempotent: it has no `Done`
+    /// guard, so calling it twice rebuilds the body and double-counts accesses.
+    /// Safe only because Phase 3 visits each `DefId` exactly once.
     fn ensure_body(&mut self, def_id: ast::DefId) {
         self.ensure_signature(def_id);
 
@@ -3296,21 +3697,23 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 _ => return,
             },
-            AstNodeRef::ImplMethod { item, .. } => match item {
-                ast::ImplItem::Method {
-                    id,
-                    signature,
-                    block,
-                    ..
-                } => {
-                    let fi = match self.function_index_lookup.get(id) {
-                        Some(&fi) => fi,
-                        None => return,
-                    };
-                    (signature, block.as_ref(), fi)
+            AstNodeRef::ImplMethod { item, .. } | AstNodeRef::ImplTraitMethod { item, .. } => {
+                match item {
+                    ast::ImplItem::Method {
+                        id,
+                        signature,
+                        block,
+                        ..
+                    } => {
+                        let fi = match self.function_index_lookup.get(id) {
+                            Some(&fi) => fi,
+                            None => return,
+                        };
+                        (signature, block.as_ref(), fi)
+                    }
+                    _ => return,
                 }
-                _ => return,
-            },
+            }
             AstNodeRef::TraitFunction { item, .. } => match item {
                 ast::TraitItem::Function {
                     id,
@@ -3339,9 +3742,25 @@ impl<'ast> Builder<'ast, '_> {
             _ => return,
         };
 
+        let self_type = match &node {
+            AstNodeRef::ImplMethod { impl_target, .. } => Some(self.resolve_type(impl_target)),
+            AstNodeRef::ImplTraitMethod { parent_id, .. } => self
+                .trait_impl_block_lookup
+                .get(parent_id)
+                .map(|&idx| self.trait_impls[idx as usize].target),
+            AstNodeRef::TraitFunction { trait_index, .. } => {
+                Some(self.type_pool.intern(Type::Trait {
+                    trait_index: *trait_index,
+                }))
+            }
+            _ => None,
+        };
+
         let saved_file_id = self.file_id;
         let saved_scope = std::mem::replace(&mut self.module_scope, node.module_path().to_vec());
+        let saved_self_type = self.current_self_type;
         self.file_id = node.file_id();
+        self.current_self_type = self_type;
 
         match self.build_function_body(sig, body_expr, func_index) {
             Ok(body) => {
@@ -3352,6 +3771,7 @@ impl<'ast> Builder<'ast, '_> {
 
         self.file_id = saved_file_id;
         self.module_scope = saved_scope;
+        self.current_self_type = saved_self_type;
     }
 
     fn build_function_signature(
@@ -3409,33 +3829,31 @@ impl<'ast> Builder<'ast, '_> {
     }
 
     fn seed_memory_trait_impl(&mut self, trait_index: u32, memory_type: TypeIndex) {
-        for const_index in self.traits[trait_index as usize].consts.iter().copied() {
-            let constant = &self.constants[const_index as usize];
-            self.impl_members.entry(memory_type).or_default().insert(
-                constant.name.inner,
-                ImplEntry::AssociatedConst {
-                    ty: constant.ty.inner,
-                },
-            );
-        }
-
         let self_symbol = self.interner.get_or_intern("self");
-        for func_index in self.traits[trait_index as usize].functions.iter().copied() {
-            let func = &self.functions[func_index as usize];
-            let entry = if func
-                .params
-                .first()
-                .map(|p| p.name.inner == self_symbol)
-                .unwrap_or(false)
-            {
-                ImplEntry::Method(func_index)
-            } else {
-                ImplEntry::AssociatedFn(func_index)
-            };
-            self.impl_members
-                .entry(memory_type)
-                .or_default()
-                .insert(func.name.inner, entry);
+        let members: Vec<(SymbolU32, ImplEntry)> = self.traits[trait_index as usize]
+            .members
+            .iter()
+            .map(|(&sym, entry)| match entry {
+                ImplEntry::Method(fi) => {
+                    let func = &self.functions[*fi as usize];
+                    let entry = if func
+                        .params
+                        .first()
+                        .map(|p| p.name.inner == self_symbol)
+                        .unwrap_or(false)
+                    {
+                        ImplEntry::Method(*fi)
+                    } else {
+                        ImplEntry::AssociatedFn(*fi)
+                    };
+                    (sym, entry)
+                }
+                other => (sym, other.clone()),
+            })
+            .collect();
+        let slot = self.impl_members.entry(memory_type).or_default();
+        for (sym, entry) in members {
+            slot.insert(sym, entry);
         }
     }
 
@@ -4046,6 +4464,110 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
+    fn check_trait_conformance(&mut self) {
+        enum Violation {
+            MissingItem {
+                file_id: FileId,
+                span: TextSpan,
+                item_sym: SymbolU32,
+                trait_sym: SymbolU32,
+                kind: &'static str,
+            },
+            MissingSupertrait {
+                file_id: FileId,
+                span: TextSpan,
+                trait_sym: SymbolU32,
+                supertrait_sym: SymbolU32,
+            },
+        }
+
+        let mut violations: Vec<Violation> = Vec::new();
+
+        for ti in &self.trait_impls {
+            let trait_ = &self.traits[ti.trait_index as usize];
+
+            // `ti.members` = only what the impl block explicitly provided.
+            // `impl_members[target]` = full dispatch table including seeded
+            // defaults. We use `ti.members` intentionally: a default method
+            // must not satisfy an abstract (no-body) requirement.
+            for (&sym, entry) in &trait_.members {
+                // `body.is_none()` distinguishes abstract from default methods.
+                // Requires Phase 3 to have populated bodies before this runs.
+                let (required, kind) = match entry {
+                    ImplEntry::Method(fi) => (self.functions[*fi as usize].body.is_none(), "fn"),
+                    ImplEntry::AssociatedConst { .. } => (true, "const"),
+                    _ => continue,
+                };
+                if required && !ti.members.contains_key(&sym) {
+                    violations.push(Violation::MissingItem {
+                        file_id: ti.file_id,
+                        span: ti.span,
+                        item_sym: sym,
+                        trait_sym: trait_.name.inner,
+                        kind,
+                    });
+                }
+            }
+
+            for &supertrait_index in &trait_.supertraits {
+                if !self
+                    .trait_impl_lookup
+                    .contains_key(&(ti.target, supertrait_index))
+                {
+                    let supertrait_sym = self.traits[supertrait_index as usize].name.inner;
+                    violations.push(Violation::MissingSupertrait {
+                        file_id: ti.file_id,
+                        span: ti.span,
+                        trait_sym: trait_.name.inner,
+                        supertrait_sym,
+                    });
+                }
+            }
+        }
+
+        for v in violations {
+            match v {
+                Violation::MissingItem {
+                    file_id,
+                    span,
+                    item_sym,
+                    trait_sym,
+                    kind,
+                } => {
+                    let item_name = self.interner.resolve(item_sym).unwrap_or("?");
+                    let trait_name = self.interner.resolve(trait_sym).unwrap_or("?");
+                    self.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::MissingTraitImplItem.code())
+                            .with_message(format!(
+                                "missing {} `{}` required by `{}`",
+                                kind, item_name, trait_name
+                            ))
+                            .with_label(Label::primary(file_id, span)),
+                    );
+                }
+                Violation::MissingSupertrait {
+                    file_id,
+                    span,
+                    trait_sym,
+                    supertrait_sym,
+                } => {
+                    let trait_name = self.interner.resolve(trait_sym).unwrap_or("?");
+                    let supertrait_name = self.interner.resolve(supertrait_sym).unwrap_or("?");
+                    self.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::MissingSupertraitImpl.code())
+                            .with_message(format!(
+                                "cannot implement `{}` without implementing supertrait `{}`",
+                                trait_name, supertrait_name
+                            ))
+                            .with_label(Label::primary(file_id, span)),
+                    );
+                }
+            }
+        }
+    }
+
     fn report_unused_items(&mut self) {
         for function in self.functions.iter() {
             if function.accesses.is_empty()
@@ -4292,6 +4814,16 @@ impl<'ast> Builder<'ast, '_> {
                 ty: Type::NEVER_IDX,
                 span: expr.span,
             }),
+            ast::Expression::SelfType => {
+                // `Self` used as a standalone value (not `Self::X`) — always an error.
+                self.diagnostics.push(
+                    Diagnostic::error()
+                        .with_code(DiagnosticCode::NamespaceUsedAsValue.code())
+                        .with_message("`Self` is a type, not a value; use `Self::member` to access associated items")
+                        .with_label(Label::primary(self.file_id, expr.span)),
+                );
+                Err(())
+            }
             ast::Expression::Error => Ok(Expression {
                 kind: ExprKind::Error,
                 ty: Type::ERROR_IDX,
@@ -4688,6 +5220,57 @@ impl<'ast> Builder<'ast, '_> {
                             span: TextSpan::merge(namespace_expr.span, member.span),
                         })
                     }
+                    _ => {
+                        self.diagnostics.push(
+                            UndeclaredIdentifierDiagnostic {
+                                file_id: self.file_id,
+                                span: member.span,
+                            }
+                            .report(),
+                        );
+                        Err(())
+                    }
+                }
+            }
+            Type::Trait { trait_index } => {
+                match self.traits[trait_index as usize]
+                    .members
+                    .get(&member.inner)
+                    .cloned()
+                {
+                    Some(ImplEntry::Method(func_index)) => {
+                        let caller_id = self.functions[func_ctx.func_index as usize].id;
+                        self.functions[func_index as usize]
+                            .accesses
+                            .push(FunctionAccess {
+                                caller: Some(caller_id),
+                                kind: FunctionAccessKind::Reference,
+                                span: member.span,
+                            });
+                        let ty = self.functions[func_index as usize].signature_index;
+                        Ok(Expression {
+                            kind: ExprKind::NamespaceAccess {
+                                ty: ast::Spanned {
+                                    inner: namespace_ty,
+                                    span: namespace_expr.span,
+                                },
+                                member: member.clone(),
+                            },
+                            ty,
+                            span: TextSpan::merge(namespace_expr.span, member.span),
+                        })
+                    }
+                    Some(ImplEntry::AssociatedConst { ty }) => Ok(Expression {
+                        kind: ExprKind::NamespaceAccess {
+                            ty: ast::Spanned {
+                                inner: namespace_ty,
+                                span: namespace_expr.span,
+                            },
+                            member: member.clone(),
+                        },
+                        ty,
+                        span: TextSpan::merge(namespace_expr.span, member.span),
+                    }),
                     _ => {
                         self.diagnostics.push(
                             UndeclaredIdentifierDiagnostic {
@@ -7489,6 +8072,12 @@ pub struct TIR {
     pub impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
     pub memories: Vec<Memory>,
     pub traits: Vec<Trait>,
+    pub trait_impls: Vec<TraitImpl>,
+    /// O(1) query: "does type T implement trait X?"
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
+    pub trait_impl_lookup: HashMap<(TypeIndex, TraitIndex), TraitImplIndex>,
+    /// O(1) query: "what trait impls does type T have?"
+    pub type_trait_impls: HashMap<TypeIndex, Vec<TraitImplIndex>>,
     /// Maps each function's `DefId` to its index in `functions`.
     #[cfg_attr(test, serde(skip))]
     pub function_index_lookup: HashMap<ast::DefId, FunctionIndex>,
@@ -7547,12 +8136,16 @@ impl TIR {
             structs: Vec::new(),
             memories: Vec::new(),
             traits: Vec::new(),
+            trait_impls: Vec::new(),
+            trait_impl_lookup: HashMap::new(),
+            type_trait_impls: HashMap::new(),
             function_index_lookup: HashMap::new(),
             global_index_lookup: HashMap::new(),
             memory_index_lookup: HashMap::new(),
+            current_self_type: None,
             ast_nodes: HashMap::new(),
             sig_state: HashMap::new(),
-            trait_def_ids: HashMap::new(),
+            trait_impl_block_lookup: HashMap::new(),
         };
 
         // Phase 1: register all top-level items into ast_nodes / pending
@@ -7574,6 +8167,9 @@ impl TIR {
         for def_id in &def_ids {
             builder.ensure_body(*def_id);
         }
+
+        // Phase 3.5: verify every trait impl provides all required items
+        builder.check_trait_conformance();
 
         // Phase 4: process exports (must run after all signatures are resolved)
         for ast in asts.iter() {
@@ -7600,6 +8196,9 @@ impl TIR {
             impl_members: builder.impl_members,
             memories: builder.memories,
             traits: builder.traits,
+            trait_impls: builder.trait_impls,
+            trait_impl_lookup: builder.trait_impl_lookup,
+            type_trait_impls: builder.type_trait_impls,
             functions: builder.functions,
             globals: builder.globals,
             function_index_lookup: builder.function_index_lookup,

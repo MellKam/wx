@@ -1258,6 +1258,9 @@ pub enum Expression {
     },
     /// `unreachable`
     Unreachable,
+    /// `Self` — the type of the enclosing impl or trait block, used as a
+    /// namespace root: `Self::CONST` or `Self::method`.
+    SelfType,
     /// "hello world"
     String {
         symbol: SymbolU32,
@@ -1334,6 +1337,8 @@ pub enum TypeExpression {
     },
     /// `impl Trait`
     ImplTrait { name: Spanned<SymbolU32> },
+    /// `Self` — the concrete type of the enclosing impl or trait block.
+    SelfType,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1524,6 +1529,7 @@ pub enum Item {
     },
     /// `impl Trait for Type { ... }`
     ImplTrait {
+        id: DefId,
         trait_name: Box<Spanned<TypeExpression>>,
         target: Box<Spanned<TypeExpression>>,
         items: Grouped<Box<[Separated<Spanned<ImplItem>>]>>,
@@ -1551,8 +1557,11 @@ pub enum Item {
         items: Grouped<Box<[Separated<Spanned<Item>>]>>,
     },
     Trait {
+        id: DefId,
         pub_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
+        /// Supertrait bounds: `trait X: Y + Z { ... }`.  Empty = no bounds.
+        supertraits: Box<[Spanned<TypeExpression>]>,
         items: Grouped<Box<[Separated<Spanned<TraitItem>>]>>,
     },
 }
@@ -1674,6 +1683,7 @@ pub enum Keyword {
     Module,
     Trait,
     For,
+    SelfType,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1705,6 +1715,7 @@ impl TryFrom<&str> for Keyword {
             "module" => Ok(Keyword::Module),
             "trait" => Ok(Keyword::Trait),
             "for" => Ok(Keyword::For),
+            "Self" => Ok(Keyword::SelfType),
             _ => Err(()),
         }
     }
@@ -2269,6 +2280,13 @@ impl<'input> Parser<'input> {
                             span,
                         });
                     }
+                    Ok(Keyword::SelfType) => {
+                        let span = self.lexer.next().span;
+                        return Ok(Spanned {
+                            inner: TypeExpression::SelfType,
+                            span,
+                        });
+                    }
                     _ => {}
                 }
                 let token = self.lexer.next();
@@ -2564,6 +2582,12 @@ impl<'input> Parser<'input> {
     fn parse_identifier_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
         let token = parser.lexer.next();
         let text = token.span.extract_str(parser.source);
+        if matches!(Keyword::try_from(text), Ok(Keyword::SelfType)) {
+            return Ok(Spanned {
+                inner: Expression::SelfType,
+                span: token.span,
+            });
+        }
         match Keyword::try_from(text) {
             Ok(Keyword::SelfKw) | Err(_) => {}
             Ok(_) => {
@@ -3135,8 +3159,28 @@ impl<'input> Parser<'input> {
         left: Spanned<Expression>,
         _: BindingPower,
     ) -> Result<Spanned<Expression>, ()> {
-        let symbol = match left.inner {
-            Expression::Identifier { symbol } => symbol,
+        // Consume the :: token
+        _ = parser.lexer.next();
+
+        let namespace_ty = match left.inner {
+            Expression::SelfType => Spanned {
+                inner: TypeExpression::SelfType,
+                span: left.span,
+            },
+            Expression::Identifier { symbol } => {
+                // `Ident::{ ... }` — struct initializer
+                if parser.lexer.peek().inner == Token::OpenBrace {
+                    let name = Spanned {
+                        inner: symbol,
+                        span: left.span,
+                    };
+                    return Parser::parse_struct_init_expression(parser, name);
+                }
+                Spanned {
+                    inner: TypeExpression::Identifier { symbol },
+                    span: left.span,
+                }
+            }
             _ => {
                 parser.ast.diagnostics.push(
                     InvalidNamespaceDiagnostic {
@@ -3149,29 +3193,14 @@ impl<'input> Parser<'input> {
             }
         };
 
-        // Consume the :: token
-        _ = parser.lexer.next();
-
-        // `Ident::{ ... }` — struct initializer
-        if parser.lexer.peek().inner == Token::OpenBrace {
-            let name = Spanned {
-                inner: symbol,
-                span: left.span,
-            };
-            return Parser::parse_struct_init_expression(parser, name);
-        }
-
-        // Normal namespace access: `Ident::member`
+        // Normal namespace access: `Namespace::member`
         let member_token = parser.next_expect(Token::Identifier)?;
         let member_symbol = parser.intern_identifier(member_token.span);
 
         let span = TextSpan::merge(left.span, member_token.span);
         Ok(Spanned {
             inner: Expression::NamespaceAccess {
-                namespace: Box::new(Spanned {
-                    inner: TypeExpression::Identifier { symbol },
-                    span: left.span,
-                }),
+                namespace: Box::new(namespace_ty),
                 member: Spanned {
                     inner: member_symbol,
                     span: member_token.span,
@@ -3621,6 +3650,7 @@ impl<'input> Parser<'input> {
         match target {
             Some(target) => Ok(Spanned {
                 inner: Item::ImplTrait {
+                    id: parser.get_id(),
                     items,
                     target,
                     trait_name: first_ty,
@@ -3645,6 +3675,17 @@ impl<'input> Parser<'input> {
             inner: parser.intern_identifier(name_span),
             span: name_span,
         };
+
+        let supertraits: Box<[Spanned<TypeExpression>]> =
+            if parser.lexer.next_if(Token::Colon).is_some() {
+                let mut bounds = vec![parser.parse_type_expression()?];
+                while parser.lexer.next_if(Token::Plus).is_some() {
+                    bounds.push(parser.parse_type_expression()?);
+                }
+                bounds.into_boxed_slice()
+            } else {
+                Box::new([])
+            };
 
         let items = SeparatedGroup {
             open_token: Token::OpenBrace,
@@ -3747,8 +3788,10 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(trait_span, items.close);
         Ok(Spanned {
             inner: Item::Trait {
+                id: parser.get_id(),
                 pub_span: None,
                 name,
+                supertraits,
                 items,
             },
             span,

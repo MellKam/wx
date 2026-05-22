@@ -8,12 +8,14 @@ items:
   - inner:
       inner:
         Trait:
+          id: 3
           pub_span: ~
           name:
             inner: 1
             span:
               start: 6
               end: 11
+          supertraits: []
           items:
             open:
               start: 12

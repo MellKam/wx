@@ -1,3 +1,4 @@
+use codespan_reporting::diagnostic::Severity;
 use indoc::indoc;
 
 use super::*;
@@ -794,7 +795,9 @@ fn test_impl_members_registered() {
         .expect("symbol `from_bool` not interned");
 
     // `abs` takes `self` → Method; `from_bool` has no receiver → AssociatedFn
-    let abs_entry = members.get(&abs_sym).expect("`abs` missing from impl_members");
+    let abs_entry = members
+        .get(&abs_sym)
+        .expect("`abs` missing from impl_members");
     let from_bool_entry = members
         .get(&from_bool_sym)
         .expect("`from_bool` missing from impl_members");
@@ -811,8 +814,12 @@ fn test_impl_members_registered() {
     );
 
     // Both entries must point to valid function indices
-    let &ImplEntry::Method(abs_idx) = abs_entry else { unreachable!() };
-    let &ImplEntry::AssociatedFn(from_bool_idx) = from_bool_entry else { unreachable!() };
+    let &ImplEntry::Method(abs_idx) = abs_entry else {
+        unreachable!()
+    };
+    let &ImplEntry::AssociatedFn(from_bool_idx) = from_bool_entry else {
+        unreachable!()
+    };
     assert!(
         (abs_idx as usize) < case.tir.functions.len(),
         "abs func_index out of bounds"
@@ -1256,6 +1263,390 @@ fn test_impl_undeclared_type_is_error() {
     );
 }
 
+// ── impl trait for type ───────────────────────────────────────────────────────
+
+#[test]
+fn test_impl_trait_for_type_registers_trait_impl() {
+    let case = TestCase::new(indoc! {"
+        trait Drawable {
+            fn draw(self);
+        }
+
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        impl Drawable for Point {
+            fn draw(self) {
+                unreachable
+            }
+        }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "unexpected errors: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    assert_eq!(case.tir.trait_impls.len(), 1, "expected one TraitImpl");
+
+    let ti = &case.tir.trait_impls[0];
+
+    // target type is Point (a struct)
+    assert!(
+        matches!(case.tir.type_pool[ti.target as usize], Type::Struct { .. }),
+        "target should be a struct type"
+    );
+
+    // trait_impl_lookup contains (Point, Drawable) → 0
+    let point_type = ti.target;
+    let drawable_index = ti.trait_index;
+    assert_eq!(
+        case.tir
+            .trait_impl_lookup
+            .get(&(point_type, drawable_index)),
+        Some(&0),
+        "trait_impl_lookup should map (Point, Drawable) → 0"
+    );
+
+    // type_trait_impls maps Point → [0]
+    assert_eq!(
+        case.tir.type_trait_impls.get(&point_type),
+        Some(&vec![0u32]),
+        "type_trait_impls should map Point → [0]"
+    );
+
+    // draw method is registered in TraitImpl.members
+    let draw_sym = case
+        .interner
+        .get("draw")
+        .expect("symbol `draw` not interned");
+    assert!(
+        matches!(ti.members.get(&draw_sym), Some(ImplEntry::Method(_))),
+        "`draw` should be ImplEntry::Method in TraitImpl.members"
+    );
+
+    // draw method also appears in impl_members for Point (for dispatch)
+    let impl_members = case
+        .tir
+        .impl_members
+        .get(&point_type)
+        .expect("impl_members should have an entry for Point");
+    assert!(
+        matches!(impl_members.get(&draw_sym), Some(ImplEntry::Method(_))),
+        "`draw` should also be in impl_members for method dispatch"
+    );
+}
+
+#[test]
+fn test_impl_trait_function_origin_is_trait_impl() {
+    let case = TestCase::new(indoc! {"
+        trait Greet {
+            fn hello(self);
+        }
+
+        struct Foo {}
+
+        impl Greet for Foo {
+            fn hello(self) {
+                unreachable
+            }
+        }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error)
+    );
+
+    let hello_sym = case
+        .interner
+        .get("hello")
+        .expect("symbol `hello` not interned");
+    let ti = &case.tir.trait_impls[0];
+
+    let func_index = match ti.members.get(&hello_sym) {
+        Some(ImplEntry::Method(fi)) => *fi,
+        other => panic!("expected Method entry, got {:?}", other),
+    };
+
+    assert!(
+        matches!(
+            case.tir.functions[func_index as usize].origin,
+            FunctionOrigin::TraitImpl { .. }
+        ),
+        "function origin should be FunctionOrigin::TraitImpl"
+    );
+}
+
+// ── trait conformance check ───────────────────────────────────────────────────
+
+#[test]
+fn test_trait_conformance_missing_fn() {
+    // impl block omits the required abstract method → E1033
+    let case = TestCase::new(indoc! {"
+        trait Drawable {
+            fn draw(self);
+        }
+
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        impl Drawable for Point {}
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1033")),
+        "expected E1033 for missing trait item, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.as_deref(), &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_trait_conformance_missing_const() {
+    // impl block omits a required associated const → E1033
+    let case = TestCase::new(indoc! {"
+        trait Sized {
+            const SIZE: u32;
+        }
+
+        struct Foo {}
+
+        impl Sized for Foo {}
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1033")),
+        "expected E1033 for missing const, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.as_deref(), &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_trait_conformance_default_fn_not_required() {
+    // Trait methods with a default body are optional to override — no E1033
+    let case = TestCase::new(indoc! {"
+        trait Greet {
+            fn hello(self) {
+                unreachable
+            }
+        }
+
+        struct Bar {}
+
+        impl Greet for Bar {}
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "unexpected errors: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// ── supertrait bounds ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_supertrait_resolved() {
+    // `Drawable: Sized` — the TIR Trait should carry Sized in its supertraits
+    let case = TestCase::new(indoc! {"
+        trait Sized {
+            const SIZE: u32;
+        }
+
+        trait Drawable: Sized {
+            fn draw(self);
+        }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "unexpected errors: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+
+    let drawable_idx = case
+        .tir
+        .traits
+        .iter()
+        .position(|t| case.interner.resolve(t.name.inner) == Some("Drawable"))
+        .expect("Drawable not found") as u32;
+    let sized_idx = case
+        .tir
+        .traits
+        .iter()
+        .position(|t| case.interner.resolve(t.name.inner) == Some("Sized"))
+        .expect("Sized not found") as u32;
+
+    assert_eq!(
+        case.tir.traits[drawable_idx as usize].supertraits,
+        vec![sized_idx],
+        "Drawable should list Sized as a supertrait"
+    );
+}
+
+#[test]
+fn test_supertrait_missing_impl_errors() {
+    // impl Drawable for Point without impl Sized for Point → E1034
+    let case = TestCase::new(indoc! {"
+        trait Sized {
+            const SIZE: u32;
+        }
+
+        trait Drawable: Sized {
+            fn draw(self);
+        }
+
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        impl Drawable for Point {
+            fn draw(self) {
+                unreachable
+            }
+        }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1034")),
+        "expected E1034 for missing supertrait impl, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| (d.code.as_deref(), &d.message))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_supertrait_satisfied_impl_no_errors() {
+    // Both Sized and Drawable implemented for Point — no E1034
+    let case = TestCase::new(indoc! {"
+        trait Sized {
+            const SIZE: u32;
+        }
+
+        trait Drawable: Sized {
+            fn draw(self);
+        }
+
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        impl Sized for Point {
+            const SIZE: u32 = 8
+        }
+
+        impl Drawable for Point {
+            fn draw(self) {
+                unreachable
+            }
+        }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "unexpected errors: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+// this is a temporary playground I'm using only for testing purposes, I will remove it later
+#[test]
+fn test_playground() {
+    let case = TestCase::new(indoc! {"
+        trait Sized {
+            const SIZE: u32;
+            fn size(self) -> u32 {
+                Self::SIZE
+            }
+        }
+
+        trait Drawable: Sized {
+            fn draw(self);
+        }
+
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        impl Sized for Point {
+            const SIZE: u32 = 8;
+        }
+
+        impl Drawable for Point {
+            fn draw(self) {
+                _ = self.size();
+            }
+        }
+
+        fn main() {
+            local p = Point::{ x: 1, y: 2 };
+            p.draw();
+        }
+
+        export { main }
+    "});
+    insta::assert_yaml_snapshot!(case.tir);
+}
+
 // ── wasm module intrinsics ────────────────────────────────────────────────────
 
 #[test]
@@ -1378,7 +1769,11 @@ fn test_struct_forward_reference_resolves() {
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics for valid forward reference: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1392,7 +1787,11 @@ fn test_struct_forward_reference_reversed_order_resolves() {
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 

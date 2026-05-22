@@ -197,3 +197,6 @@ impl_members:
   18: {}
 memories: []
 traits: []
+trait_impls: []
+trait_impl_lookup: {}
+type_trait_impls: {}
