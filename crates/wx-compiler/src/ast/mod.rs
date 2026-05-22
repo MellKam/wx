@@ -1210,6 +1210,11 @@ pub enum Expression {
         callee: Box<Spanned<Expression>>,
         arguments: Box<[Separated<Spanned<Expression>>]>,
     },
+    /// `{expr}::<Type1, Type2>` — turbofish type application. Always the callee of a `Call`.
+    TypeApplication {
+        callee: Box<Spanned<Expression>>,
+        args: Box<[Spanned<TypeExpression>]>,
+    },
     /// `{expr}::{expr}`
     NamespaceAccess {
         namespace: Box<Spanned<TypeExpression>>,
@@ -1298,6 +1303,14 @@ impl Expression {
             _ => false,
         }
     }
+}
+
+/// A generic type parameter declaration: `T` or `T: Bound1 + Bound2`.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct TypeParam {
+    pub name: Spanned<SymbolU32>,
+    /// Trait bounds. Empty = unconstrained.
+    pub bounds: Box<[Spanned<TypeExpression>]>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1435,6 +1448,8 @@ impl TraitItem {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionSignature {
     pub name: Spanned<SymbolU32>,
+    /// Generic type parameters `<T, U: Bound>`. Empty = monomorphic.
+    pub type_params: Box<[TypeParam]>,
     pub params: Grouped<Box<[Separated<Spanned<FunctionParam>>]>>,
     pub result: Option<Box<Spanned<TypeExpression>>>,
 }
@@ -1484,6 +1499,10 @@ pub struct DefId(u32);
 impl DefId {
     pub fn as_u32(self) -> u32 {
         self.0
+    }
+
+    pub fn new(id: u32) -> Self {
+        DefId(id)
     }
 }
 
@@ -2159,6 +2178,12 @@ impl<'input> Parser<'input> {
             span: name_span,
         };
 
+        let type_params = if self.lexer.peek().inner == Token::LeftArrow {
+            self.parse_type_params()?
+        } else {
+            Box::new([])
+        };
+
         let params = SeparatedGroup {
             open_token: Token::OpenParen,
             close_token: Token::CloseParen,
@@ -2186,11 +2211,98 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: FunctionSignature {
                 name,
+                type_params,
                 params,
                 result,
             },
             span,
         })
+    }
+
+    /// Parse `<T, U: Bound1 + Bound2>` — generic type parameter declarations.
+    fn parse_type_params(&mut self) -> Result<Box<[TypeParam]>, ()> {
+        let open_span = self.next_expect(Token::LeftArrow)?.span;
+        let mut params: Vec<TypeParam> = Vec::new();
+
+        loop {
+            let peeked = self.lexer.peek();
+            if peeked.inner == Token::RightArrow {
+                self.lexer.next();
+                break;
+            }
+            if peeked.inner == Token::Eof {
+                self.ast.diagnostics.push(
+                    UnclosedDelimiterDiagnostic {
+                        file_id: self.ast.file_id,
+                        open_span,
+                        close_token: Token::RightArrow,
+                        expected_close_span: peeked.span,
+                    }
+                    .report(),
+                );
+                break;
+            }
+
+            let name_span = self.next_expect(Token::Identifier)?.span;
+            let name_symbol = self.intern_identifier(name_span);
+            let name = Spanned {
+                inner: name_symbol,
+                span: name_span,
+            };
+
+            let bounds: Box<[Spanned<TypeExpression>]> =
+                if self.lexer.next_if(Token::Colon).is_some() {
+                    let mut bounds = vec![self.parse_type_expression()?];
+                    while self.lexer.next_if(Token::Plus).is_some() {
+                        bounds.push(self.parse_type_expression()?);
+                    }
+                    bounds.into_boxed_slice()
+                } else {
+                    Box::new([])
+                };
+
+            params.push(TypeParam { name, bounds });
+
+            if self.lexer.peek().inner == Token::Comma {
+                self.lexer.next();
+            }
+        }
+
+        Ok(params.into_boxed_slice())
+    }
+
+    /// Parse `::<Type1, Type2>` turbofish arguments (the `<...>` part after `::` is already
+    /// consumed by the caller). Returns the args and the closing `>` span.
+    fn parse_type_args(&mut self) -> Result<(Box<[Spanned<TypeExpression>]>, TextSpan), ()> {
+        let open_span = self.next_expect(Token::LeftArrow)?.span;
+        let mut args: Vec<Spanned<TypeExpression>> = Vec::new();
+
+        let close_span = loop {
+            let peeked = self.lexer.peek();
+            if peeked.inner == Token::RightArrow {
+                break self.lexer.next().span;
+            }
+            if peeked.inner == Token::Eof {
+                self.ast.diagnostics.push(
+                    UnclosedDelimiterDiagnostic {
+                        file_id: self.ast.file_id,
+                        open_span,
+                        close_token: Token::RightArrow,
+                        expected_close_span: peeked.span,
+                    }
+                    .report(),
+                );
+                break peeked.span;
+            }
+
+            args.push(self.parse_type_expression()?);
+
+            if self.lexer.peek().inner == Token::Comma {
+                self.lexer.next();
+            }
+        };
+
+        Ok((args.into_boxed_slice(), close_span))
     }
 
     #[inline]
@@ -3162,6 +3274,19 @@ impl<'input> Parser<'input> {
         // Consume the :: token
         _ = parser.lexer.next();
 
+        // Turbofish: `expr::<T1, T2>` — applies to any expression (free fn, method, etc.)
+        if parser.lexer.peek().inner == Token::LeftArrow {
+            let (args, close_span) = parser.parse_type_args()?;
+            let span = TextSpan::merge(left.span, close_span);
+            return Ok(Spanned {
+                inner: Expression::TypeApplication {
+                    callee: Box::new(left),
+                    args,
+                },
+                span,
+            });
+        }
+
         let namespace_ty = match left.inner {
             Expression::SelfType => Spanned {
                 inner: TypeExpression::SelfType,
@@ -3571,6 +3696,11 @@ impl<'input> Parser<'input> {
                 let fn_span = parser.lexer.next().span;
                 let name_span = parser.next_expect(Token::Identifier)?.span;
                 let name_symbol = parser.intern_identifier(name_span);
+                let type_params = if parser.lexer.peek().inner == Token::LeftArrow {
+                    parser.parse_type_params()?
+                } else {
+                    Box::new([])
+                };
                 let params = SeparatedGroup {
                     open_token: Token::OpenParen,
                     close_token: Token::CloseParen,
@@ -3598,6 +3728,7 @@ impl<'input> Parser<'input> {
                                 inner: name_symbol,
                                 span: name_span,
                             },
+                            type_params,
                             params,
                             result,
                         },

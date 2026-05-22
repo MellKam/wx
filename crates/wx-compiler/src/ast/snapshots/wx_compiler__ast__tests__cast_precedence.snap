@@ -17,6 +17,7 @@ items:
               span:
                 start: 3
                 end: 8
+            type_params: []
             params:
               open:
                 start: 8
@@ -146,6 +147,7 @@ items:
               span:
                 start: 52
                 end: 57
+            type_params: []
             params:
               open:
                 start: 57

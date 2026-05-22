@@ -51,6 +51,7 @@ items:
               span:
                 start: 3
                 end: 9
+            type_params: []
             params:
               open:
                 start: 9
@@ -96,6 +97,7 @@ items:
               span:
                 start: 30
                 end: 35
+            type_params: []
             params:
               open:
                 start: 35

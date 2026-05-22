@@ -89,10 +89,12 @@ pub enum Type {
     Trait {
         trait_index: u32,
     },
-    // TODO: maybe add these later
-    // Generic {
-    //     generic_index: u32,
-    // },
+    /// A type parameter `T` within a generic function. `param_index` is the
+    /// slot in the enclosing `Function::type_params`. Two uses of `T` in the
+    /// same function share one interned `TypeParam { 0 }` entry.
+    TypeParam {
+        param_index: u32,
+    },
 }
 
 impl Type {
@@ -310,6 +312,21 @@ pub enum ExprKind {
     },
     Call {
         callee: Box<Expression>,
+        arguments: Box<[Expression]>,
+    },
+    /// A direct call to a generic function with resolved type arguments.
+    /// `type_args[i]` holds the concrete `TypeIndex` substituted for `TypeParam { param_index: i }`.
+    GenericCall {
+        id: DefId,
+        type_args: Box<[TypeIndex]>,
+        arguments: Box<[Expression]>,
+    },
+    /// A method call on a generic trait method.
+    /// `type_args[0]` = Self type (receiver), `type_args[1..]` = explicit generics.
+    GenericMethodCall {
+        id: DefId,
+        type_args: Box<[TypeIndex]>,
+        object: Box<Expression>,
         arguments: Box<[Expression]>,
     },
     MethodCall {
@@ -682,6 +699,15 @@ pub enum FunctionOrigin {
     TraitImpl { trait_impl_index: TraitImplIndex },
 }
 
+/// Metadata for a single generic type parameter, e.g. `T` in `fn foo<T: Bound>`.
+#[derive(Clone)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct TypeParamInfo {
+    pub name: SymbolU32,
+    pub bounds: Box<[TraitIndex]>,
+}
+
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Function {
@@ -689,7 +715,8 @@ pub struct Function {
     pub pub_span: Option<ast::TextSpan>,
     pub source: ItemSource,
     pub origin: FunctionOrigin,
-    pub type_params: Box<[TypeIndex]>,
+    /// Generic type parameters declared on this function. Empty = monomorphic.
+    pub type_params: Box<[TypeParamInfo]>,
     pub signature_index: SignatureIndex,
     pub name: ast::Spanned<SymbolU32>,
     pub params: Box<[FunctionParam]>,
@@ -1976,6 +2003,10 @@ struct Builder<'ast, 'interner> {
     module_scope: Vec<ModuleIndex>,
     /// Type that `Self` resolves to; saved/restored alongside `file_id`.
     current_self_type: Option<TypeIndex>,
+    /// Type params in scope for the function being compiled; saved/restored
+    /// around `ensure_signature` / `ensure_body`. Allows `resolve_type("T")`
+    /// to return `Type::TypeParam { param_index }`.
+    current_type_params: Vec<TypeParamInfo>,
 
     // ── infrastructure ────────────────────────────────────────────────────────
     interner: &'interner mut ast::StringInterner,
@@ -2084,6 +2115,14 @@ impl<'ast> Builder<'ast, '_> {
                 let text = self.interner.resolve(symbol).unwrap();
                 if let Ok(ty) = Type::try_from(text) {
                     return self.type_pool.intern(ty);
+                }
+                // Check scoped type params before the global symbol table.
+                for (idx, tp) in self.current_type_params.iter().enumerate() {
+                    if tp.name == symbol {
+                        return self.type_pool.intern(Type::TypeParam {
+                            param_index: idx as u32,
+                        });
+                    }
                 }
                 match self.lookup_symbol(SymbolNamespace::Type, symbol).cloned() {
                     Some(SymbolKind::Pending(def_id)) => {
@@ -2322,6 +2361,15 @@ impl<'ast> Builder<'ast, '_> {
                     .join(", ");
                 let result = self.display_type(signature.result());
                 format!("fn({}) -> {}", params, result)
+            }
+            Type::TypeParam { param_index } => {
+                let param_index = *param_index;
+                match self.current_type_params.get(param_index as usize) {
+                    Some(tp) => {
+                        self.interner.resolve(tp.name).unwrap_or("?").to_string()
+                    }
+                    None => format!("T{}", param_index),
+                }
             }
         }
     }
@@ -2881,7 +2929,13 @@ impl<'ast> Builder<'ast, '_> {
                         .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                         .cloned()
                         .map(|k| self.get_symbol_span(k));
+                    let type_params = self.resolve_ast_type_params(&signature.type_params);
+                    let saved_type_params = std::mem::replace(
+                        &mut self.current_type_params,
+                        type_params.clone(),
+                    );
                     let (params, result) = self.build_function_signature(signature);
+                    self.current_type_params = saved_type_params;
                     let signature_index = self.type_pool.intern_function(&params, result.clone());
                     let func_index = self.functions.len() as u32;
                     let origin = if self.module_scope.is_empty() {
@@ -2893,7 +2947,7 @@ impl<'ast> Builder<'ast, '_> {
                         id: *id,
                         body: None,
                         origin,
-                        type_params: Box::new([]),
+                        type_params: type_params.into_boxed_slice(),
                         pub_span: *pub_span,
                         source: ItemSource::Internal,
                         signature_index,
@@ -3116,7 +3170,11 @@ impl<'ast> Builder<'ast, '_> {
             AstNodeRef::TraitFunction {
                 trait_index, item, ..
             } => {
-                self.current_self_type = Some(self.type_pool.intern(Type::Trait { trait_index }));
+                // Self is encoded as TypeParam{0} so default implementations can be
+                // monomorphized: type_args[0] = concrete receiver type at the call site.
+                let self_type_param_idx =
+                    self.type_pool.intern(Type::TypeParam { param_index: 0 });
+                self.current_self_type = Some(self_type_param_idx);
                 let self_sym = self.interner.get_or_intern("self");
                 if let ast::TraitItem::Function {
                     id,
@@ -3126,6 +3184,24 @@ impl<'ast> Builder<'ast, '_> {
                 } = item
                 {
                     let attributes = self.resolve_function_attributes(attributes);
+
+                    // Self occupies slot 0; any explicit generics on the method start at 1.
+                    let self_name_sym = self.interner.get_or_intern("Self");
+                    let self_type_param = TypeParamInfo {
+                        name: self_name_sym,
+                        bounds: Box::new([trait_index]),
+                    };
+                    let explicit_type_params =
+                        self.resolve_ast_type_params(&signature.type_params);
+                    let type_params: Box<[TypeParamInfo]> = std::iter::once(self_type_param)
+                        .chain(explicit_type_params)
+                        .collect();
+
+                    let saved_type_params = std::mem::replace(
+                        &mut self.current_type_params,
+                        type_params.to_vec(),
+                    );
+
                     let params: Box<[FunctionParam]> = signature
                         .params
                         .inner
@@ -3142,7 +3218,7 @@ impl<'ast> Builder<'ast, '_> {
                                     },
                                     None => Spanned {
                                         inner: if is_self {
-                                            self.type_pool.intern(Type::Trait { trait_index })
+                                            self_type_param_idx
                                         } else {
                                             Type::ERROR_IDX
                                         },
@@ -3156,6 +3232,9 @@ impl<'ast> Builder<'ast, '_> {
                         inner: self.resolve_type(r),
                         span: r.span,
                     });
+
+                    self.current_type_params = saved_type_params;
+
                     let sig_idx = self.type_pool.intern_function(&params, result.clone());
                     let func_index = self.functions.len() as u32;
                     self.functions.push(Function {
@@ -3163,7 +3242,7 @@ impl<'ast> Builder<'ast, '_> {
                         body: None,
                         pub_span: None,
                         origin: FunctionOrigin::Trait,
-                        type_params: Box::new([self.type_pool.intern(Type::Trait { trait_index })]),
+                        type_params,
                         source: ItemSource::Internal,
                         signature_index: sig_idx,
                         name: signature.name.clone(),
@@ -3748,10 +3827,9 @@ impl<'ast> Builder<'ast, '_> {
                 .trait_impl_block_lookup
                 .get(parent_id)
                 .map(|&idx| self.trait_impls[idx as usize].target),
-            AstNodeRef::TraitFunction { trait_index, .. } => {
-                Some(self.type_pool.intern(Type::Trait {
-                    trait_index: *trait_index,
-                }))
+            AstNodeRef::TraitFunction { .. } => {
+                // Self is TypeParam{0} in trait default methods (see ensure_signature).
+                Some(self.type_pool.intern(Type::TypeParam { param_index: 0 }))
             }
             _ => None,
         };
@@ -3759,6 +3837,11 @@ impl<'ast> Builder<'ast, '_> {
         let saved_file_id = self.file_id;
         let saved_scope = std::mem::replace(&mut self.module_scope, node.module_path().to_vec());
         let saved_self_type = self.current_self_type;
+        // Restore this function's type params so resolve_type("T") works in the body.
+        let fn_type_params: Vec<TypeParamInfo> =
+            self.functions[func_index as usize].type_params.to_vec();
+        let saved_type_params =
+            std::mem::replace(&mut self.current_type_params, fn_type_params);
         self.file_id = node.file_id();
         self.current_self_type = self_type;
 
@@ -3772,6 +3855,47 @@ impl<'ast> Builder<'ast, '_> {
         self.file_id = saved_file_id;
         self.module_scope = saved_scope;
         self.current_self_type = saved_self_type;
+        self.current_type_params = saved_type_params;
+    }
+
+    /// Resolve AST type param declarations to `TypeParamInfo`, populating
+    /// `current_type_params` so that subsequent `resolve_type` calls can map
+    /// `T` → `Type::TypeParam { idx }`. Returns the resolved params.
+    fn resolve_ast_type_params(
+        &mut self,
+        ast_params: &[ast::TypeParam],
+    ) -> Vec<TypeParamInfo> {
+        ast_params
+            .iter()
+            .map(|tp| {
+                let bounds: Box<[TraitIndex]> = tp
+                    .bounds
+                    .iter()
+                    .filter_map(|bound| {
+                        let ty = self.resolve_type(bound);
+                        match *self.type_pool.get(ty) {
+                            Type::Trait { trait_index } => Some(trait_index),
+                            _ => {
+                                self.diagnostics.push(
+                                    Diagnostic::error()
+                                        .with_code(DiagnosticCode::ExpectedTrait.code())
+                                        .with_message("expected a trait name as a bound")
+                                        .with_label(Label::primary(
+                                            self.file_id,
+                                            bound.span,
+                                        )),
+                                );
+                                None
+                            }
+                        }
+                    })
+                    .collect();
+                TypeParamInfo {
+                    name: tp.name.inner,
+                    bounds,
+                }
+            })
+            .collect()
     }
 
     fn build_function_signature(
@@ -4888,7 +5012,9 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::Unary { .. } => {
                 self.build_unary_expression(func_ctx, expr, access_ctx)
             }
-            ast::Expression::Call { .. } => self.build_call_expression(func_ctx, expr),
+            ast::Expression::Call { .. } => {
+                self.build_call_expression(func_ctx, expr, access_ctx.expected_type)
+            }
             ast::Expression::NamespaceAccess { namespace, member } => {
                 self.build_namespace_access_expression(func_ctx, namespace, member.clone())
             }
@@ -4928,6 +5054,11 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::Tuple { elements } => {
                 self.build_tuple_expression(func_ctx, expr.span, elements, access_ctx)
             }
+            // Type args are stored for future monomorphization; TIR resolves the
+            // inner callee and treats the call as non-generic until mono pass.
+            ast::Expression::TypeApplication { callee, .. } => {
+                self.build_expression(func_ctx, callee, access_ctx)
+            }
         }
     }
 
@@ -4939,10 +5070,26 @@ impl<'ast> Builder<'ast, '_> {
         access_ctx: AccessContext,
     ) -> Result<Expression, ()> {
         let object = self.build_expression(func_ctx, object_expr, access_ctx)?;
-        let entry = self
-            .ensure_impl_members(object.ty)
-            .get(&member.inner)
-            .cloned();
+        // Trait-typed receivers appear only in default method bodies where
+        // `self` has type `Type::Trait { .. }`.  impl_members holds concrete
+        // dispatch entries only, so look up in Trait::members directly instead.
+        // TypeParam receivers use their bounds the same way.
+        let entry = match *self.type_pool.get(object.ty) {
+            Type::Trait { trait_index } => {
+                self.traits[trait_index as usize].members.get(&member.inner).cloned()
+            }
+            Type::TypeParam { param_index } => {
+                let bounds = self
+                    .current_type_params
+                    .get(param_index as usize)
+                    .map(|tp| tp.bounds.to_vec())
+                    .unwrap_or_default();
+                bounds.iter().find_map(|&ti| {
+                    self.traits[ti as usize].members.get(&member.inner).cloned()
+                })
+            }
+            _ => self.ensure_impl_members(object.ty).get(&member.inner).cloned(),
+        };
         match entry {
             Some(ImplEntry::Method(func_index)) => {
                 let caller_id = self.functions[func_ctx.func_index as usize].id;
@@ -7090,17 +7237,46 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
+    /// Returns true when `arg_ty` is a `TypeParam` whose bounds include the
+    /// trait that `expected_ty` represents (`Trait { trait_index }`).
+    /// This makes a bounded TypeParam coercible to `impl Trait` parameters.
+    fn type_param_satisfies_bound(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
+        let Type::TypeParam { param_index } = *self.type_pool.get(arg_ty) else {
+            return false;
+        };
+        let Type::Trait { trait_index: expected_trait } = *self.type_pool.get(expected_ty) else {
+            return false;
+        };
+        self.current_type_params
+            .get(param_index as usize)
+            .map(|tp| tp.bounds.iter().any(|&b| b == expected_trait))
+            .unwrap_or(false)
+    }
+
     fn build_call_arguments(
         &mut self,
         ctx: &mut FunctionContext,
         arguments: &[Separated<Spanned<ast::Expression>>],
         params: &[TypeIndex],
+        type_args: &[TypeIndex],
     ) -> Result<Box<[Expression]>, ()> {
         arguments
             .iter()
             .enumerate()
             .map(|(index, argument)| {
-                let expected_type: Option<TypeIndex> = params.get(index).copied();
+                let param_ty: Option<TypeIndex> = params.get(index).copied();
+                // Resolve TypeParam params via type_args (indexed by param_index).
+                // For non-generic calls type_args is empty and TypeParam params are filtered out.
+                let expected_type = param_ty
+                    .map(|ty| match *self.type_pool.get(ty) {
+                        Type::TypeParam { param_index } => type_args
+                            .get(param_index as usize)
+                            .copied()
+                            .filter(|&t| t != Type::UNKNOWN_IDX)
+                            .unwrap_or(ty),
+                        _ => ty,
+                    })
+                    .filter(|&ty| !matches!(*self.type_pool.get(ty), Type::TypeParam { .. }));
 
                 let mut argument = self.build_expression(
                     ctx,
@@ -7114,7 +7290,9 @@ impl<'ast> Builder<'ast, '_> {
                 if let Some(expected_type) = expected_type {
                     if argument.ty == Type::UNKNOWN_IDX {
                         self.coerce_untyped_expr(&mut argument, expected_type)?;
-                    } else if !self.type_pool.coercible_to(argument.ty, expected_type) {
+                    } else if !self.type_pool.coercible_to(argument.ty, expected_type)
+                        && !self.type_param_satisfies_bound(argument.ty, expected_type)
+                    {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
                                 file_id: self.file_id,
@@ -7125,6 +7303,17 @@ impl<'ast> Builder<'ast, '_> {
                             .report(&self),
                         );
                     }
+                } else if argument.ty == Type::UNKNOWN_IDX {
+                    // Argument passed to a TypeParam parameter with no concrete type
+                    // and no inference from context — require an explicit annotation.
+                    self.diagnostics.push(
+                        TypeAnnotationRequiredDiagnostic {
+                            file_id: self.file_id,
+                            span: argument.span,
+                        }
+                        .report(),
+                    );
+                    return Err(());
                 }
 
                 Ok(argument)
@@ -7136,6 +7325,7 @@ impl<'ast> Builder<'ast, '_> {
         &mut self,
         ctx: &mut FunctionContext,
         expr: &Spanned<ast::Expression>,
+        expected_result: Option<TypeIndex>,
     ) -> Result<Expression, ()> {
         let (ast_callee, arguments) = match &expr.inner {
             ast::Expression::Call { callee, arguments } => (callee, arguments),
@@ -7179,12 +7369,23 @@ impl<'ast> Builder<'ast, '_> {
         };
         match callee.kind {
             ExprKind::ObjectAccess { member, object } => {
-                match self
-                    .impl_members
-                    .get(&object.ty)
-                    .and_then(|m| m.get(&member.inner))
-                    .cloned()
-                {
+                let method_entry = match *self.type_pool.get(object.ty) {
+                    Type::Trait { trait_index } => {
+                        self.traits[trait_index as usize].members.get(&member.inner).cloned()
+                    }
+                    Type::TypeParam { param_index } => {
+                        let bounds = self
+                            .current_type_params
+                            .get(param_index as usize)
+                            .map(|tp| tp.bounds.to_vec())
+                            .unwrap_or_default();
+                        bounds.iter().find_map(|&ti| {
+                            self.traits[ti as usize].members.get(&member.inner).cloned()
+                        })
+                    }
+                    _ => self.impl_members.get(&object.ty).and_then(|m| m.get(&member.inner)).cloned(),
+                };
+                match method_entry {
                     Some(ImplEntry::Method(func_index)) => {
                         if let Some(access) =
                             self.functions[func_index as usize].accesses.last_mut()
@@ -7206,7 +7407,35 @@ impl<'ast> Builder<'ast, '_> {
                             );
                         }
 
-                        let arguments = self.build_call_arguments(ctx, arguments, params)?;
+                        let type_params_len =
+                            self.functions[func_index as usize].type_params.len();
+                        if type_params_len > 0 {
+                            // Generic trait method: build type_args with Self at index 0.
+                            let mut type_args = vec![Type::UNKNOWN_IDX; type_params_len];
+                            type_args[0] = object.ty;
+                            let arguments =
+                                self.build_call_arguments(ctx, arguments, params, &type_args)?;
+                            let return_ty = match *self.type_pool.get(signature.result()) {
+                                Type::TypeParam { param_index } => type_args
+                                    .get(param_index as usize)
+                                    .copied()
+                                    .filter(|&t| t != Type::UNKNOWN_IDX)
+                                    .unwrap_or(signature.result()),
+                                _ => signature.result(),
+                            };
+                            return Ok(Expression {
+                                kind: ExprKind::GenericMethodCall {
+                                    id,
+                                    type_args: type_args.into_boxed_slice(),
+                                    object,
+                                    arguments,
+                                },
+                                ty: return_ty,
+                                span: expr.span,
+                            });
+                        }
+
+                        let arguments = self.build_call_arguments(ctx, arguments, params, &[])?;
 
                         Ok(Expression {
                             kind: ExprKind::MethodCall {
@@ -7238,15 +7467,67 @@ impl<'ast> Builder<'ast, '_> {
                     );
                 }
 
-                if let ExprKind::Function { id } = callee.kind {
-                    let func_index = self.function_index_lookup[&id];
+                if let ExprKind::Function { id } = &callee.kind {
+                    let func_index = self.function_index_lookup[id];
                     if let Some(access) = self.functions[func_index as usize].accesses.last_mut() {
                         access.kind = FunctionAccessKind::DirectCall;
                     }
+
+                    let type_params_len = self.functions[func_index as usize].type_params.len();
+                    if type_params_len > 0 {
+                        let id = *id;
+                        let mut type_args = vec![Type::UNKNOWN_IDX; type_params_len];
+
+                        // Seed from the expected return type so `identity(42)` in an
+                        // `i32` context infers `T = i32` before arguments are built.
+                        if let Some(expected) = expected_result {
+                            if let Type::TypeParam { param_index } =
+                                *self.type_pool.get(signature.result())
+                            {
+                                type_args[param_index as usize] = expected;
+                            }
+                        }
+
+                        let arguments =
+                            self.build_call_arguments(ctx, arguments, params, &type_args)?;
+
+                        // Fill any slots not already covered by return-type seeding.
+                        for (arg, &param_ty) in arguments.iter().zip(params.iter()) {
+                            if let Type::TypeParam { param_index } = *self.type_pool.get(param_ty)
+                            {
+                                let slot = &mut type_args[param_index as usize];
+                                if *slot == Type::UNKNOWN_IDX
+                                    && arg.ty != Type::UNKNOWN_IDX
+                                    && arg.ty != Type::ERROR_IDX
+                                {
+                                    *slot = arg.ty;
+                                }
+                            }
+                        }
+
+                        let return_ty = match *self.type_pool.get(signature.result()) {
+                            Type::TypeParam { param_index } => type_args
+                                .get(param_index as usize)
+                                .copied()
+                                .filter(|&t| t != Type::UNKNOWN_IDX)
+                                .unwrap_or(signature.result()),
+                            _ => signature.result(),
+                        };
+
+                        return Ok(Expression {
+                            kind: ExprKind::GenericCall {
+                                id,
+                                type_args: type_args.into_boxed_slice(),
+                                arguments,
+                            },
+                            ty: return_ty,
+                            span: expr.span,
+                        });
+                    }
                 }
 
-                let arguments = self.build_call_arguments(ctx, arguments, params)?;
-
+                // Non-generic call (direct or indirect).
+                let arguments = self.build_call_arguments(ctx, arguments, params, &[])?;
                 Ok(Expression {
                     kind: ExprKind::Call {
                         callee: Box::new(callee),
@@ -8143,6 +8424,7 @@ impl TIR {
             global_index_lookup: HashMap::new(),
             memory_index_lookup: HashMap::new(),
             current_self_type: None,
+            current_type_params: Vec::new(),
             ast_nodes: HashMap::new(),
             sig_state: HashMap::new(),
             trait_impl_block_lookup: HashMap::new(),

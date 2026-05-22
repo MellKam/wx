@@ -266,18 +266,9 @@ pub enum ImportModuleItem {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ExportItem {
-    Function {
-        id: ast::DefId,
-        name: SymbolU32,
-    },
-    Global {
-        id: ast::DefId,
-        name: SymbolU32,
-    },
-    Memory {
-        memory_index: u32,
-        name: SymbolU32,
-    },
+    Function { id: ast::DefId, name: SymbolU32 },
+    Global { id: ast::DefId, name: SymbolU32 },
+    Memory { memory_index: u32, name: SymbolU32 },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -465,7 +456,8 @@ pub fn compute_layout(
         | tir::Type::Module { .. }
         | tir::Type::Enum { .. }
         | tir::Type::Memory { .. }
-        | tir::Type::Trait { .. } => panic!("compute_layout called on non-value type"),
+        | tir::Type::Trait { .. }
+        | tir::Type::TypeParam { .. } => panic!("compute_layout called on non-value type"),
     }
 }
 
@@ -563,7 +555,6 @@ impl LayoutCache {
 
 impl MIR {
     pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
-
         // Memory index remap: each memory's DefId → its position in tir.memories
         // which equals the WebAssembly linear-memory index.
         let memory_id_remap: HashMap<ast::DefId, u32> = tir
@@ -587,6 +578,13 @@ impl MIR {
             .map(|(pos, &type_idx)| (type_idx, pos as u32))
             .collect();
 
+        let max_def_id = tir
+            .functions
+            .iter()
+            .map(|f| f.id.as_u32())
+            .max()
+            .unwrap_or(0);
+
         let mut builder = Builder {
             tir,
             interner,
@@ -596,10 +594,13 @@ impl MIR {
             memory_id_remap,
             sig_index_remap,
             current_substitutions: Box::new([]),
+            mono_registry: MonoRegistry::new(max_def_id + 1),
         };
+        let _ = max_def_id;
 
-        // MIR functions: live defined (Internal) functions only.
-        // Wasm index ordering (imports first) is codegen's responsibility.
+        // MIR functions: live defined (Internal) monomorphic functions only.
+        // Generic functions (type_params non-empty) are lowered on demand by the
+        // mono pass below. Wasm index ordering (imports first) is codegen's responsibility.
         let mut functions: Vec<Function> = Vec::new();
         let mut inline_functions: HashSet<ast::DefId> = HashSet::new();
         for func in &tir.functions {
@@ -607,6 +608,7 @@ impl MIR {
                 && func.body.is_some()
                 && !func.accesses.is_empty()
                 && func.origin != tir::FunctionOrigin::Trait
+                && func.type_params.is_empty()
             {
                 if func
                     .attributes
@@ -619,6 +621,52 @@ impl MIR {
             }
         }
 
+        // Monomorphization: drain the registry worklist populated by lower_expression
+        // when it encountered calls to generic functions. Each iteration may add new
+        // entries (generic-calls-generic), so we loop until the worklist is exhausted.
+        let base_sig_count = builder.sig_index_remap.len() as u32;
+        let mut mono_sigs: Vec<FunctionSignature> = Vec::new();
+        let mut work_cursor = 0;
+        loop {
+            let current_len = builder.mono_registry.worklist.len();
+            if work_cursor >= current_len {
+                break;
+            }
+            let pending = builder.mono_registry.worklist[work_cursor..current_len].to_vec();
+            work_cursor = current_len;
+
+            for (orig_id, subst, mono_id) in pending {
+                let tir_idx = tir.function_index_lookup[&orig_id];
+                let tir_func = &tir.functions[tir_idx as usize];
+
+                builder.current_substitutions = subst;
+
+                // Compute concrete signature while substitutions are active.
+                let tir_sig = match &tir.type_pool[tir_func.signature_index as usize] {
+                    tir::Type::Function { signature } => signature.clone(),
+                    _ => unreachable!(),
+                };
+                let concrete_sig = FunctionSignature {
+                    items: tir_sig
+                        .params()
+                        .iter()
+                        .chain(std::iter::once(&tir_sig.result()))
+                        .map(|&ty| builder.lower_type_index(ty))
+                        .collect(),
+                    params_count: tir_sig.params().len(),
+                };
+                let concrete_sig_index = base_sig_count + mono_sigs.len() as u32;
+                mono_sigs.push(concrete_sig);
+
+                let mut mir_func = builder.lower_function(tir_func);
+                mir_func.id = mono_id;
+                mir_func.signature_index = concrete_sig_index;
+
+                builder.current_substitutions = Box::new([]);
+                functions.push(mir_func);
+            }
+        }
+
         let globals: Vec<Global> = tir
             .globals
             .iter()
@@ -626,21 +674,41 @@ impl MIR {
             .map(|g| builder.lower_global(g))
             .collect();
 
-        let signatures = sig_type_indices
+        // Build base signatures. Generic (TypeParam-containing) function types get
+        // a dummy entry so sig_index_remap stays valid; mono instances use their
+        // own concrete entries appended below.
+        let mut signatures: Vec<FunctionSignature> = sig_type_indices
             .iter()
             .map(|&type_idx| match &tir.type_pool[type_idx as usize] {
-                tir::Type::Function { signature } => FunctionSignature {
-                    items: signature
-                        .params()
-                        .iter()
-                        .chain(std::iter::once(&signature.result()))
-                        .map(|&idx| builder.lower_type_index(idx))
-                        .collect(),
-                    params_count: signature.params().len(),
-                },
+                tir::Type::Function { signature } => {
+                    let is_generic =
+                        signature.params().iter().any(|&p| {
+                            matches!(tir.type_pool[p as usize], tir::Type::TypeParam { .. })
+                        }) || matches!(
+                            tir.type_pool[signature.result() as usize],
+                            tir::Type::TypeParam { .. }
+                        );
+                    if is_generic {
+                        FunctionSignature {
+                            items: Box::new([]),
+                            params_count: 0,
+                        }
+                    } else {
+                        FunctionSignature {
+                            items: signature
+                                .params()
+                                .iter()
+                                .chain(std::iter::once(&signature.result()))
+                                .map(|&idx| builder.lower_type_index(idx))
+                                .collect(),
+                            params_count: signature.params().len(),
+                        }
+                    }
+                }
                 _ => unreachable!(),
             })
             .collect();
+        signatures.extend(mono_sigs);
 
         let mut mir = MIR {
             functions,
@@ -769,6 +837,41 @@ impl StringPool {
     }
 }
 
+/// Tracks which generic function instantiations are needed, assigning each
+/// unique `(original_def_id, type_args)` pair a fresh synthetic `DefId`.
+struct MonoRegistry {
+    map: HashMap<(ast::DefId, Box<[tir::TypeIndex]>), ast::DefId>,
+    /// Stable insertion-order worklist; grows as generic-calls-generic paths
+    /// are encountered during lowering.
+    worklist: Vec<(ast::DefId, Box<[tir::TypeIndex]>, ast::DefId)>,
+    next_id: u32,
+}
+
+impl MonoRegistry {
+    fn new(start_id: u32) -> Self {
+        Self {
+            map: HashMap::new(),
+            worklist: Vec::new(),
+            next_id: start_id,
+        }
+    }
+
+    fn get_or_insert(
+        &mut self,
+        orig_id: ast::DefId,
+        type_args: Box<[tir::TypeIndex]>,
+    ) -> ast::DefId {
+        if let Some(&id) = self.map.get(&(orig_id, type_args.clone())) {
+            return id;
+        }
+        let id = ast::DefId::new(self.next_id);
+        self.next_id += 1;
+        self.map.insert((orig_id, type_args.clone()), id);
+        self.worklist.push((orig_id, type_args, id));
+        id
+    }
+}
+
 struct Builder<'tir> {
     tir: &'tir tir::TIR,
     interner: &'tir ast::StringInterner,
@@ -778,7 +881,11 @@ struct Builder<'tir> {
     /// DefId → index in tir.memories (= WebAssembly memory index).
     memory_id_remap: HashMap<ast::DefId, u32>,
     sig_index_remap: HashMap<tir::TypeIndex, SignatureIndex>,
-    current_substitutions: Box<[(tir::TypeIndex, tir::TypeIndex)]>,
+    /// Concrete type substitution for the current generic instantiation.
+    /// Indexed by `param_index`: `current_substitutions[i]` is the concrete
+    /// `TypeIndex` for `TypeParam { param_index: i }`.
+    current_substitutions: Box<[tir::TypeIndex]>,
+    mono_registry: MonoRegistry,
 }
 
 struct FunctionContext {
@@ -807,13 +914,12 @@ impl<'tir> Builder<'tir> {
             idx if idx == tir::Type::CHAR_IDX => return Type::U32,
             _ => {}
         };
-        let type_idx = self
-            .current_substitutions
-            .iter()
-            .find(|(from, _)| *from == type_idx)
-            .map(|(_, to)| *to)
-            .unwrap_or(type_idx);
+
         match self.tir.type_pool[type_idx as usize].clone() {
+            tir::Type::TypeParam { param_index } => {
+                let concrete = self.current_substitutions[param_index as usize];
+                self.lower_type_index(concrete)
+            }
             tir::Type::Function { .. } => {
                 let sig_idx = self.sig_index_remap[&type_idx];
                 Type::Function {
@@ -855,18 +961,12 @@ impl<'tir> Builder<'tir> {
                 let aggregate_index = self.aggregate_pool.add(Aggregate { values: fields });
                 Type::Aggregate { aggregate_index }
             }
-            _ => unimplemented!(),
+            other => unimplemented!("lower_type_index: unhandled TIR type {:?}", other),
         }
     }
 
     fn memory_index_from_arg(&self, type_idx: tir::TypeIndex) -> u32 {
-        let resolved = self
-            .current_substitutions
-            .iter()
-            .find(|(from, _)| *from == type_idx)
-            .map(|(_, to)| *to)
-            .unwrap_or(type_idx);
-        match self.tir.type_pool[resolved as usize] {
+        match self.tir.type_pool[type_idx as usize] {
             tir::Type::Memory { id, .. } => self.memory_id_remap[&id],
             _ => unreachable!("intrinsic argument is not a Memory type"),
         }
@@ -980,9 +1080,7 @@ impl<'tir> Builder<'tir> {
                 ty: Type::Bool,
             },
             tir::ExprKind::Global { id } => Expression {
-                kind: ExprKind::Global {
-                    id: *id,
-                },
+                kind: ExprKind::Global { id: *id },
                 ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Local {
@@ -1041,6 +1139,89 @@ impl<'tir> Builder<'tir> {
                 let variant = &enum_.variants[*variant_index as usize];
                 self.lower_expression(func_ctx, &variant.value, sink)
             }
+            tir::ExprKind::GenericCall { id, type_args, arguments } => {
+                let mono_id = self.mono_registry.get_or_insert(*id, type_args.clone());
+                let lowered_args: Box<[_]> = arguments
+                    .iter()
+                    .map(|arg| self.lower_expression(func_ctx, arg, sink))
+                    .collect();
+                Expression {
+                    kind: ExprKind::Call {
+                        callee: Box::new(Expression {
+                            kind: ExprKind::Function { id: mono_id },
+                            ty: Type::Unit,
+                        }),
+                        arguments: lowered_args,
+                    },
+                    ty: self.lower_type_index(expr.ty),
+                }
+            }
+
+            tir::ExprKind::GenericMethodCall {
+                id,
+                type_args,
+                object,
+                arguments,
+            } => {
+                let tir_idx = self.tir.function_index_lookup[id];
+                let tir_func = &self.tir.functions[tir_idx as usize];
+
+                // Resolve any TypeParam entries in type_args through active substitutions.
+                let resolved: Box<[tir::TypeIndex]> = type_args
+                    .iter()
+                    .map(|&ty| match &self.tir.type_pool[ty as usize] {
+                        tir::Type::TypeParam { param_index } => self
+                            .current_substitutions
+                            .get(*param_index as usize)
+                            .copied()
+                            .unwrap_or(ty),
+                        _ => ty,
+                    })
+                    .collect();
+
+                let target_id = if tir_func.body.is_some() {
+                    // Default impl: monomorphize with resolved type_args.
+                    self.mono_registry.get_or_insert(*id, resolved)
+                } else {
+                    // Abstract method called inside a default body: the concrete Self
+                    // type is now known, so dispatch directly to the impl.
+                    let concrete_self = resolved[0];
+                    let method_name = tir_func.name.inner;
+                    let impl_func_idx = self
+                        .tir
+                        .impl_members
+                        .get(&concrete_self)
+                        .and_then(|m| m.get(&method_name))
+                        .map(|entry| match entry {
+                            tir::ImplEntry::Method(idx) | tir::ImplEntry::AssociatedFn(idx) => {
+                                *idx
+                            }
+                            _ => unreachable!("impl entry for method is not a function"),
+                        })
+                        .expect("no impl found for abstract trait method");
+                    self.tir.functions[impl_func_idx as usize].id
+                };
+
+                let lowered_object = self.lower_expression(func_ctx, object, sink);
+                let lowered_args: Box<[_]> = std::iter::once(lowered_object)
+                    .chain(
+                        arguments
+                            .iter()
+                            .map(|arg| self.lower_expression(func_ctx, arg, sink)),
+                    )
+                    .collect();
+                Expression {
+                    kind: ExprKind::Call {
+                        callee: Box::new(Expression {
+                            kind: ExprKind::Function { id: target_id },
+                            ty: Type::Unit,
+                        }),
+                        arguments: lowered_args,
+                    },
+                    ty: self.lower_type_index(expr.ty),
+                }
+            }
+
             tir::ExprKind::Call { callee, arguments } => {
                 // Detect calls to intrinsic functions (e.g. wasm::memory32_grow).
                 // TIR resolves module::fn directly to ExprKind::Function { id }.
@@ -1169,9 +1350,7 @@ impl<'tir> Builder<'tir> {
                                 ty: self.lower_type_index(expr.ty),
                             },
                             tir::ImportValue::Global { id } => Expression {
-                                kind: ExprKind::Global {
-                                    id: *id,
-                                },
+                                kind: ExprKind::Global { id: *id },
                                 ty: self.lower_type_index(expr.ty),
                             },
                             tir::ImportValue::Memory { .. } => {
@@ -1343,7 +1522,10 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
-            tir::ExprKind::TupleFieldAccess { object, field_index } => {
+            tir::ExprKind::TupleFieldAccess {
+                object,
+                field_index,
+            } => {
                 let phys_index = self
                     .layout_cache
                     .get_or_compute(object.ty, &self.tir.type_pool, &self.tir.structs)
@@ -1351,7 +1533,10 @@ impl<'tir> Builder<'tir> {
                 let field_ty = self.lower_type_index(expr.ty);
 
                 match &object.kind {
-                    tir::ExprKind::Local { scope_index, local_index } => Expression {
+                    tir::ExprKind::Local {
+                        scope_index,
+                        local_index,
+                    } => Expression {
                         kind: ExprKind::AggregateGet {
                             scope_index: *scope_index,
                             local_index: *local_index,
@@ -1921,7 +2106,11 @@ fn inline_call(
         })
         .collect();
 
-    exprs.push(rewrite_body(callee.block.clone(), body_scope_offset, wrapper_scope));
+    exprs.push(rewrite_body(
+        callee.block.clone(),
+        body_scope_offset,
+        wrapper_scope,
+    ));
 
     Expression {
         ty: result_ty,
@@ -2119,7 +2308,12 @@ pub fn run_inlining_pass(mir: &mut MIR) {
         for caller_id in caller_ids {
             let ci = func_idx[&caller_id];
             let caller_func = &mut mir.functions[ci];
-            inline_expr(&mut caller_func.block, &mut caller_func.scopes, f_id, &f_body);
+            inline_expr(
+                &mut caller_func.block,
+                &mut caller_func.scopes,
+                f_id,
+                &f_body,
+            );
 
             // Update graph: remove caller → f, propagate f's callees to caller.
             graph.callees.get_mut(&caller_id).unwrap().remove(&f_id);

@@ -1842,3 +1842,99 @@ fn test_struct_cycle_does_not_prevent_other_structs_from_resolving() {
         "Good struct should still resolve despite Bad being cyclic"
     );
 }
+
+// ── Generics ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_generic_identity_resolves() {
+    // identity<T>(t: T) -> T called with i32 — TIR must have no diagnostics
+    // and the function must carry one TypeParamInfo named "T".
+    let case = TestCase::new(indoc! {"
+        pub fn identity<T>(t: T) -> T {
+            t
+        }
+    "});
+    let errors: Vec<_> = case.tir.diagnostics.iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors (count: {})", errors.len());
+    let func = case.tir.functions.iter().find(|f| {
+        case.interner
+            .resolve(f.name.inner)
+            .map(|n| n == "identity")
+            .unwrap_or(false)
+    });
+    let func = func.expect("function 'identity' not found in TIR");
+    assert_eq!(func.type_params.len(), 1, "expected one type param");
+    assert_eq!(
+        case.interner.resolve(func.type_params[0].name),
+        Some("T")
+    );
+    assert!(
+        func.type_params[0].bounds.is_empty(),
+        "T should have no bounds"
+    );
+    insta::assert_yaml_snapshot!(case.tir);
+}
+
+#[test]
+fn test_generic_call_return_type_substituted() {
+    // Calling identity(42) must produce no diagnostics — the return type
+    // is substituted from TypeParam{0} → i32 via the argument.
+    let case = TestCase::new(indoc! {"
+        pub fn identity<T>(t: T) -> T {
+            t
+        }
+        pub fn main() -> i32 {
+            identity(42)
+        }
+    "});
+    let errors: Vec<_> = case.tir.diagnostics.iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors (count: {})", errors.len());
+}
+
+#[test]
+fn test_generic_with_bound_resolves() {
+    // fn with a trait bound — TypeParamInfo.bounds must contain the trait index.
+    let case = TestCase::new(indoc! {"
+        trait Scalable {
+            fn scale(self, factor: i32) -> i32;
+        }
+        fn call_scale<T: Scalable>(t: T, n: i32) -> i32 {
+            t.scale(n)
+        }
+    "});
+    let errors: Vec<_> = case.tir.diagnostics.iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "unexpected errors (count: {})", errors.len());
+    let func = case.tir.functions.iter().find(|f| {
+        case.interner
+            .resolve(f.name.inner)
+            .map(|n| n == "call_scale")
+            .unwrap_or(false)
+    });
+    let func = func.expect("function 'call_scale' not found in TIR");
+    assert_eq!(func.type_params.len(), 1);
+    assert_eq!(
+        func.type_params[0].bounds.len(),
+        1,
+        "T should have one bound (Scalable)"
+    );
+}
+
+#[test]
+fn test_generic_unknown_bound_is_error() {
+    // A bound that names an undeclared type should produce a diagnostic.
+    let case = TestCase::new(indoc! {"
+        fn f<T: Nonexistent>(t: T) -> T {
+            t
+        }
+    "});
+    assert!(
+        !case.tir.diagnostics.is_empty(),
+        "expected a diagnostic for unknown bound 'Nonexistent'"
+    );
+}

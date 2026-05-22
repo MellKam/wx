@@ -17,6 +17,7 @@ items:
               span:
                 start: 3
                 end: 11
+            type_params: []
             params:
               open:
                 start: 11
