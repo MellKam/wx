@@ -1210,7 +1210,8 @@ pub enum Expression {
         callee: Box<Spanned<Expression>>,
         arguments: Box<[Separated<Spanned<Expression>>]>,
     },
-    /// `{expr}::<Type1, Type2>` — turbofish type application. Always the callee of a `Call`.
+    /// `{expr}::<Type1, Type2>` — turbofish type application. Always the callee
+    /// of a `Call`.
     TypeApplication {
         callee: Box<Spanned<Expression>>,
         args: Box<[Spanned<TypeExpression>]>,
@@ -1497,11 +1498,27 @@ pub struct EnumVariant {
 pub struct DefId(u32);
 
 impl DefId {
+    #[inline]
     pub fn as_u32(self) -> u32 {
         self.0
     }
+}
 
-    pub fn new(id: u32) -> Self {
+#[derive(Clone, Copy)]
+pub struct DefIdGenerator {
+    next_id: u32,
+}
+
+impl DefIdGenerator {
+    #[inline]
+    pub fn new() -> Self {
+        DefIdGenerator { next_id: 0 }
+    }
+
+    #[inline]
+    pub fn generate(&mut self) -> DefId {
+        let id = self.next_id;
+        self.next_id += 1;
         DefId(id)
     }
 }
@@ -1617,6 +1634,8 @@ pub struct AST {
     pub file_id: FileId,
     pub diagnostics: Vec<Diagnostic<FileId>>,
     pub items: Vec<Separated<Spanned<Item>>>,
+    #[cfg_attr(test, serde(skip))]
+    pub id_generator: DefIdGenerator,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
@@ -1748,7 +1767,6 @@ pub struct Parser<'input> {
     lexer: Lexer<'input>,
     interner: &'input mut StringInterner,
     ast: AST,
-    next_def_id: DefId,
 }
 
 struct SeparatedGroup<T> {
@@ -1896,8 +1914,8 @@ impl<'input> Parser<'input> {
                 file_id,
                 diagnostics: Vec::new(),
                 items: Vec::new(),
+                id_generator: DefIdGenerator::new(),
             },
-            next_def_id: DefId(0),
         };
 
         loop {
@@ -2271,8 +2289,9 @@ impl<'input> Parser<'input> {
         Ok(params.into_boxed_slice())
     }
 
-    /// Parse `::<Type1, Type2>` turbofish arguments (the `<...>` part after `::` is already
-    /// consumed by the caller). Returns the args and the closing `>` span.
+    /// Parse `::<Type1, Type2>` turbofish arguments (the `<...>` part after
+    /// `::` is already consumed by the caller). Returns the args and the
+    /// closing `>` span.
     fn parse_type_args(&mut self) -> Result<(Box<[Spanned<TypeExpression>]>, TextSpan), ()> {
         let open_span = self.next_expect(Token::LeftArrow)?.span;
         let mut args: Vec<Spanned<TypeExpression>> = Vec::new();
@@ -2305,13 +2324,6 @@ impl<'input> Parser<'input> {
         Ok((args.into_boxed_slice(), close_span))
     }
 
-    #[inline]
-    fn get_id(&mut self) -> DefId {
-        let id = self.next_def_id;
-        self.next_def_id.0 += 1;
-        id
-    }
-
     fn parse_function_definition_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let signature = Parser::parse_function_signature(parser)?;
         let block = Parser::parse_block_expression(parser).ok().map(Box::new);
@@ -2329,13 +2341,13 @@ impl<'input> Parser<'input> {
                     attributes: Box::new([]),
                     signature: signature.inner,
                     block,
-                    id: parser.get_id(),
+                    id: parser.ast.id_generator.generate(),
                 },
                 None => Item::FunctionDeclaration {
                     pub_span: None,
                     attributes: Box::new([]),
                     signature: signature.inner,
-                    id: parser.get_id(),
+                    id: parser.ast.id_generator.generate(),
                 },
             },
             span,
@@ -3274,7 +3286,8 @@ impl<'input> Parser<'input> {
         // Consume the :: token
         _ = parser.lexer.next();
 
-        // Turbofish: `expr::<T1, T2>` — applies to any expression (free fn, method, etc.)
+        // Turbofish: `expr::<T1, T2>` — applies to any expression (free fn, method,
+        // etc.)
         if parser.lexer.peek().inner == Token::LeftArrow {
             let (args, close_span) = parser.parse_type_args()?;
             let span = TextSpan::merge(left.span, close_span);
@@ -3460,7 +3473,7 @@ impl<'input> Parser<'input> {
                 name,
                 ty,
                 value: Box::new(value),
-                id: parser.get_id(),
+                id: parser.ast.id_generator.generate(),
             },
             span,
         })
@@ -3483,7 +3496,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(const_span, value.span);
         Ok(Spanned {
             inner: Item::Const {
-                id: parser.get_id(),
+                id: parser.ast.id_generator.generate(),
                 name: Spanned {
                     inner: name_symbol,
                     span: name_span,
@@ -3624,7 +3637,7 @@ impl<'input> Parser<'input> {
 
         Ok(Spanned {
             inner: Item::Enum {
-                id: parser.get_id(),
+                id: parser.ast.id_generator.generate(),
                 repr,
                 name: Spanned {
                     inner: name_symbol,
@@ -3681,7 +3694,7 @@ impl<'input> Parser<'input> {
                 let span = TextSpan::merge(const_span, value.span);
                 Ok(Spanned {
                     inner: ImplItem::Const {
-                        id: parser.get_id(),
+                        id: parser.ast.id_generator.generate(),
                         name: Spanned {
                             inner: name_symbol,
                             span: name_span,
@@ -3720,7 +3733,7 @@ impl<'input> Parser<'input> {
                 let method_span = TextSpan::merge(fn_span, block.span);
                 Ok(Spanned {
                     inner: ImplItem::Method {
-                        id: parser.get_id(),
+                        id: parser.ast.id_generator.generate(),
                         pub_span,
                         attributes: attrs,
                         signature: FunctionSignature {
@@ -3781,7 +3794,7 @@ impl<'input> Parser<'input> {
         match target {
             Some(target) => Ok(Spanned {
                 inner: Item::ImplTrait {
-                    id: parser.get_id(),
+                    id: parser.ast.id_generator.generate(),
                     items,
                     target,
                     trait_name: first_ty,
@@ -3862,7 +3875,7 @@ impl<'input> Parser<'input> {
                         let span = TextSpan::merge(const_span, ty.span);
                         Ok(Spanned {
                             inner: TraitItem::Const {
-                                id: parser.get_id(),
+                                id: parser.ast.id_generator.generate(),
                                 name: Spanned {
                                     inner: name_symbol,
                                     span: name_span,
@@ -3889,7 +3902,7 @@ impl<'input> Parser<'input> {
 
                         Ok(Spanned {
                             inner: TraitItem::Function {
-                                id: parser.get_id(),
+                                id: parser.ast.id_generator.generate(),
                                 pub_span,
                                 attributes: attrs,
                                 signature: signature.inner,
@@ -3919,7 +3932,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(trait_span, items.close);
         Ok(Spanned {
             inner: Item::Trait {
-                id: parser.get_id(),
+                id: parser.ast.id_generator.generate(),
                 pub_span: None,
                 name,
                 supertraits,
@@ -3973,7 +3986,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(struct_span, fields.close);
         Ok(Spanned {
             inner: Item::Struct {
-                id: parser.get_id(),
+                id: parser.ast.id_generator.generate(),
                 pub_span: None,
                 name: Spanned {
                     inner: name_symbol,
@@ -4067,7 +4080,7 @@ impl<'input> Parser<'input> {
             inner: Item::Memory {
                 name,
                 kind: Box::new(kind),
-                id: parser.get_id(),
+                id: parser.ast.id_generator.generate(),
             },
             span,
         })
@@ -4097,7 +4110,7 @@ impl<'input> Parser<'input> {
                 mut_span,
                 name,
                 ty: Box::new(type_expr),
-                id: self.get_id(),
+                id: self.ast.id_generator.generate(),
             },
             span,
         })
@@ -4117,7 +4130,7 @@ impl<'input> Parser<'input> {
             inner: ImportDeclaration::Memory {
                 name,
                 kind: Box::new(kind),
-                id: self.get_id(),
+                id: self.ast.id_generator.generate(),
             },
             span,
         })
@@ -4135,7 +4148,7 @@ impl<'input> Parser<'input> {
                     external_name: None,
                     declaration: ImportDeclaration::Function {
                         signature: signature.inner,
-                        id: parser.get_id(),
+                        id: parser.ast.id_generator.generate(),
                     },
                 },
                 span: signature.span,

@@ -1,0 +1,16 @@
+---
+source: crates/wx-compiler/src/opt/tests.rs
+expression: case.schedule_full()
+---
+locals:
+  - I32
+  - I32
+body:
+  - LocalGet: 0
+  - I32Const: 1
+  - I32Add
+  - LocalSet: 1
+  - LocalGet: 1
+  - LocalGet: 1
+  - I32Add
+  - Return

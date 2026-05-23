@@ -5,7 +5,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use string_interner::symbol::SymbolU32;
 
-use crate::{ast, tir};
+use crate::ast::{self, DefIdGenerator};
+use crate::tir;
 
 pub type LocalIndex = u32;
 pub type ScopeIndex = u32;
@@ -170,7 +171,8 @@ pub enum ExprKind {
     Neg {
         value: Box<Expression>,
     },
-    /// `i32.const <data_section_end>` — byte offset of the first writable memory region.
+    /// `i32.const <data_section_end>` — byte offset of the first writable
+    /// memory region.
     MemoryOffset {
         memory_index: u32,
     },
@@ -178,7 +180,8 @@ pub enum ExprKind {
     MemorySize {
         memory_index: u32,
     },
-    /// `memory.grow <memory_index>` — grow linear memory by N pages; pushes old size or -1.
+    /// `memory.grow <memory_index>` — grow linear memory by N pages; pushes old
+    /// size or -1.
     MemoryGrow {
         memory_index: u32,
         delta: Box<Expression>,
@@ -239,6 +242,11 @@ pub struct MIR {
     pub memories: Vec<tir::MemoryKind>,
     pub aggregates: Box<[Aggregate]>,
     pub strings: Box<[SymbolU32]>,
+    /// Direct call edges collected during lowering: (caller_mir_id,
+    /// callee_mir_id). Consumed by `run_inlining_pass` to build the call
+    /// graph.
+    #[cfg_attr(test, serde(skip))]
+    pub call_edges: Vec<(ast::DefId, ast::DefId)>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -318,10 +326,6 @@ pub struct Function {
     pub signature_index: SignatureIndex,
     pub scopes: Vec<BlockScope>,
     pub block: Expression,
-    /// DefIds of functions that call this function, derived from TIR accesses.
-    /// Used to build the call graph without re-walking MIR expressions.
-    #[cfg_attr(test, serde(skip))]
-    pub callers: Box<[ast::DefId]>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -578,13 +582,6 @@ impl MIR {
             .map(|(pos, &type_idx)| (type_idx, pos as u32))
             .collect();
 
-        let max_def_id = tir
-            .functions
-            .iter()
-            .map(|f| f.id.as_u32())
-            .max()
-            .unwrap_or(0);
-
         let mut builder = Builder {
             tir,
             interner,
@@ -594,21 +591,21 @@ impl MIR {
             memory_id_remap,
             sig_index_remap,
             current_substitutions: Box::new([]),
-            mono_registry: MonoRegistry::new(max_def_id + 1),
+            mono_registry: MonoRegistry::new(tir.id_generator),
+            current_function_id: None,
+            call_edges: Vec::new(),
         };
-        let _ = max_def_id;
 
         // MIR functions: live defined (Internal) monomorphic functions only.
         // Generic functions (type_params non-empty) are lowered on demand by the
-        // mono pass below. Wasm index ordering (imports first) is codegen's responsibility.
+        // mono pass below. Wasm index ordering (imports first) is codegen's
+        // responsibility.
         let mut functions: Vec<Function> = Vec::new();
         let mut inline_functions: HashSet<ast::DefId> = HashSet::new();
         for func in &tir.functions {
-            if func.source == tir::ItemSource::Internal
-                && func.body.is_some()
-                && !func.accesses.is_empty()
-                && func.origin != tir::FunctionOrigin::Trait
+            if func.body.is_some()
                 && func.type_params.is_empty()
+                && func.source == tir::ItemSource::Internal
             {
                 if func
                     .attributes
@@ -617,6 +614,7 @@ impl MIR {
                 {
                     inline_functions.insert(func.id);
                 }
+                builder.current_function_id = Some(func.id);
                 functions.push(builder.lower_function(func));
             }
         }
@@ -640,6 +638,7 @@ impl MIR {
                 let tir_func = &tir.functions[tir_idx as usize];
 
                 builder.current_substitutions = subst;
+                builder.current_function_id = Some(mono_id);
 
                 // Compute concrete signature while substitutions are active.
                 let tir_sig = match &tir.type_pool[tir_func.signature_index as usize] {
@@ -805,6 +804,7 @@ impl MIR {
                 });
                 exports
             },
+            call_edges: builder.call_edges,
         };
 
         run_inlining_pass(&mut mir);
@@ -844,15 +844,15 @@ struct MonoRegistry {
     /// Stable insertion-order worklist; grows as generic-calls-generic paths
     /// are encountered during lowering.
     worklist: Vec<(ast::DefId, Box<[tir::TypeIndex]>, ast::DefId)>,
-    next_id: u32,
+    id_generator: DefIdGenerator,
 }
 
 impl MonoRegistry {
-    fn new(start_id: u32) -> Self {
+    fn new(id_generator: DefIdGenerator) -> Self {
         Self {
             map: HashMap::new(),
             worklist: Vec::new(),
-            next_id: start_id,
+            id_generator,
         }
     }
 
@@ -864,8 +864,7 @@ impl MonoRegistry {
         if let Some(&id) = self.map.get(&(orig_id, type_args.clone())) {
             return id;
         }
-        let id = ast::DefId::new(self.next_id);
-        self.next_id += 1;
+        let id = self.id_generator.generate();
         self.map.insert((orig_id, type_args.clone()), id);
         self.worklist.push((orig_id, type_args, id));
         id
@@ -886,6 +885,15 @@ struct Builder<'tir> {
     /// `TypeIndex` for `TypeParam { param_index: i }`.
     current_substitutions: Box<[tir::TypeIndex]>,
     mono_registry: MonoRegistry,
+    /// MIR id of the function currently being lowered. Set by `MIR::build`
+    /// before each `lower_function` call (TIR id in Phase 1, synthetic mono id
+    /// in Phase 2) so that call edges are recorded with accurate MIR ids.
+    current_function_id: Option<ast::DefId>,
+    /// Direct call edges collected during lowering: (caller_mir_id,
+    /// callee_mir_id). Used after all functions are built to derive each
+    /// function's `callers` list from actual MIR-level calls rather than
+    /// TIR accesses.
+    call_edges: Vec<(ast::DefId, ast::DefId)>,
 }
 
 struct FunctionContext {
@@ -966,9 +974,21 @@ impl<'tir> Builder<'tir> {
     }
 
     fn memory_index_from_arg(&self, type_idx: tir::TypeIndex) -> u32 {
-        match self.tir.type_pool[type_idx as usize] {
-            tir::Type::Memory { id, .. } => self.memory_id_remap[&id],
-            _ => unreachable!("intrinsic argument is not a Memory type"),
+        let resolved = match &self.tir.type_pool[type_idx as usize] {
+            tir::Type::TypeParam { param_index } => {
+                self.current_substitutions[*param_index as usize]
+            }
+            _ => type_idx,
+        };
+        match &self.tir.type_pool[resolved as usize] {
+            tir::Type::Memory { id, .. } => self.memory_id_remap[id],
+            x => unreachable!("intrinsic argument is not a Memory type {x:?}"),
+        }
+    }
+
+    fn record_call_edge(&mut self, callee_id: ast::DefId) {
+        if let Some(caller_id) = self.current_function_id {
+            self.call_edges.push((caller_id, callee_id));
         }
     }
 
@@ -1012,20 +1032,11 @@ impl<'tir> Builder<'tir> {
         let mut top_sink = Vec::new();
         let block = self.lower_expression(&mut ctx, &body.block, &mut top_sink);
 
-        let callers: Box<[ast::DefId]> = func
-            .accesses
-            .iter()
-            .filter_map(|a| a.caller)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-
         Function {
             id: func.id,
             signature_index: self.sig_index_remap[&func.signature_index],
             scopes: ctx.frame,
             block,
-            callers,
         }
     }
 
@@ -1061,7 +1072,10 @@ impl<'tir> Builder<'tir> {
 
         match &expr.kind {
             tir::ExprKind::Error | tir::ExprKind::Placeholder | tir::ExprKind::Memory { .. } => {
-                unreachable!("memory handle should only appear as object of a member access")
+                Expression {
+                    kind: ExprKind::Noop,
+                    ty: Type::Unit,
+                }
             }
             tir::ExprKind::Unreachable => Expression {
                 kind: ExprKind::Unreachable,
@@ -1139,8 +1153,30 @@ impl<'tir> Builder<'tir> {
                 let variant = &enum_.variants[*variant_index as usize];
                 self.lower_expression(func_ctx, &variant.value, sink)
             }
-            tir::ExprKind::GenericCall { id, type_args, arguments } => {
-                let mono_id = self.mono_registry.get_or_insert(*id, type_args.clone());
+            tir::ExprKind::GenericCall {
+                id,
+                type_args,
+                arguments,
+            } => {
+                // Substitute any TypeParam entries in type_args through
+                // current_substitutions.  Without this, a generic calling another
+                // generic (e.g. `call_wrap<T>` calling `wrap<T>`) would register
+                // `wrap<TypeParam{0}>` instead of `wrap<i32>`, causing
+                // `lower_type_index` to recurse infinitely when it later tries to
+                // lower `TypeParam{0}` with substitutions = [TypeParam{0}].
+                let concrete_type_args: Box<[tir::TypeIndex]> = type_args
+                    .iter()
+                    .map(|&ty| match &self.tir.type_pool[ty as usize] {
+                        tir::Type::TypeParam { param_index } => self
+                            .current_substitutions
+                            .get(*param_index as usize)
+                            .copied()
+                            .unwrap_or(ty),
+                        _ => ty,
+                    })
+                    .collect();
+                let mono_id = self.mono_registry.get_or_insert(*id, concrete_type_args);
+                self.record_call_edge(mono_id);
                 let lowered_args: Box<[_]> = arguments
                     .iter()
                     .map(|arg| self.lower_expression(func_ctx, arg, sink))
@@ -1163,6 +1199,47 @@ impl<'tir> Builder<'tir> {
                 object,
                 arguments,
             } => {
+                // Resolve object type through any active TypeParam substitution.
+                let resolved_obj_ty = match &self.tir.type_pool[object.ty as usize] {
+                    tir::Type::TypeParam { param_index } => {
+                        self.current_substitutions[*param_index as usize]
+                    }
+                    _ => object.ty,
+                };
+                if matches!(
+                    self.tir.type_pool[resolved_obj_ty as usize],
+                    tir::Type::Memory { .. }
+                ) {
+                    let memory_index = match &object.kind {
+                        tir::ExprKind::Memory { id: mem_id } => self.memory_id_remap[mem_id],
+                        _ => unreachable!("memory method call on non-memory expression"),
+                    };
+                    let tir_fn_idx = self.tir.function_index_lookup[id];
+                    let method_name = self
+                        .interner
+                        .resolve(self.tir.functions[tir_fn_idx as usize].name.inner)
+                        .unwrap_or("");
+                    let result_ty = self.lower_type_index(expr.ty);
+                    return match method_name {
+                        "size" => Expression {
+                            kind: ExprKind::MemorySize { memory_index },
+                            ty: result_ty,
+                        },
+                        "grow" => {
+                            let delta =
+                                Box::new(self.lower_expression(func_ctx, &arguments[0], sink));
+                            Expression {
+                                kind: ExprKind::MemoryGrow {
+                                    memory_index,
+                                    delta,
+                                },
+                                ty: result_ty,
+                            }
+                        }
+                        name => unreachable!("unknown memory method: {name}"),
+                    };
+                }
+
                 let tir_idx = self.tir.function_index_lookup[id];
                 let tir_func = &self.tir.functions[tir_idx as usize];
 
@@ -1193,14 +1270,13 @@ impl<'tir> Builder<'tir> {
                         .get(&concrete_self)
                         .and_then(|m| m.get(&method_name))
                         .map(|entry| match entry {
-                            tir::ImplEntry::Method(idx) | tir::ImplEntry::AssociatedFn(idx) => {
-                                *idx
-                            }
-                            _ => unreachable!("impl entry for method is not a function"),
+                            tir::ImplEntry::Method(idx) => *idx,
+                            _ => unreachable!(),
                         })
                         .expect("no impl found for abstract trait method");
                     self.tir.functions[impl_func_idx as usize].id
                 };
+                self.record_call_edge(target_id);
 
                 let lowered_object = self.lower_expression(func_ctx, object, sink);
                 let lowered_args: Box<[_]> = std::iter::once(lowered_object)
@@ -1260,6 +1336,9 @@ impl<'tir> Builder<'tir> {
                     }
                 }
 
+                if let tir::ExprKind::Function { id } = &callee.kind {
+                    self.record_call_edge(*id);
+                }
                 let callee = Box::new(self.lower_expression(func_ctx, callee, sink));
                 let arguments = arguments
                     .iter()
@@ -1275,41 +1354,9 @@ impl<'tir> Builder<'tir> {
                 arguments,
                 id,
             } => {
-                if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty as usize] {
-                    let memory_index = match &object.kind {
-                        tir::ExprKind::Memory { id } => self.memory_id_remap[id],
-                        _ => unreachable!("memory method call on non-memory expression"),
-                    };
-                    let tir_idx = self.tir.function_index_lookup[id];
-                    let method_name = self
-                        .interner
-                        .resolve(self.tir.functions[tir_idx as usize].name.inner)
-                        .unwrap_or("");
-                    let result_ty = self.lower_type_index(expr.ty);
-                    return match method_name {
-                        "size" => Expression {
-                            kind: ExprKind::MemorySize { memory_index },
-                            ty: result_ty,
-                        },
-                        "grow" => {
-                            let delta =
-                                Box::new(self.lower_expression(func_ctx, &arguments[0], sink));
-                            Expression {
-                                kind: ExprKind::MemoryGrow {
-                                    memory_index,
-                                    delta,
-                                },
-                                ty: result_ty,
-                            }
-                        }
-                        _ => unreachable!("unknown memory method: {}", method_name),
-                    };
-                }
-
-                let tir_idx = self.tir.function_index_lookup[id];
-                let tir_func = &self.tir.functions[tir_idx as usize];
+                self.record_call_edge(*id);
                 let callee = Box::new(Expression {
-                    kind: ExprKind::Function { id: tir_func.id },
+                    kind: ExprKind::Function { id: *id },
                     ty: self.lower_type_index(expr.ty),
                 });
                 let object = self.lower_expression(func_ctx, object, sink);
@@ -1354,7 +1401,8 @@ impl<'tir> Builder<'tir> {
                                 ty: self.lower_type_index(expr.ty),
                             },
                             tir::ImportValue::Memory { .. } => {
-                                // TIR resolves imported memory namespace accesses to ExprKind::Memory,
+                                // TIR resolves imported memory namespace accesses to
+                                // ExprKind::Memory,
                                 // not ExprKind::NamespaceAccess, so this arm is never reached.
                                 unreachable!("import module NamespaceAccess for Memory")
                             }
@@ -1410,7 +1458,8 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::ObjectAccess { object, member } => {
-                // Memory member access — OFFSET constant; grow/size appear only as call callees.
+                // Memory member access — OFFSET constant; grow/size appear only as call
+                // callees.
                 if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty as usize] {
                     let member_name = self.interner.resolve(member.inner).unwrap_or("");
                     let memory_index = match &object.kind {
@@ -1503,7 +1552,8 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::TupleInit { elements } => {
-                // Same reordering as StructInit: declaration order → physical (alignment-sorted) order.
+                // Same reordering as StructInit: declaration order → physical
+                // (alignment-sorted) order.
                 let decl_to_phys = self
                     .layout_cache
                     .get_or_compute(expr.ty, &self.tir.type_pool, &self.tir.structs)
@@ -1874,7 +1924,8 @@ impl<'tir> Builder<'tir> {
 // ---------------------------------------------------------------------------
 
 /// Deep-clones `expr`, offsetting every scope index by `scope_offset` and
-/// rewriting `Return { value }` into `Break { scope_index: wrapper_scope, value }`.
+/// rewriting `Return { value }` into `Break { scope_index: wrapper_scope, value
+/// }`.
 fn rewrite_body(
     expr: Expression,
     scope_offset: ScopeIndex,
@@ -2232,9 +2283,6 @@ fn inline_expr(
 }
 
 /// Directed call graph over MIR function `DefId`s.
-///
-/// Built from the `callers` field on each `Function` (derived from TIR
-/// accesses during lowering) — no expression-tree walk required.
 struct CallGraph {
     /// `callees[A]` = functions that A calls.
     callees: HashMap<ast::DefId, HashSet<ast::DefId>>,
@@ -2243,7 +2291,7 @@ struct CallGraph {
 }
 
 impl CallGraph {
-    fn build(functions: &[Function]) -> Self {
+    fn build(functions: &[Function], call_edges: &[(ast::DefId, ast::DefId)]) -> Self {
         let mut callees: HashMap<ast::DefId, HashSet<ast::DefId>> =
             HashMap::with_capacity(functions.len());
         let mut callers: HashMap<ast::DefId, HashSet<ast::DefId>> =
@@ -2253,12 +2301,12 @@ impl CallGraph {
             callers.insert(f.id, HashSet::new());
         }
 
-        for func in functions {
-            for &caller_id in func.callers.iter() {
-                if let Some(caller_callees) = callees.get_mut(&caller_id) {
-                    caller_callees.insert(func.id);
-                    callers.get_mut(&func.id).unwrap().insert(caller_id);
-                }
+        for &(caller_id, callee_id) in call_edges {
+            if let Some(caller_callees) = callees.get_mut(&caller_id) {
+                caller_callees.insert(callee_id);
+            }
+            if let Some(callee_callers) = callers.get_mut(&callee_id) {
+                callee_callers.insert(caller_id);
             }
         }
 
@@ -2269,7 +2317,7 @@ impl CallGraph {
 /// Inlines all `#[inline]` functions in topological order, then removes
 /// unreachable functions via dead code elimination from export roots.
 pub fn run_inlining_pass(mir: &mut MIR) {
-    let mut graph = CallGraph::build(&mir.functions);
+    let mut graph = CallGraph::build(&mir.functions, &mir.call_edges);
 
     // DefId → index in mir.functions for O(1) mutation during inlining.
     let func_idx: HashMap<ast::DefId, usize> = mir
@@ -2299,32 +2347,58 @@ pub fn run_inlining_pass(mir: &mut MIR) {
         .map(|(&id, _)| id)
         .collect();
 
-    while let Some(f_id) = queue.pop_front() {
-        // f's body is clean: all of its inline callees were processed first.
-        // Clone once here; inline_call will clone scopes+block again per call site.
-        let f_body = mir.functions[func_idx[&f_id]].clone();
+    // Outer loop: run Kahn's, then break one mutual-recursion cycle at a time.
+    // When all inline callees have been processed the inner while loop drains
+    // to empty and there are no stalled nodes left, so we break out.
+    loop {
+        while let Some(f_id) = queue.pop_front() {
+            // f's body is clean: all of its inline callees were processed first.
+            // Clone once here; inline_call will clone scopes+block again per call site.
+            let f_body = mir.functions[func_idx[&f_id]].clone();
 
-        let caller_ids: Vec<ast::DefId> = graph.callers[&f_id].iter().copied().collect();
-        for caller_id in caller_ids {
-            let ci = func_idx[&caller_id];
-            let caller_func = &mut mir.functions[ci];
-            inline_expr(
-                &mut caller_func.block,
-                &mut caller_func.scopes,
-                f_id,
-                &f_body,
-            );
+            let caller_ids: Vec<ast::DefId> = graph.callers[&f_id].iter().copied().collect();
+            for caller_id in caller_ids {
+                let ci = func_idx[&caller_id];
+                let caller_func = &mut mir.functions[ci];
+                inline_expr(
+                    &mut caller_func.block,
+                    &mut caller_func.scopes,
+                    f_id,
+                    &f_body,
+                );
 
-            // Update graph: remove caller → f, propagate f's callees to caller.
-            graph.callees.get_mut(&caller_id).unwrap().remove(&f_id);
-            graph.callers.get_mut(&f_id).unwrap().remove(&caller_id);
-            let f_callees: Vec<ast::DefId> = graph.callees[&f_id].iter().copied().collect();
-            for callee_id in f_callees {
-                graph.callees.get_mut(&caller_id).unwrap().insert(callee_id);
-                graph.callers.get_mut(&callee_id).unwrap().insert(caller_id);
+                // Update graph: remove caller → f, propagate f's callees to caller.
+                graph.callees.get_mut(&caller_id).unwrap().remove(&f_id);
+                graph.callers.get_mut(&f_id).unwrap().remove(&caller_id);
+                let f_callees: Vec<ast::DefId> = graph.callees[&f_id].iter().copied().collect();
+                for callee_id in f_callees {
+                    graph.callees.get_mut(&caller_id).unwrap().insert(callee_id);
+                    graph.callers.get_mut(&callee_id).unwrap().insert(caller_id);
+                }
+
+                // If caller is also inline, one of its pending inline callees is done.
+                if let Some(count) = inline_callee_count.get_mut(&caller_id) {
+                    *count -= 1;
+                    if *count == 0 {
+                        queue.push_back(caller_id);
+                    }
+                }
             }
+            // graph.callers[f_id] is now empty — f is dead.
+        }
 
-            // If caller is also inline, one of its pending inline callees is done.
+        // Cycle-breaker: any inline function still with count > 0 is part of a
+        // mutual-recursion cycle.  Inlining it fully would require infinite
+        // expansion, so we evict one "anchor" per iteration — it stays as an
+        // ordinary call target — then decrement its inline callers so they may
+        // become unblocked and get inlined on the next inner-loop pass.
+        let anchor = inline_callee_count
+            .iter()
+            .find(|(_, n)| **n > 0)
+            .map(|(&id, _)| id);
+        let Some(anchor) = anchor else { break };
+        inline_callee_count.remove(&anchor);
+        for caller_id in graph.callers[&anchor].iter().copied().collect::<Vec<_>>() {
             if let Some(count) = inline_callee_count.get_mut(&caller_id) {
                 *count -= 1;
                 if *count == 0 {
@@ -2332,7 +2406,6 @@ pub fn run_inlining_pass(mir: &mut MIR) {
                 }
             }
         }
-        // graph.callers[f_id] is now empty — f is dead.
     }
 
     // Dead code elimination: BFS from exported function roots.

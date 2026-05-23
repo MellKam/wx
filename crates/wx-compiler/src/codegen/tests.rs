@@ -53,7 +53,9 @@ impl<'case> TestCase {
             }
             std::process::exit(1);
         }
+        // insta::assert_yaml_snapshot!(tir.functions);
         let mir = mir::MIR::build(&tir, &interner);
+        // insta::assert_yaml_snapshot!(mir);
         let wasm = Builder::build(&mir, &interner).unwrap();
         let bytecode = wasm.encode();
 
@@ -606,7 +608,8 @@ fn test_imports() {
     main.call(&mut store, ()).unwrap();
 }
 
-// ── WAT snapshots ─────────────────────────────────────────────────────────────
+// ── WAT snapshots
+// ─────────────────────────────────────────────────────────────
 
 #[test]
 fn test_globals_wat() {
@@ -898,6 +901,7 @@ fn test_trait_default_method() {
     // A default method defined in the trait body calls another (abstract) method
     // on Self.  The default body must compile with `self` having the trait type,
     // and the conformance checker must NOT require the impl to provide it.
+
     let case = TestCase::new(indoc! {"
         trait Scalable {
             fn value(self) -> i32;

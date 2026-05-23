@@ -237,7 +237,10 @@ functions:
                         end: 284
                     right:
                       kind:
-                        MethodCall:
+                        GenericMethodCall:
+                          id: 1
+                          type_args:
+                            - 20
                           object:
                             kind:
                               Local:
@@ -248,7 +251,6 @@ functions:
                               start: 287
                               end: 291
                           arguments: []
-                          id: 1
                       ty: 8
                       span:
                         start: 287

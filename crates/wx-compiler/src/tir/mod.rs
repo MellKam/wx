@@ -315,14 +315,16 @@ pub enum ExprKind {
         arguments: Box<[Expression]>,
     },
     /// A direct call to a generic function with resolved type arguments.
-    /// `type_args[i]` holds the concrete `TypeIndex` substituted for `TypeParam { param_index: i }`.
+    /// `type_args[i]` holds the concrete `TypeIndex` substituted for `TypeParam
+    /// { param_index: i }`.
     GenericCall {
         id: DefId,
         type_args: Box<[TypeIndex]>,
         arguments: Box<[Expression]>,
     },
     /// A method call on a generic trait method.
-    /// `type_args[0]` = Self type (receiver), `type_args[1..]` = explicit generics.
+    /// `type_args[0]` = Self type (receiver), `type_args[1..]` = explicit
+    /// generics.
     GenericMethodCall {
         id: DefId,
         type_args: Box<[TypeIndex]>,
@@ -699,7 +701,8 @@ pub enum FunctionOrigin {
     TraitImpl { trait_impl_index: TraitImplIndex },
 }
 
-/// Metadata for a single generic type parameter, e.g. `T` in `fn foo<T: Bound>`.
+/// Metadata for a single generic type parameter, e.g. `T` in `fn foo<T:
+/// Bound>`.
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1937,7 +1940,8 @@ enum AstNodeRef<'ast> {
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
-    /// The `trait Name: Bound { ... }` block itself — owns supertrait resolution.
+    /// The `trait Name: Bound { ... }` block itself — owns supertrait
+    /// resolution.
     Trait {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
@@ -2050,7 +2054,8 @@ struct Builder<'ast, 'interner> {
     // ── demand-driven resolution ──────────────────────────────────────────────
     /// AST node for every `DefId`-bearing item, populated in Phase 1.
     ast_nodes: HashMap<ast::DefId, AstNodeRef<'ast>>,
-    /// Memoization state for `ensure_signature` — prevents re-entrant processing.
+    /// Memoization state for `ensure_signature` — prevents re-entrant
+    /// processing.
     sig_state: HashMap<ast::DefId, ComputeState>,
     /// O(1): `TraitImplIndex` for an `impl Trait for Type` block's `DefId`.
     /// Populated when the block resolves; read by its child methods and consts.
@@ -2365,9 +2370,7 @@ impl<'ast> Builder<'ast, '_> {
             Type::TypeParam { param_index } => {
                 let param_index = *param_index;
                 match self.current_type_params.get(param_index as usize) {
-                    Some(tp) => {
-                        self.interner.resolve(tp.name).unwrap_or("?").to_string()
-                    }
+                    Some(tp) => self.interner.resolve(tp.name).unwrap_or("?").to_string(),
                     None => format!("T{}", param_index),
                 }
             }
@@ -2930,10 +2933,8 @@ impl<'ast> Builder<'ast, '_> {
                         .cloned()
                         .map(|k| self.get_symbol_span(k));
                     let type_params = self.resolve_ast_type_params(&signature.type_params);
-                    let saved_type_params = std::mem::replace(
-                        &mut self.current_type_params,
-                        type_params.clone(),
-                    );
+                    let saved_type_params =
+                        std::mem::replace(&mut self.current_type_params, type_params.clone());
                     let (params, result) = self.build_function_signature(signature);
                     self.current_type_params = saved_type_params;
                     let signature_index = self.type_pool.intern_function(&params, result.clone());
@@ -3172,8 +3173,7 @@ impl<'ast> Builder<'ast, '_> {
             } => {
                 // Self is encoded as TypeParam{0} so default implementations can be
                 // monomorphized: type_args[0] = concrete receiver type at the call site.
-                let self_type_param_idx =
-                    self.type_pool.intern(Type::TypeParam { param_index: 0 });
+                let self_type_param_idx = self.type_pool.intern(Type::TypeParam { param_index: 0 });
                 self.current_self_type = Some(self_type_param_idx);
                 let self_sym = self.interner.get_or_intern("self");
                 if let ast::TraitItem::Function {
@@ -3191,16 +3191,13 @@ impl<'ast> Builder<'ast, '_> {
                         name: self_name_sym,
                         bounds: Box::new([trait_index]),
                     };
-                    let explicit_type_params =
-                        self.resolve_ast_type_params(&signature.type_params);
+                    let explicit_type_params = self.resolve_ast_type_params(&signature.type_params);
                     let type_params: Box<[TypeParamInfo]> = std::iter::once(self_type_param)
                         .chain(explicit_type_params)
                         .collect();
 
-                    let saved_type_params = std::mem::replace(
-                        &mut self.current_type_params,
-                        type_params.to_vec(),
-                    );
+                    let saved_type_params =
+                        std::mem::replace(&mut self.current_type_params, type_params.to_vec());
 
                     let params: Box<[FunctionParam]> = signature
                         .params
@@ -3840,8 +3837,7 @@ impl<'ast> Builder<'ast, '_> {
         // Restore this function's type params so resolve_type("T") works in the body.
         let fn_type_params: Vec<TypeParamInfo> =
             self.functions[func_index as usize].type_params.to_vec();
-        let saved_type_params =
-            std::mem::replace(&mut self.current_type_params, fn_type_params);
+        let saved_type_params = std::mem::replace(&mut self.current_type_params, fn_type_params);
         self.file_id = node.file_id();
         self.current_self_type = self_type;
 
@@ -3861,10 +3857,7 @@ impl<'ast> Builder<'ast, '_> {
     /// Resolve AST type param declarations to `TypeParamInfo`, populating
     /// `current_type_params` so that subsequent `resolve_type` calls can map
     /// `T` → `Type::TypeParam { idx }`. Returns the resolved params.
-    fn resolve_ast_type_params(
-        &mut self,
-        ast_params: &[ast::TypeParam],
-    ) -> Vec<TypeParamInfo> {
+    fn resolve_ast_type_params(&mut self, ast_params: &[ast::TypeParam]) -> Vec<TypeParamInfo> {
         ast_params
             .iter()
             .map(|tp| {
@@ -3880,10 +3873,7 @@ impl<'ast> Builder<'ast, '_> {
                                     Diagnostic::error()
                                         .with_code(DiagnosticCode::ExpectedTrait.code())
                                         .with_message("expected a trait name as a bound")
-                                        .with_label(Label::primary(
-                                            self.file_id,
-                                            bound.span,
-                                        )),
+                                        .with_label(Label::primary(self.file_id, bound.span)),
                                 );
                                 None
                             }
@@ -5075,20 +5065,24 @@ impl<'ast> Builder<'ast, '_> {
         // dispatch entries only, so look up in Trait::members directly instead.
         // TypeParam receivers use their bounds the same way.
         let entry = match *self.type_pool.get(object.ty) {
-            Type::Trait { trait_index } => {
-                self.traits[trait_index as usize].members.get(&member.inner).cloned()
-            }
+            Type::Trait { trait_index } => self.traits[trait_index as usize]
+                .members
+                .get(&member.inner)
+                .cloned(),
             Type::TypeParam { param_index } => {
                 let bounds = self
                     .current_type_params
                     .get(param_index as usize)
                     .map(|tp| tp.bounds.to_vec())
                     .unwrap_or_default();
-                bounds.iter().find_map(|&ti| {
-                    self.traits[ti as usize].members.get(&member.inner).cloned()
-                })
+                bounds
+                    .iter()
+                    .find_map(|&ti| self.traits[ti as usize].members.get(&member.inner).cloned())
             }
-            _ => self.ensure_impl_members(object.ty).get(&member.inner).cloned(),
+            _ => self
+                .ensure_impl_members(object.ty)
+                .get(&member.inner)
+                .cloned(),
         };
         match entry {
             Some(ImplEntry::Method(func_index)) => {
@@ -7244,7 +7238,10 @@ impl<'ast> Builder<'ast, '_> {
         let Type::TypeParam { param_index } = *self.type_pool.get(arg_ty) else {
             return false;
         };
-        let Type::Trait { trait_index: expected_trait } = *self.type_pool.get(expected_ty) else {
+        let Type::Trait {
+            trait_index: expected_trait,
+        } = *self.type_pool.get(expected_ty)
+        else {
             return false;
         };
         self.current_type_params
@@ -7266,7 +7263,8 @@ impl<'ast> Builder<'ast, '_> {
             .map(|(index, argument)| {
                 let param_ty: Option<TypeIndex> = params.get(index).copied();
                 // Resolve TypeParam params via type_args (indexed by param_index).
-                // For non-generic calls type_args is empty and TypeParam params are filtered out.
+                // For non-generic calls type_args is empty and TypeParam params are filtered
+                // out.
                 let expected_type = param_ty
                     .map(|ty| match *self.type_pool.get(ty) {
                         Type::TypeParam { param_index } => type_args
@@ -7370,9 +7368,10 @@ impl<'ast> Builder<'ast, '_> {
         match callee.kind {
             ExprKind::ObjectAccess { member, object } => {
                 let method_entry = match *self.type_pool.get(object.ty) {
-                    Type::Trait { trait_index } => {
-                        self.traits[trait_index as usize].members.get(&member.inner).cloned()
-                    }
+                    Type::Trait { trait_index } => self.traits[trait_index as usize]
+                        .members
+                        .get(&member.inner)
+                        .cloned(),
                     Type::TypeParam { param_index } => {
                         let bounds = self
                             .current_type_params
@@ -7383,7 +7382,11 @@ impl<'ast> Builder<'ast, '_> {
                             self.traits[ti as usize].members.get(&member.inner).cloned()
                         })
                     }
-                    _ => self.impl_members.get(&object.ty).and_then(|m| m.get(&member.inner)).cloned(),
+                    _ => self
+                        .impl_members
+                        .get(&object.ty)
+                        .and_then(|m| m.get(&member.inner))
+                        .cloned(),
                 };
                 match method_entry {
                     Some(ImplEntry::Method(func_index)) => {
@@ -7407,8 +7410,7 @@ impl<'ast> Builder<'ast, '_> {
                             );
                         }
 
-                        let type_params_len =
-                            self.functions[func_index as usize].type_params.len();
+                        let type_params_len = self.functions[func_index as usize].type_params.len();
                         if type_params_len > 0 {
                             // Generic trait method: build type_args with Self at index 0.
                             let mut type_args = vec![Type::UNKNOWN_IDX; type_params_len];
@@ -7423,6 +7425,7 @@ impl<'ast> Builder<'ast, '_> {
                                     .unwrap_or(signature.result()),
                                 _ => signature.result(),
                             };
+
                             return Ok(Expression {
                                 kind: ExprKind::GenericMethodCall {
                                     id,
@@ -7493,8 +7496,7 @@ impl<'ast> Builder<'ast, '_> {
 
                         // Fill any slots not already covered by return-type seeding.
                         for (arg, &param_ty) in arguments.iter().zip(params.iter()) {
-                            if let Type::TypeParam { param_index } = *self.type_pool.get(param_ty)
-                            {
+                            if let Type::TypeParam { param_index } = *self.type_pool.get(param_ty) {
                                 let slot = &mut type_args[param_index as usize];
                                 if *slot == Type::UNKNOWN_IDX
                                     && arg.ty != Type::UNKNOWN_IDX
@@ -8336,6 +8338,8 @@ impl TypePool {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TIR {
     pub file_id: ast::FileId,
+    #[cfg_attr(test, serde(skip))]
+    pub id_generator: ast::DefIdGenerator,
     pub type_pool: Vec<Type>,
     pub functions: Vec<Function>,
     pub globals: Vec<Global>,
@@ -8485,6 +8489,7 @@ impl TIR {
             globals: builder.globals,
             function_index_lookup: builder.function_index_lookup,
             global_index_lookup: builder.global_index_lookup,
+            id_generator: asts.last().unwrap().id_generator,
         }
     }
 }
