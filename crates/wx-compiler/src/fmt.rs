@@ -659,6 +659,19 @@ impl Builder {
                 items.push(Node::Text("}".to_string()));
                 Node::Group(Box::new(Node::Concat(items)))
             }
+            Expression::TypeApplication { callee, args } => {
+                let mut items = Vec::new();
+                items.push(Self::build_expression(interner, source, callee));
+                items.push(Node::Text("::<".to_string()));
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        items.push(Node::Text(", ".to_string()));
+                    }
+                    items.push(Self::build_type_expression(interner, &arg.inner));
+                }
+                items.push(Node::Text(">".to_string()));
+                Node::Concat(items)
+            }
             Expression::Tuple { elements } => {
                 let mut items = Vec::new();
                 items.push(Node::Text("(".to_string()));

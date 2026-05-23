@@ -57,7 +57,6 @@ impl FunctionSignature {
     }
 }
 
-
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -335,11 +334,13 @@ pub struct WasmModule {
 pub struct Builder {
     table: Vec<FuncIndex>,
     string_pool: StringPool,
-    /// Maps every function DefId (imported or defined) to its wasm function index.
-    /// Imported functions occupy indices 0..import_func_count; defined functions follow.
+    /// Maps every function DefId (imported or defined) to its wasm function
+    /// index. Imported functions occupy indices 0..import_func_count;
+    /// defined functions follow.
     func_wasm_index: HashMap<ast::DefId, u32>,
     /// Maps every global DefId (imported or defined) to its wasm global index.
-    /// Imported globals occupy indices 0..import_global_count; defined globals follow.
+    /// Imported globals occupy indices 0..import_global_count; defined globals
+    /// follow.
     global_wasm_index: HashMap<ast::DefId, u32>,
     /// Deduplicated function-type entries for the wasm type section.
     /// Shared between function signatures and multi-value block types.
@@ -367,7 +368,6 @@ impl TryFrom<mir::Type> for ValueType {
         }
     }
 }
-
 
 struct FunctionContext<'mir> {
     local_offsets: Box<[usize]>,
@@ -475,8 +475,9 @@ impl Builder {
         }
     }
 
-    /// Intern a function signature built from a MIR signature + the aggregate pool,
-    /// correctly flattening any aggregate params/results into individual wasm types.
+    /// Intern a function signature built from a MIR signature + the aggregate
+    /// pool, correctly flattening any aggregate params/results into
+    /// individual wasm types.
     fn register_signature(
         &mut self,
         sig: &mir::FunctionSignature,
@@ -496,8 +497,9 @@ impl Builder {
         *self.signatures.entry(signature).or_insert(next)
     }
 
-    /// Return the `BlockResult` for a MIR type. For aggregate types, a multi-value
-    /// function type `(func (result t1 t2 ...))` is registered in the type section.
+    /// Return the `BlockResult` for a MIR type. For aggregate types, a
+    /// multi-value function type `(func (result t1 t2 ...))` is registered
+    /// in the type section.
     fn block_result_for(&mut self, ty: mir::Type, aggregates: &[mir::Aggregate]) -> BlockResult {
         match ty {
             mir::Type::Unit | mir::Type::Never => BlockResult::Empty,
@@ -595,7 +597,8 @@ impl Builder {
                 }
             }
         }
-        // Defined functions follow all imports; defined globals follow all imported globals.
+        // Defined functions follow all imports; defined globals follow all imported
+        // globals.
         for func in &mir.functions {
             builder.func_wasm_index.insert(func.id, next_func_idx);
             next_func_idx += 1;
@@ -888,6 +891,7 @@ impl Builder {
                 value.encode(sink);
             }
             mir::ExprKind::Call { callee, arguments } => {
+                println!("Building call to {:#?} with args: {:#?}", callee, arguments);
                 for argument in arguments {
                     self.build_expression(ctx, argument, sink);
                 }
@@ -1380,7 +1384,10 @@ impl Builder {
                 sink.push(Instruction::MemorySize as u8);
                 (*memory_index).encode(sink);
             }
-            mir::ExprKind::MemoryGrow { memory_index, delta } => {
+            mir::ExprKind::MemoryGrow {
+                memory_index,
+                delta,
+            } => {
                 self.build_expression(ctx, delta, sink);
                 sink.push(Instruction::MemoryGrow as u8);
                 (*memory_index).encode(sink);

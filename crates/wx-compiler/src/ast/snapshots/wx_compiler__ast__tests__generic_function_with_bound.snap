@@ -1,0 +1,115 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          id: 0
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 1
+              span:
+                start: 3
+                end: 13
+            type_params:
+              - name:
+                  inner: 2
+                  span:
+                    start: 14
+                    end: 15
+                bounds:
+                  - inner:
+                      Identifier:
+                        symbol: 3
+                    span:
+                      start: 17
+                      end: 25
+            params:
+              open:
+                start: 26
+                end: 27
+              inner:
+                - inner:
+                    inner:
+                      mut_span: ~
+                      name:
+                        inner: 4
+                        span:
+                          start: 27
+                          end: 28
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 2
+                        span:
+                          start: 30
+                          end: 31
+                    span:
+                      start: 27
+                      end: 31
+                  separator: ~
+              close:
+                start: 31
+                end: 32
+            result:
+              inner:
+                Identifier:
+                  symbol: 5
+              span:
+                start: 36
+                end: 39
+          block:
+            inner:
+              Block:
+                statements:
+                  open:
+                    start: 40
+                    end: 41
+                  inner:
+                    - inner:
+                        inner:
+                          Expression:
+                            inner:
+                              Call:
+                                callee:
+                                  inner:
+                                    ObjectAccess:
+                                      object:
+                                        inner:
+                                          Identifier:
+                                            symbol: 4
+                                        span:
+                                          start: 46
+                                          end: 47
+                                      member:
+                                        inner: 6
+                                        span:
+                                          start: 48
+                                          end: 53
+                                  span:
+                                    start: 46
+                                    end: 53
+                                arguments: []
+                            span:
+                              start: 46
+                              end: 55
+                        span:
+                          start: 46
+                          end: 55
+                      separator: ~
+                  close:
+                    start: 56
+                    end: 57
+            span:
+              start: 40
+              end: 57
+      span:
+        start: 0
+        end: 57
+    separator: ~

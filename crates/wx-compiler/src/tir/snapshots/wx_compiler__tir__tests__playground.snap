@@ -22,22 +22,24 @@ type_pool:
   - Char
   - Trait:
       trait_index: 0
+  - TypeParam:
+      param_index: 0
   - Function:
       signature:
         items:
-          - 16
+          - 17
           - 8
         params_count: 1
-  - Trait:
-      trait_index: 1
   - Function:
       signature:
         items:
-          - 18
+          - 17
           - 1
         params_count: 1
   - Struct:
       struct_index: 0
+  - Trait:
+      trait_index: 1
   - Function:
       signature:
         items:
@@ -55,8 +57,10 @@ functions:
     source: Internal
     origin: Trait
     type_params:
-      - 16
-    signature_index: 17
+      - name: 18
+        bounds:
+          - 0
+    signature_index: 18
     name:
       inner: 4
       span:
@@ -70,7 +74,7 @@ functions:
             start: 47
             end: 51
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 47
             end: 51
@@ -98,7 +102,7 @@ functions:
                   span:
                     start: 47
                     end: 51
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses: []
             inferred_type: 8
@@ -112,7 +116,7 @@ functions:
               kind:
                 NamespaceAccess:
                   ty:
-                    inner: 16
+                    inner: 17
                     span:
                       start: 70
                       end: 74
@@ -134,7 +138,9 @@ functions:
     source: Internal
     origin: Trait
     type_params:
-      - 18
+      - name: 18
+        bounds:
+          - 1
     signature_index: 19
     name:
       inner: 7
@@ -149,7 +155,7 @@ functions:
             start: 126
             end: 130
         ty:
-          inner: 18
+          inner: 17
           span:
             start: 126
             end: 130
@@ -164,7 +170,7 @@ functions:
       TraitImpl:
         trait_impl_index: 1
     type_params: []
-    signature_index: 21
+    signature_index: 22
     name:
       inner: 7
       span:
@@ -231,7 +237,10 @@ functions:
                         end: 284
                     right:
                       kind:
-                        MethodCall:
+                        GenericMethodCall:
+                          id: 1
+                          type_args:
+                            - 20
                           object:
                             kind:
                               Local:
@@ -242,7 +251,6 @@ functions:
                               start: 287
                               end: 291
                           arguments: []
-                          id: 1
                       ty: 8
                       span:
                         start: 287
@@ -261,7 +269,7 @@ functions:
     source: Internal
     origin: Free
     type_params: []
-    signature_index: 22
+    signature_index: 23
     name:
       inner: 13
       span:
@@ -417,7 +425,13 @@ structs:
       9: 0
       11: 1
 impl_members:
-  16: {}
+  17:
+    2:
+      AssociatedConst:
+        ty: 8
+    19:
+      AssociatedConst:
+        ty: 8
   20:
     2:
       AssociatedConst:

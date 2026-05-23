@@ -53,7 +53,9 @@ impl<'case> TestCase {
             }
             std::process::exit(1);
         }
+        // insta::assert_yaml_snapshot!(tir.functions);
         let mir = mir::MIR::build(&tir, &interner);
+        // insta::assert_yaml_snapshot!(mir);
         let wasm = Builder::build(&mir, &interner).unwrap();
         let bytecode = wasm.encode();
 
@@ -606,7 +608,8 @@ fn test_imports() {
     main.call(&mut store, ()).unwrap();
 }
 
-// ── WAT snapshots ─────────────────────────────────────────────────────────────
+// ── WAT snapshots
+// ─────────────────────────────────────────────────────────────
 
 #[test]
 fn test_globals_wat() {
@@ -769,6 +772,173 @@ fn test_tuple_block_result_wat() {
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
 
+// ── traits ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_trait_method_dispatch() {
+    // Execution test: a method defined in an `impl Trait for Type` block is
+    // callable and produces the correct result.
+    let case = TestCase::new(indoc! {"
+        trait Addable {
+            fn add_one(self) -> i32;
+        }
+
+        struct Counter {
+            value: i32,
+        }
+
+        impl Addable for Counter {
+            fn add_one(self) -> i32 {
+                self.value + 1
+            }
+        }
+
+        fn run() -> i32 {
+            local c = Counter::{ value: 41 };
+            c.add_one()
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 42);
+}
+
+#[test]
+fn test_trait_multiple_methods() {
+    // A struct implementing a trait with two methods; both are callable and
+    // produce the right results.
+    let case = TestCase::new(indoc! {"
+        trait Ops {
+            fn double(self) -> i32;
+            fn triple(self) -> i32;
+        }
+
+        struct Num {
+            n: i32,
+        }
+
+        impl Ops for Num {
+            fn double(self) -> i32 { self.n * 2 }
+            fn triple(self) -> i32 { self.n * 3 }
+        }
+
+        fn run_double(n: i32) -> i32 {
+            local x = Num::{ n: n };
+            x.double()
+        }
+
+        fn run_triple(n: i32) -> i32 {
+            local x = Num::{ n: n };
+            x.triple()
+        }
+
+        export { run_double, run_triple }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let run_double = instance
+        .get_typed_func::<i32, i32>(&mut store, "run_double")
+        .unwrap();
+    let run_triple = instance
+        .get_typed_func::<i32, i32>(&mut store, "run_triple")
+        .unwrap();
+
+    assert_eq!(run_double.call(&mut store, 7).unwrap(), 14);
+    assert_eq!(run_triple.call(&mut store, 7).unwrap(), 21);
+}
+
+#[test]
+fn test_trait_associated_const() {
+    // An associated constant declared in the trait and provided by the impl
+    // must be accessible via `Type::CONST` syntax and produce the right value.
+    let case = TestCase::new(indoc! {"
+        trait Sized {
+            const SIZE: u32;
+        }
+
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        impl Sized for Point {
+            const SIZE: u32 = 8;
+        }
+
+        fn run() -> u32 {
+            Point::SIZE
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let run = instance
+        .get_typed_func::<(), u32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 8);
+}
+
+#[test]
+fn test_trait_default_method() {
+    // A default method defined in the trait body calls another (abstract) method
+    // on Self.  The default body must compile with `self` having the trait type,
+    // and the conformance checker must NOT require the impl to provide it.
+
+    let case = TestCase::new(indoc! {"
+        trait Scalable {
+            fn value(self) -> i32;
+            fn doubled(self) -> i32 {
+                self.value() * 2
+            }
+        }
+
+        struct Num {
+            n: i32,
+        }
+
+        impl Scalable for Num {
+            fn value(self) -> i32 {
+                self.n
+            }
+        }
+
+        fn run() -> i32 {
+            local x = Num::{ n: 21 };
+            x.doubled()
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 42);
+}
+
 #[test]
 fn test_tuple_roundtrip() {
     // Execution test: swap(3, 7) must return (7, 3).
@@ -790,4 +960,31 @@ fn test_tuple_roundtrip() {
         .unwrap();
     assert_eq!(swap.call(&mut store, (3, 7)).unwrap(), (7, 3));
     assert_eq!(swap.call(&mut store, (0, 1)).unwrap(), (1, 0));
+}
+
+#[test]
+fn test_generic_identity_monomorphized() {
+    // identity<T>(t: T) -> T called with i32; the mono pass must emit a concrete
+    // function and the export must return the passed value unchanged.
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T {
+            t
+        }
+
+        fn run() -> i32 {
+            identity(42)
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 42);
 }

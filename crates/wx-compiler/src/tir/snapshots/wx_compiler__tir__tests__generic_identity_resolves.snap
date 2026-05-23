@@ -1,0 +1,117 @@
+---
+source: crates/wx-compiler/src/tir/tests.rs
+expression: case.tir
+---
+file_id: 0
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - U8
+  - I8
+  - U16
+  - I16
+  - U32
+  - I32
+  - U64
+  - I64
+  - F32
+  - F64
+  - Bool
+  - Char
+  - TypeParam:
+      param_index: 0
+  - Function:
+      signature:
+        items:
+          - 16
+          - 16
+        params_count: 1
+functions:
+  - id: 0
+    pub_span:
+      start: 0
+      end: 3
+    source: Internal
+    origin: Free
+    type_params:
+      - name: 2
+        bounds: []
+    signature_index: 17
+    name:
+      inner: 1
+      span:
+        start: 7
+        end: 15
+    params:
+      - mut_span: ~
+        name:
+          inner: 3
+          span:
+            start: 19
+            end: 20
+        ty:
+          inner: 16
+          span:
+            start: 22
+            end: 23
+    result:
+      inner: 16
+      span:
+        start: 28
+        end: 29
+    accesses: []
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 3
+                  span:
+                    start: 19
+                    end: 20
+                ty: 16
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 36
+                      end: 37
+                    kind: Read
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Local:
+                  scope_index: 0
+                  local_index: 0
+              ty: 16
+              span:
+                start: 36
+                end: 37
+        ty: 16
+        span:
+          start: 30
+          end: 39
+globals: []
+import_modules: []
+enums: []
+modules: []
+exports: {}
+diagnostics: []
+structs: []
+impl_members: {}
+memories: []
+traits: []
+trait_impls: []
+trait_impl_lookup: {}
+type_trait_impls: {}

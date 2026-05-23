@@ -477,3 +477,60 @@ fn test_chained_comparison_error() {
     );
     insta::assert_yaml_snapshot!(case.ast);
 }
+
+// ── Generics ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_generic_function_unconstrained() {
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T {
+            t
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_generic_function_with_bound() {
+    let case = TestCase::new(indoc! {"
+        fn call_value<T: Scalable>(t: T) -> i32 {
+            t.value()
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_generic_function_multiple_params_and_bounds() {
+    let case = TestCase::new(indoc! {"
+        fn zip<T: Show + Clone, U>(a: T, b: U) -> T {
+            a
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_turbofish_call() {
+    let case = TestCase::new(indoc! {"
+        fn main() {
+            identity::<i32>(42)
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_turbofish_method_call() {
+    let case = TestCase::new(indoc! {"
+        fn main(obj: Foo) {
+            obj.transform::<i32>()
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.ast);
+}
