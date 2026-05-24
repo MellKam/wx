@@ -1336,9 +1336,12 @@ impl<'tir> Builder<'tir> {
                 id,
             } => {
                 self.record_call_edge(*id);
+                let tir_idx = self.tir.function_index_lookup[id];
+                let callee_sig_idx =
+                    self.intern_tir_function_type(self.tir.functions[tir_idx as usize].signature_index);
                 let callee = Box::new(Expression {
                     kind: ExprKind::Function { id: *id },
-                    ty: self.lower_type_index(expr.ty),
+                    ty: Type::Function { signature_index: callee_sig_idx },
                 });
                 let object = self.lower_expression(func_ctx, object, sink);
                 let arguments: Box<_> = std::iter::once(object)

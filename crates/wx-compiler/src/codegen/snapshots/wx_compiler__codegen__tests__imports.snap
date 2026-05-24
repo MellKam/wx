@@ -10,17 +10,13 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
   (export "main" (func 1))
   (export "memory" (memory 0))
   (func (;1;) (type 1)
-    (local i32 i32 i32 i32)
+    (local i32 i32)
     i32.const 0
+    local.set 0
     i32.const 12
     local.set 1
-    local.set 0
-    i32.const 0
-    i32.const 12
-    local.set 3
-    local.set 2
-    local.get 2
-    local.get 3
+    local.get 0
+    local.get 1
     call 0
     local.get 0
     local.get 1

@@ -13,4 +13,3 @@ body:
   - LocalGet: 1
   - LocalGet: 1
   - I32Add
-  - Return

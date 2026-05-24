@@ -11,6 +11,5 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     i32.mul
     i32.const 2
     i32.mul
-    return
   )
 )

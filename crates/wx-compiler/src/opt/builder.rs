@@ -55,13 +55,41 @@ impl<'mir> Builder<'mir> {
         let mut data_bindings = vec![StackResult::Unit; root_scope.locals.len()];
 
         let params_count = sig.params_count;
+        // `wasm_idx` tracks the flattened WASM local index: aggregate params
+        // occupy one slot per field, scalar params occupy one slot each.
+        let mut wasm_idx = 0u32;
         for (i, local) in root_scope.locals[..params_count].iter().enumerate() {
-            let ty = ScalarType::try_from(local.ty).expect("param must be scalar");
-            let node = self.func.ensure_node(DataNodeKind::Param {
-                index: i as u32,
-                ty,
-            });
-            data_bindings[i] = StackResult::Value(node);
+            data_bindings[i] = match local.ty {
+                mir::Type::Aggregate { aggregate_index } => {
+                    let fields: Box<[_]> = self.mir.aggregates[aggregate_index as usize]
+                        .values
+                        .iter()
+                        .map(|&ft| {
+                            let ty =
+                                ScalarType::try_from(ft).expect("aggregate field must be scalar");
+                            let node = self.func.ensure_node(DataNodeKind::Param {
+                                index: wasm_idx,
+                                ty,
+                            });
+                            wasm_idx += 1;
+                            node
+                        })
+                        .collect();
+                    StackResult::Value(self.func.ensure_node(DataNodeKind::Aggregate {
+                        fields,
+                        aggregate_index,
+                    }))
+                }
+                _ => {
+                    let ty = ScalarType::try_from(local.ty).expect("param must be scalar");
+                    let node = self.func.ensure_node(DataNodeKind::Param {
+                        index: wasm_idx,
+                        ty,
+                    });
+                    wasm_idx += 1;
+                    StackResult::Value(node)
+                }
+            };
         }
         for (i, local) in root_scope.locals[params_count..].iter().enumerate() {
             data_bindings[params_count + i] = self.default_value(local.ty);
@@ -622,10 +650,14 @@ impl<'mir> Builder<'mir> {
             result: StackResult::Never,
         });
         let body_fallthrough = self.build_block_exprs(body_block, &mut loop_bindings, body_exprs);
-        // blocks[body_block].result accumulates the result type from all `break` statements.
-        // Save it before overwriting with the body's fallthrough result (which is always
-        // Unit/Never since loops exit via break, not fallthrough).
-        let break_result = self.func.blocks[body_block as usize].as_ref().unwrap().result;
+        // blocks[body_block].result accumulates the result type from all `break`
+        // statements. Save it before overwriting with the body's fallthrough
+        // result (which is always Unit/Never since loops exit via break, not
+        // fallthrough).
+        let break_result = self.func.blocks[body_block as usize]
+            .as_ref()
+            .unwrap()
+            .result;
         self.func.blocks[body_block as usize]
             .as_mut()
             .unwrap()
@@ -669,19 +701,20 @@ impl<'mir> Builder<'mir> {
             .map(|a| self.build_expr(block_idx, bindings, a).unwrap_value())
             .collect();
 
-        let result = match ScalarType::try_from(result_ty) {
-            Ok(ty) => {
-                let node = self.func.ensure_node(DataNodeKind::CallResult {
+        let result = match result_ty {
+            mir::Type::Unit | mir::Type::Never => StackResult::Unit,
+            mir::Type::Aggregate { aggregate_index } => StackResult::Value(
+                self.func
+                    .ensure_node(DataNodeKind::AggregateCallResult { aggregate_index }),
+            ),
+            _ => {
+                let ty = ScalarType::try_from(result_ty).expect("scalar call result type");
+                StackResult::Value(self.func.ensure_node(DataNodeKind::CallResult {
                     callee,
                     args: args.clone(),
                     ty,
-                });
-                StackResult::Value(node)
+                }))
             }
-            Err(_) => match result_ty {
-                mir::Type::Unit | mir::Type::Never => StackResult::Unit,
-                _ => panic!("unexpected call result type: {:?}", result_ty),
-            },
         };
 
         self.push_stmt(
@@ -704,14 +737,9 @@ impl<'mir> Builder<'mir> {
         parent: &[StackResult],
         scope_index: mir::ScopeIndex,
     ) -> Vec<StackResult> {
-        let local_types: Vec<mir::Type> = self.mir_func.scopes[scope_index as usize]
-            .locals
-            .iter()
-            .map(|l| l.ty)
-            .collect();
         let mut child = parent.to_vec();
-        for ty in local_types {
-            child.push(self.default_value(ty));
+        for local in &self.mir_func.scopes[scope_index as usize].locals {
+            child.push(self.default_value(local.ty));
         }
         child
     }
@@ -722,13 +750,8 @@ impl<'mir> Builder<'mir> {
         bindings: &mut Vec<StackResult>,
         scope_index: mir::ScopeIndex,
     ) {
-        let local_types: Vec<mir::Type> = self.mir_func.scopes[scope_index as usize]
-            .locals
-            .iter()
-            .map(|l| l.ty)
-            .collect();
-        for ty in local_types {
-            bindings.push(self.default_value(ty));
+        for local in &self.mir_func.scopes[scope_index as usize].locals {
+            bindings.push(self.default_value(local.ty));
         }
     }
 
@@ -748,12 +771,9 @@ impl<'mir> Builder<'mir> {
                             let lp = self.func.push_loop_param(block_index, node_id, ty);
                             StackResult::Value(lp)
                         }
-                        NodeType::Aggregate(aggregate_index) => {
+                        NodeType::Aggregate(_) => {
                             // One loop-param per field; reassemble as an Aggregate node.
-                            let fields = match self.func.data_nodes[node_id as usize].kind.clone() {
-                                DataNodeKind::Aggregate { fields, .. } => fields,
-                                _ => panic!("aggregate-typed binding must be an Aggregate node"),
-                            };
+                            let (fields, aggregate_index) = self.extract_aggregate_fields(node_id);
                             let agg_def = &self.mir.aggregates[aggregate_index as usize];
                             let lp_fields: Box<[_]> = fields
                                 .iter()
@@ -827,15 +847,9 @@ impl<'mir> Builder<'mir> {
                     outputs.push(param);
                 }
             }
-            NodeType::Aggregate(aggregate_index) => {
-                let lp_fields = match self.func.data_nodes[param as usize].kind.clone() {
-                    DataNodeKind::Aggregate { fields, .. } => fields,
-                    _ => panic!(),
-                };
-                let after_fields = match self.func.data_nodes[after as usize].kind.clone() {
-                    DataNodeKind::Aggregate { fields, .. } => fields,
-                    _ => panic!("loop final aggregate binding must be an Aggregate node"),
-                };
+            NodeType::Aggregate(_) => {
+                let (lp_fields, aggregate_index) = self.extract_aggregate_fields(param);
+                let (after_fields, _) = self.extract_aggregate_fields(after);
                 let mut any_changed = false;
                 let mut new_fields = lp_fields.to_vec();
                 for (j, (&lp_field, &after_field)) in
@@ -929,15 +943,9 @@ impl<'mir> Builder<'mir> {
                 }
                 phi
             }
-            (NodeType::Aggregate(aggregate_index), NodeType::Aggregate(_)) => {
-                let l_fields = match self.func.data_nodes[l as usize].kind.clone() {
-                    DataNodeKind::Aggregate { fields, .. } => fields,
-                    _ => panic!(),
-                };
-                let r_fields = match self.func.data_nodes[r as usize].kind.clone() {
-                    DataNodeKind::Aggregate { fields, .. } => fields,
-                    _ => panic!(),
-                };
+            (NodeType::Aggregate(_), NodeType::Aggregate(_)) => {
+                let (l_fields, aggregate_index) = self.extract_aggregate_fields(l);
+                let (r_fields, _) = self.extract_aggregate_fields(r);
                 let agg_def = &self.mir.aggregates[aggregate_index as usize];
                 let phi_fields: Box<[_]> = l_fields
                     .iter()
@@ -965,6 +973,43 @@ impl<'mir> Builder<'mir> {
                 })
             }
             _ => panic!("type mismatch when merging branch values"),
+        }
+    }
+
+    /// Return the per-field data node indices for any aggregate node.
+    ///
+    /// For `Aggregate { fields }` the existing field nodes are returned
+    /// directly. For `AggregateCallResult` — which has no concrete fields —
+    /// a fresh `AggregateGet` node is synthesized for each field.  Those
+    /// get nodes do not fold (the fold only applies to `Aggregate`), so
+    /// they remain visible to the scheduler, which reads them from
+    /// `node_to_aggregate_locals`.
+    fn extract_aggregate_fields(
+        &mut self,
+        node: DataNodeIndex,
+    ) -> (Box<[DataNodeIndex]>, mir::AggregateIndex) {
+        match self.func.data_nodes[node as usize].kind.clone() {
+            DataNodeKind::Aggregate {
+                fields,
+                aggregate_index,
+            } => (fields, aggregate_index),
+            DataNodeKind::AggregateCallResult { aggregate_index } => {
+                let fields: Box<[_]> = self.mir.aggregates[aggregate_index as usize]
+                    .values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &ft)| {
+                        let ty = ScalarType::try_from(ft).expect("aggregate field must be scalar");
+                        self.func.ensure_node(DataNodeKind::AggregateGet {
+                            aggregate: node,
+                            field_index: i as u32,
+                            ty,
+                        })
+                    })
+                    .collect();
+                (fields, aggregate_index)
+            }
+            _ => panic!("expected aggregate node"),
         }
     }
 

@@ -986,3 +986,190 @@ fn test_generic_identity_monomorphized() {
         .unwrap();
     assert_eq!(run.call(&mut store, ()).unwrap(), 42);
 }
+
+// ── aggregate call results
+// ────────────────────────────────────────────────────
+
+#[test]
+fn test_struct_returned_from_call() {
+    // Calls a wx function that returns a struct, then accesses fields.
+    // Exercises AggregateCallResult: the multi-return values are captured into
+    // per-field locals and read back via AggregateGet.
+    let case = TestCase::new(indoc! {"
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        fn translate(p: Point, dx: i32, dy: i32) -> Point {
+            Point::{ x: p.x + dx, y: p.y + dy }
+        }
+
+        fn run() -> i32 {
+            local p = Point::{ x: 3, y: 7 };
+            local q = translate(p, 10, 20);
+            q.x + q.y
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 40); // (3+10) + (7+20)
+}
+
+#[test]
+fn test_tuple_returned_from_call() {
+    // Calls a wx function that returns a tuple, then accesses .0 / .1.
+    // Same AggregateCallResult path as structs.
+    let case = TestCase::new(indoc! {"
+        fn divmod(a: i32, b: i32) -> (i32, i32) {
+            (a / b, a % b)
+        }
+
+        fn run() -> i32 {
+            local r = divmod(17, 5);
+            r.0 * 10 + r.1
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 32); // 3*10 + 2
+}
+
+#[test]
+fn test_struct_chained_transforms() {
+    // Two back-to-back calls each returning a struct; the second call receives
+    // the first call's result as an argument.  Verifies that multiple independent
+    // AggregateCallResult nodes don't clobber each other's captured locals.
+    let case = TestCase::new(indoc! {"
+        struct Vec2 {
+            x: i32,
+            y: i32,
+        }
+
+        fn scale(v: Vec2, factor: i32) -> Vec2 {
+            Vec2::{ x: v.x * factor, y: v.y * factor }
+        }
+
+        fn run() -> i32 {
+            local v = Vec2::{ x: 3, y: 4 };
+            local v2 = scale(v, 2);
+            local v3 = scale(v2, 3);
+            v3.x + v3.y
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 42); // (3*6) + (4*6)
+}
+
+#[test]
+fn test_struct_in_conditional() {
+    // An if-else expression whose both branches produce a struct.  The builder
+    // merges the two Aggregate nodes field-by-field into Phi nodes; the
+    // scheduler captures each branch's fields into phi locals.
+    let case = TestCase::new(indoc! {"
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        fn run(flag: i32) -> i32 {
+            local p = if flag > 0 {
+                Point::{ x: 10, y: 20 }
+            } else {
+                Point::{ x: 1, y: 2 }
+            };
+            p.x + p.y
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let run = instance
+        .get_typed_func::<i32, i32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, 1).unwrap(), 30); // 10 + 20
+    assert_eq!(run.call(&mut store, -1).unwrap(), 3); // 1 + 2
+}
+
+#[test]
+fn test_struct_i64_fields() {
+    // A struct with i64 fields passed through a call and returned.  Verifies
+    // that type flattening uses I64 WASM locals throughout the pipeline.
+    let case = TestCase::new(indoc! {"
+        struct Stats {
+            x: i64,
+            y: i64,
+        }
+
+        fn add_stats(a: Stats, b: Stats) -> Stats {
+            Stats::{ x: a.x + b.x, y: a.y + b.y }
+        }
+
+        fn run() -> i64 {
+            local a = Stats::{ x: 10, y: 20 };
+            local b = Stats::{ x: 30, y: 40 };
+            local c = add_stats(a, b);
+            c.x + c.y
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let run = instance
+        .get_typed_func::<(), i64>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 100); // (10+30) + (20+40)
+}
+
+#[test]
+fn test_struct_call_result_wat() {
+    // WAT snapshot for a function that takes a struct (as flattened params) and
+    // returns a struct (as multi-value result).  Pins the WASM signature shape:
+    // (param i32 i32 i32 i32) (result i32 i32).
+    let case = TestCase::new(indoc! {"
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        fn translate(p: Point, dx: i32, dy: i32) -> Point {
+            Point::{ x: p.x + dx, y: p.y + dy }
+        }
+
+        export { translate }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}

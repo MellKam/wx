@@ -305,6 +305,14 @@ pub enum DataNodeKind {
         args: Box<[DataNodeIndex]>,
         ty: ScalarType,
     },
+    /// Aggregate value returned by a call. Unlike `Aggregate`, there are no
+    /// concrete field sub-nodes — the per-field values come from the WASM
+    /// multi-return stack. The scheduler captures them into per-field locals
+    /// immediately when the call instruction is emitted.
+    /// `AggregateGet` of this node does not fold (no known fields to inline).
+    AggregateCallResult {
+        aggregate_index: mir::AggregateIndex,
+    },
     MemoryGrowResult {
         memory_index: u32,
         delta: DataNodeIndex,
@@ -355,7 +363,10 @@ impl DataNodeKind {
 
             DataNodeKind::Aggregate {
                 aggregate_index, ..
-            } => NodeType::Aggregate(*aggregate_index),
+            }
+            | DataNodeKind::AggregateCallResult { aggregate_index } => {
+                NodeType::Aggregate(*aggregate_index)
+            }
         }
     }
 
@@ -373,6 +384,7 @@ impl DataNodeKind {
             DataNodeKind::GlobalGet { .. }
                 | DataNodeKind::MemorySize { .. }
                 | DataNodeKind::CallResult { .. }
+                | DataNodeKind::AggregateCallResult { .. }
                 | DataNodeKind::MemoryGrowResult { .. }
                 // LoopParam nodes are mutated after creation, so they cannot be CSE'd.
                 | DataNodeKind::LoopParam { .. }
@@ -683,6 +695,7 @@ impl Function {
             | DataNodeKind::StringRef { .. }
             | DataNodeKind::MemoryOffset { .. }
             | DataNodeKind::MemorySize { .. }
+            | DataNodeKind::AggregateCallResult { .. }
             // LoopParam uses are registered by patch_loop_param after both
             // `before` and `after` are known.
             | DataNodeKind::LoopParam { .. } => {}

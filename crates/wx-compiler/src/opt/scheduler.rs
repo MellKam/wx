@@ -67,8 +67,8 @@ pub enum Instruction {
     LocalSet(u32),
     LocalTee(u32),
     // Globals
-    GlobalGet(u32),
-    GlobalSet(u32),
+    GlobalGet(crate::ast::DefId),
+    GlobalSet(crate::ast::DefId),
     // Arithmetic — i32
     I32Add,
     I32Sub,
@@ -141,9 +141,15 @@ pub enum Instruction {
     F64Gt,
     F64Ge,
     // Control flow
-    Block { ty: BlockType },
-    Loop { ty: BlockType },
-    If { ty: BlockType },
+    Block {
+        ty: BlockType,
+    },
+    Loop {
+        ty: BlockType,
+    },
+    If {
+        ty: BlockType,
+    },
     Else,
     End,
     Br(u32), // break by depth
@@ -152,10 +158,14 @@ pub enum Instruction {
     Unreachable,
     Drop,
     // Calls
-    Call(u32), // direct call by function index
+    /// Direct call; the encoder resolves the WASM function index from
+    /// `func_wasm_index`, covering both internal and imported functions.
+    Call(crate::ast::DefId),
     /// Indirect call via the function table; the encoder resolves `type_index`
     /// from the referenced MIR signature.
-    CallIndirectSym { mir_sig_index: u32 },
+    CallIndirectSym {
+        mir_sig_index: u32,
+    },
     // Memory
     MemorySize(u32),
     MemoryGrow(u32),
@@ -171,7 +181,9 @@ pub enum Instruction {
     StringPointer(crate::mir::StringIndex),
     /// End of the static data section for a given memory (base of writable
     /// heap); the encoder emits `i32.const <data_section_end>`.
-    DataSectionEnd { memory_index: u32 },
+    DataSectionEnd {
+        memory_index: u32,
+    },
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
@@ -209,12 +221,12 @@ impl<'f> Scheduler<'f> {
                 .signature_index as usize
         }];
 
+        // Aggregate params are flattened to one local per field.
         let locals: Vec<Local> = sig
             .params()
             .iter()
-            .map(|ty| Local {
-                ty: ScalarType::try_from(*ty).expect("param must be scalar"),
-            })
+            .flat_map(|&ty| Self::flatten_mir_type(ty, &mir.aggregates))
+            .map(|ty| Local { ty })
             .collect();
 
         let mut sched = Scheduler {
@@ -229,6 +241,10 @@ impl<'f> Scheduler<'f> {
         let root = func.blocks[0].as_ref().expect("root block must exist");
         for stmt in &root.statements {
             sched.emit_control(0, stmt);
+        }
+
+        if matches!(sched.body.last(), Some(Instruction::Return)) {
+            sched.body.pop();
         }
 
         ScheduledFunction {
@@ -250,8 +266,7 @@ impl<'f> Scheduler<'f> {
 
             ControlNode::GlobalSet { id, value } => {
                 self.emit_value(*value);
-                let global_wasm_index = self.resolve_global_id(*id);
-                self.body.push(Instruction::GlobalSet(global_wasm_index));
+                self.body.push(Instruction::GlobalSet(*id));
             }
 
             ControlNode::Call {
@@ -264,15 +279,48 @@ impl<'f> Scheduler<'f> {
                     self.emit_value(arg);
                 }
                 self.emit_call(*callee, *callee_sig);
-                // If the call produces a value that is later used, spill it.
                 if let StackResult::Value(result_node) = result {
-                    if self.should_spill(&self.func.data_nodes[*result_node as usize]) {
-                        let ty = self.func.data_nodes[*result_node as usize].kind.scalar_type();
-                        let local = self.alloc_local(ty);
-                        self.node_to_local.insert(*result_node, local);
-                        self.body.push(Instruction::LocalSet(local));
-                    } else {
-                        self.body.push(Instruction::Drop);
+                    match self.func.data_nodes[*result_node as usize].kind {
+                        DataNodeKind::AggregateCallResult { aggregate_index } => {
+                            // Multi-value return: fields land on the WASM stack in
+                            // field order (field[0] deepest, field[n-1] topmost).
+                            // Pop in reverse order so each local.set captures the
+                            // correct field, then restore field-order indexing.
+                            //
+                            // Always capture into locals even if data-node uses is
+                            // empty: the result may still be referenced as a control-
+                            // node argument (call args, return), which is not tracked
+                            // in DataNode::uses.
+                            let mut locals = Vec::with_capacity(
+                                self.mir.aggregates[aggregate_index as usize].values.len(),
+                            );
+                            for &t in self.mir.aggregates[aggregate_index as usize]
+                                .values
+                                .iter()
+                                .rev()
+                            {
+                                let ty = ScalarType::try_from(t).expect("field must be scalar");
+                                let local = self.alloc_local(ty);
+                                self.body.push(Instruction::LocalSet(local));
+                                locals.push(local);
+                            }
+                            locals.reverse();
+                            self.node_to_aggregate_locals
+                                .insert(*result_node, locals.into_boxed_slice());
+                        }
+                        _ => {
+                            // Scalar result: spill to a local if used, drop otherwise.
+                            if self.should_spill(&self.func.data_nodes[*result_node as usize]) {
+                                let ty = self.func.data_nodes[*result_node as usize]
+                                    .kind
+                                    .scalar_type();
+                                let local = self.alloc_local(ty);
+                                self.node_to_local.insert(*result_node, local);
+                                self.body.push(Instruction::LocalSet(local));
+                            } else {
+                                self.body.push(Instruction::Drop);
+                            }
+                        }
                     }
                 }
             }
@@ -317,10 +365,8 @@ impl<'f> Scheduler<'f> {
                     self.body.push(Instruction::Else);
                     self.emit_block(*eb);
                     if outputs.is_empty() {
-                        let else_block_result = self.func.blocks[*eb as usize]
-                            .as_ref()
-                            .unwrap()
-                            .result;
+                        let else_block_result =
+                            self.func.blocks[*eb as usize].as_ref().unwrap().result;
                         if let StackResult::Value(n) = else_block_result {
                             self.emit_value(n);
                         }
@@ -328,6 +374,25 @@ impl<'f> Scheduler<'f> {
                     self.emit_phi_stores_for_branch(*eb, outputs, false);
                 }
                 self.body.push(Instruction::End);
+
+                // Value-type block: the if-End leaves the result on the WASM stack.
+                // Capture it into a local so the parent's emit_value(result_node) can
+                // read from the local rather than pushing a second copy.
+                if outputs.is_empty() {
+                    if let StackResult::Value(result_node) = *result {
+                        let local = if let Some(&l) = self.node_to_local.get(&result_node) {
+                            l
+                        } else {
+                            let ty = self.func.data_nodes[result_node as usize]
+                                .kind
+                                .scalar_type();
+                            let l = self.alloc_local(ty);
+                            self.node_to_local.insert(result_node, l);
+                            l
+                        };
+                        self.body.push(Instruction::LocalSet(local));
+                    }
+                }
             }
 
             ControlNode::Loop {
@@ -376,9 +441,7 @@ impl<'f> Scheduler<'f> {
                     }
                 }
                 for &lp in outputs.iter().rev() {
-                    if let DataNodeKind::LoopParam { .. } =
-                        self.func.data_nodes[lp as usize].kind
-                    {
+                    if let DataNodeKind::LoopParam { .. } = self.func.data_nodes[lp as usize].kind {
                         let lp_local = *self.node_to_local.get(&lp).unwrap();
                         self.body.push(Instruction::LocalSet(lp_local));
                     }
@@ -453,7 +516,19 @@ impl<'f> Scheduler<'f> {
 
     /// Emit instructions that push `node`'s value onto the WASM stack.
     /// If the node is spilled to a local, emits `local.get`; otherwise inlines.
+    /// Aggregate nodes push all their field locals in field order.
     fn emit_value(&mut self, node: DataNodeIndex) {
+        if matches!(
+            self.func.data_nodes[node as usize].kind,
+            DataNodeKind::Aggregate { .. } | DataNodeKind::AggregateCallResult { .. }
+        ) {
+            self.ensure_aggregate_locals(node);
+            for i in 0..self.node_to_aggregate_locals[&node].len() {
+                let local = self.node_to_aggregate_locals[&node][i];
+                self.body.push(Instruction::LocalGet(local));
+            }
+            return;
+        }
         if self.should_spill(&self.func.data_nodes[node as usize]) {
             let local = self.ensure_local(node);
             self.body.push(Instruction::LocalGet(local));
@@ -481,8 +556,7 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::LocalGet(index));
             }
             DataNodeKind::GlobalGet { id } => {
-                let idx = self.resolve_global_id(id);
-                self.body.push(Instruction::GlobalGet(idx));
+                self.body.push(Instruction::GlobalGet(id));
             }
             DataNodeKind::FunctionRef { id } => {
                 self.body.push(Instruction::FunctionPointer(id));
@@ -602,28 +676,26 @@ impl<'f> Scheduler<'f> {
                 });
             }
 
-            DataNodeKind::Neg { operand, ty } => {
-                match ty {
-                    ScalarType::F32 => {
-                        self.emit_value(operand);
-                        self.body.push(Instruction::F32Neg);
-                    }
-                    ScalarType::F64 => {
-                        self.emit_value(operand);
-                        self.body.push(Instruction::F64Neg);
-                    }
-                    ScalarType::I32 => {
-                        self.body.push(Instruction::I32Const(0));
-                        self.emit_value(operand);
-                        self.body.push(Instruction::I32Sub);
-                    }
-                    ScalarType::I64 => {
-                        self.body.push(Instruction::I64Const(0));
-                        self.emit_value(operand);
-                        self.body.push(Instruction::I64Sub);
-                    }
+            DataNodeKind::Neg { operand, ty } => match ty {
+                ScalarType::F32 => {
+                    self.emit_value(operand);
+                    self.body.push(Instruction::F32Neg);
                 }
-            }
+                ScalarType::F64 => {
+                    self.emit_value(operand);
+                    self.body.push(Instruction::F64Neg);
+                }
+                ScalarType::I32 => {
+                    self.body.push(Instruction::I32Const(0));
+                    self.emit_value(operand);
+                    self.body.push(Instruction::I32Sub);
+                }
+                ScalarType::I64 => {
+                    self.body.push(Instruction::I64Const(0));
+                    self.emit_value(operand);
+                    self.body.push(Instruction::I64Sub);
+                }
+            },
             DataNodeKind::BitNot { operand, ty } => {
                 // WASM has no bitwise-not; emit `x ^ -1`.
                 self.emit_value(operand);
@@ -745,7 +817,9 @@ impl<'f> Scheduler<'f> {
                 field_index,
                 ..
             } => {
-                // Aggregate locals are decomposed into per-field WASM locals.
+                // Ensure the aggregate's per-field locals are populated, then read
+                // the requested field.
+                self.ensure_aggregate_locals(aggregate);
                 let field_local = self.node_to_aggregate_locals[&aggregate][field_index as usize];
                 self.body.push(Instruction::LocalGet(field_local));
             }
@@ -769,12 +843,9 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::LocalGet(local));
             }
 
-            DataNodeKind::Aggregate { .. } => {
-                // Aggregate values don't exist on the WASM stack; their fields
-                // are accessed individually via `AggregateGet` nodes.
-                // If this is reached, it means an aggregate was used directly
-                // (e.g. as a return value) — needs decomposition at the call site.
-                unimplemented!("aggregate value on WASM stack — decompose at use site")
+            // Aggregates are intercepted in `emit_value` before reaching here.
+            DataNodeKind::Aggregate { .. } | DataNodeKind::AggregateCallResult { .. } => {
+                unreachable!("aggregate nodes are handled by emit_value, not emit_value_inline")
             }
         }
     }
@@ -800,7 +871,9 @@ impl<'f> Scheduler<'f> {
             DataNodeKind::Phi { left, right, .. } => left != right,
 
             // Calls and memory.grow always produce a single result that must be captured.
-            DataNodeKind::CallResult { .. } | DataNodeKind::MemoryGrowResult { .. } => true,
+            DataNodeKind::CallResult { .. }
+            | DataNodeKind::AggregateCallResult { .. }
+            | DataNodeKind::MemoryGrowResult { .. } => true,
 
             // Aggregates live in per-field locals, not on the stack.
             DataNodeKind::Aggregate { .. } => true,
@@ -808,6 +881,58 @@ impl<'f> Scheduler<'f> {
             // For all other ops: spill only if the result is consumed more than once.
             _ => node.uses.len() > 1,
         }
+    }
+
+    /// Recursively flatten a MIR type into its constituent scalar types.
+    /// Mirrors `codegen::Builder::flatten_type` but yields `ScalarType`.
+    fn flatten_mir_type(ty: mir::Type, aggregates: &[mir::Aggregate]) -> Vec<ScalarType> {
+        match ty {
+            mir::Type::Unit | mir::Type::Never => vec![],
+            mir::Type::Aggregate { aggregate_index } => aggregates[aggregate_index as usize]
+                .values
+                .iter()
+                .flat_map(|&f| Self::flatten_mir_type(f, aggregates))
+                .collect(),
+            _ => vec![ScalarType::try_from(ty).expect("must be scalar")],
+        }
+    }
+
+    /// Ensure per-field WASM locals exist for an `Aggregate` node.
+    /// Emits each field expression and spills it to a fresh local, then records
+    /// the mapping in `node_to_aggregate_locals`.
+    ///
+    /// For `AggregateCallResult` nodes this must never be called — their locals
+    /// are populated by `emit_control` when the call instruction is emitted.
+    fn ensure_aggregate_locals(&mut self, node: DataNodeIndex) {
+        if self.node_to_aggregate_locals.contains_key(&node) {
+            return;
+        }
+        let (fields, aggregate_index) = match self.func.data_nodes[node as usize].kind.clone() {
+            DataNodeKind::Aggregate {
+                fields,
+                aggregate_index,
+            } => (fields, aggregate_index),
+            DataNodeKind::AggregateCallResult { .. } => {
+                unreachable!(
+                    "AggregateCallResult locals must be populated by emit_control before use"
+                )
+            }
+            _ => panic!("ensure_aggregate_locals called on non-aggregate node"),
+        };
+        let field_types: Vec<ScalarType> = self.mir.aggregates[aggregate_index as usize]
+            .values
+            .iter()
+            .map(|&t| ScalarType::try_from(t).expect("aggregate field must be scalar"))
+            .collect();
+        let mut locals = Vec::with_capacity(fields.len());
+        for (i, &field_node) in fields.iter().enumerate() {
+            self.emit_value(field_node);
+            let local = self.alloc_local(field_types[i]);
+            self.body.push(Instruction::LocalSet(local));
+            locals.push(local);
+        }
+        self.node_to_aggregate_locals
+            .insert(node, locals.into_boxed_slice());
     }
 
     /// Ensure a WASM local exists for a scalar node. Computes and stores the
@@ -905,31 +1030,16 @@ impl<'f> Scheduler<'f> {
 
     // ── Index resolution ───────────────────────────────────────────────────────
 
-    fn resolve_global_id(&self, id: crate::ast::DefId) -> u32 {
-        self.mir
-            .globals
-            .iter()
-            .position(|g| g.id == id)
-            .expect("global not found") as u32
-    }
-
-    fn resolve_function_id(&self, id: crate::ast::DefId) -> u32 {
-        self.mir
-            .functions
-            .iter()
-            .position(|f| f.id == id)
-            .expect("function not found") as u32
-    }
-
     fn emit_call(&mut self, callee_node: DataNodeIndex, callee_sig: u32) {
         match &self.func.data_nodes[callee_node as usize].kind {
             DataNodeKind::FunctionRef { id } => {
-                let idx = self.resolve_function_id(*id);
-                self.body.push(Instruction::Call(idx));
+                self.body.push(Instruction::Call(*id));
             }
             _ => {
                 self.emit_value(callee_node);
-                self.body.push(Instruction::CallIndirectSym { mir_sig_index: callee_sig });
+                self.body.push(Instruction::CallIndirectSym {
+                    mir_sig_index: callee_sig,
+                });
             }
         }
     }

@@ -14,7 +14,6 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     local.get 2
     f32.mul
     f32.add
-    return
   )
   (func (;1;) (type 1) (result f32)
     (local f32)
@@ -31,7 +30,7 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     else
       local.get 0
     end
+    local.set 0
     local.get 0
-    return
   )
 )
