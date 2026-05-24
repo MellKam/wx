@@ -1107,10 +1107,13 @@ impl<'tir> Builder<'tir> {
                 },
                 ty: self.lower_type_index(expr.ty),
             },
-            tir::ExprKind::Function { id } => Expression {
-                kind: ExprKind::Function { id: *id },
-                ty: self.lower_type_index(expr.ty),
-            },
+            tir::ExprKind::Function { id } => {
+                self.record_call_edge(*id);
+                Expression {
+                    kind: ExprKind::Function { id: *id },
+                    ty: self.lower_type_index(expr.ty),
+                }
+            }
             tir::ExprKind::Char { value } => Expression {
                 kind: ExprKind::Int {
                     value: *value as i64,
@@ -1336,9 +1339,6 @@ impl<'tir> Builder<'tir> {
                     }
                 }
 
-                if let tir::ExprKind::Function { id } = &callee.kind {
-                    self.record_call_edge(*id);
-                }
                 let callee = Box::new(self.lower_expression(func_ctx, callee, sink));
                 let arguments = arguments
                     .iter()

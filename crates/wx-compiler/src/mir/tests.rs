@@ -405,6 +405,27 @@ fn test_multiple_exports_protect_their_callees() {
 }
 
 #[test]
+fn test_function_reference_value_survives_dce() {
+    // `target` is only referenced as a value passed to `apply` — never called
+    // directly from `run`. DCE must keep it because it is a live dependency.
+    let case = TestCase::new(indoc! {"
+        fn target(x: u32) -> u32 { x + 1 }
+
+        fn apply(f: fn(u32) -> u32, x: u32) -> u32 {
+            f(x)
+        }
+
+        fn run() -> u32 {
+            apply(target, 42)
+        }
+
+        export { run }
+    "});
+    // run, apply, target — all three must survive.
+    assert_eq!(case.mir.functions.len(), 3);
+}
+
+#[test]
 fn test_unused_trait_impl_eliminated_by_dce() {
     // Both Num1 and Num2 implement Scalable, but only Num1 is ever used.
     // The call chain is: run → doubled<Num1> → Num1::value.
