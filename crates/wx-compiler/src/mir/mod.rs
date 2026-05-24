@@ -302,7 +302,7 @@ pub struct BlockScope {
     pub result: Type,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionSignature {
     pub items: Box<[Type]>,
@@ -568,20 +568,6 @@ impl MIR {
             .map(|(i, m)| (m.id, i as u32))
             .collect();
 
-        // Signatures live in the type pool as Type::Function entries.
-        let sig_type_indices: Vec<u32> = tir
-            .type_pool
-            .iter()
-            .enumerate()
-            .filter(|(_, ty)| matches!(ty, tir::Type::Function { .. }))
-            .map(|(i, _)| i as u32)
-            .collect();
-        let sig_index_remap: HashMap<u32, u32> = sig_type_indices
-            .iter()
-            .enumerate()
-            .map(|(pos, &type_idx)| (type_idx, pos as u32))
-            .collect();
-
         let mut builder = Builder {
             tir,
             interner,
@@ -589,7 +575,8 @@ impl MIR {
             aggregate_pool: AggregatePool::new(),
             layout_cache: LayoutCache::new(),
             memory_id_remap,
-            sig_index_remap,
+            signature_pool: Vec::new(),
+            signature_index_lookup: HashMap::new(),
             current_substitutions: Box::new([]),
             mono_registry: MonoRegistry::new(tir.id_generator),
             current_function_id: None,
@@ -622,8 +609,6 @@ impl MIR {
         // Monomorphization: drain the registry worklist populated by lower_expression
         // when it encountered calls to generic functions. Each iteration may add new
         // entries (generic-calls-generic), so we loop until the worklist is exhausted.
-        let base_sig_count = builder.sig_index_remap.len() as u32;
-        let mut mono_sigs: Vec<FunctionSignature> = Vec::new();
         let mut work_cursor = 0;
         loop {
             let current_len = builder.mono_registry.worklist.len();
@@ -640,26 +625,9 @@ impl MIR {
                 builder.current_substitutions = subst;
                 builder.current_function_id = Some(mono_id);
 
-                // Compute concrete signature while substitutions are active.
-                let tir_sig = match &tir.type_pool[tir_func.signature_index as usize] {
-                    tir::Type::Function { signature } => signature.clone(),
-                    _ => unreachable!(),
-                };
-                let concrete_sig = FunctionSignature {
-                    items: tir_sig
-                        .params()
-                        .iter()
-                        .chain(std::iter::once(&tir_sig.result()))
-                        .map(|&ty| builder.lower_type_index(ty))
-                        .collect(),
-                    params_count: tir_sig.params().len(),
-                };
-                let concrete_sig_index = base_sig_count + mono_sigs.len() as u32;
-                mono_sigs.push(concrete_sig);
-
+                // lower_function interns the concrete signature (substitutions active).
                 let mut mir_func = builder.lower_function(tir_func);
                 mir_func.id = mono_id;
-                mir_func.signature_index = concrete_sig_index;
 
                 builder.current_substitutions = Box::new([]);
                 functions.push(mir_func);
@@ -673,41 +641,43 @@ impl MIR {
             .map(|g| builder.lower_global(g))
             .collect();
 
-        // Build base signatures. Generic (TypeParam-containing) function types get
-        // a dummy entry so sig_index_remap stays valid; mono instances use their
-        // own concrete entries appended below.
-        let mut signatures: Vec<FunctionSignature> = sig_type_indices
+        let imports: Vec<ImportModule> = tir
+            .import_modules
             .iter()
-            .map(|&type_idx| match &tir.type_pool[type_idx as usize] {
-                tir::Type::Function { signature } => {
-                    let is_generic =
-                        signature.params().iter().any(|&p| {
-                            matches!(tir.type_pool[p as usize], tir::Type::TypeParam { .. })
-                        }) || matches!(
-                            tir.type_pool[signature.result() as usize],
-                            tir::Type::TypeParam { .. }
-                        );
-                    if is_generic {
-                        FunctionSignature {
-                            items: Box::new([]),
-                            params_count: 0,
+            .map(|module| ImportModule {
+                name: interner
+                    .resolve(module.external_name.inner)
+                    .unwrap()
+                    .to_string(),
+                items: module
+                    .lookup
+                    .iter()
+                    .map(|(symbol, value)| match value {
+                        tir::ImportValue::Function { id } => {
+                            let tir_idx = tir.function_index_lookup[id];
+                            let tir_func = &tir.functions[tir_idx as usize];
+                            let signature_index =
+                                builder.intern_tir_function_type(tir_func.signature_index);
+                            ImportModuleItem::Function {
+                                name: *symbol,
+                                id: *id,
+                                signature_index,
+                            }
                         }
-                    } else {
-                        FunctionSignature {
-                            items: signature
-                                .params()
-                                .iter()
-                                .chain(std::iter::once(&signature.result()))
-                                .map(|&idx| builder.lower_type_index(idx))
-                                .collect(),
-                            params_count: signature.params().len(),
-                        }
-                    }
-                }
-                _ => unreachable!(),
+                        tir::ImportValue::Global { id } => ImportModuleItem::Global {
+                            name: *symbol,
+                            id: *id,
+                        },
+                        tir::ImportValue::Memory { id } => ImportModuleItem::Memory {
+                            name: *symbol,
+                            memory_index: builder.memory_id_remap[id],
+                        },
+                    })
+                    .collect(),
             })
             .collect();
-        signatures.extend(mono_sigs);
+
+        let signatures = builder.signature_pool;
 
         let mut mir = MIR {
             functions,
@@ -716,41 +686,7 @@ impl MIR {
             strings: builder.string_pool.strings.into_boxed_slice(),
             signatures,
             aggregates: builder.aggregate_pool.aggregates.into_boxed_slice(),
-            imports: tir
-                .import_modules
-                .iter()
-                .map(|module| ImportModule {
-                    name: interner
-                        .resolve(module.external_name.inner)
-                        .unwrap()
-                        .to_string(),
-                    items: module
-                        .lookup
-                        .iter()
-                        .map(|(symbol, value)| match value {
-                            tir::ImportValue::Function { id } => {
-                                let tir_idx = tir.function_index_lookup[id];
-                                let tir_func = &tir.functions[tir_idx as usize];
-                                let signature_index =
-                                    builder.sig_index_remap[&tir_func.signature_index];
-                                ImportModuleItem::Function {
-                                    name: *symbol,
-                                    id: *id,
-                                    signature_index,
-                                }
-                            }
-                            tir::ImportValue::Global { id } => ImportModuleItem::Global {
-                                name: *symbol,
-                                id: *id,
-                            },
-                            tir::ImportValue::Memory { id } => ImportModuleItem::Memory {
-                                name: *symbol,
-                                memory_index: builder.memory_id_remap[id],
-                            },
-                        })
-                        .collect(),
-                })
-                .collect(),
+            imports,
             memories: tir
                 .memories
                 .iter()
@@ -879,7 +815,10 @@ struct Builder<'tir> {
     layout_cache: LayoutCache,
     /// DefId → index in tir.memories (= WebAssembly memory index).
     memory_id_remap: HashMap<ast::DefId, u32>,
-    sig_index_remap: HashMap<tir::TypeIndex, SignatureIndex>,
+    /// Concrete function signatures, interned on demand. The index into this
+    /// Vec is the MIR `SignatureIndex` used throughout the rest of the IR.
+    signature_pool: Vec<FunctionSignature>,
+    signature_index_lookup: HashMap<FunctionSignature, SignatureIndex>,
     /// Concrete type substitution for the current generic instantiation.
     /// Indexed by `param_index`: `current_substitutions[i]` is the concrete
     /// `TypeIndex` for `TypeParam { param_index: i }`.
@@ -928,12 +867,9 @@ impl<'tir> Builder<'tir> {
                 let concrete = self.current_substitutions[param_index as usize];
                 self.lower_type_index(concrete)
             }
-            tir::Type::Function { .. } => {
-                let sig_idx = self.sig_index_remap[&type_idx];
-                Type::Function {
-                    signature_index: sig_idx,
-                }
-            }
+            tir::Type::Function { .. } => Type::Function {
+                signature_index: self.intern_tir_function_type(type_idx),
+            },
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index } => {
                 let si = struct_index as usize;
@@ -986,6 +922,33 @@ impl<'tir> Builder<'tir> {
         }
     }
 
+    fn intern_signature(&mut self, sig: FunctionSignature) -> SignatureIndex {
+        let next = self.signature_pool.len() as SignatureIndex;
+        *self.signature_index_lookup.entry(sig.clone()).or_insert_with(|| {
+            self.signature_pool.push(sig);
+            next
+        })
+    }
+
+    /// Converts a TIR function type (by its type-pool index) to a MIR
+    /// `SignatureIndex`, interning the concrete signature on first use.
+    fn intern_tir_function_type(&mut self, type_idx: tir::TypeIndex) -> SignatureIndex {
+        let sig = match &self.tir.type_pool[type_idx as usize] {
+            tir::Type::Function { signature } => signature.clone(),
+            _ => unreachable!("expected Function type"),
+        };
+        let concrete = FunctionSignature {
+            items: sig
+                .params()
+                .iter()
+                .chain(std::iter::once(&sig.result()))
+                .map(|&ty| self.lower_type_index(ty))
+                .collect(),
+            params_count: sig.params().len(),
+        };
+        self.intern_signature(concrete)
+    }
+
     fn record_call_edge(&mut self, callee_id: ast::DefId) {
         if let Some(caller_id) = self.current_function_id {
             self.call_edges.push((caller_id, callee_id));
@@ -1034,7 +997,7 @@ impl<'tir> Builder<'tir> {
 
         Function {
             id: func.id,
-            signature_index: self.sig_index_remap[&func.signature_index],
+            signature_index: self.intern_tir_function_type(func.signature_index),
             scopes: ctx.frame,
             block,
         }
@@ -1178,8 +1141,20 @@ impl<'tir> Builder<'tir> {
                         _ => ty,
                     })
                     .collect();
-                let mono_id = self.mono_registry.get_or_insert(*id, concrete_type_args);
+                let mono_id = self.mono_registry.get_or_insert(*id, concrete_type_args.clone());
                 self.record_call_edge(mono_id);
+
+                // Intern the callee's concrete signature with the resolved
+                // substitutions active, then restore previous substitutions.
+                let tir_func_sig_idx = {
+                    let tir_idx = self.tir.function_index_lookup[id];
+                    self.tir.functions[tir_idx as usize].signature_index
+                };
+                let saved_subs =
+                    std::mem::replace(&mut self.current_substitutions, concrete_type_args);
+                let callee_sig_idx = self.intern_tir_function_type(tir_func_sig_idx);
+                self.current_substitutions = saved_subs;
+
                 let lowered_args: Box<[_]> = arguments
                     .iter()
                     .map(|arg| self.lower_expression(func_ctx, arg, sink))
@@ -1188,7 +1163,7 @@ impl<'tir> Builder<'tir> {
                     kind: ExprKind::Call {
                         callee: Box::new(Expression {
                             kind: ExprKind::Function { id: mono_id },
-                            ty: Type::Unit,
+                            ty: Type::Function { signature_index: callee_sig_idx },
                         }),
                         arguments: lowered_args,
                     },
@@ -1259,6 +1234,12 @@ impl<'tir> Builder<'tir> {
                     })
                     .collect();
 
+                // Intern the callee's concrete signature before consuming `resolved`.
+                let saved_subs =
+                    std::mem::replace(&mut self.current_substitutions, resolved.clone());
+                let callee_sig_idx = self.intern_tir_function_type(tir_func.signature_index);
+                self.current_substitutions = saved_subs;
+
                 let target_id = if tir_func.body.is_some() {
                     // Default impl: monomorphize with resolved type_args.
                     self.mono_registry.get_or_insert(*id, resolved)
@@ -1293,7 +1274,7 @@ impl<'tir> Builder<'tir> {
                     kind: ExprKind::Call {
                         callee: Box::new(Expression {
                             kind: ExprKind::Function { id: target_id },
-                            ty: Type::Unit,
+                            ty: Type::Function { signature_index: callee_sig_idx },
                         }),
                         arguments: lowered_args,
                     },
@@ -2120,6 +2101,7 @@ fn inline_call(
     callee: &Function,
     arguments: Box<[Expression]>,
     caller_scopes: &mut Vec<BlockScope>,
+    call_site_scope: ScopeIndex,
 ) -> Expression {
     let result_ty = callee.block.ty;
 
@@ -2127,7 +2109,7 @@ fn inline_call(
     let wrapper_scope = caller_scopes.len() as ScopeIndex;
     caller_scopes.push(BlockScope {
         kind: tir::BlockKind::Block,
-        parent: None,
+        parent: Some(call_site_scope),
         locals: vec![],
         result: result_ty,
     });
@@ -2136,7 +2118,7 @@ fn inline_call(
     let body_scope_offset = caller_scopes.len() as ScopeIndex;
     for scope in callee.scopes.iter().cloned() {
         caller_scopes.push(BlockScope {
-            parent: scope.parent.map(|p| p + body_scope_offset),
+            parent: scope.parent.map(|p| p + body_scope_offset).or(Some(wrapper_scope)),
             ..scope
         });
     }
@@ -2179,6 +2161,7 @@ fn inline_expr(
     caller_scopes: &mut Vec<BlockScope>,
     inline_id: ast::DefId,
     inline_body: &Function,
+    current_scope: ScopeIndex,
 ) {
     // Recurse into all children first.
     match &mut expr.kind {
@@ -2187,23 +2170,28 @@ fn inline_expr(
         | ExprKind::Drop { value }
         | ExprKind::Neg { value }
         | ExprKind::BitNot { value }
-        | ExprKind::Eqz { value } => inline_expr(value, caller_scopes, inline_id, inline_body),
+        | ExprKind::Eqz { value } => {
+            inline_expr(value, caller_scopes, inline_id, inline_body, current_scope)
+        }
 
         ExprKind::Aggregate { values: fields } => {
             for e in fields.iter_mut() {
-                inline_expr(e, caller_scopes, inline_id, inline_body);
+                inline_expr(e, caller_scopes, inline_id, inline_body, current_scope);
             }
         }
-        ExprKind::Block { expressions, .. } => {
+        ExprKind::Block { scope_index, expressions, .. } => {
+            let block_scope = *scope_index;
             for e in expressions.iter_mut() {
-                inline_expr(e, caller_scopes, inline_id, inline_body);
+                inline_expr(e, caller_scopes, inline_id, inline_body, block_scope);
             }
         }
-        ExprKind::Loop { block, .. } => inline_expr(block, caller_scopes, inline_id, inline_body),
+        ExprKind::Loop { block, .. } => {
+            inline_expr(block, caller_scopes, inline_id, inline_body, current_scope)
+        }
 
         ExprKind::Break { value, .. } | ExprKind::Return { value } => {
             if let Some(v) = value {
-                inline_expr(v, caller_scopes, inline_id, inline_body);
+                inline_expr(v, caller_scopes, inline_id, inline_body, current_scope);
             }
         }
         ExprKind::IfElse {
@@ -2211,16 +2199,16 @@ fn inline_expr(
             then_block,
             else_block,
         } => {
-            inline_expr(condition, caller_scopes, inline_id, inline_body);
-            inline_expr(then_block, caller_scopes, inline_id, inline_body);
+            inline_expr(condition, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(then_block, caller_scopes, inline_id, inline_body, current_scope);
             if let Some(e) = else_block {
-                inline_expr(e, caller_scopes, inline_id, inline_body);
+                inline_expr(e, caller_scopes, inline_id, inline_body, current_scope);
             }
         }
         ExprKind::Call { callee, arguments } => {
-            inline_expr(callee, caller_scopes, inline_id, inline_body);
+            inline_expr(callee, caller_scopes, inline_id, inline_body, current_scope);
             for a in arguments.iter_mut() {
-                inline_expr(a, caller_scopes, inline_id, inline_body);
+                inline_expr(a, caller_scopes, inline_id, inline_body, current_scope);
             }
         }
         ExprKind::Add { left, right }
@@ -2241,11 +2229,11 @@ fn inline_expr(
         | ExprKind::BitXor { left, right }
         | ExprKind::LeftShift { left, right }
         | ExprKind::RightShift { left, right } => {
-            inline_expr(left, caller_scopes, inline_id, inline_body);
-            inline_expr(right, caller_scopes, inline_id, inline_body);
+            inline_expr(left, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(right, caller_scopes, inline_id, inline_body, current_scope);
         }
         ExprKind::MemoryGrow { delta, .. } => {
-            inline_expr(delta, caller_scopes, inline_id, inline_body)
+            inline_expr(delta, caller_scopes, inline_id, inline_body, current_scope)
         }
         // Leaf variants — nothing to recurse into.
         ExprKind::Noop
@@ -2279,7 +2267,7 @@ fn inline_expr(
         ExprKind::Call { arguments, .. } => arguments,
         _ => unreachable!(),
     };
-    *expr = inline_call(inline_body, arguments, caller_scopes);
+    *expr = inline_call(inline_body, arguments, caller_scopes, current_scope);
 }
 
 /// Directed call graph over MIR function `DefId`s.
@@ -2365,6 +2353,7 @@ pub fn run_inlining_pass(mir: &mut MIR) {
                     &mut caller_func.scopes,
                     f_id,
                     &f_body,
+                    0,
                 );
 
                 // Update graph: remove caller → f, propagate f's callees to caller.

@@ -116,7 +116,10 @@ impl<'mir> Builder<'mir> {
             }
             ExprKind::Float { value } => {
                 let ty = ScalarType::try_from(expr.ty).expect("Float must be scalar");
-                let bits = value.to_bits();
+                let bits = match ty {
+                    ScalarType::F32 => (*value as f32).to_bits() as u64,
+                    _ => value.to_bits(),
+                };
                 StackResult::Value(self.func.ensure_node(DataNodeKind::Float { bits, ty }))
             }
             ExprKind::Bool { value } => {
@@ -618,11 +621,15 @@ impl<'mir> Builder<'mir> {
             statements: Vec::new(),
             result: StackResult::Never,
         });
-        let loop_result = self.build_block_exprs(body_block, &mut loop_bindings, body_exprs);
+        let body_fallthrough = self.build_block_exprs(body_block, &mut loop_bindings, body_exprs);
+        // blocks[body_block].result accumulates the result type from all `break` statements.
+        // Save it before overwriting with the body's fallthrough result (which is always
+        // Unit/Never since loops exit via break, not fallthrough).
+        let break_result = self.func.blocks[body_block as usize].as_ref().unwrap().result;
         self.func.blocks[body_block as usize]
             .as_mut()
             .unwrap()
-            .result = loop_result;
+            .result = body_fallthrough;
 
         // Patch loop params and collect outputs.
         let mut outputs = Vec::new();
@@ -636,10 +643,10 @@ impl<'mir> Builder<'mir> {
             ControlNode::Loop {
                 body: body_block,
                 outputs: outputs.into_boxed_slice(),
-                result: loop_result,
+                result: break_result,
             },
         );
-        loop_result
+        break_result
     }
 
     fn build_call(
@@ -650,6 +657,10 @@ impl<'mir> Builder<'mir> {
         arguments: &[mir::Expression],
         result_ty: mir::Type,
     ) -> StackResult {
+        let callee_sig = match callee_expr.ty {
+            mir::Type::Function { signature_index } => signature_index,
+            ty => unreachable!("callee expression must have Function type, got {:?}", ty),
+        };
         let callee = self
             .build_expr(block_idx, bindings, callee_expr)
             .unwrap_value();
@@ -679,6 +690,7 @@ impl<'mir> Builder<'mir> {
                 callee,
                 args,
                 result,
+                callee_sig,
             },
         );
         result

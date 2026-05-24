@@ -55,6 +55,7 @@ pub struct ScheduledFunction {
 /// Each variant maps 1-to-1 to a WASM opcode; operands are pushed onto the
 /// implicit value stack by the preceding instructions.
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[derive(Clone)]
 pub enum Instruction {
     // Constants
     I32Const(i32),
@@ -152,12 +153,25 @@ pub enum Instruction {
     Drop,
     // Calls
     Call(u32), // direct call by function index
-    CallIndirect { type_index: u32, table_index: u32 },
+    /// Indirect call via the function table; the encoder resolves `type_index`
+    /// from the referenced MIR signature.
+    CallIndirectSym { mir_sig_index: u32 },
     // Memory
     MemorySize(u32),
     MemoryGrow(u32),
     // Nop (used as a placeholder)
     Nop,
+    // Symbolic references — resolved to concrete i32.const values by the
+    // codegen encoder, which has access to the string pool and function table.
+    /// A function referenced as a value; the encoder pushes it into the
+    /// function table and emits `i32.const <table_index>`.
+    FunctionPointer(crate::ast::DefId),
+    /// A string literal; the encoder resolves the pool index to a byte offset
+    /// and emits `i32.const <byte_offset>`.
+    StringPointer(crate::mir::StringIndex),
+    /// End of the static data section for a given memory (base of writable
+    /// heap); the encoder emits `i32.const <data_section_end>`.
+    DataSectionEnd { memory_index: u32 },
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
@@ -244,15 +258,17 @@ impl<'f> Scheduler<'f> {
                 callee,
                 args,
                 result,
+                callee_sig,
             } => {
                 for &arg in args.iter() {
                     self.emit_value(arg);
                 }
-                self.emit_call(*callee);
+                self.emit_call(*callee, *callee_sig);
                 // If the call produces a value that is later used, spill it.
                 if let StackResult::Value(result_node) = result {
                     if self.should_spill(&self.func.data_nodes[*result_node as usize]) {
-                        let local = self.alloc_local(ScalarType::I32); // placeholder — see note
+                        let ty = self.func.data_nodes[*result_node as usize].kind.scalar_type();
+                        let local = self.alloc_local(ty);
                         self.node_to_local.insert(*result_node, local);
                         self.body.push(Instruction::LocalSet(local));
                     } else {
@@ -285,10 +301,30 @@ impl<'f> Scheduler<'f> {
                 });
 
                 self.emit_block(*then_block);
+                // When there are no phi outputs, the if block has a value result
+                // type; each branch must leave its result on the stack.
+                if outputs.is_empty() {
+                    let then_block_result = self.func.blocks[*then_block as usize]
+                        .as_ref()
+                        .unwrap()
+                        .result;
+                    if let StackResult::Value(n) = then_block_result {
+                        self.emit_value(n);
+                    }
+                }
                 self.emit_phi_stores_for_branch(*then_block, outputs, true);
                 if let Some(eb) = else_block {
                     self.body.push(Instruction::Else);
                     self.emit_block(*eb);
+                    if outputs.is_empty() {
+                        let else_block_result = self.func.blocks[*eb as usize]
+                            .as_ref()
+                            .unwrap()
+                            .result;
+                        if let StackResult::Value(n) = else_block_result {
+                            self.emit_value(n);
+                        }
+                    }
                     self.emit_phi_stores_for_branch(*eb, outputs, false);
                 }
                 self.body.push(Instruction::End);
@@ -297,23 +333,30 @@ impl<'f> Scheduler<'f> {
             ControlNode::Loop {
                 body,
                 outputs,
-                result,
+                result: _,
             } => {
-                // Spill each `before` value into a local and immediately map the
-                // LoopParam to that local.  This must happen *before* emit_block
-                // so that uses of the LoopParam inside the body read the correct local.
+                // Allocate a fresh local for each loop param and initialise it
+                // with the `before` value.  Each param gets its own local so that
+                // two params with the same `before` node (e.g. both init to 1)
+                // don't share a slot and overwrite each other.
                 for &lp in outputs.iter() {
-                    if let DataNodeKind::LoopParam { before, .. } =
+                    if let DataNodeKind::LoopParam { before, ty, .. } =
                         self.func.data_nodes[lp as usize].kind
                     {
-                        let local = self.ensure_local(before);
+                        let local = self.alloc_local(ty);
+                        self.emit_value(before);
+                        self.body.push(Instruction::LocalSet(local));
                         self.node_to_local.insert(lp, local);
                     }
                 }
 
-                let result_block_ty = self.stack_result_block_type(*result);
+                // The outer block always has an empty result type.
+                // Break values stay in their LoopParam locals — the parent reads
+                // from those locals after the loop exits, rather than relying on
+                // WASM block-result passing (which would leave an extra value on
+                // the stack that the parent also re-emits).
                 self.body.push(Instruction::Block {
-                    ty: result_block_ty,
+                    ty: BlockType::Empty,
                 });
                 self.body.push(Instruction::Loop {
                     ty: BlockType::Empty,
@@ -321,14 +364,22 @@ impl<'f> Scheduler<'f> {
 
                 self.emit_block(*body);
 
-                // Write the `after` value back into the LoopParam's local so the
-                // next iteration reads the updated value.
+                // Write after values back into LoopParam locals for the next iteration.
+                // ALL values are pushed first (using the ORIGINAL locals), then
+                // popped in reverse — this avoids swap-corruption where writing lp_a
+                // first would cause lp_b's after-computation to read the wrong value.
                 for &lp in outputs.iter() {
                     if let DataNodeKind::LoopParam { after, .. } =
                         self.func.data_nodes[lp as usize].kind
                     {
-                        let lp_local = *self.node_to_local.get(&lp).unwrap();
                         self.emit_value(after);
+                    }
+                }
+                for &lp in outputs.iter().rev() {
+                    if let DataNodeKind::LoopParam { .. } =
+                        self.func.data_nodes[lp as usize].kind
+                    {
+                        let lp_local = *self.node_to_local.get(&lp).unwrap();
                         self.body.push(Instruction::LocalSet(lp_local));
                     }
                 }
@@ -342,10 +393,10 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::End); // Block
             }
 
-            ControlNode::Break { target, value } => {
-                if let StackResult::Value(v) = value {
-                    self.emit_value(*v);
-                }
+            ControlNode::Break { target, .. } => {
+                // Break values are accessed via the value node's local after the loop.
+                // We do NOT push the value before `br` — the outer block has an empty
+                // result type, so the branch carries no stack value.
                 let depth = self.break_depth(block_idx, *target);
                 self.body.push(Instruction::Br(depth));
             }
@@ -434,16 +485,13 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::GlobalGet(idx));
             }
             DataNodeKind::FunctionRef { id } => {
-                let idx = self.resolve_function_id(id);
-                self.body.push(Instruction::I32Const(idx as i32));
+                self.body.push(Instruction::FunctionPointer(id));
             }
             DataNodeKind::StringRef { string_index } => {
-                // Strings are emitted as an i32 offset; exact value computed by codegen.
-                self.body.push(Instruction::I32Const(string_index as i32)); // placeholder
+                self.body.push(Instruction::StringPointer(string_index));
             }
-            DataNodeKind::MemoryOffset { .. } => {
-                // Link-time constant; codegen fills the actual value.
-                self.body.push(Instruction::I32Const(0)); // placeholder
+            DataNodeKind::MemoryOffset { memory_index } => {
+                self.body.push(Instruction::DataSectionEnd { memory_index });
             }
             DataNodeKind::MemorySize { memory_index } => {
                 self.body.push(Instruction::MemorySize(memory_index));
@@ -555,12 +603,26 @@ impl<'f> Scheduler<'f> {
             }
 
             DataNodeKind::Neg { operand, ty } => {
-                self.emit_value(operand);
-                self.body.push(match ty {
-                    ScalarType::F32 => Instruction::F32Neg,
-                    ScalarType::F64 => Instruction::F64Neg,
-                    _ => unimplemented!("integer negation"),
-                });
+                match ty {
+                    ScalarType::F32 => {
+                        self.emit_value(operand);
+                        self.body.push(Instruction::F32Neg);
+                    }
+                    ScalarType::F64 => {
+                        self.emit_value(operand);
+                        self.body.push(Instruction::F64Neg);
+                    }
+                    ScalarType::I32 => {
+                        self.body.push(Instruction::I32Const(0));
+                        self.emit_value(operand);
+                        self.body.push(Instruction::I32Sub);
+                    }
+                    ScalarType::I64 => {
+                        self.body.push(Instruction::I64Const(0));
+                        self.emit_value(operand);
+                        self.body.push(Instruction::I64Sub);
+                    }
+                }
             }
             DataNodeKind::BitNot { operand, ty } => {
                 // WASM has no bitwise-not; emit `x ^ -1`.
@@ -696,9 +758,9 @@ impl<'f> Scheduler<'f> {
             }
 
             DataNodeKind::LoopParam { before, .. } => {
-                // Loop params share a local with their `before` value.
-                let local = self.ensure_local(before);
-                self.body.push(Instruction::LocalGet(local));
+                // Unmodified loop param (before == after, should_spill = false):
+                // the value never changes, so just re-emit the `before` value directly.
+                self.emit_value(before);
             }
 
             DataNodeKind::CallResult { .. } | DataNodeKind::MemoryGrowResult { .. } => {
@@ -809,30 +871,36 @@ impl<'f> Scheduler<'f> {
     /// WASM `br` depth for a `break` targeting `target_block` from
     /// `current_block`.
     fn break_depth(&self, current: BlockIndex, target: BlockIndex) -> u32 {
-        // Walk up the block tree counting nesting levels.
-        // Each regular block adds 1 level; loop blocks add 1 for the outer `block`
-        // wrapper (used to break out of the loop).
+        // Walk up the block tree counting WASM nesting levels.
+        //
+        // A loop body block (is_loop=true) is wrapped in TWO WASM instructions:
+        //   `block $b0` (outer, for break/exit) + `loop $l0` (inner, for continue).
+        // All other blocks (if-then, else) are wrapped in ONE WASM instruction.
+        //
+        // When the target itself is a loop body, we add +1 so the branch lands on
+        // the outer `block $b0` (exit), not the inner `loop $l0` (continue).
         let mut depth = 0u32;
         let mut idx = current;
         loop {
+            let block = self.func.blocks[idx as usize].as_ref().unwrap();
             if idx == target {
+                if block.is_loop {
+                    depth += 1;
+                }
                 return depth;
             }
-            depth += 1;
-            idx = self.func.blocks[idx as usize]
-                .as_ref()
-                .unwrap()
-                .parent
-                .unwrap();
+            depth += if block.is_loop { 2 } else { 1 };
+            idx = block.parent.unwrap();
         }
     }
 
     /// WASM `br` depth for a `continue` (branch to loop header) from
     /// `current_block`.
     fn continue_depth(&self, current: BlockIndex, target: BlockIndex) -> u32 {
-        // A `continue` targets the inner `loop` instruction, which is one level
-        // deeper than the outer `block` wrapper.
-        self.break_depth(current, target) + 1
+        // `continue` targets the inner `loop $l0` instruction.
+        // `break_depth` returns the depth of the outer `block $b0` (one past the loop),
+        // so subtract 1 to land on `loop $l0` instead.
+        self.break_depth(current, target) - 1
     }
 
     // ── Index resolution ───────────────────────────────────────────────────────
@@ -853,20 +921,15 @@ impl<'f> Scheduler<'f> {
             .expect("function not found") as u32
     }
 
-    fn emit_call(&mut self, callee_node: DataNodeIndex) {
+    fn emit_call(&mut self, callee_node: DataNodeIndex, callee_sig: u32) {
         match &self.func.data_nodes[callee_node as usize].kind {
             DataNodeKind::FunctionRef { id } => {
                 let idx = self.resolve_function_id(*id);
                 self.body.push(Instruction::Call(idx));
             }
             _ => {
-                // Indirect call via function table — emit the table index then call_indirect.
                 self.emit_value(callee_node);
-                // TODO: look up the correct type index for the signature.
-                self.body.push(Instruction::CallIndirect {
-                    type_index: 0,
-                    table_index: 0,
-                });
+                self.body.push(Instruction::CallIndirectSym { mir_sig_index: callee_sig });
             }
         }
     }

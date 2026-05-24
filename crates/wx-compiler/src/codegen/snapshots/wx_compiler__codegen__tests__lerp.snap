@@ -1,5 +1,5 @@
 ---
-source: crates/wx-compiler/src/codegen.rs
+source: crates/wx-compiler/src/codegen/tests.rs
 expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
 ---
 (module
@@ -14,6 +14,7 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     local.get 2
     f32.mul
     f32.add
+    return
   )
   (func (;1;) (type 1) (result f32)
     (local f32)
@@ -30,5 +31,7 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     else
       local.get 0
     end
+    local.get 0
+    return
   )
 )

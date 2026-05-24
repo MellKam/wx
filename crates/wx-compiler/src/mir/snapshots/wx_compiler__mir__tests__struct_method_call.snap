@@ -13,11 +13,11 @@ functions:
             mutability: Immutable
         result: U32
       - kind: Block
-        parent: ~
+        parent: 0
         locals: []
         result: U32
       - kind: Block
-        parent: ~
+        parent: 1
         locals:
           - ty: U32
             mutability: Immutable
@@ -31,11 +31,11 @@ functions:
         locals: []
         result: U32
       - kind: Block
-        parent: ~
+        parent: 2
         locals: []
         result: Bool
       - kind: Block
-        parent: ~
+        parent: 5
         locals:
           - ty: U32
             mutability: Immutable

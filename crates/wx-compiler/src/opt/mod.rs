@@ -403,6 +403,9 @@ pub enum ControlNode {
         callee: DataNodeIndex,
         args: Box<[DataNodeIndex]>,
         result: StackResult,
+        /// MIR signature index for this call; used by the scheduler to emit
+        /// `CallIndirectSym` when the callee is not a statically known `FunctionRef`.
+        callee_sig: u32,
     },
     IfElse {
         condition: DataNodeIndex,

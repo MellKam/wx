@@ -126,8 +126,6 @@ fn test_arithmetic_operations() {
         }
     "});
 
-    println!("{}", wasmprinter::print_bytes(&case.bytecode).unwrap());
-
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());

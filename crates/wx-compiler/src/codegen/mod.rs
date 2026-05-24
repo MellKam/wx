@@ -460,6 +460,22 @@ impl StringPool {
     }
 }
 
+/// Returns true if `func` contains any aggregate (struct/tuple) types in its
+/// signature or locals. Such functions fall back to `build_expression` until
+/// the scheduler gains aggregate decomposition support.
+fn func_has_aggregates(func: &mir::Function, mir: &mir::MIR) -> bool {
+    let sig = &mir.signatures[func.signature_index as usize];
+    sig.params()
+        .iter()
+        .any(|t| matches!(t, mir::Type::Aggregate { .. }))
+        || matches!(sig.result(), mir::Type::Aggregate { .. })
+        || func
+            .scopes
+            .iter()
+            .flat_map(|s| s.locals.iter())
+            .any(|l| matches!(l.ty, mir::Type::Aggregate { .. }))
+}
+
 impl Builder {
     /// Recursively expand a MIR type into its flat wasm `ValueType`s.
     /// Unit/Never produce zero slots; Aggregate recurses into its fields.
@@ -651,69 +667,82 @@ impl Builder {
             );
             function_signatures.push(signature_index);
 
-            let expressions = match &func.block.kind {
-                mir::ExprKind::Block { expressions, .. } => expressions,
-                _ => unreachable!(),
-            };
+            let body = if func_has_aggregates(func, mir) {
+                // Aggregate-containing functions fall back to the MIR tree-walker
+                // until the scheduler gains aggregate decomposition support.
+                let expressions = match &func.block.kind {
+                    mir::ExprKind::Block { expressions, .. } => expressions,
+                    _ => unreachable!(),
+                };
 
-            let scope_offsets: Box<_> = func
-                .scopes
-                .iter()
-                .scan(0, |offset, scope| {
-                    let current = *offset;
-                    *offset += scope.locals.len();
-                    Some(current)
-                })
-                .collect();
+                let scope_offsets: Box<_> = func
+                    .scopes
+                    .iter()
+                    .scan(0, |offset, scope| {
+                        let current = *offset;
+                        *offset += scope.locals.len();
+                        Some(current)
+                    })
+                    .collect();
 
-            let min_capacity = scope_offsets.last().copied().unwrap_or(0);
-            let mut locals = Vec::with_capacity(min_capacity);
-            let mut local_offsets = Vec::with_capacity(min_capacity + 1);
-            local_offsets.push(0); // First local starts at index 0
+                let min_capacity = scope_offsets.last().copied().unwrap_or(0);
+                let mut locals = Vec::with_capacity(min_capacity);
+                let mut local_offsets = Vec::with_capacity(min_capacity + 1);
+                local_offsets.push(0);
 
-            for scope in &func.scopes {
-                for local in scope.locals.iter().cloned() {
-                    match local.ty {
-                        mir::Type::Aggregate {
-                            aggregate_index: tuple_index,
-                        } => {
-                            let tuple = &mir.aggregates[tuple_index as usize];
-                            local_offsets
-                                .push(local_offsets.last().copied().unwrap() + tuple.values.len());
-                            for field in tuple.values.iter().copied() {
+                for scope in &func.scopes {
+                    for local in scope.locals.iter().cloned() {
+                        match local.ty {
+                            mir::Type::Aggregate {
+                                aggregate_index: tuple_index,
+                            } => {
+                                let tuple = &mir.aggregates[tuple_index as usize];
+                                local_offsets.push(
+                                    local_offsets.last().copied().unwrap() + tuple.values.len(),
+                                );
+                                for field in tuple.values.iter().copied() {
+                                    locals.push(Local {
+                                        ty: ValueType::try_from(field).unwrap(),
+                                    });
+                                }
+                            }
+                            _ => {
+                                local_offsets.push(local_offsets.last().copied().unwrap() + 1);
                                 locals.push(Local {
-                                    ty: ValueType::try_from(field).unwrap(),
+                                    ty: ValueType::try_from(local.ty).unwrap(),
                                 });
                             }
                         }
-                        _ => {
-                            local_offsets.push(local_offsets.last().copied().unwrap() + 1);
-                            locals.push(Local {
-                                ty: ValueType::try_from(local.ty).unwrap(),
-                            });
-                        }
                     }
                 }
-            }
 
-            let mut ctx = FunctionContext {
-                locals: locals.into_boxed_slice(),
-                scope_offsets,
-                local_offsets: local_offsets.into_boxed_slice(),
-                scope_index: 0 as tir::ScopeIndex,
-                scopes: &func.scopes,
-                tuples: &mir.aggregates,
+                let mut ctx = FunctionContext {
+                    locals: locals.into_boxed_slice(),
+                    scope_offsets,
+                    local_offsets: local_offsets.into_boxed_slice(),
+                    scope_index: 0 as tir::ScopeIndex,
+                    scopes: &func.scopes,
+                    tuples: &mir.aggregates,
+                };
+
+                let mut sink = Vec::new();
+                for expr in expressions {
+                    builder.build_expression(&mut ctx, expr, &mut sink);
+                }
+
+                FunctionBody {
+                    locals: ctx.locals,
+                    expressions: sink.into_boxed_slice(),
+                }
+            } else {
+                // Scalar-only functions go through the opt pipeline: sea-of-nodes
+                // builder → scheduler → encoder.
+                let opt_func = crate::opt::builder::Builder::build(mir, func);
+                let scheduled = crate::opt::scheduler::Scheduler::schedule(&opt_func, mir);
+                builder.encode_scheduled(&scheduled, mir)
             };
 
-            let mut sink = Vec::new();
-            for expr in expressions {
-                builder.build_expression(&mut ctx, expr, &mut sink);
-            }
-
-            functions.push(FunctionBody {
-                locals: ctx.locals,
-                expressions: sink.into_boxed_slice(),
-            });
+            functions.push(body);
         }
 
         let globals = GlobalSection {
@@ -827,6 +856,227 @@ impl Builder {
         })
     }
 
+    /// Encode a [`scheduler::ScheduledFunction`] into a [`FunctionBody`].
+    ///
+    /// All index resolution (function WASM indices, global WASM indices, string
+    /// byte offsets, data section end) is performed here using the maps and
+    /// pools already built on `self`.
+    fn encode_scheduled(
+        &mut self,
+        scheduled: &crate::opt::scheduler::ScheduledFunction,
+        mir: &mir::MIR,
+    ) -> FunctionBody {
+        let locals: Box<[Local]> = scheduled
+            .locals
+            .iter()
+            .map(|l| Local {
+                ty: ValueType::from(l.ty),
+            })
+            .collect();
+
+        let mut sink = Vec::new();
+        for instr in scheduled.body.iter().cloned() {
+            self.encode_scheduled_instr(instr, mir, &mut sink);
+        }
+
+        FunctionBody {
+            locals,
+            expressions: sink.into_boxed_slice(),
+        }
+    }
+
+    fn encode_scheduled_instr(
+        &mut self,
+        instr: crate::opt::scheduler::Instruction,
+        mir: &mir::MIR,
+        sink: &mut Vec<u8>,
+    ) {
+        use crate::opt::scheduler::Instruction as SI;
+        match instr {
+            SI::I32Const(v) => {
+                sink.push(Instruction::I32Const as u8);
+                v.encode(sink);
+            }
+            SI::I64Const(v) => {
+                sink.push(Instruction::I64Const as u8);
+                v.encode(sink);
+            }
+            SI::F32Const(v) => {
+                sink.push(Instruction::F32Const as u8);
+                v.encode(sink);
+            }
+            SI::F64Const(v) => {
+                sink.push(Instruction::F64Const as u8);
+                v.encode(sink);
+            }
+            SI::LocalGet(i) => {
+                sink.push(Instruction::LocalGet as u8);
+                i.encode(sink);
+            }
+            SI::LocalSet(i) => {
+                sink.push(Instruction::LocalSet as u8);
+                i.encode(sink);
+            }
+            SI::LocalTee(i) => {
+                sink.push(Instruction::LocalTee as u8);
+                i.encode(sink);
+            }
+            SI::GlobalGet(mir_pos) => {
+                let wasm_idx = self.global_wasm_index[&mir.globals[mir_pos as usize].id];
+                sink.push(Instruction::GlobalGet as u8);
+                wasm_idx.encode(sink);
+            }
+            SI::GlobalSet(mir_pos) => {
+                let wasm_idx = self.global_wasm_index[&mir.globals[mir_pos as usize].id];
+                sink.push(Instruction::GlobalSet as u8);
+                wasm_idx.encode(sink);
+            }
+            SI::I32Add => sink.push(Instruction::I32Add as u8),
+            SI::I32Sub => sink.push(Instruction::I32Sub as u8),
+            SI::I32Mul => sink.push(Instruction::I32Mul as u8),
+            SI::I32DivS => sink.push(Instruction::I32DivS as u8),
+            SI::I32RemS => sink.push(Instruction::I32RemS as u8),
+            SI::I32And => sink.push(Instruction::I32And as u8),
+            SI::I32Or => sink.push(Instruction::I32Or as u8),
+            SI::I32Xor => sink.push(Instruction::I32Xor as u8),
+            SI::I32Shl => sink.push(Instruction::I32Shl as u8),
+            SI::I32ShrS => sink.push(Instruction::I32ShrS as u8),
+            SI::I32ShrU => sink.push(Instruction::I32ShrU as u8),
+            SI::I32Eqz => sink.push(Instruction::I32Eqz as u8),
+            SI::I32Eq => sink.push(Instruction::I32Eq as u8),
+            SI::I32Ne => sink.push(Instruction::I32Ne as u8),
+            SI::I32LtS => sink.push(Instruction::I32LtS as u8),
+            SI::I32LtU => sink.push(Instruction::I32LtU as u8),
+            SI::I32LeS => sink.push(Instruction::I32LeS as u8),
+            SI::I32LeU => sink.push(Instruction::I32LeU as u8),
+            SI::I32GtS => sink.push(Instruction::I32GtS as u8),
+            SI::I32GtU => sink.push(Instruction::I32GtU as u8),
+            SI::I32GeS => sink.push(Instruction::I32GeS as u8),
+            SI::I32GeU => sink.push(Instruction::I32GeU as u8),
+            SI::I32Clz => sink.push(Instruction::I32Clz as u8),
+            SI::I32Ctz => sink.push(Instruction::I32Ctz as u8),
+            SI::I64Add => sink.push(Instruction::I64Add as u8),
+            SI::I64Sub => sink.push(Instruction::I64Sub as u8),
+            SI::I64Mul => sink.push(Instruction::I64Mul as u8),
+            SI::I64DivS => sink.push(Instruction::I64DivS as u8),
+            SI::I64RemS => sink.push(Instruction::I64RemS as u8),
+            SI::I64And => sink.push(Instruction::I64And as u8),
+            SI::I64Or => sink.push(Instruction::I64Or as u8),
+            SI::I64Xor => sink.push(Instruction::I64Xor as u8),
+            SI::I64Shl => sink.push(Instruction::I64Shl as u8),
+            SI::I64ShrS => sink.push(Instruction::I64ShrS as u8),
+            SI::I64ShrU => sink.push(Instruction::I64ShrU as u8),
+            SI::I64Eqz => sink.push(Instruction::I64Eqz as u8),
+            SI::I64Eq => sink.push(Instruction::I64Eq as u8),
+            SI::I64Ne => sink.push(Instruction::I64Ne as u8),
+            SI::I64LtS => sink.push(Instruction::I64LtS as u8),
+            SI::I64LtU => sink.push(Instruction::I64LtU as u8),
+            SI::I64LeS => sink.push(Instruction::I64LeS as u8),
+            SI::I64LeU => sink.push(Instruction::I64LeU as u8),
+            SI::I64GtS => sink.push(Instruction::I64GtS as u8),
+            SI::I64GtU => sink.push(Instruction::I64GtU as u8),
+            SI::I64GeS => sink.push(Instruction::I64GeS as u8),
+            SI::I64GeU => sink.push(Instruction::I64GeU as u8),
+            SI::F32Add => sink.push(Instruction::F32Add as u8),
+            SI::F32Sub => sink.push(Instruction::F32Sub as u8),
+            SI::F32Mul => sink.push(Instruction::F32Mul as u8),
+            SI::F32Div => sink.push(Instruction::F32Div as u8),
+            SI::F32Neg => sink.push(Instruction::F32Neg as u8),
+            SI::F64Add => sink.push(Instruction::F64Add as u8),
+            SI::F64Sub => sink.push(Instruction::F64Sub as u8),
+            SI::F64Mul => sink.push(Instruction::F64Mul as u8),
+            SI::F64Div => sink.push(Instruction::F64Div as u8),
+            SI::F64Neg => sink.push(Instruction::F64Neg as u8),
+            SI::F32Eq => sink.push(Instruction::F32Eq as u8),
+            SI::F32Ne => sink.push(Instruction::F32Ne as u8),
+            SI::F32Lt => sink.push(Instruction::F32Lt as u8),
+            SI::F32Le => sink.push(Instruction::F32Le as u8),
+            SI::F32Gt => sink.push(Instruction::F32Gt as u8),
+            SI::F32Ge => sink.push(Instruction::F32Ge as u8),
+            SI::F64Eq => sink.push(Instruction::F64Eq as u8),
+            SI::F64Ne => sink.push(Instruction::F64Ne as u8),
+            SI::F64Lt => sink.push(Instruction::F64Lt as u8),
+            SI::F64Le => sink.push(Instruction::F64Le as u8),
+            SI::F64Gt => sink.push(Instruction::F64Gt as u8),
+            SI::F64Ge => sink.push(Instruction::F64Ge as u8),
+            SI::Block { ty } => {
+                sink.push(Instruction::Block as u8);
+                Self::encode_block_type(ty, sink);
+            }
+            SI::Loop { ty } => {
+                sink.push(Instruction::Loop as u8);
+                Self::encode_block_type(ty, sink);
+            }
+            SI::If { ty } => {
+                sink.push(Instruction::If as u8);
+                Self::encode_block_type(ty, sink);
+            }
+            SI::Else => sink.push(Instruction::Else as u8),
+            SI::End => sink.push(Instruction::End as u8),
+            SI::Br(depth) => {
+                sink.push(Instruction::Br as u8);
+                depth.encode(sink);
+            }
+            SI::BrIf(depth) => {
+                sink.push(Instruction::BrIf as u8);
+                depth.encode(sink);
+            }
+            SI::Return => sink.push(Instruction::Return as u8),
+            SI::Unreachable => sink.push(Instruction::Unreachable as u8),
+            SI::Drop => sink.push(Instruction::Drop as u8),
+            SI::Call(mir_pos) => {
+                let wasm_idx = self.func_wasm_index[&mir.functions[mir_pos as usize].id];
+                sink.push(Instruction::Call as u8);
+                wasm_idx.encode(sink);
+            }
+            SI::CallIndirectSym { mir_sig_index } => {
+                let type_index = self.register_signature(
+                    &mir.signatures[mir_sig_index as usize],
+                    &mir.aggregates,
+                );
+                sink.push(Instruction::CallIndirect as u8);
+                type_index.0.encode(sink);
+                0u32.encode(sink); // table index 0 (single function table)
+            }
+            SI::MemorySize(idx) => {
+                sink.push(Instruction::MemorySize as u8);
+                idx.encode(sink);
+            }
+            SI::MemoryGrow(idx) => {
+                sink.push(Instruction::MemoryGrow as u8);
+                idx.encode(sink);
+            }
+            SI::Nop => sink.push(Instruction::Nop as u8),
+            SI::FunctionPointer(id) => {
+                let wasm_idx = self.func_wasm_index[&id];
+                let table_idx = self.table.len() as i32;
+                self.table.push(FuncIndex(wasm_idx));
+                sink.push(Instruction::I32Const as u8);
+                table_idx.encode(sink);
+            }
+            SI::StringPointer(pool_idx) => {
+                let (byte_offset, _) = self.string_pool.strings[pool_idx as usize];
+                sink.push(Instruction::I32Const as u8);
+                (byte_offset as i32).encode(sink);
+            }
+            SI::DataSectionEnd { .. } => {
+                // All static string data lives in memory 0 at offset 0; the end
+                // of the data section is the total pool byte length.
+                let offset = self.string_pool.bytes.len() as i32;
+                sink.push(Instruction::I32Const as u8);
+                offset.encode(sink);
+            }
+        }
+    }
+
+    fn encode_block_type(ty: crate::opt::scheduler::BlockType, sink: &mut Vec<u8>) {
+        use crate::opt::scheduler::BlockType;
+        match ty {
+            BlockType::Empty => sink.push(0x40),
+            BlockType::Value(vt) => ValueType::from(vt).encode(sink),
+        }
+    }
+
     fn build_global_expr(&self, global: &mir::Global) -> Expression {
         match global.value.kind {
             mir::ExprKind::Int { value } => match global.ty {
@@ -891,7 +1141,6 @@ impl Builder {
                 value.encode(sink);
             }
             mir::ExprKind::Call { callee, arguments } => {
-                println!("Building call to {:#?} with args: {:#?}", callee, arguments);
                 for argument in arguments {
                     self.build_expression(ctx, argument, sink);
                 }
