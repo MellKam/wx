@@ -461,7 +461,10 @@ pub fn compute_layout(
         | tir::Type::Enum { .. }
         | tir::Type::Memory { .. }
         | tir::Type::Trait { .. }
-        | tir::Type::TypeParam { .. } => panic!("compute_layout called on non-value type"),
+        | tir::Type::TypeParam { .. }
+        | tir::Type::AssocTypeProjection { .. } => {
+            panic!("compute_layout called on non-value type")
+        }
     }
 }
 
@@ -924,10 +927,13 @@ impl<'tir> Builder<'tir> {
 
     fn intern_signature(&mut self, sig: FunctionSignature) -> SignatureIndex {
         let next = self.signature_pool.len() as SignatureIndex;
-        *self.signature_index_lookup.entry(sig.clone()).or_insert_with(|| {
-            self.signature_pool.push(sig);
-            next
-        })
+        *self
+            .signature_index_lookup
+            .entry(sig.clone())
+            .or_insert_with(|| {
+                self.signature_pool.push(sig);
+                next
+            })
     }
 
     /// Converts a TIR function type (by its type-pool index) to a MIR
@@ -1141,7 +1147,9 @@ impl<'tir> Builder<'tir> {
                         _ => ty,
                     })
                     .collect();
-                let mono_id = self.mono_registry.get_or_insert(*id, concrete_type_args.clone());
+                let mono_id = self
+                    .mono_registry
+                    .get_or_insert(*id, concrete_type_args.clone());
                 self.record_call_edge(mono_id);
 
                 // Intern the callee's concrete signature with the resolved
@@ -1163,7 +1171,9 @@ impl<'tir> Builder<'tir> {
                     kind: ExprKind::Call {
                         callee: Box::new(Expression {
                             kind: ExprKind::Function { id: mono_id },
-                            ty: Type::Function { signature_index: callee_sig_idx },
+                            ty: Type::Function {
+                                signature_index: callee_sig_idx,
+                            },
                         }),
                         arguments: lowered_args,
                     },
@@ -1274,7 +1284,9 @@ impl<'tir> Builder<'tir> {
                     kind: ExprKind::Call {
                         callee: Box::new(Expression {
                             kind: ExprKind::Function { id: target_id },
-                            ty: Type::Function { signature_index: callee_sig_idx },
+                            ty: Type::Function {
+                                signature_index: callee_sig_idx,
+                            },
                         }),
                         arguments: lowered_args,
                     },
@@ -1337,11 +1349,13 @@ impl<'tir> Builder<'tir> {
             } => {
                 self.record_call_edge(*id);
                 let tir_idx = self.tir.function_index_lookup[id];
-                let callee_sig_idx =
-                    self.intern_tir_function_type(self.tir.functions[tir_idx as usize].signature_index);
+                let callee_sig_idx = self
+                    .intern_tir_function_type(self.tir.functions[tir_idx as usize].signature_index);
                 let callee = Box::new(Expression {
                     kind: ExprKind::Function { id: *id },
-                    ty: Type::Function { signature_index: callee_sig_idx },
+                    ty: Type::Function {
+                        signature_index: callee_sig_idx,
+                    },
                 });
                 let object = self.lower_expression(func_ctx, object, sink);
                 let arguments: Box<_> = std::iter::once(object)
@@ -2121,7 +2135,10 @@ fn inline_call(
     let body_scope_offset = caller_scopes.len() as ScopeIndex;
     for scope in callee.scopes.iter().cloned() {
         caller_scopes.push(BlockScope {
-            parent: scope.parent.map(|p| p + body_scope_offset).or(Some(wrapper_scope)),
+            parent: scope
+                .parent
+                .map(|p| p + body_scope_offset)
+                .or(Some(wrapper_scope)),
             ..scope
         });
     }
@@ -2182,7 +2199,11 @@ fn inline_expr(
                 inline_expr(e, caller_scopes, inline_id, inline_body, current_scope);
             }
         }
-        ExprKind::Block { scope_index, expressions, .. } => {
+        ExprKind::Block {
+            scope_index,
+            expressions,
+            ..
+        } => {
             let block_scope = *scope_index;
             for e in expressions.iter_mut() {
                 inline_expr(e, caller_scopes, inline_id, inline_body, block_scope);
@@ -2202,8 +2223,20 @@ fn inline_expr(
             then_block,
             else_block,
         } => {
-            inline_expr(condition, caller_scopes, inline_id, inline_body, current_scope);
-            inline_expr(then_block, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(
+                condition,
+                caller_scopes,
+                inline_id,
+                inline_body,
+                current_scope,
+            );
+            inline_expr(
+                then_block,
+                caller_scopes,
+                inline_id,
+                inline_body,
+                current_scope,
+            );
             if let Some(e) = else_block {
                 inline_expr(e, caller_scopes, inline_id, inline_body, current_scope);
             }

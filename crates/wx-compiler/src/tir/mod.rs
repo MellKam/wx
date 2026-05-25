@@ -61,15 +61,21 @@ pub enum Type {
     Pointer {
         to: TypeIndex,
         mutable: bool,
+        /// `Some(id)` when written as `memory::*T`; `None` for untagged `*T`.
+        memory: Option<ast::DefId>,
     },
     Array {
         of: TypeIndex,
         size: u32,
         mutable: bool,
+        /// `Some(id)` when written as `memory::[N]T`; `None` for untagged `[N]T`.
+        memory: Option<ast::DefId>,
     },
     Slice {
         of: TypeIndex,
         mutable: bool,
+        /// `Some(id)` when written as `memory::[]T`; `None` for untagged `[]T`.
+        memory: Option<ast::DefId>,
     },
     // Namespace types
     ImportModule {
@@ -94,6 +100,16 @@ pub enum Type {
     /// same function share one interned `TypeParam { 0 }` entry.
     TypeParam {
         param_index: u32,
+    },
+    /// `M::Size` — the named associated type projected through a type parameter.
+    /// Stays opaque until monomorphisation substitutes the concrete type for `M`.
+    AssocTypeProjection {
+        /// Index into the enclosing function's `type_params` (the `M` in `M::Size`).
+        type_param_index: u32,
+        /// Which trait declares this associated type.
+        trait_index: TraitIndex,
+        /// The associated type name (for display and impl lookup during monomorphisation).
+        assoc_name: SymbolU32,
     },
 }
 
@@ -239,10 +255,19 @@ pub struct Trait {
     /// All items declared in the trait body, keyed by name.
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub members: HashMap<SymbolU32, ImplEntry>,
+    /// Bounds on each associated type, keyed by name.
+    /// Used during conformance checking to verify that the concrete type
+    /// provided by an impl satisfies all declared bounds.
+    #[cfg_attr(test, serde(skip))]
+    pub assoc_type_bounds: HashMap<SymbolU32, Box<[TraitIndex]>>,
     /// `DefId`s of all member items (functions and consts) — used during
     /// `ensure_signature` to demand-resolve members before reading `members`.
     #[cfg_attr(test, serde(skip))]
     pub member_def_ids: Vec<ast::DefId>,
+    /// Associated-type values bound at each supertrait use site.
+    /// E.g. `trait Memory32: Memory<Size = u32>` → {(Memory_idx, "Size") → u32}.
+    #[cfg_attr(test, serde(skip))]
+    pub supertrait_bindings: HashMap<(TraitIndex, SymbolU32), TypeIndex>,
 }
 
 /// A concrete implementation of a trait for a specific type:
@@ -648,6 +673,13 @@ pub enum ImplEntry {
     AssociatedConst {
         ty: TypeIndex,
     },
+    /// An associated type. In `Trait::members` `ty` holds a `Type::TypeParam`
+    /// — a placeholder substituted when a concrete impl is resolved, analogous
+    /// to how `Self` works. In `TraitImpl::members` and `impl_members` `ty`
+    /// holds the concrete type the impl provides.
+    AssociatedType {
+        ty: TypeIndex,
+    },
 }
 
 impl PartialOrd for ItemSource {
@@ -976,6 +1008,7 @@ define_diagnostic_codes! {
         CyclicTypeDependency => "E1032",
         MissingTraitImplItem => "E1033",
         MissingSupertraitImpl => "E1034",
+        AssociatedTypeInInherentImpl => "E1035",
     }
 }
 
@@ -1844,6 +1877,21 @@ impl MissingStructFieldsDiagnostic<'_> {
     }
 }
 
+struct AssociatedTypeInInherentImplDiagnostic {
+    file_id: FileId,
+    span: ast::TextSpan,
+}
+
+impl AssociatedTypeInInherentImplDiagnostic {
+    fn report(self) -> Diagnostic<FileId> {
+        Diagnostic::error()
+            .with_code(DiagnosticCode::AssociatedTypeInInherentImpl.code())
+            .with_message("associated types are not allowed in inherent impl blocks")
+            .with_label(Label::primary(self.file_id, self.span))
+            .with_note("associated types can only be defined in `impl Trait for Type` blocks")
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum ComputeState {
     InProgress,
@@ -1880,6 +1928,13 @@ enum AstNodeRef<'ast> {
     },
     /// Constant declared inside a `trait` block.
     TraitConst {
+        file_id: ast::FileId,
+        module_path: Box<[ModuleIndex]>,
+        trait_index: u32,
+        item: &'ast ast::TraitItem,
+    },
+    /// Associated type declared inside a `trait` block: `type Name;` or `type Name: Bound;`
+    TraitAssociatedType {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         trait_index: u32,
@@ -1940,6 +1995,13 @@ enum AstNodeRef<'ast> {
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
+    /// Associated type definition inside an `impl Trait for Type` block: `type Name = ConcreteType;`
+    ImplTraitAssociatedType {
+        file_id: ast::FileId,
+        module_path: Box<[ModuleIndex]>,
+        parent_id: ast::DefId,
+        item: &'ast ast::ImplItem,
+    },
     /// The `trait Name: Bound { ... }` block itself — owns supertrait
     /// resolution.
     Trait {
@@ -1964,6 +2026,7 @@ impl AstNodeRef<'_> {
             | AstNodeRef::ImplMethod { file_id, .. }
             | AstNodeRef::TraitFunction { file_id, .. }
             | AstNodeRef::TraitConst { file_id, .. }
+            | AstNodeRef::TraitAssociatedType { file_id, .. }
             | AstNodeRef::Struct { file_id, .. }
             | AstNodeRef::Enum { file_id, .. }
             | AstNodeRef::Global { file_id, .. }
@@ -1973,6 +2036,7 @@ impl AstNodeRef<'_> {
             | AstNodeRef::ImplTraitBlock { file_id, .. }
             | AstNodeRef::ImplTraitMethod { file_id, .. }
             | AstNodeRef::ImplTraitConst { file_id, .. }
+            | AstNodeRef::ImplTraitAssociatedType { file_id, .. }
             | AstNodeRef::Trait { file_id, .. }
             | AstNodeRef::ImportedFunction { file_id, .. } => *file_id,
         }
@@ -1984,6 +2048,7 @@ impl AstNodeRef<'_> {
             | AstNodeRef::ImplMethod { module_path, .. }
             | AstNodeRef::TraitFunction { module_path, .. }
             | AstNodeRef::TraitConst { module_path, .. }
+            | AstNodeRef::TraitAssociatedType { module_path, .. }
             | AstNodeRef::Struct { module_path, .. }
             | AstNodeRef::Enum { module_path, .. }
             | AstNodeRef::Global { module_path, .. }
@@ -1993,6 +2058,7 @@ impl AstNodeRef<'_> {
             | AstNodeRef::ImplTraitBlock { module_path, .. }
             | AstNodeRef::ImplTraitMethod { module_path, .. }
             | AstNodeRef::ImplTraitConst { module_path, .. }
+            | AstNodeRef::ImplTraitAssociatedType { module_path, .. }
             | AstNodeRef::Trait { module_path, .. }
             | AstNodeRef::ImportedFunction { module_path, .. } => module_path,
         }
@@ -2192,6 +2258,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.type_pool.intern(Type::Pointer {
                     to,
                     mutable: mutability.is_some(),
+                    memory: None,
                 })
             }
             ast::TypeExpression::Slice { mutability, inner } => {
@@ -2199,6 +2266,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.type_pool.intern(Type::Slice {
                     of,
                     mutable: mutability.is_some(),
+                    memory: None,
                 })
             }
             ast::TypeExpression::Array {
@@ -2211,6 +2279,7 @@ impl<'ast> Builder<'ast, '_> {
                     of,
                     size: size.inner as u32,
                     mutable: mutability.is_some(),
+                    memory: None,
                 })
             }
             ast::TypeExpression::Tuple { elements } => {
@@ -2230,6 +2299,157 @@ impl<'ast> Builder<'ast, '_> {
                     Type::ERROR_IDX
                 }
             },
+            ast::TypeExpression::NamespaceAccess { namespace, member } => {
+                let namespace_ty = self.resolve_type(namespace);
+                if namespace_ty == Type::ERROR_IDX {
+                    return Type::ERROR_IDX;
+                }
+
+                let (type_param_index, module_index, memory_id) =
+                    match *self.type_pool.get(namespace_ty) {
+                        Type::TypeParam { param_index } => (Some(param_index), None, None),
+                        Type::Module { module_index } => (None, Some(module_index), None),
+                        Type::Memory { id, .. } => (None, None, Some(id)),
+                        _ => (None, None, None),
+                    };
+
+                if let Some(param_index) = type_param_index {
+                    // `M::AssocType` — look through trait bounds on type param M
+                    let member_name = match &member.inner {
+                        ast::TypeExpression::Identifier { symbol } => *symbol,
+                        _ => {
+                            self.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_message(
+                                        "memory-scoped pointer types are not yet supported",
+                                    )
+                                    .with_label(Label::primary(self.file_id, member.span)),
+                            );
+                            return Type::ERROR_IDX;
+                        }
+                    };
+
+                    let bounds = self
+                        .current_type_params
+                        .get(param_index as usize)
+                        .map(|tp| tp.bounds.clone())
+                        .unwrap_or_default();
+
+                    for &trait_index in bounds.iter() {
+                        // Ensure all trait member signatures (including assoc types) are resolved.
+                        let def_ids =
+                            self.traits[trait_index as usize].member_def_ids.clone();
+                        for def_id in def_ids {
+                            self.ensure_signature(def_id);
+                        }
+                        if let Some(ImplEntry::AssociatedType { .. }) =
+                            self.traits[trait_index as usize].members.get(&member_name)
+                        {
+                            return self.type_pool.intern(Type::AssocTypeProjection {
+                                type_param_index: param_index,
+                                trait_index,
+                                assoc_name: member_name,
+                            });
+                        }
+                    }
+
+                    self.diagnostics.push(
+                        UndeclaredTypeDiagnostic {
+                            file_id: self.file_id,
+                            span: member.span,
+                        }
+                        .report(),
+                    );
+                    Type::ERROR_IDX
+                } else if let Some(module_index) = module_index {
+                    // `module::Type`
+                    let member_name = match &member.inner {
+                        ast::TypeExpression::Identifier { symbol } => *symbol,
+                        _ => {
+                            self.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_message("expected a type name after `::`")
+                                    .with_label(Label::primary(self.file_id, member.span)),
+                            );
+                            return Type::ERROR_IDX;
+                        }
+                    };
+
+                    let kind = self
+                        .modules
+                        .get(module_index as usize)
+                        .and_then(|m| {
+                            m.symbol_lookup
+                                .get(&(SymbolNamespace::Type, member_name))
+                                .cloned()
+                        });
+
+                    match kind {
+                        Some(SymbolKind::Pending(def_id)) => {
+                            self.ensure_signature(def_id);
+                            let kind = self.modules[module_index as usize]
+                                .symbol_lookup
+                                .get(&(SymbolNamespace::Type, member_name))
+                                .cloned();
+                            match kind {
+                                Some(k) => {
+                                    self.symbol_kind_to_type(k).unwrap_or(Type::ERROR_IDX)
+                                }
+                                None => Type::ERROR_IDX,
+                            }
+                        }
+                        Some(k) => self.symbol_kind_to_type(k).unwrap_or(Type::ERROR_IDX),
+                        None => {
+                            self.diagnostics.push(
+                                UndeclaredTypeDiagnostic {
+                                    file_id: self.file_id,
+                                    span: member.span,
+                                }
+                                .report(),
+                            );
+                            Type::ERROR_IDX
+                        }
+                    }
+                } else if let Some(id) = memory_id {
+                    // `memory::*T`, `memory::[]T`, `memory::[N]T`
+                    let member_ty = self.resolve_type(member);
+                    if member_ty == Type::ERROR_IDX {
+                        return Type::ERROR_IDX;
+                    }
+                    let resolved = self.type_pool.get(member_ty).clone();
+                    match resolved {
+                        Type::Pointer { to, mutable, .. } => {
+                            self.type_pool.intern(Type::Pointer { to, mutable, memory: Some(id) })
+                        }
+                        Type::Slice { of, mutable, .. } => {
+                            self.type_pool.intern(Type::Slice { of, mutable, memory: Some(id) })
+                        }
+                        Type::Array { of, size, mutable, .. } => {
+                            self.type_pool.intern(Type::Array { of, size, mutable, memory: Some(id) })
+                        }
+                        _ => {
+                            self.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_message(
+                                        "memory namespace can only prefix pointer, slice, or array types",
+                                    )
+                                    .with_label(Label::primary(self.file_id, member.span)),
+                            );
+                            Type::ERROR_IDX
+                        }
+                    }
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::error()
+                            .with_message(format!(
+                                "`{}` is not a valid namespace for type access",
+                                self.display_type(namespace_ty)
+                            ))
+                            .with_label(Label::primary(self.file_id, namespace.span)),
+                    );
+                    Type::ERROR_IDX
+                }
+            }
             ast::TypeExpression::ImplTrait { name } => {
                 // Full APIT support requires monomorphisation; for now we record the
                 // trait type so callers can at least see the constraint.
@@ -2272,6 +2492,21 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 }
             }
+            ast::TypeExpression::TraitApplication { name, assoc_bindings } => {
+                // Resolve as the base trait; bindings (e.g. `Size = u32`) are
+                // parsed for correctness but not yet enforced by the type checker.
+                let base = Spanned {
+                    inner: ast::TypeExpression::Identifier { symbol: name.inner },
+                    span: name.span,
+                };
+                let trait_idx = self.resolve_type(&base);
+                // Resolve binding RHS types to catch undeclared-type errors eagerly.
+                for sep in assoc_bindings.inner.iter() {
+                    let (_, ty) = &sep.inner.inner;
+                    self.resolve_type(ty);
+                }
+                trait_idx
+            }
         }
     }
 
@@ -2304,20 +2539,44 @@ impl<'ast> Builder<'ast, '_> {
             Type::F64 => "f64".to_string(),
             Type::U32 => "u32".to_string(),
             Type::U64 => "u64".to_string(),
-            Type::Pointer { to, mutable } => {
-                let (to, mutable) = (*to, *mutable);
+            Type::Pointer { to, mutable, memory } => {
+                let (to, mutable, memory) = (*to, *mutable, *memory);
                 let mutability = if mutable { "mut " } else { "" };
-                format!("*{}{}", mutability, self.display_type(to))
+                let inner = format!("*{}{}", mutability, self.display_type(to));
+                match memory {
+                    Some(id) => {
+                        let idx = self.memory_index_lookup[&id] as usize;
+                        let name = self.interner.resolve(self.memories[idx].name.inner).unwrap_or("?");
+                        format!("{}::{}", name, inner)
+                    }
+                    None => inner,
+                }
             }
-            Type::Slice { of, mutable } => {
-                let (of, mutable) = (*of, *mutable);
+            Type::Slice { of, mutable, memory } => {
+                let (of, mutable, memory) = (*of, *mutable, *memory);
                 let mutability = if mutable { "mut " } else { "" };
-                format!("[]{}{}", mutability, self.display_type(of))
+                let inner = format!("[]{}{}", mutability, self.display_type(of));
+                match memory {
+                    Some(id) => {
+                        let idx = self.memory_index_lookup[&id] as usize;
+                        let name = self.interner.resolve(self.memories[idx].name.inner).unwrap_or("?");
+                        format!("{}::{}", name, inner)
+                    }
+                    None => inner,
+                }
             }
-            Type::Array { of, size, mutable } => {
-                let (of, size, mutable) = (*of, *size, *mutable);
+            Type::Array { of, size, mutable, memory } => {
+                let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
                 let mutability = if mutable { "mut " } else { "" };
-                format!("[{}]{}{}", size, mutability, self.display_type(of))
+                let inner = format!("[{}]{}{}", size, mutability, self.display_type(of));
+                match memory {
+                    Some(id) => {
+                        let idx = self.memory_index_lookup[&id] as usize;
+                        let name = self.interner.resolve(self.memories[idx].name.inner).unwrap_or("?");
+                        format!("{}::{}", name, inner)
+                    }
+                    None => inner,
+                }
             }
             Type::Tuple { elements } => {
                 let elems = elements
@@ -2373,6 +2632,19 @@ impl<'ast> Builder<'ast, '_> {
                     Some(tp) => self.interner.resolve(tp.name).unwrap_or("?").to_string(),
                     None => format!("T{}", param_index),
                 }
+            }
+            Type::AssocTypeProjection {
+                type_param_index,
+                assoc_name,
+                ..
+            } => {
+                let (type_param_index, assoc_name) = (*type_param_index, *assoc_name);
+                let param_name = match self.current_type_params.get(type_param_index as usize) {
+                    Some(tp) => self.interner.resolve(tp.name).unwrap_or("?").to_string(),
+                    None => format!("T{}", type_param_index),
+                };
+                let member_name = self.interner.resolve(assoc_name).unwrap_or("?");
+                format!("{}::{}", param_name, member_name)
             }
         }
     }
@@ -2572,7 +2844,9 @@ impl<'ast> Builder<'ast, '_> {
                     name: name.clone(),
                     supertraits: Vec::new(),
                     members: HashMap::new(),
+                    assoc_type_bounds: HashMap::new(),
                     member_def_ids: Vec::new(),
+                    supertrait_bindings: HashMap::new(),
                 });
                 self.insert_symbol(
                     (SymbolNamespace::Type, name.inner),
@@ -2623,6 +2897,22 @@ impl<'ast> Builder<'ast, '_> {
                             );
                             ids.push(*id);
                         }
+                        ast::TraitItem::AssociatedType { id, name, .. } => {
+                            self.insert_symbol(
+                                (SymbolNamespace::Type, name.inner),
+                                SymbolKind::Pending(*id),
+                            );
+                            self.ast_nodes.insert(
+                                *id,
+                                AstNodeRef::TraitAssociatedType {
+                                    file_id,
+                                    module_path: module_path.clone(),
+                                    trait_index,
+                                    item: &ti.inner.inner,
+                                },
+                            );
+                            ids.push(*id);
+                        }
                     }
                 }
                 self.traits[trait_index as usize].member_def_ids = ids;
@@ -2650,6 +2940,15 @@ impl<'ast> Builder<'ast, '_> {
                                     impl_target: target,
                                     item: &mi.inner.inner,
                                 },
+                            );
+                        }
+                        ast::ImplItem::AssociatedType { name, .. } => {
+                            self.diagnostics.push(
+                                AssociatedTypeInInherentImplDiagnostic {
+                                    file_id,
+                                    span: name.span,
+                                }
+                                .report(),
                             );
                         }
                     }
@@ -2761,6 +3060,17 @@ impl<'ast> Builder<'ast, '_> {
                             self.ast_nodes.insert(
                                 *const_id,
                                 AstNodeRef::ImplTraitConst {
+                                    file_id,
+                                    module_path: module_path.clone(),
+                                    parent_id: *id,
+                                    item: &mi.inner.inner,
+                                },
+                            );
+                        }
+                        ast::ImplItem::AssociatedType { id: type_id, .. } => {
+                            self.ast_nodes.insert(
+                                *type_id,
+                                AstNodeRef::ImplTraitAssociatedType {
                                     file_id,
                                     module_path: module_path.clone(),
                                     parent_id: *id,
@@ -3001,7 +3311,13 @@ impl<'ast> Builder<'ast, '_> {
                             .report(),
                         );
                     } else {
+                        let type_params = self.resolve_ast_type_params(&signature.type_params);
+                        let saved_type_params = std::mem::replace(
+                            &mut self.current_type_params,
+                            type_params.clone(),
+                        );
                         let (params, result) = self.build_function_signature(signature);
+                        self.current_type_params = saved_type_params;
                         let signature_index =
                             self.type_pool.intern_function(&params, result.clone());
                         let func_index = self.functions.len() as u32;
@@ -3014,7 +3330,7 @@ impl<'ast> Builder<'ast, '_> {
                             id: *id,
                             body: None,
                             origin,
-                            type_params: Box::new([]),
+                            type_params: type_params.into_boxed_slice(),
                             pub_span: *pub_span,
                             source: ItemSource::Internal,
                             signature_index,
@@ -3164,7 +3480,21 @@ impl<'ast> Builder<'ast, '_> {
                     })
                     .collect();
 
+                // Extract assoc-type bindings from TraitApplication supertraits.
+                let mut bindings: HashMap<(TraitIndex, SymbolU32), TypeIndex> = HashMap::new();
+                for (bound, &st) in supertraits.iter().zip(resolved.iter()) {
+                    if let ast::TypeExpression::TraitApplication { assoc_bindings, .. } =
+                        &bound.inner
+                    {
+                        for sep in assoc_bindings.inner.iter() {
+                            let (key, val_te) = &sep.inner.inner;
+                            let val_ty = self.resolve_type(val_te);
+                            bindings.insert((st, key.inner), val_ty);
+                        }
+                    }
+                }
                 self.traits[trait_index as usize].supertraits = resolved;
+                self.traits[trait_index as usize].supertrait_bindings = bindings;
             }
 
             // ── trait function ────────────────────────────────────────────────
@@ -3734,6 +4064,122 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 }
             }
+
+            // ── trait associated type ─────────────────────────────────────────
+            AstNodeRef::TraitAssociatedType {
+                trait_index, item, ..
+            } => {
+                self.current_self_type = Some(self.type_pool.intern(Type::Trait { trait_index }));
+                if let ast::TraitItem::AssociatedType { name, bounds, .. } = item {
+                    // Resolve each bound TypeExpression to a TraitIndex.
+                    let resolved_bounds: Box<[TraitIndex]> = bounds
+                        .iter()
+                        .filter_map(|b| {
+                            let ty = self.resolve_type(b);
+                            match *self.type_pool.get(ty) {
+                                Type::Trait { trait_index } => Some(trait_index),
+                                _ => {
+                                    // Non-trait bound — emit error and skip.
+                                    self.diagnostics.push(
+                                        Diagnostic::error()
+                                            .with_code(DiagnosticCode::ExpectedTrait.code())
+                                            .with_message("associated type bound must be a trait")
+                                            .with_label(Label::primary(self.file_id, b.span)),
+                                    );
+                                    None
+                                }
+                            }
+                        })
+                        .collect();
+
+                    // Self = TypeParam{0}; associated types start at index 1.
+                    // Each type is resolved exactly once, so len() is a stable counter.
+                    let param_index =
+                        (self.traits[trait_index as usize].assoc_type_bounds.len() + 1) as u32;
+                    let placeholder = self.type_pool.intern(Type::TypeParam { param_index });
+
+                    self.traits[trait_index as usize]
+                        .assoc_type_bounds
+                        .insert(name.inner, resolved_bounds);
+                    self.traits[trait_index as usize]
+                        .members
+                        .insert(name.inner, ImplEntry::AssociatedType { ty: placeholder });
+                }
+            }
+
+            // ── impl trait associated type ────────────────────────────────────
+            AstNodeRef::ImplTraitAssociatedType {
+                parent_id, item, ..
+            } => {
+                self.ensure_signature(parent_id);
+                let trait_impl_index = match self.trait_impl_block_lookup.get(&parent_id) {
+                    Some(&idx) => idx,
+                    None => return,
+                };
+                let trait_index = self.trait_impls[trait_impl_index as usize].trait_index;
+                let self_type = self.trait_impls[trait_impl_index as usize].target;
+                self.current_self_type = Some(self_type);
+
+                if let ast::ImplItem::AssociatedType { name, ty, .. } = item {
+                    let concrete_ty = self.resolve_type(ty);
+                    let entry = ImplEntry::AssociatedType { ty: concrete_ty };
+                    self.impl_members
+                        .entry(self_type)
+                        .or_default()
+                        .insert(name.inner, entry.clone());
+                    self.trait_impls[trait_impl_index as usize]
+                        .members
+                        .insert(name.inner, entry);
+
+                    // Check that the concrete type satisfies each declared bound.
+                    // Bounds are resolved lazily — ensure the trait's signature is
+                    // ready before reading assoc_type_bounds.
+                    let trait_def_id = self.traits[trait_index as usize]
+                        .member_def_ids
+                        .iter()
+                        .copied()
+                        .find(|&did| {
+                            matches!(
+                                self.ast_nodes.get(&did),
+                                Some(AstNodeRef::TraitAssociatedType { item, .. })
+                                    if matches!(item, ast::TraitItem::AssociatedType { name: n, .. } if n.inner == name.inner)
+                            )
+                        });
+                    if let Some(did) = trait_def_id {
+                        self.ensure_signature(did);
+                    }
+                    let bounds = self.traits[trait_index as usize]
+                        .assoc_type_bounds
+                        .get(&name.inner)
+                        .cloned()
+                        .unwrap_or_default();
+                    for bound_trait_index in bounds.iter().copied() {
+                        if !self
+                            .trait_impl_lookup
+                            .contains_key(&(concrete_ty, bound_trait_index))
+                        {
+                            let bound_name = self.interner
+                                .resolve(self.traits[bound_trait_index as usize].name.inner)
+                                .unwrap_or("?");
+                            let type_name = self.display_type(concrete_ty);
+                            self.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_code(DiagnosticCode::TypeMistmatch.code())
+                                    .with_message(format!(
+                                        "associated type `{}` must implement `{}`",
+                                        self.interner.resolve(name.inner).unwrap_or("?"),
+                                        bound_name,
+                                    ))
+                                    .with_label(Label::primary(self.file_id, name.span))
+                                    .with_note(format!(
+                                        "`{}` does not implement `{}`",
+                                        type_name, bound_name
+                                    )),
+                            );
+                        }
+                    }
+                }
+            }
         }
 
         self.file_id = saved_file_id;
@@ -3942,7 +4388,62 @@ impl<'ast> Builder<'ast, '_> {
         (params, result)
     }
 
+    fn resolve_ty_with_args(&self, ty: TypeIndex, type_args: &[TypeIndex]) -> TypeIndex {
+        match *self.type_pool.get(ty) {
+            Type::TypeParam { param_index } => type_args
+                .get(param_index as usize)
+                .copied()
+                .filter(|&t| t != Type::ERROR_IDX)
+                .unwrap_or(ty),
+            Type::AssocTypeProjection { type_param_index, assoc_name, .. } => {
+                let receiver = type_args
+                    .get(type_param_index as usize)
+                    .copied()
+                    .unwrap_or(Type::ERROR_IDX);
+                self.impl_members
+                    .get(&receiver)
+                    .and_then(|m| m.get(&assoc_name))
+                    .and_then(|e| {
+                        if let ImplEntry::AssociatedType { ty } = e {
+                            Some(*ty)
+                        } else {
+                            None
+                        }
+                    })
+                    .filter(|&t| !matches!(*self.type_pool.get(t), Type::TypeParam { .. }))
+                    .unwrap_or(ty)
+            }
+            _ => ty,
+        }
+    }
+
     fn seed_memory_trait_impl(&mut self, trait_index: u32, memory_type: TypeIndex) {
+        self.seed_memory_trait_impl_with(trait_index, memory_type, &HashMap::new());
+    }
+
+    fn seed_memory_trait_impl_with(
+        &mut self,
+        trait_index: u32,
+        memory_type: TypeIndex,
+        // Assoc-type overrides from the parent supertrait declaration.
+        // E.g. Memory32's `Memory<Size=u32>` provides {"Size" → u32}.
+        bindings: &HashMap<SymbolU32, TypeIndex>,
+    ) {
+        // Seed supertrait members first (lower priority); own members override them.
+        let st_list = self.traits[trait_index as usize].supertraits.clone();
+        for &st in &st_list {
+            // Pass bindings declared at *this* trait's supertrait use site down to st.
+            let st_bindings: HashMap<SymbolU32, TypeIndex> = self.traits[trait_index as usize]
+                .supertrait_bindings
+                .iter()
+                .filter_map(|(&(ti, sym), &ty)| if ti == st { Some((sym, ty)) } else { None })
+                .collect();
+            self.seed_memory_trait_impl_with(st, memory_type, &st_bindings);
+        }
+        // Ensure all member signatures in this trait are resolved.
+        for did in self.traits[trait_index as usize].member_def_ids.clone() {
+            self.ensure_signature(did);
+        }
         let self_symbol = self.interner.get_or_intern("self");
         let members: Vec<(SymbolU32, ImplEntry)> = self.traits[trait_index as usize]
             .members
@@ -3961,6 +4462,11 @@ impl<'ast> Builder<'ast, '_> {
                         ImplEntry::AssociatedFn(*fi)
                     };
                     (sym, entry)
+                }
+                ImplEntry::AssociatedType { ty } => {
+                    // Substitute placeholder with the concrete binding if provided.
+                    let concrete = bindings.get(&sym).copied().unwrap_or(*ty);
+                    (sym, ImplEntry::AssociatedType { ty: concrete })
                 }
                 other => (sym, other.clone()),
             })
@@ -4610,6 +5116,7 @@ impl<'ast> Builder<'ast, '_> {
                 let (required, kind) = match entry {
                     ImplEntry::Method(fi) => (self.functions[*fi as usize].body.is_none(), "fn"),
                     ImplEntry::AssociatedConst { .. } => (true, "const"),
+                    ImplEntry::AssociatedType { .. } => (true, "type"),
                     _ => continue,
                 };
                 if required && !ti.members.contains_key(&sym) {
@@ -5117,7 +5624,8 @@ impl<'ast> Builder<'ast, '_> {
                     span: ast::TextSpan::merge(object_expr.span, member.span),
                 });
             }
-            None => {}
+            // Associated types are type-level constructs, not value members.
+            Some(ImplEntry::AssociatedType { .. }) | None => {}
         }
 
         // Check struct fields
@@ -5232,7 +5740,10 @@ impl<'ast> Builder<'ast, '_> {
                     span: TextSpan::merge(namespace_expr.span, member.span),
                 });
             }
-            None => {}
+            // Associated types resolve at the type level, not the value level.
+            // `Type::member` where `member` is an associated type is handled in
+            // `resolve_type` as a projection, not here.
+            Some(ImplEntry::AssociatedType { .. }) | None => {}
         }
 
         match *self.type_pool.get(namespace_ty) {
@@ -7272,9 +7783,28 @@ impl<'ast> Builder<'ast, '_> {
                             .copied()
                             .filter(|&t| t != Type::UNKNOWN_IDX)
                             .unwrap_or(ty),
+                        Type::AssocTypeProjection { type_param_index, assoc_name, .. } => {
+                            // Resolve via the concrete receiver type's impl_members.
+                            let receiver = type_args
+                                .get(type_param_index as usize)
+                                .copied()
+                                .unwrap_or(Type::ERROR_IDX);
+                            self.impl_members
+                                .get(&receiver)
+                                .and_then(|m| m.get(&assoc_name))
+                                .and_then(|e| {
+                                    if let ImplEntry::AssociatedType { ty } = e {
+                                        Some(*ty)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .filter(|&t| !matches!(*self.type_pool.get(t), Type::TypeParam { .. }))
+                                .unwrap_or(ty)
+                        }
                         _ => ty,
                     })
-                    .filter(|&ty| !matches!(*self.type_pool.get(ty), Type::TypeParam { .. }));
+                    .filter(|&ty| !matches!(*self.type_pool.get(ty), Type::TypeParam { .. } | Type::AssocTypeProjection { .. }));
 
                 let mut argument = self.build_expression(
                     ctx,
@@ -7417,14 +7947,7 @@ impl<'ast> Builder<'ast, '_> {
                             type_args[0] = object.ty;
                             let arguments =
                                 self.build_call_arguments(ctx, arguments, params, &type_args)?;
-                            let return_ty = match *self.type_pool.get(signature.result()) {
-                                Type::TypeParam { param_index } => type_args
-                                    .get(param_index as usize)
-                                    .copied()
-                                    .filter(|&t| t != Type::UNKNOWN_IDX)
-                                    .unwrap_or(signature.result()),
-                                _ => signature.result(),
-                            };
+                            let return_ty = self.resolve_ty_with_args(signature.result(), &type_args);
 
                             return Ok(Expression {
                                 kind: ExprKind::GenericMethodCall {

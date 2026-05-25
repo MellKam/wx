@@ -23,6 +23,7 @@ type_pool:
   - Slice:
       of: 4
       mutable: false
+      memory: ~
   - Function:
       signature:
         items:

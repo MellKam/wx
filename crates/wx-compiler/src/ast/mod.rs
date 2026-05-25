@@ -1353,6 +1353,16 @@ pub enum TypeExpression {
     ImplTrait { name: Spanned<SymbolU32> },
     /// `Self` — the concrete type of the enclosing impl or trait block.
     SelfType,
+    /// `M::Size`, `Self::*mut u8`, `module::Type`
+    NamespaceAccess {
+        namespace: Box<Spanned<TypeExpression>>,
+        member: Box<Spanned<TypeExpression>>,
+    },
+    /// `Memory<Size = u32>` — trait name with associated-type constraints.
+    TraitApplication {
+        name: Spanned<SymbolU32>,
+        assoc_bindings: Grouped<Box<[Separated<Spanned<(Spanned<SymbolU32>, Spanned<TypeExpression>)>>]>>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1405,13 +1415,19 @@ pub enum ImplItem {
         ty: Option<Box<Spanned<TypeExpression>>>,
         value: Box<Spanned<Expression>>,
     },
+    /// An associated type definition: `type Name = ConcreteType;`
+    AssociatedType {
+        id: DefId,
+        name: Spanned<SymbolU32>,
+        ty: Box<Spanned<TypeExpression>>,
+    },
 }
 
 impl ImplItem {
     pub fn is_block_like(&self) -> bool {
         match self {
             ImplItem::Method { .. } => true,
-            ImplItem::Const { .. } => false,
+            ImplItem::Const { .. } | ImplItem::AssociatedType { .. } => false,
         }
     }
 }
@@ -1435,13 +1451,21 @@ pub enum TraitItem {
         name: Spanned<SymbolU32>,
         ty: Box<Spanned<TypeExpression>>,
     },
+    /// An associated type declaration: `type Name;` or `type Name: Bound1 + Bound2;`
+    /// The concrete type is provided by each impl; bounds constrain what is allowed.
+    AssociatedType {
+        id: DefId,
+        name: Spanned<SymbolU32>,
+        /// Trait bounds the concrete type must satisfy. Empty = unconstrained.
+        bounds: Box<[Spanned<TypeExpression>]>,
+    },
 }
 
 impl TraitItem {
     pub fn is_block_like(&self) -> bool {
         match self {
             TraitItem::Function { body, .. } => body.is_some(),
-            TraitItem::Const { .. } => false,
+            TraitItem::Const { .. } | TraitItem::AssociatedType { .. } => false,
         }
     }
 }
@@ -1722,6 +1746,7 @@ pub enum Keyword {
     Trait,
     For,
     SelfType,
+    Type,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1754,6 +1779,7 @@ impl TryFrom<&str> for Keyword {
             "trait" => Ok(Keyword::Trait),
             "for" => Ok(Keyword::For),
             "Self" => Ok(Keyword::SelfType),
+            "type" => Ok(Keyword::Type),
             _ => Err(()),
         }
     }
@@ -2370,6 +2396,27 @@ impl<'input> Parser<'input> {
     }
 
     fn parse_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
+        let mut lhs = self.parse_type_atom()?;
+
+        // Left-recursive `::` loop: `M::Size`, `Self::*mut u8`, `a::b::c`
+        while self.lexer.peek().inner == Token::ColonColon {
+            let _colon_colon = self.lexer.next();
+            let member = self.parse_type_atom()?;
+            let span = TextSpan::merge(lhs.span, member.span);
+            lhs = Spanned {
+                inner: TypeExpression::NamespaceAccess {
+                    namespace: Box::new(lhs),
+                    member: Box::new(member),
+                },
+                span,
+            };
+        }
+
+        Ok(lhs)
+    }
+
+    /// Parse a single type term without consuming any trailing `::`.
+    fn parse_type_atom(&mut self) -> Result<Spanned<TypeExpression>, ()> {
         let token = self.lexer.peek();
         match token.inner {
             Token::Star => {
@@ -2414,11 +2461,38 @@ impl<'input> Parser<'input> {
                     _ => {}
                 }
                 let token = self.lexer.next();
+                let name_sym = self.intern_identifier(token.span);
+                let name_span = token.span;
+                // `Trait<AssocType = ConcreteType, ...>` — associated-type constraint syntax.
+                if self.lexer.peek().inner == Token::LeftArrow {
+                    let bindings = SeparatedGroup {
+                        open_token: Token::LeftArrow,
+                        close_token: Token::RightArrow,
+                        separator_token: Token::Comma,
+                        should_warn_missing_separator: None,
+                        item_handler: |parser: &mut Parser| {
+                            let key_tok = parser.next_expect(Token::Identifier)?;
+                            let key_sym = parser.intern_identifier(key_tok.span);
+                            let key = Spanned { inner: key_sym, span: key_tok.span };
+                            parser.next_expect(Token::Eq)?;
+                            let ty = parser.parse_type_expression()?;
+                            let span = TextSpan::merge(key_tok.span, ty.span);
+                            Ok(Spanned { inner: (key, ty), span })
+                        },
+                    }
+                    .parse(self)?;
+                    let span = TextSpan::merge(name_span, bindings.close);
+                    return Ok(Spanned {
+                        inner: TypeExpression::TraitApplication {
+                            name: Spanned { inner: name_sym, span: name_span },
+                            assoc_bindings: bindings,
+                        },
+                        span,
+                    });
+                }
                 Ok(Spanned {
-                    inner: TypeExpression::Identifier {
-                        symbol: self.intern_identifier(token.span),
-                    },
-                    span: token.span,
+                    inner: TypeExpression::Identifier { symbol: name_sym },
+                    span: name_span,
                 })
             }
             Token::OpenParen => self.parse_tuple_or_paren_type_expression(),
@@ -3678,6 +3752,28 @@ impl<'input> Parser<'input> {
         };
 
         match keyword {
+            Some(Keyword::Type) => {
+                let type_span = parser.lexer.next().span;
+                let name_span = parser.next_expect(Token::Identifier)?.span;
+                let name_symbol = parser.intern_identifier(name_span);
+                parser.next_expect(Token::Eq)?;
+                let ty = parser.parse_type_expression()?;
+                let span = TextSpan::merge(type_span, ty.span);
+                Ok(Spanned {
+                    inner: ImplItem::AssociatedType {
+                        id: parser.ast.id_generator.generate(),
+                        name: Spanned {
+                            inner: name_symbol,
+                            span: name_span,
+                        },
+                        ty: Box::new(Spanned {
+                            inner: ty.inner,
+                            span: ty.span,
+                        }),
+                    },
+                    span,
+                })
+            }
             Some(Keyword::Const) => {
                 let const_span = parser.lexer.next().span;
                 let name_span = parser.next_expect(Token::Identifier)?.span;
@@ -3866,6 +3962,37 @@ impl<'input> Parser<'input> {
                 };
 
                 match keyword {
+                    Some(Keyword::Type) => {
+                        let type_span = parser.lexer.next().span;
+                        let name_span = parser.next_expect(Token::Identifier)?.span;
+                        let name_symbol = parser.intern_identifier(name_span);
+                        // Optional `: Bound1 + Bound2 + ...`
+                        let bounds: Box<[Spanned<TypeExpression>]> =
+                            if parser.lexer.next_if(Token::Colon).is_some() {
+                                let mut list = vec![parser.parse_type_expression()?];
+                                while parser.lexer.next_if(Token::Plus).is_some() {
+                                    list.push(parser.parse_type_expression()?);
+                                }
+                                list.into_boxed_slice()
+                            } else {
+                                Box::new([])
+                            };
+                        let span = TextSpan::merge(
+                            type_span,
+                            bounds.last().map(|b| b.span).unwrap_or(name_span),
+                        );
+                        Ok(Spanned {
+                            inner: TraitItem::AssociatedType {
+                                id: parser.ast.id_generator.generate(),
+                                name: Spanned {
+                                    inner: name_symbol,
+                                    span: name_span,
+                                },
+                                bounds,
+                            },
+                            span,
+                        })
+                    }
                     Some(Keyword::Const) => {
                         let const_span = parser.lexer.next().span;
                         let name_span = parser.next_expect(Token::Identifier)?.span;
