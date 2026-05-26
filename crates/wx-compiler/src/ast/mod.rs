@@ -717,8 +717,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_dash(&mut self) -> Token {
-        let mut peeker = self.chars.clone();
-        match peeker.next().unwrap_or(EOF) {
+        let mut lookahead = self.chars.clone();
+        match lookahead.next().unwrap_or(EOF) {
             '=' => {
                 _ = self.chars.next();
                 return Token::MinusEq;
@@ -732,8 +732,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_open_angle(&mut self) -> Token {
-        let mut peeker = self.chars.clone();
-        match peeker.next().unwrap_or(EOF) {
+        let mut lookahead = self.chars.clone();
+        match lookahead.next().unwrap_or(EOF) {
             '=' => {
                 _ = self.chars.next();
                 return Token::LeftArrowEq;
@@ -747,8 +747,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_close_angle(&mut self) -> Token {
-        let mut peeker = self.chars.clone();
-        match peeker.next().unwrap_or(EOF) {
+        let mut lookahead = self.chars.clone();
+        match lookahead.next().unwrap_or(EOF) {
             '=' => {
                 _ = self.chars.next();
                 return Token::RightArrowEq;
@@ -762,9 +762,9 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_identifier(&mut self) -> Token {
-        let mut peeker = self.chars.clone();
-        while let Some(char) = peeker.next() {
-            match char {
+        let mut lookahead = self.chars.clone();
+        while let Some(ch) = lookahead.next() {
+            match ch {
                 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' => {
                     _ = self.chars.next();
                 }
@@ -776,8 +776,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_whitespace(&mut self) -> Token {
-        let mut peeker = self.chars.clone();
-        while let Some(ch) = peeker.next() {
+        let mut lookahead = self.chars.clone();
+        while let Some(ch) = lookahead.next() {
             if ch.is_whitespace() {
                 _ = self.chars.next();
             } else {
@@ -788,15 +788,13 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_number(&mut self) -> Token {
-        // Check for a base prefix immediately after the leading digit.
-        // At this point `advance()` has consumed the first digit character.
-        let first_remaining = self.chars.clone().next();
-        match first_remaining {
+        let radix_marker = self.chars.clone().next();
+        match radix_marker {
             Some('b' | 'B') => {
-                _ = self.chars.next(); // consume 'b'
-                let mut peeker = self.chars.clone();
-                while let Some(c) = peeker.next() {
-                    match c {
+                _ = self.chars.next();
+                let mut lookahead = self.chars.clone();
+                while let Some(ch) = lookahead.next() {
+                    match ch {
                         '0' | '1' | '_' => {
                             _ = self.chars.next();
                         }
@@ -806,10 +804,10 @@ impl<'a> Lexer<'a> {
                 return Token::Int;
             }
             Some('x' | 'X') => {
-                _ = self.chars.next(); // consume 'x'
-                let mut peeker = self.chars.clone();
-                while let Some(c) = peeker.next() {
-                    match c {
+                _ = self.chars.next();
+                let mut lookahead = self.chars.clone();
+                while let Some(ch) = lookahead.next() {
+                    match ch {
                         '0'..='9' | 'a'..='f' | 'A'..='F' | '_' => {
                             _ = self.chars.next();
                         }
@@ -821,11 +819,10 @@ impl<'a> Lexer<'a> {
             _ => {}
         }
 
-        // Decimal integer or float; underscores are allowed as separators.
         let mut seen_dot = false;
-        let mut peeker = self.chars.clone();
-        while let Some(char) = peeker.next() {
-            match char {
+        let mut lookahead = self.chars.clone();
+        while let Some(ch) = lookahead.next() {
+            match ch {
                 '0'..='9' | '_' => {
                     _ = self.chars.next();
                 }
@@ -847,7 +844,6 @@ impl<'a> Lexer<'a> {
         loop {
             match self.chars.next().unwrap_or(EOF) {
                 '\\' => {
-                    // Escape sequence - skip next character
                     _ = self.chars.next();
                 }
                 '"' | EOF => return Token::String,
@@ -860,7 +856,6 @@ impl<'a> Lexer<'a> {
         loop {
             match self.chars.next().unwrap_or(EOF) {
                 '\\' => {
-                    // Escape sequence - skip next character
                     _ = self.chars.next();
                 }
                 '\'' | EOF => return Token::Char,
@@ -870,8 +865,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn consume_slash(&mut self) -> Token {
-        let mut peeker = self.chars.clone();
-        match peeker.next().unwrap_or(EOF) {
+        let mut lookahead = self.chars.clone();
+        match lookahead.next().unwrap_or(EOF) {
             '/' => {
                 _ = self.chars.next();
             }
@@ -882,8 +877,8 @@ impl<'a> Lexer<'a> {
             _ => return Token::Slash,
         }
 
-        while let Some(char) = peeker.next() {
-            match char {
+        while let Some(ch) = lookahead.next() {
+            match ch {
                 '\n' | EOF => break,
                 _ => {
                     _ = self.chars.next();
@@ -1361,7 +1356,8 @@ pub enum TypeExpression {
     /// `Memory<Size = u32>` — trait name with associated-type constraints.
     TraitApplication {
         name: Spanned<SymbolU32>,
-        assoc_bindings: Grouped<Box<[Separated<Spanned<(Spanned<SymbolU32>, Spanned<TypeExpression>)>>]>>,
+        assoc_bindings:
+            Grouped<Box<[Separated<Spanned<(Spanned<SymbolU32>, Spanned<TypeExpression>)>>]>>,
     },
 }
 
@@ -1451,8 +1447,9 @@ pub enum TraitItem {
         name: Spanned<SymbolU32>,
         ty: Box<Spanned<TypeExpression>>,
     },
-    /// An associated type declaration: `type Name;` or `type Name: Bound1 + Bound2;`
-    /// The concrete type is provided by each impl; bounds constrain what is allowed.
+    /// An associated type declaration: `type Name;` or `type Name: Bound1 +
+    /// Bound2;` The concrete type is provided by each impl; bounds
+    /// constrain what is allowed.
     AssociatedType {
         id: DefId,
         name: Spanned<SymbolU32>,
@@ -2396,26 +2393,24 @@ impl<'input> Parser<'input> {
     }
 
     fn parse_type_expression(&mut self) -> Result<Spanned<TypeExpression>, ()> {
-        let mut lhs = self.parse_type_atom()?;
+        let mut ty = self.parse_type_atom()?;
 
-        // Left-recursive `::` loop: `M::Size`, `Self::*mut u8`, `a::b::c`
         while self.lexer.peek().inner == Token::ColonColon {
             let _colon_colon = self.lexer.next();
             let member = self.parse_type_atom()?;
-            let span = TextSpan::merge(lhs.span, member.span);
-            lhs = Spanned {
+            let span = TextSpan::merge(ty.span, member.span);
+            ty = Spanned {
                 inner: TypeExpression::NamespaceAccess {
-                    namespace: Box::new(lhs),
+                    namespace: Box::new(ty),
                     member: Box::new(member),
                 },
                 span,
             };
         }
 
-        Ok(lhs)
+        Ok(ty)
     }
 
-    /// Parse a single type term without consuming any trailing `::`.
     fn parse_type_atom(&mut self) -> Result<Spanned<TypeExpression>, ()> {
         let token = self.lexer.peek();
         match token.inner {
@@ -2463,7 +2458,6 @@ impl<'input> Parser<'input> {
                 let token = self.lexer.next();
                 let name_sym = self.intern_identifier(token.span);
                 let name_span = token.span;
-                // `Trait<AssocType = ConcreteType, ...>` — associated-type constraint syntax.
                 if self.lexer.peek().inner == Token::LeftArrow {
                     let bindings = SeparatedGroup {
                         open_token: Token::LeftArrow,
@@ -2473,18 +2467,27 @@ impl<'input> Parser<'input> {
                         item_handler: |parser: &mut Parser| {
                             let key_tok = parser.next_expect(Token::Identifier)?;
                             let key_sym = parser.intern_identifier(key_tok.span);
-                            let key = Spanned { inner: key_sym, span: key_tok.span };
+                            let key = Spanned {
+                                inner: key_sym,
+                                span: key_tok.span,
+                            };
                             parser.next_expect(Token::Eq)?;
                             let ty = parser.parse_type_expression()?;
                             let span = TextSpan::merge(key_tok.span, ty.span);
-                            Ok(Spanned { inner: (key, ty), span })
+                            Ok(Spanned {
+                                inner: (key, ty),
+                                span,
+                            })
                         },
                     }
                     .parse(self)?;
                     let span = TextSpan::merge(name_span, bindings.close);
                     return Ok(Spanned {
                         inner: TypeExpression::TraitApplication {
-                            name: Spanned { inner: name_sym, span: name_span },
+                            name: Spanned {
+                                inner: name_sym,
+                                span: name_span,
+                            },
                             assoc_bindings: bindings,
                         },
                         span,
@@ -2587,7 +2590,6 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(grouped.open, grouped.close);
         let mut elements = Vec::from(grouped.inner);
 
-        // (T) with no trailing comma — parenthesized type, unwrap
         if elements.len() == 1 && elements[0].separator.is_none() {
             let single = elements.remove(0);
             return Ok(Spanned {
@@ -2596,7 +2598,6 @@ impl<'input> Parser<'input> {
             });
         }
 
-        // () or (T,) or (T, U, ...) — tuple type
         let types: Box<[Spanned<TypeExpression>]> = elements.into_iter().map(|s| s.inner).collect();
         Ok(Spanned {
             inner: TypeExpression::Tuple { elements: types },
@@ -3322,9 +3323,9 @@ impl<'input> Parser<'input> {
         let if_keyword = parser.lexer.next();
         let condition = parser.parse_expression(BindingPower::Default)?;
         let then_block = Parser::parse_block_expression(parser)?;
-        let maybe_keyword = Keyword::try_from(parser.lexer.peek().span.extract_str(parser.source));
+        let else_keyword = Keyword::try_from(parser.lexer.peek().span.extract_str(parser.source));
 
-        match maybe_keyword {
+        match else_keyword {
             Ok(Keyword::Else) => {
                 let _ = parser.lexer.next();
                 let else_block = Parser::parse_block_expression(parser)?;
@@ -3357,11 +3358,9 @@ impl<'input> Parser<'input> {
         left: Spanned<Expression>,
         _: BindingPower,
     ) -> Result<Spanned<Expression>, ()> {
-        // Consume the :: token
         _ = parser.lexer.next();
 
-        // Turbofish: `expr::<T1, T2>` — applies to any expression (free fn, method,
-        // etc.)
+        // `expr::<T1, T2>` applies to any expression, not just bare identifiers.
         if parser.lexer.peek().inner == Token::LeftArrow {
             let (args, close_span) = parser.parse_type_args()?;
             let span = TextSpan::merge(left.span, close_span);
@@ -3405,7 +3404,6 @@ impl<'input> Parser<'input> {
             }
         };
 
-        // Normal namespace access: `Namespace::member`
         let member_token = parser.next_expect(Token::Identifier)?;
         let member_symbol = parser.intern_identifier(member_token.span);
 

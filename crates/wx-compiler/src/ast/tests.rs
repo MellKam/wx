@@ -25,13 +25,89 @@ impl TestCase {
     }
 }
 
+fn diagnostic_codes(ast: &AST) -> Vec<&str> {
+    ast.diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic.code.as_deref())
+        .collect()
+}
+
+fn item(ast: &AST, index: usize) -> &Item {
+    &ast.items[index].inner.inner
+}
+
+fn function_item(ast: &AST, index: usize) -> &Item {
+    item(ast, index)
+}
+
+fn function_block(ast: &AST, index: usize) -> &Grouped<Box<[Separated<Spanned<Statement>>]>> {
+    let Item::Function { block, .. } = function_item(ast, index) else {
+        panic!("expected function item")
+    };
+
+    let Expression::Block { statements } = &block.inner else {
+        panic!("expected function body block")
+    };
+
+    statements
+}
+
+fn statement_expression<'a>(
+    statements: &'a Grouped<Box<[Separated<Spanned<Statement>>]>>,
+    index: usize,
+) -> &'a Expression {
+    let Statement::Expression(expr) = &statements.inner[index].inner.inner else {
+        panic!("expected expression statement")
+    };
+
+    &expr.inner
+}
+
+fn local_definition_value<'a>(
+    statements: &'a Grouped<Box<[Separated<Spanned<Statement>>]>>,
+    index: usize,
+) -> &'a Expression {
+    let Statement::LocalDefinition { value, .. } = &statements.inner[index].inner.inner else {
+        panic!("expected local definition")
+    };
+
+    &value.inner
+}
+
+fn struct_fields(ast: &AST, index: usize) -> &Grouped<Box<[Separated<Spanned<StructField>>]>> {
+    let Item::Struct { fields, .. } = item(ast, index) else {
+        panic!("expected struct item")
+    };
+
+    fields
+}
+
 // ── Top-level items ──────────────────────────────────────────────────────────
 
 #[test]
-fn test_function() {
+fn test_top_level_items() {
     let case = TestCase::new(indoc! {"
         fn add(a: i32, b: i32) -> i32 {
             a + b
+        }
+
+        memory MEM: Memory32;
+        global mut counter: i32 = 0;
+        const MAX: i32 = 100;
+
+        struct Point {
+            pub x: i32,
+            y: i32,
+        }
+
+        import \"env\" {
+            fn log(message: string)
+        }
+
+        enum Color {
+            Red,
+            Green = 1,
+            Blue,
         }
     "});
     insta::assert_yaml_snapshot!(case.ast);
@@ -73,48 +149,62 @@ fn test_impl_trait_param() {
 }
 
 #[test]
-fn test_memory() {
+fn test_type_expression_forms() {
     let case = TestCase::new(indoc! {"
-        memory MEM: Memory32;
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
-
-#[test]
-fn test_global() {
-    let case = TestCase::new(indoc! {"
-        global mut counter: i32 = 0
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
-
-#[test]
-fn test_const() {
-    let case = TestCase::new(indoc! {"
-        const MAX: i32 = 100
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
-
-#[test]
-fn test_struct_definition() {
-    let case = TestCase::new(indoc! {"
-        struct Point {
-            pub x: i32,
-            y: i32,
+        struct TypeForms {
+            ptr: *mut u8,
+            slice: []mut u8,
+            array: [4]mut u8,
+            tuple: (i32, u32),
+            namespaced: math::Number,
+            constrained: Memory<Size = u32>,
         }
     "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
 
-#[test]
-fn test_import() {
-    let case = TestCase::new(indoc! {"
-        import \"env\" {
-            fn log(message: string)
-        }
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
+    assert!(
+        case.ast.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        diagnostic_codes(&case.ast)
+    );
+    let Item::Struct { fields, .. } = item(&case.ast, 0) else {
+        panic!("expected struct item")
+    };
+
+    let fields = &fields.inner;
+    assert!(matches!(
+        Some(&fields[0].inner.inner.ty.inner),
+        Some(TypeExpression::Pointer {
+            mutability: Some(_),
+            ..
+        })
+    ));
+    assert!(matches!(
+        Some(&fields[1].inner.inner.ty.inner),
+        Some(TypeExpression::Slice {
+            mutability: Some(_),
+            ..
+        })
+    ));
+    assert!(matches!(
+        Some(&fields[2].inner.inner.ty.inner),
+        Some(TypeExpression::Array {
+            size: Spanned { inner: 4, .. },
+            mutability: Some(_),
+            ..
+        })
+    ));
+    assert!(matches!(
+        Some(&fields[3].inner.inner.ty.inner),
+        Some(TypeExpression::Tuple { elements }) if elements.len() == 2
+    ));
+    assert!(matches!(
+        Some(&fields[4].inner.inner.ty.inner),
+        Some(TypeExpression::NamespaceAccess { .. })
+    ));
+    assert!(matches!(
+        Some(&fields[5].inner.inner.ty.inner),
+        Some(TypeExpression::TraitApplication { assoc_bindings, .. }) if assoc_bindings.inner.len() == 1
+    ));
 }
 
 #[test]
@@ -145,64 +235,17 @@ fn test_impl_trait_for_type() {
 }
 
 #[test]
-fn test_trait_abstract() {
-    // trait with const declarations and an abstract method (no default body)
-    let case = TestCase::new(indoc! {"
-        trait Sized {
-            const SIZE: u32;
-            const ALIGN: u32;
-            fn measure(self) -> u32;
-        }
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
-
-#[test]
-fn test_trait_supertrait_single() {
-    // trait X: Y { ... } — one supertrait bound
-    let case = TestCase::new(indoc! {"
-        trait Drawable: Sized {
-            fn draw(self);
-        }
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
-
-#[test]
-fn test_trait_supertrait_multiple() {
-    // trait X: Y + Z { ... } — two supertrait bounds
+fn test_trait_items() {
     let case = TestCase::new(indoc! {"
         trait Widget: Drawable + Sized {
-            fn render(self);
-        }
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
+            const SIZE: u32;
 
-#[test]
-fn test_trait_default_method() {
-    // trait method with a default implementation and an attribute
-    let case = TestCase::new(indoc! {"
-        trait Memory32 {
-            const OFFSET: u32;
+            fn render(self);
 
             #[inline]
             fn grow(self, delta: u32) -> u32 {
                 delta
             }
-        }
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
-
-#[test]
-fn test_enum() {
-    // variant with and without an explicit discriminant value
-    let case = TestCase::new(indoc! {"
-        enum Color {
-            Red,
-            Green = 1,
-            Blue,
         }
     "});
     insta::assert_yaml_snapshot!(case.ast);
@@ -264,6 +307,18 @@ fn test_loop_break_label() {
 }
 
 #[test]
+fn test_label_requires_block_like_expression() {
+    let case = TestCase::new(indoc! {"
+        fn f(value: i32) {
+            target: value
+        }
+    "});
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0006"]);
+    assert!(function_block(&case.ast, 0).inner.is_empty());
+}
+
+#[test]
 fn test_struct_init() {
     // explicit fields, shorthand ({ field } == { field: field }), and empty
     let case = TestCase::new(indoc! {"
@@ -274,6 +329,40 @@ fn test_struct_init() {
         }
     "});
     insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_grouping_tuple_and_tuple_field_access() {
+    let case = TestCase::new(indoc! {"
+        fn shapes(x: i32, y: i32) {
+            local grouped = (x);
+            local single = (x,);
+            local pair = (x, y);
+            local first = pair.0;
+        }
+    "});
+
+    assert!(case.ast.diagnostics.is_empty());
+    let statements = function_block(&case.ast, 0);
+    assert!(matches!(
+        local_definition_value(statements, 0),
+        Expression::Grouping { .. }
+    ));
+    assert!(matches!(
+        local_definition_value(statements, 1),
+        Expression::Tuple { elements } if elements.len() == 1
+    ));
+    assert!(matches!(
+        local_definition_value(statements, 2),
+        Expression::Tuple { elements } if elements.len() == 2
+    ));
+    assert!(matches!(
+        local_definition_value(statements, 3),
+        Expression::TupleFieldAccess {
+            field: Spanned { inner: 0, .. },
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -293,36 +382,83 @@ fn test_call_field_namespace() {
 
 #[test]
 fn test_operator_precedence() {
-    // * binds tighter than +; the AST must reflect this without extra parens
     let case = TestCase::new(indoc! {"
         fn f(a: i32, b: i32, c: i32) -> i32 {
             a + b * c
         }
     "});
-    insta::assert_yaml_snapshot!(case.ast);
+
+    let statements = function_block(&case.ast, 0);
+    let Expression::Binary { right, .. } = statement_expression(statements, 0) else {
+        panic!("expected outer binary expression")
+    };
+    assert!(
+        matches!(
+            &right.inner,
+            Expression::Binary {
+                operator: Spanned {
+                    inner: BinaryOp::Mul,
+                    ..
+                },
+                ..
+            }
+        ),
+        "expected multiplication on the right-hand side of addition"
+    );
 }
 
 #[test]
 fn test_left_associativity() {
-    // a - b - c must be (a - b) - c, not a - (b - c)
-    // tests that repeated same-precedence operators nest left, not right
     let case = TestCase::new(indoc! {"
         fn f(a: i32, b: i32, c: i32) -> i32 {
             a - b - c
         }
     "});
-    insta::assert_yaml_snapshot!(case.ast);
+
+    let statements = function_block(&case.ast, 0);
+    let Expression::Binary { left, operator, .. } = statement_expression(statements, 0) else {
+        panic!("expected outer binary expression")
+    };
+    assert_eq!(operator.inner, BinaryOp::Sub);
+    assert!(
+        matches!(
+            &left.inner,
+            Expression::Binary {
+                operator: Spanned {
+                    inner: BinaryOp::Sub,
+                    ..
+                },
+                ..
+            }
+        ),
+        "expected subtraction to associate to the left"
+    );
 }
 
 #[test]
 fn test_cast_precedence() {
-    // `as` binds tighter than arithmetic: a + b as i32  =>  a + (b as i32)
-    // `as` binds tighter than unary:     -x as i32      =>  -(x as i32)
     let case = TestCase::new(indoc! {"
         fn arith(a: i32, b: i32) -> i32 { a + b as i32 }
         fn unary(x: i32) -> i32 { -x as i32 }
     "});
-    insta::assert_yaml_snapshot!(case.ast);
+
+    let arithmetic = function_block(&case.ast, 0);
+    let Expression::Binary { right, .. } = statement_expression(arithmetic, 0) else {
+        panic!("expected arithmetic binary expression")
+    };
+    assert!(
+        matches!(&right.inner, Expression::Cast { .. }),
+        "expected cast to bind tighter than addition"
+    );
+
+    let unary = function_block(&case.ast, 1);
+    let Expression::Unary { operand, .. } = statement_expression(unary, 0) else {
+        panic!("expected unary expression")
+    };
+    assert!(
+        matches!(&operand.inner, Expression::Cast { .. }),
+        "expected cast to bind tighter than unary negation"
+    );
 }
 
 #[test]
@@ -340,7 +476,6 @@ fn test_chained_member_access() {
 
 #[test]
 fn test_numeric_literal_forms() {
-    // hex, binary, and underscore-separated literals all parse to their i64 value
     let case = TestCase::new(indoc! {"
         fn f() {
             local hex    = 0xFF;
@@ -348,100 +483,110 @@ fn test_numeric_literal_forms() {
             local sep    = 1_000_000;
         }
     "});
-    insta::assert_yaml_snapshot!(case.ast);
+
+    let statements = function_block(&case.ast, 0);
+    assert_eq!(statements.inner.len(), 3);
+    assert!(matches!(
+        local_definition_value(statements, 0),
+        Expression::Int { value: 255 }
+    ));
+    assert!(matches!(
+        local_definition_value(statements, 1),
+        Expression::Int { value: 10 }
+    ));
+    assert!(matches!(
+        local_definition_value(statements, 2),
+        Expression::Int { value: 1_000_000 }
+    ));
 }
 
 // ── Diagnostics ──────────────────────────────────────────────────────────────
 
 #[test]
 fn test_missing_semicolon_warns_but_parses() {
-    // Semicolons are recommended but optional — the parser recovers and emits
-    // E0003 warnings without corrupting the AST.
     let case = TestCase::new(indoc! {"
         fn f(x: i32) -> i32 {
             local y: i32 = x
             y
         }
     "});
-    assert!(
-        case.ast
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E0003"))
-    );
-    insta::assert_yaml_snapshot!(case.ast);
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0003"]);
+    assert_eq!(function_block(&case.ast, 0).inner.len(), 2);
 }
 
 #[test]
 fn test_unclosed_delimiter() {
-    // Missing `}` on the function body — parser recovers, emits E0004, and
-    // still produces the items it managed to parse before EOF.
     let case = TestCase::new(indoc! {"
         fn f() {
             local x: i32 = 1;
     "});
-    assert!(
-        case.ast
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E0004"))
-    );
-    insta::assert_yaml_snapshot!(case.ast);
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0004"]);
+    assert_eq!(function_block(&case.ast, 0).inner.len(), 1);
 }
 
 #[test]
 fn test_invalid_integer_literal() {
-    // A number that overflows i64 is caught at parse time (E0005).
     let case = TestCase::new(indoc! {"
         fn f() -> i32 {
             99999999999999999999
         }
     "});
-    assert!(
-        case.ast
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E0005"))
-    );
-    insta::assert_yaml_snapshot!(case.ast);
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0005"]);
+    assert!(matches!(
+        statement_expression(function_block(&case.ast, 0), 0),
+        Expression::Int { value: 0 }
+    ));
 }
 
 #[test]
 fn test_incomplete_expression() {
-    // Dangling binary operator and standalone unary operator both produce E0006.
     let case = TestCase::new(indoc! {"
         fn binary() -> i32 { 1 + }
         fn unary()  -> i32 { -   }
     "});
-    assert!(
-        case.ast
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E0006"))
-    );
-    insta::assert_yaml_snapshot!(case.ast);
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0006", "E0006"]);
+    assert!(function_block(&case.ast, 0).inner.is_empty());
+    assert!(function_block(&case.ast, 1).inner.is_empty());
 }
 
 #[test]
 fn test_reserved_identifier() {
-    // Using a keyword as a local variable name produces E0008.
     let case = TestCase::new(indoc! {"
         fn f() {
             local fn = 1;
         }
     "});
-    assert!(
-        case.ast
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E0008"))
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0008"]);
+    assert_eq!(function_block(&case.ast, 0).inner.len(), 1);
+}
+
+#[test]
+fn test_invalid_attribute_and_namespace_diagnostics() {
+    let case = TestCase::new(indoc! {"
+        #[123]
+        fn attr() {}
+
+        fn namespace_error(x: i32, y: i32) {
+            (x + y)::value
+        }
+    "});
+
+    assert_eq!(
+        diagnostic_codes(&case.ast),
+        vec!["E0012", "E0009", "invalid-namespace"]
     );
-    insta::assert_yaml_snapshot!(case.ast);
+    assert_eq!(case.ast.items.len(), 2);
+    assert!(matches!(item(&case.ast, 0), Item::Function { .. }));
+    assert!(function_block(&case.ast, 1).inner.is_empty());
 }
 
 #[test]
 fn test_missing_initializer() {
-    // Both `local` and `global` require `= value`; omitting it produces E0010.
     let case = TestCase::new(indoc! {"
         fn f() {
             local x: i32
@@ -458,33 +603,132 @@ fn test_missing_initializer() {
         e0010_count, 2,
         "expected one E0010 for local and one for global"
     );
-    insta::assert_yaml_snapshot!(case.ast);
+    assert_eq!(case.ast.items.len(), 1);
+    assert!(function_block(&case.ast, 0).inner.is_empty());
+}
+
+#[test]
+fn test_missing_comma_between_struct_fields_warns_but_parses() {
+    let case = TestCase::new(indoc! {"
+        struct Pair {
+            left: i32
+            right: i32,
+        }
+    "});
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0003"]);
+    assert_eq!(struct_fields(&case.ast, 0).inner.len(), 2);
+}
+
+#[test]
+fn test_module_pub_items_and_associated_types() {
+    let case = TestCase::new(indoc! {"
+        pub module math {
+            pub fn zero() -> i32 {
+                0
+            }
+        }
+
+        pub struct Counter {
+            value: i32,
+        }
+
+        pub trait Iterator {
+            type Item: Show + Clone;
+            fn next(self) -> Self::Item;
+        }
+
+        impl Iterator for Range {
+            type Item = i32;
+
+            fn next(self) -> Self::Item {
+                0
+            }
+        }
+    "});
+
+    assert!(case.ast.diagnostics.is_empty());
+
+    let Item::Module {
+        pub_span, items, ..
+    } = item(&case.ast, 0)
+    else {
+        panic!("expected public module")
+    };
+    assert!(pub_span.is_some());
+    assert!(matches!(
+        items.inner[0].inner.inner,
+        Item::Function {
+            pub_span: Some(_),
+            ..
+        }
+    ));
+
+    let Item::Struct { pub_span, .. } = item(&case.ast, 1) else {
+        panic!("expected public struct")
+    };
+    assert!(pub_span.is_some());
+
+    let Item::Trait {
+        pub_span,
+        items: trait_items,
+        ..
+    } = item(&case.ast, 2)
+    else {
+        panic!("expected public trait")
+    };
+    assert!(pub_span.is_some());
+    assert!(matches!(
+        trait_items.inner[0].inner.inner,
+        TraitItem::AssociatedType { ref bounds, .. } if bounds.len() == 2
+    ));
+
+    let Item::ImplTrait {
+        items: impl_items, ..
+    } = item(&case.ast, 3)
+    else {
+        panic!("expected trait impl")
+    };
+    assert!(matches!(
+        impl_items.inner[0].inner.inner,
+        ImplItem::AssociatedType { .. }
+    ));
 }
 
 #[test]
 fn test_chained_comparison_error() {
-    // a < b < c must produce an E0007 diagnostic; the parser must not crash.
     let case = TestCase::new(indoc! {"
         fn f(a: i32, b: i32, c: i32) -> bool {
             a < b < c
         }
     "});
-    assert!(
-        case.ast
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E0007"))
-    );
-    insta::assert_yaml_snapshot!(case.ast);
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0007"]);
+    let Expression::Binary { left, operator, .. } =
+        statement_expression(function_block(&case.ast, 0), 0)
+    else {
+        panic!("expected outer comparison")
+    };
+    assert_eq!(operator.inner, BinaryOp::Less);
+    assert!(matches!(
+        &left.inner,
+        Expression::Binary {
+            operator: Spanned {
+                inner: BinaryOp::Less,
+                ..
+            },
+            ..
+        }
+    ));
 }
 
 // ── Generics ─────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_generic_function_unconstrained() {
+fn test_generic_signatures() {
     let case = TestCase::new(indoc! {"
-        fn identity<T>(t: T) -> T {
-            t
+        fn zip<T, U: Show + Clone, V: Scalable>(left: T, middle: U, right: V) -> U {
+            middle
         }
     "});
     assert!(case.ast.diagnostics.is_empty());
@@ -492,25 +736,35 @@ fn test_generic_function_unconstrained() {
 }
 
 #[test]
-fn test_generic_function_with_bound() {
+fn test_import_alias_and_entry_kinds() {
     let case = TestCase::new(indoc! {"
-        fn call_value<T: Scalable>(t: T) -> i32 {
-            t.value()
+        import \"env\" as host {
+            fn log(message: string);
+            global mut counter: i32;
+            memory MEM: Memory32;
         }
     "});
-    assert!(case.ast.diagnostics.is_empty());
-    insta::assert_yaml_snapshot!(case.ast);
-}
 
-#[test]
-fn test_generic_function_multiple_params_and_bounds() {
-    let case = TestCase::new(indoc! {"
-        fn zip<T: Show + Clone, U>(a: T, b: U) -> T {
-            a
-        }
-    "});
     assert!(case.ast.diagnostics.is_empty());
-    insta::assert_yaml_snapshot!(case.ast);
+    let Item::Import { alias, entries, .. } = item(&case.ast, 0) else {
+        panic!("expected import block")
+    };
+    assert!(alias.is_some());
+    assert!(matches!(
+        entries.inner[0].inner.inner.declaration,
+        ImportDeclaration::Function { .. }
+    ));
+    assert!(matches!(
+        entries.inner[1].inner.inner.declaration,
+        ImportDeclaration::Global {
+            mut_span: Some(_),
+            ..
+        }
+    ));
+    assert!(matches!(
+        entries.inner[2].inner.inner.declaration,
+        ImportDeclaration::Memory { .. }
+    ));
 }
 
 #[test]
