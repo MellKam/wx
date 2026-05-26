@@ -1,0 +1,204 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Trait:
+          id: 3
+          pub_span: ~
+          name:
+            inner: 1
+            span:
+              start: 6
+              end: 12
+          supertraits:
+            - inner:
+                Identifier:
+                  symbol: 2
+              span:
+                start: 14
+                end: 22
+            - inner:
+                Identifier:
+                  symbol: 3
+              span:
+                start: 25
+                end: 30
+          items:
+            open:
+              start: 31
+              end: 32
+            inner:
+              - inner:
+                  inner:
+                    Const:
+                      id: 0
+                      name:
+                        inner: 4
+                        span:
+                          start: 43
+                          end: 47
+                      ty:
+                        inner:
+                          Identifier:
+                            symbol: 5
+                        span:
+                          start: 49
+                          end: 52
+                  span:
+                    start: 37
+                    end: 52
+                separator:
+                  start: 52
+                  end: 53
+              - inner:
+                  inner:
+                    Function:
+                      id: 1
+                      pub_span: ~
+                      attributes: []
+                      signature:
+                        name:
+                          inner: 6
+                          span:
+                            start: 62
+                            end: 68
+                        type_params: []
+                        params:
+                          open:
+                            start: 68
+                            end: 69
+                          inner:
+                            - inner:
+                                inner:
+                                  mut_span: ~
+                                  name:
+                                    inner: 7
+                                    span:
+                                      start: 69
+                                      end: 73
+                                  ty: ~
+                                span:
+                                  start: 69
+                                  end: 73
+                              separator: ~
+                          close:
+                            start: 73
+                            end: 74
+                        result: ~
+                      body: ~
+                  span:
+                    start: 59
+                    end: 74
+                separator:
+                  start: 74
+                  end: 75
+              - inner:
+                  inner:
+                    Function:
+                      id: 2
+                      pub_span: ~
+                      attributes:
+                        - name:
+                            inner: 8
+                            span:
+                              start: 83
+                              end: 89
+                      signature:
+                        name:
+                          inner: 9
+                          span:
+                            start: 98
+                            end: 102
+                        type_params: []
+                        params:
+                          open:
+                            start: 102
+                            end: 103
+                          inner:
+                            - inner:
+                                inner:
+                                  mut_span: ~
+                                  name:
+                                    inner: 7
+                                    span:
+                                      start: 103
+                                      end: 107
+                                  ty: ~
+                                span:
+                                  start: 103
+                                  end: 107
+                              separator:
+                                start: 107
+                                end: 108
+                            - inner:
+                                inner:
+                                  mut_span: ~
+                                  name:
+                                    inner: 10
+                                    span:
+                                      start: 109
+                                      end: 114
+                                  ty:
+                                    inner:
+                                      Identifier:
+                                        symbol: 5
+                                    span:
+                                      start: 116
+                                      end: 119
+                                span:
+                                  start: 109
+                                  end: 119
+                              separator: ~
+                          close:
+                            start: 119
+                            end: 120
+                        result:
+                          inner:
+                            Identifier:
+                              symbol: 5
+                          span:
+                            start: 124
+                            end: 127
+                      body:
+                        inner:
+                          Block:
+                            statements:
+                              open:
+                                start: 128
+                                end: 129
+                              inner:
+                                - inner:
+                                    inner:
+                                      Expression:
+                                        inner:
+                                          Identifier:
+                                            symbol: 10
+                                        span:
+                                          start: 138
+                                          end: 143
+                                    span:
+                                      start: 138
+                                      end: 143
+                                  separator: ~
+                              close:
+                                start: 148
+                                end: 149
+                        span:
+                          start: 128
+                          end: 149
+                  span:
+                    start: 95
+                    end: 149
+                separator: ~
+            close:
+              start: 150
+              end: 151
+      span:
+        start: 0
+        end: 151
+    separator: ~

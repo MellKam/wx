@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use leb128fmt;
 
-use crate::{ast, mir, tir};
+use crate::{ast, mir};
 
 #[derive(Clone, Copy, PartialEq, Hash, Eq)]
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -427,30 +427,6 @@ impl Builder {
         };
         let next = SignatureIndex(self.signatures.len() as u32);
         *self.signatures.entry(signature).or_insert(next)
-    }
-
-    /// Return the `BlockResult` for a MIR type. For aggregate types, a
-    /// multi-value function type `(func (result t1 t2 ...))` is registered
-    /// in the type section.
-    fn block_result_for(&mut self, ty: mir::Type, aggregates: &[mir::Aggregate]) -> BlockResult {
-        match ty {
-            mir::Type::Unit | mir::Type::Never => BlockResult::Empty,
-            mir::Type::Aggregate { aggregate_index } => {
-                let fields: Box<[ValueType]> = aggregates[aggregate_index as usize]
-                    .values
-                    .iter()
-                    .flat_map(|&f| Self::flatten_type(f, aggregates))
-                    .collect();
-                let signature = FunctionSignature {
-                    param_count: 0,
-                    param_results: fields,
-                };
-                let next = SignatureIndex(self.signatures.len() as u32);
-                let idx = *self.signatures.entry(signature).or_insert(next);
-                BlockResult::MultiValue(idx)
-            }
-            t => BlockResult::SingleValue(ValueType::try_from(t).unwrap()),
-        }
     }
 
     pub fn build<'interner>(

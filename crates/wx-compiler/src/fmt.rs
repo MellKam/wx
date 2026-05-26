@@ -874,6 +874,31 @@ impl Builder {
                 Node::Text(format!("impl {}", interner.resolve(name.inner).unwrap()))
             }
             TypeExpression::SelfType => Node::Text("Self".to_string()),
+            TypeExpression::NamespaceAccess { namespace, member } => Node::Concat(vec![
+                Self::build_type_expression(interner, &namespace.inner),
+                Node::Text("::".to_string()),
+                Self::build_type_expression(interner, &member.inner),
+            ]),
+            TypeExpression::TraitApplication { name, assoc_bindings } => {
+                let mut inner_parts: Vec<Node> = Vec::new();
+                for (i, sep) in assoc_bindings.inner.iter().enumerate() {
+                    if i > 0 {
+                        inner_parts.push(Node::Text(", ".to_string()));
+                    }
+                    let (key, ty) = &sep.inner.inner;
+                    inner_parts.push(Node::Concat(vec![
+                        Node::Text(interner.resolve(key.inner).unwrap_or("?").to_string()),
+                        Node::Text(" = ".to_string()),
+                        Self::build_type_expression(interner, &ty.inner),
+                    ]));
+                }
+                Node::Concat(vec![
+                    Node::Text(interner.resolve(name.inner).unwrap_or("?").to_string()),
+                    Node::Text("<".to_string()),
+                    Node::Concat(inner_parts),
+                    Node::Text(">".to_string()),
+                ])
+            }
         }
     }
 }

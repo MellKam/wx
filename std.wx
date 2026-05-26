@@ -12,19 +12,14 @@ pub trait Sized {
 
 module wasm {
   #[intrinsic]
-  pub fn memory64_grow<M: Memory64>(mem: Memory64, delta: u64) -> u64;
+  pub fn memory_grow<M: Memory>(mem: M, delta: M::usize) -> M::usize;
   #[intrinsic]
-  pub memory64_size(mem: impl Memory64) -> u64;
+  pub memory_size<M: Memory>(mem: M) -> M::usize;
 
   #[intrinsic]
-  pub memory32_grow(mem: impl Memory32, delta: u32) -> u32;
+  pub fn i32_load<M: Memory>(offset: *(M'a)i32) -> i32; 
   #[intrinsic]
-  pub memory32_size(mem: impl Memory32) -> u32;
-
-  #[intrinsic]
-  pub i32_load<M: Memory>(offset: *memory(M) i32) -> i32; 
-  #[intrinsic]
-  pub i32_load8_u<M: Memory>(offset: *memory(M) i32) -> u8;
+  pub i32_load8_u<M: Memory>(offset: M::*i32) -> u8;
   #[intrinsic]
   pub i32_load8_s<M: Memory>(offset: *memory(M) i32) -> i8;
   #[intrinsic]
@@ -38,13 +33,115 @@ module wasm {
   pub i32_store<M: Memory>(offset: *memory(M) mut i32, value: i32);
 }
 
-trait Memory {
-  const MEMORY_INDEX: u32;
+fn strlen<M: Memory>(str: M::[]u8) -> M::usize {
+  let mut len = 0;
+  while unsafe { wasm::i32_load8_u(str.bytes + len) } != 0 {
+    len += 1;
+  }
+  len
 }
 
-trait Memory32: Memory {
-  const STATIC_BASE: *memory(Self) mut u8;
+memory heap: Memory<Size = u32> {
+  initial: 1,
+  maximum: 10,
+};
 
+trait Memory32: Memory {
+  type usize = u32;
+  type size = u32;
+
+  #[inline]
+  fn grow(self, delta: u32) -> u32 {
+    wasm::memory_grow(self, delta)
+  }
+
+  #[inline]
+  fn size(self) -> u32 {
+    wasm::memory_size(self)
+  }
+}
+
+trait Memory64: Memory {
+  type usize = u64;
+  type size = u64;
+
+  #[inline]
+  fn grow(self, delta: Self::usize) -> Self::usize {
+    wasm::memory32_grow(self, delta)
+  }
+
+  #[inline]
+  fn size(self) -> Self::usize {
+    wasm::memory32_size(self)
+  }
+}
+
+struct ArenaAllocator<M: Memory, 'a: M> {
+  memory: M::*,
+};
+
+trait ArenaAllocator<M: Memory> {
+  const BASE: *M'static mut u8;
+  const SIZE: M::Pointer;
+  global mut OFFSET: M::Pointer;
+
+  fn alloc<T: Sized>(self) -> *M'a mut T {
+    local offset = Self::BASE as usize;
+    // Allocation logic using offset and size
+    // This is a placeholder and should be replaced with actual allocation logic
+    0 as *M'a mut T
+  }
+}
+
+memory heap: Memory32;
+
+sturct Arena;
+impl ArenaAllocator<heap> for Arena {
+  static BASE = heap::STATIC_BASE;
+  static SIZE = heap::INITIAL_SIZE - heap::STATIC_BASE;
+  static mut OFFSET = 0;
+}
+
+fn main() {
+  let mut arena = Arena::{};
+  let ptr: *heap'a mut i32 = arena.alloc();
+}
+
+trait ArenaAllocator<M: Memory, 'a: M> {
+  const BASE: *mut u8 in M;
+  const SIZE: M::Pointer;
+  static OFFSET: M::Pointer;
+
+  fn alloc<T: Sized>(self) -> *M'a mut T {
+    local offset = self.BASE as usize;
+  }
+}
+
+impl ArenaAllocator {
+  fn alloc<T: Sized>(&mut self) -> *mut T {
+    // Implementation of arena allocation logic
+    // This is a placeholder and should be replaced with actual allocation logic
+    0 as *mut T
+  }
+}
+
+type Box<T: Sized, M: Memory = DefaultMemory> = *mut T in M;
+
+Box<i32>
+
+fn reverse<M: Memory, 'a: M>(str: &M'a string) -> x {
+
+}
+
+local x: []heap'static u8 = "abc";
+
+*mut(*mut i32 in heap) in heap
+
+(*mut i32 in heap
+
+[]mut i32.heap'a
+
+trait Memory32: Memory {
   #[inline]
   fn grow(self, delta: u32) -> u32 {
     wasm::memory32_grow(self, delta)
@@ -56,9 +153,15 @@ trait Memory32: Memory {
   }
 }
 
-trait Memory64: Memory {
-  const STATIC_BASE: *memory(Self) mut u8;
+#[memory(heap)]
+static MATRIX: [4]mut[4]mut u8 = [
+  [0, 1, 2, 3],
+  [4, 5, 6, 7],
+  [8, 9, 10, 11],
+  [12, 13, 14, 15],
+];
 
+trait Memory64: Memory {
   #[inline]
   fn grow(self, delta: u64) -> u64 {
     wasm::memory64_grow(self, delta)
@@ -97,14 +200,27 @@ export { heap };
 
 
 
+*mut'a.i32
+
+*'a mut 
+
+*mut'a heap.i32
+
+&'a mut i32
+
+*heap'a mut i32
+
+*<'a>mut i32
+
+local x: *mut i32 = 0;
 
 
+*mut heap'a.i32 // mutable pointer to i32 in heap memory
+*heap.i32 // immutable pointer to i32 in heap memory
 
+*mut heap'static.u8
 
-
-
-
-
+*<heap'a> i32
 
 
 
@@ -230,12 +346,129 @@ impl Add for Vec2 {
   }
 }
 
+struct Arena;
+static ARENA
+
 fn test() {
   let a: u32 = 5;
   let b: u32 = 10;
   let c = a.add(b);
 
+  static FOO: [_]mut str = "Hello, World!";
+
+  []u8
+
   let v1 = Vec2 { x: 1.0, y: 2.0 };
   let v2 = Vec2 { x: 3.0, y: 4.0 };
   let v3 = v1.add(v2);
+}
+
+*mut i32
+[]mut i32
+*<heap'a>mut i32
+
+local x: *mut i32 = 0;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+module wasm {
+  #[intrinsic]
+  pub fn memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
+  #[intrinsic]
+  pub fn memory_size<M: Memory>(mem: M) -> M::Size;
+}
+
+trait PointerSize {}
+impl PointerSize for u32 {}
+impl PointerSize for u64 {}
+
+trait Memory {
+  type Size: PointerSize;
+
+  const MEMORY_INDEX: u32;
+  const DATA_END: Self::*mut u8;
+
+  #[inline]
+  fn grow(self, delta: Self::Size) -> Self::Size {
+    wasm::memory_grow(self, delta)
+  }
+
+  fn size(self) -> Self::Size {
+    wasm::memory_size(self)
+  }
+}
+
+memory heap: Memory<Size = u32>;
+
+fn main() { 
+
+}
+
+memory main: Memory32;
+
+global CRC32_TABLE: [256]u32 = {
+    static mut table: [256]u32;
+    local mut table = <main::[256]'static mut u32>;
+    local mut i: u32 = 0;
+    
+    loop {
+        if i >= 256 { break }
+        
+        local mut crc: u32 = i;
+        local mut j: u32 = 0;
+        
+        loop {
+            if j >= 8 { break; }
+            
+            if crc & 1 == 1 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc = crc >> 1;
+            }
+            
+            j += 1;
+        }
+        
+        table[i] = crc;
+        i += 1;
+    }
+    
+    table
+};
+
+fn crc32(data: *main [u8], len: u32) -> u32 {
+    local mut crc: u32 = 0xFFFFFFFF;
+    local mut i: u32 = 0;
+    
+    loop {
+        if i >= len { break; }
+        
+        crc = (crc >> 8) ^ CRC32_TABLE[(crc ^ data[i] as u32) & 0xFF];
+        i += 1;
+    }
+    
+    crc ^ 0xFFFFFFFF
+}
+
+export fn crc32_js(ptr: u32, len: u32) -> u32 {
+    crc32(ptr as *main [u8], len)
 }

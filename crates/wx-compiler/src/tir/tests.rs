@@ -1038,135 +1038,83 @@ fn test_intrinsic_fn_declaration_is_valid() {
 
 // ── Memory namespace resolution ───────────────────────────────────────────────
 //
-// Memory32/Memory64 must now be declared as traits before use. These preamble
-// definitions are the minimal form (abstract methods, no default bodies) for
-// testing purposes.
+// Minimal standard library preamble used by memory-related tests.
 
 const STD: &str = indoc! {"
-    trait Memory32 {
-        const OFFSET: u32;
+    trait PointerSize {}
+    impl PointerSize for u32 {}
+    impl PointerSize for u64 {}
+
+    trait Memory {
+        type Size: PointerSize;
         const MEMORY_INDEX: u32;
 
-        #[inline]
-        fn size(self) -> u32 {
-            wasm::memory32_size(self)
-        }
-        #[inline]
-        fn grow(self, delta: u32) -> u32 {
-            wasm::memory32_grow(self, delta)
-        }
+        fn grow(self, delta: Self::Size) -> Self::Size;
+        fn size(self) -> Self::Size;
     }
 
-    trait Memory64 {
-        const OFFSET: u64;
-        const MEMORY_INDEX: u64;
-
-        #[inline]
-        fn size(self) -> u64 {
-            wasm::memory64_size(self)
-        }
-        #[inline]
-        fn grow(self, delta: u64) -> u64 {
-            wasm::memory64_grow(self, delta)
-        }
-    }
+    trait Memory32: Memory<Size = u32> {}
+    trait Memory64: Memory<Size = u64> {}
 
     module wasm {
         #[intrinsic]
-        pub fn memory64_grow(mem: impl Memory64, delta: u64) -> u64;
+        pub fn memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
         #[intrinsic]
-        pub fn memory64_size(mem: impl Memory64) -> u64;
-
-        #[intrinsic]
-        pub fn memory32_grow(mem: impl Memory32, delta: u32) -> u32;
-        #[intrinsic]
-        pub fn memory32_size(mem: impl Memory32) -> u32;
+        pub fn memory_size<M: Memory>(mem: M) -> M::Size;
     }
 "};
 
 #[test]
-fn test_memory_offset_resolves_to_u32() {
+fn test_memory_index_const_resolves() {
+    // `MEM::MEMORY_INDEX` — namespace access to a memory constant resolves cleanly.
     let src = format!(
         "{STD}\n{}",
         indoc! {"
         memory MEM: Memory32;
-        pub fn f() -> u32 { MEM::OFFSET }
+        pub fn f() -> u32 { MEM::MEMORY_INDEX }
     "}
     );
     let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn test_memory_size_call_resolves() {
-    // Method-call syntax: MEM is a value; size is a method from the Memory32 trait.
+    // `.size()` is a method from the Memory trait; calling it should produce no errors.
     let src = format!(
         "{STD}\n{}",
         indoc! {"
         memory MEM: Memory32;
-        pub fn f() -> u32 { MEM.size() }
+        pub fn f() { _ = MEM.size(); }
     "}
     );
     let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn test_memory_grow_call_resolves() {
+    // `.grow()` is a method from the Memory trait; calling it should produce no errors.
     let src = format!(
         "{STD}\n{}",
         indoc! {"
         memory MEM: Memory32;
-        pub fn f() -> u32 { MEM.grow(1) }
+        pub fn f() { _ = MEM.grow(1); }
     "}
     );
     let case = TestCase::new(&src);
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn test_memory64_size_and_grow_use_u64() {
-    // Memory64 grow/size take and return u64, not u32.
-    let src = format!(
-        "{STD}\n{}",
-        indoc! {"
-        memory MEM: Memory64;
-        pub fn f() -> u64 { MEM.grow(1) }
-    "}
-    );
-    let case = TestCase::new(&src);
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
 
@@ -1210,27 +1158,8 @@ fn test_memory_as_value_in_expression() {
     );
 }
 
-#[test]
-fn test_memory_grow_wrong_arg_type_is_error() {
-    // grow expects u32 for Memory32; passing i32 must produce a type mismatch.
-    let src = format!(
-        "{STD}\n{}",
-        indoc! {"
-        memory MEM: Memory32;
-        fn f(delta: i32) { _ = MEM.grow(delta); }
-    "}
-    );
-    let case = TestCase::new(&src);
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E1001")),
-        "expected type mismatch for wrong grow argument type"
-    );
-}
-
 // ── impl Trait errors ─────────────────────────────────────────────────────────
+
 
 #[test]
 fn test_impl_struct_is_error() {
@@ -1854,10 +1783,17 @@ fn test_generic_identity_resolves() {
             t
         }
     "});
-    let errors: Vec<_> = case.tir.diagnostics.iter()
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected errors (count: {})", errors.len());
+    assert!(
+        errors.is_empty(),
+        "unexpected errors (count: {})",
+        errors.len()
+    );
     let func = case.tir.functions.iter().find(|f| {
         case.interner
             .resolve(f.name.inner)
@@ -1866,10 +1802,7 @@ fn test_generic_identity_resolves() {
     });
     let func = func.expect("function 'identity' not found in TIR");
     assert_eq!(func.type_params.len(), 1, "expected one type param");
-    assert_eq!(
-        case.interner.resolve(func.type_params[0].name),
-        Some("T")
-    );
+    assert_eq!(case.interner.resolve(func.type_params[0].name), Some("T"));
     assert!(
         func.type_params[0].bounds.is_empty(),
         "T should have no bounds"
@@ -1889,10 +1822,17 @@ fn test_generic_call_return_type_substituted() {
             identity(42)
         }
     "});
-    let errors: Vec<_> = case.tir.diagnostics.iter()
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected errors (count: {})", errors.len());
+    assert!(
+        errors.is_empty(),
+        "unexpected errors (count: {})",
+        errors.len()
+    );
 }
 
 #[test]
@@ -1906,10 +1846,17 @@ fn test_generic_with_bound_resolves() {
             t.scale(n)
         }
     "});
-    let errors: Vec<_> = case.tir.diagnostics.iter()
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
         .filter(|d| d.severity == Severity::Error)
         .collect();
-    assert!(errors.is_empty(), "unexpected errors (count: {})", errors.len());
+    assert!(
+        errors.is_empty(),
+        "unexpected errors (count: {})",
+        errors.len()
+    );
     let func = case.tir.functions.iter().find(|f| {
         case.interner
             .resolve(f.name.inner)
@@ -1937,4 +1884,677 @@ fn test_generic_unknown_bound_is_error() {
         !case.tir.diagnostics.is_empty(),
         "expected a diagnostic for unknown bound 'Nonexistent'"
     );
+}
+
+// ── NamespaceAccess / associated type projection ────────────────────────────
+
+fn no_errors(case: &TestCase) {
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "unexpected errors: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+fn has_error(case: &TestCase, msg: &str) {
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "expected error: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_assoc_type_declared_in_trait() {
+    // A trait with an associated type must register it in `members` and
+    // `assoc_type_bounds`.
+    let case = TestCase::new(indoc! {"
+        trait PointerSize {}
+        trait Memory {
+            type Size: PointerSize;
+        }
+    "});
+    no_errors(&case);
+
+    let memory_trait = case
+        .tir
+        .traits
+        .iter()
+        .find(|t| case.interner.resolve(t.name.inner) == Some("Memory"))
+        .expect("trait 'Memory' not found");
+
+    let size_sym = case
+        .interner
+        .get("Size")
+        .expect("symbol 'Size' not interned");
+
+    assert!(
+        matches!(
+            memory_trait.members.get(&size_sym),
+            Some(ImplEntry::AssociatedType { .. })
+        ),
+        "expected 'Size' in Memory::members as AssociatedType"
+    );
+    assert!(
+        memory_trait.assoc_type_bounds.contains_key(&size_sym),
+        "expected 'Size' in Memory::assoc_type_bounds"
+    );
+}
+
+#[test]
+fn test_assoc_type_projection_in_return_type() {
+    // `fn foo<M: Memory>() -> M::Size` — the return type must resolve to
+    // `AssocTypeProjection` (no error diagnostics).
+    let case = TestCase::new(indoc! {"
+        trait PointerSize {}
+        trait Memory {
+            type Size: PointerSize;
+        }
+        fn foo<M: Memory>() -> M::Size {
+            unreachable
+        }
+    "});
+    no_errors(&case);
+
+    let func = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("foo"))
+        .expect("function 'foo' not found");
+
+    let result_ty = func.result.as_ref().expect("expected a return type").inner;
+    assert!(
+        matches!(
+            case.tir.type_pool[result_ty as usize],
+            Type::AssocTypeProjection {
+                type_param_index: 0,
+                ..
+            }
+        ),
+        "return type should be AssocTypeProjection for M::Size, got type index {}",
+        result_ty
+    );
+}
+
+#[test]
+fn test_assoc_type_projection_in_param_type() {
+    // `fn foo<M: Memory>(size: M::Size)` — the parameter type resolves to
+    // `AssocTypeProjection` without errors.
+    let case = TestCase::new(indoc! {"
+        trait PointerSize {}
+        trait Memory {
+            type Size: PointerSize;
+        }
+        fn consume<M: Memory>(size: M::Size) {
+            unreachable
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_assoc_type_unknown_member_is_error() {
+    // `M::Nonexistent` where `Memory` has no such associated type → diagnostic.
+    let case = TestCase::new(indoc! {"
+        trait Memory {
+            type Size;
+        }
+        fn bad<M: Memory>() -> M::Nonexistent {
+            unreachable
+        }
+    "});
+    has_error(&case, "undeclared associated type 'Nonexistent'");
+}
+
+#[test]
+fn test_assoc_type_impl_registers_in_trait_impl() {
+    // `impl Memory for Heap { type Size = u32; }` — the impl must store
+    // a concrete type in both `TraitImpl::members` and `impl_members`.
+    let case = TestCase::new(indoc! {"
+        trait PointerSize {}
+        impl PointerSize for u32 {}
+        trait Memory {
+            type Size: PointerSize;
+        }
+        struct Heap {}
+        impl Memory for Heap {
+            type Size = u32;
+        }
+    "});
+    no_errors(&case);
+
+    let ti = case
+        .tir
+        .trait_impls
+        .iter()
+        .find(|ti| {
+            case.tir
+                .traits
+                .get(ti.trait_index as usize)
+                .and_then(|t| case.interner.resolve(t.name.inner))
+                == Some("Memory")
+        })
+        .expect("TraitImpl for Memory not found");
+
+    let size_sym = case
+        .interner
+        .get("Size")
+        .expect("symbol 'Size' not interned");
+
+    assert!(
+        matches!(
+            ti.members.get(&size_sym),
+            Some(ImplEntry::AssociatedType { ty }) if *ty == Type::U32_IDX
+        ),
+        "expected 'Size' → u32 in TraitImpl::members"
+    );
+}
+
+#[test]
+fn test_assoc_type_impl_bound_violation_is_error() {
+    // `type Size = bool` where `Size: PointerSize` and `bool` does not
+    // implement `PointerSize` → diagnostic.
+    let case = TestCase::new(indoc! {"
+        trait PointerSize {}
+        impl PointerSize for u32 {}
+        trait Memory {
+            type Size: PointerSize;
+        }
+        struct Heap {}
+        impl Memory for Heap {
+            type Size = bool;
+        }
+    "});
+    has_error(&case, "bool does not implement PointerSize");
+}
+
+#[test]
+fn test_assoc_type_unconstrained_no_error() {
+    // An associated type with no bounds accepts any concrete type.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        struct Bag {}
+        impl Container for Bag {
+            type Item = i32;
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_assoc_type_projection_forwarded_in_generic_wrapper() {
+    // A generic wrapper that passes a `C::Item` argument to another function
+    // also expecting `C::Item` must compile without errors.
+    // Previously, the expected_type was silently dropped to None when the
+    // receiver was itself a TypeParam, skipping the check entirely.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        fn process<C: Container>(item: C::Item) {
+            unreachable
+        }
+        fn wrap<C: Container>(item: C::Item) {
+            process(item)
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_assoc_type_projection_concrete_mismatch_in_generic_wrapper() {
+    // Passing a concrete `i32` where `C::Item` is expected must be a type
+    // error — even inside a generic wrapper where the receiver is a TypeParam.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        fn process<C: Container>(item: C::Item) {
+            unreachable
+        }
+        fn wrap<C: Container>(item: C::Item, n: i32) {
+            process(n)
+        }
+    "});
+    has_error(&case, "type mismatch: expected C::Item, got i32");
+}
+
+#[test]
+fn test_module_namespace_type_access() {
+    // `module::Type` — a type accessed through a module namespace resolves
+    // to the module's declared type without errors.
+    let case = TestCase::new(indoc! {"
+        module shapes {
+            pub struct Circle {}
+        }
+        fn use_circle(c: shapes::Circle) {
+            unreachable
+        }
+    "});
+    no_errors(&case);
+}
+
+// ── Memory-tagged pointer types ──────────────────────────────────────────────
+
+#[test]
+fn test_memory_tagged_pointer() {
+    // `heap::*i32` resolves to Type::Pointer { memory: Some(heap_id) }
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+            memory heap: Memory32;
+            fn f(p: heap::*i32) {
+                unreachable
+            }
+        "}
+    ));
+    no_errors(&case);
+
+    let heap_id = case.tir.memories[0].id;
+    let f = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .expect("function 'f' not found");
+
+    let param_ty = f.params[0].ty.inner;
+    assert!(
+        matches!(
+            case.tir.type_pool[param_ty as usize],
+            Type::Pointer { mutable: false, memory: Some(id), .. } if id == heap_id
+        ),
+        "expected heap::*i32 (immutable pointer tagged with heap), got index {}",
+        param_ty
+    );
+}
+
+#[test]
+fn test_memory_tagged_mut_pointer() {
+    // `heap::*mut i64` — mutable pointer tagged with heap memory
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+            memory heap: Memory32;
+            fn f(p: heap::*mut i64) {
+                unreachable
+            }
+        "}
+    ));
+    no_errors(&case);
+
+    let heap_id = case.tir.memories[0].id;
+    let f = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .expect("function 'f' not found");
+
+    let param_ty = f.params[0].ty.inner;
+    assert!(
+        matches!(
+            case.tir.type_pool[param_ty as usize],
+            Type::Pointer { mutable: true, memory: Some(id), .. } if id == heap_id
+        ),
+        "expected heap::*mut i64 (mutable pointer tagged with heap), got index {}",
+        param_ty
+    );
+}
+
+#[test]
+fn test_memory_tagged_slice() {
+    // `heap::[]u8` resolves to Type::Slice { memory: Some(heap_id) }
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+            memory heap: Memory32;
+            fn f(s: heap::[]u8) {
+                unreachable
+            }
+        "}
+    ));
+    no_errors(&case);
+
+    let heap_id = case.tir.memories[0].id;
+    let f = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .expect("function 'f' not found");
+
+    let param_ty = f.params[0].ty.inner;
+    assert!(
+        matches!(
+            case.tir.type_pool[param_ty as usize],
+            Type::Slice { memory: Some(id), .. } if id == heap_id
+        ),
+        "expected heap::[]u8 (slice tagged with heap), got index {}",
+        param_ty
+    );
+}
+
+#[test]
+fn test_memory_tagged_array() {
+    // `heap::[4]u8` resolves to Type::Array { size: 4, memory: Some(heap_id) }
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+            memory heap: Memory32;
+            fn f(a: heap::[4]u8) {
+                unreachable
+            }
+        "}
+    ));
+    no_errors(&case);
+
+    let heap_id = case.tir.memories[0].id;
+    let f = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .expect("function 'f' not found");
+
+    let param_ty = f.params[0].ty.inner;
+    assert!(
+        matches!(
+            case.tir.type_pool[param_ty as usize],
+            Type::Array { size: 4, memory: Some(id), .. } if id == heap_id
+        ),
+        "expected heap::[4]u8 (array tagged with heap), got index {}",
+        param_ty
+    );
+}
+
+#[test]
+fn test_memory_tagged_nested_array() {
+    // `heap::[4]heap::[4]u8` — outer array in heap, elements are heap-tagged arrays
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+            memory heap: Memory32;
+            fn f(a: heap::[4]heap::[4]u8) {
+                unreachable
+            }
+        "}
+    ));
+    no_errors(&case);
+
+    let heap_id = case.tir.memories[0].id;
+    let f = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .expect("function 'f' not found");
+
+    let outer_ty = f.params[0].ty.inner;
+    let (inner_ty, outer_tagged) = match &case.tir.type_pool[outer_ty as usize] {
+        Type::Array { of, size: 4, memory: Some(id), .. } if *id == heap_id => (*of, true),
+        _ => (0, false),
+    };
+    assert!(outer_tagged, "outer array should be tagged with heap memory");
+    assert!(
+        matches!(
+            case.tir.type_pool[inner_ty as usize],
+            Type::Array { size: 4, memory: Some(id), .. } if id == heap_id
+        ),
+        "inner array should also be tagged with heap memory"
+    );
+}
+
+#[test]
+fn test_memory_tagged_non_pointer_is_error() {
+    // `heap::i32` — memory namespace before a scalar type should error
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+            memory heap: Memory32;
+            fn f(x: heap::i32) {
+                unreachable
+            }
+        "}
+    ));
+    has_error(&case, "memory namespace can only prefix pointer, slice, or array");
+}
+
+#[test]
+fn test_untagged_and_tagged_pointer_are_distinct_types() {
+    // `*i32` and `heap::*i32` must intern to different TypeIndex values.
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+            memory heap: Memory32;
+            fn f(a: *i32, b: heap::*i32) {
+                unreachable
+            }
+        "}
+    ));
+    no_errors(&case);
+
+    let f = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .expect("function 'f' not found");
+
+    let untagged = f.params[0].ty.inner;
+    let tagged = f.params[1].ty.inner;
+    assert_ne!(untagged, tagged, "*i32 and heap::*i32 must be distinct types");
+}
+
+// ── FunctionItem type tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_function_reference_has_function_item_type() {
+    // When a function name is used as a value (not immediately called), the
+    // resulting expression type must be `FunctionItem`, not `Function`. This
+    // ensures the compiler preserves the function's identity rather than
+    // exposing its raw (potentially TypeParam-polluted) signature.
+    let case = TestCase::new(indoc! {"
+        fn square(n: i32) -> i32 { n * n }
+        fn main() {
+            local f = square
+        }
+    "});
+    no_errors(&case);
+
+    let square_id = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("square"))
+        .expect("function 'square' not found")
+        .id;
+
+    let has_function_item = case.tir.type_pool.iter().any(|t| {
+        if let Type::FunctionItem { id, type_args } = t {
+            *id == square_id && type_args.is_empty()
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_function_item,
+        "expected Type::FunctionItem for 'square' in the type pool"
+    );
+}
+
+#[test]
+fn test_generic_function_reference_has_function_item_not_fn_pointer() {
+    // A reference to a generic function must produce `FunctionItem`, not
+    // `Function { signature: fn(TypeParam{0}) -> TypeParam{0} }`. The old
+    // representation leaked TypeParam internals and made it impossible to
+    // distinguish which function was being referenced.
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T { t }
+        fn main() {
+            local f = identity
+        }
+    "});
+    no_errors(&case);
+
+    let identity_id = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("identity"))
+        .expect("function 'identity' not found")
+        .id;
+
+    let has_function_item = case.tir.type_pool.iter().any(|t| {
+        matches!(t, Type::FunctionItem { id, .. } if *id == identity_id)
+    });
+    assert!(
+        has_function_item,
+        "expected Type::FunctionItem for generic 'identity'"
+    );
+
+    // The function's own signature_index is still fn(TypeParam{0}) -> TypeParam{0} in
+    // the pool (needed for the function body), but function *reference* expressions
+    // must use FunctionItem, not expose that raw signature as their value type.
+}
+
+#[test]
+fn test_indirect_call_via_function_item_local_compiles() {
+    // Storing a function in a local and calling it via the local is valid.
+    // `f` has type `FunctionItem`, but calling it works because
+    // `build_call_expression` resolves the signature through the function id.
+    let case = TestCase::new(indoc! {"
+        fn square(n: i32) -> i32 { n * n }
+        fn main() -> i32 {
+            local f = square
+            f(5)
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_function_item_type_error_label_names_function() {
+    // When a `FunctionItem` is passed where a concrete function-pointer type is
+    // expected, the error label must name the function ("identity"), not show
+    // its raw signature ("fn(T0) -> T0"). This verifies `display_type` for
+    // `Type::FunctionItem` returns the function name.
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T { t }
+        fn take_fn(f: fn(i32) -> i32) -> i32 { f(0) }
+        fn main() -> i32 {
+            take_fn(identity)
+        }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "expected a type error when passing FunctionItem where fn pointer expected"
+    );
+    assert!(
+        case.tir.diagnostics.iter().any(|d| {
+            d.labels
+                .iter()
+                .any(|l| l.message.contains("identity"))
+        }),
+        "error label must name the function 'identity', not show raw TypeParam signature"
+    );
+}
+
+#[test]
+fn test_two_functions_have_distinct_function_item_types() {
+    // Each distinct function must intern to a distinct `FunctionItem` TypeIndex.
+    // Sharing a type between different functions would break identity-based
+    // dispatch and type checking.
+    let case = TestCase::new(indoc! {"
+        fn square(n: i32) -> i32 { n * n }
+        fn double(n: i32) -> i32 { n + n }
+        fn main() {
+            local a = square
+            local b = double
+        }
+    "});
+    no_errors(&case);
+
+    let find_id = |name: &str| {
+        case.tir
+            .functions
+            .iter()
+            .find(|f| case.interner.resolve(f.name.inner) == Some(name))
+            .unwrap_or_else(|| panic!("function '{}' not found", name))
+            .id
+    };
+    let square_id = find_id("square");
+    let double_id = find_id("double");
+
+    let type_idx = |id: DefId| {
+        case.tir
+            .type_pool
+            .iter()
+            .enumerate()
+            .find_map(|(i, t)| {
+                if matches!(t, Type::FunctionItem { id: fid, .. } if *fid == id) {
+                    Some(i as TypeIndex)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("FunctionItem for {:?} not found", id))
+    };
+    assert_ne!(
+        type_idx(square_id),
+        type_idx(double_id),
+        "square and double must have distinct FunctionItem TypeIndex values"
+    );
+}
+
+#[test]
+fn test_function_item_coerces_to_matching_fn_pointer_type() {
+    // A FunctionItem must be implicitly coercible to a `fn(...)` parameter
+    // whose signature matches exactly. This is the `func_pointers.wx` pattern:
+    // passing a named function where a function-pointer argument is expected.
+    let case = TestCase::new(indoc! {"
+        fn add(a: i32, b: i32) -> i32 { a + b }
+        fn sub(a: i32, b: i32) -> i32 { a - b }
+        fn apply(binop: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
+            binop(a, b)
+        }
+        fn main() -> i32 {
+            local a = apply(add, 5, 10)
+            local b = apply(sub, 10, 5)
+            a + b
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_function_item_wrong_signature_is_error() {
+    // A FunctionItem must NOT coerce to a `fn(...)` type with a different
+    // signature — the arity or parameter types must match exactly.
+    let case = TestCase::new(indoc! {"
+        fn add(a: i32, b: i32) -> i32 { a + b }
+        fn apply(binop: fn(i32) -> i32, n: i32) -> i32 { binop(n) }
+        fn main() -> i32 {
+            apply(add, 5)
+        }
+    "});
+    has_error(&case, "type mismatch: add (fn(i32,i32)->i32) passed where fn(i32)->i32 expected");
 }
