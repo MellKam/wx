@@ -419,6 +419,56 @@ trait Memory {
 
 memory heap: Memory<Size = u32>;
 
-fn main() {
+fn main() { 
 
+}
+
+memory main: Memory32;
+
+global CRC32_TABLE: [256]u32 = {
+    static mut table: [256]u32;
+    local mut table = <main::[256]'static mut u32>;
+    local mut i: u32 = 0;
+    
+    loop {
+        if i >= 256 { break }
+        
+        local mut crc: u32 = i;
+        local mut j: u32 = 0;
+        
+        loop {
+            if j >= 8 { break; }
+            
+            if crc & 1 == 1 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc = crc >> 1;
+            }
+            
+            j += 1;
+        }
+        
+        table[i] = crc;
+        i += 1;
+    }
+    
+    table
+};
+
+fn crc32(data: *main [u8], len: u32) -> u32 {
+    local mut crc: u32 = 0xFFFFFFFF;
+    local mut i: u32 = 0;
+    
+    loop {
+        if i >= len { break; }
+        
+        crc = (crc >> 8) ^ CRC32_TABLE[(crc ^ data[i] as u32) & 0xFF];
+        i += 1;
+    }
+    
+    crc ^ 0xFFFFFFFF
+}
+
+export fn crc32_js(ptr: u32, len: u32) -> u32 {
+    crc32(ptr as *main [u8], len)
 }

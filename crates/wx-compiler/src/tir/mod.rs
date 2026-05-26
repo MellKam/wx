@@ -30,7 +30,6 @@ impl FunctionSignature {
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Type {
-    // Primitive types
     Error,
     Unit,
     Never,
@@ -47,37 +46,39 @@ pub enum Type {
     F64,
     Bool,
     Char,
-    // Aggregate types
     Tuple {
         elements: Box<[TypeIndex]>,
     },
     Struct {
         struct_index: u32,
     },
-    // Pointer types
     Function {
         signature: FunctionSignature,
+    },
+    /// Named function reference before coercion to a fn pointer. `type_args` is empty for uninstantiated generics.
+    FunctionItem {
+        id: DefId,
+        type_args: Box<[TypeIndex]>,
     },
     Pointer {
         to: TypeIndex,
         mutable: bool,
-        /// `Some(id)` when written as `memory::*T`; `None` for untagged `*T`.
+        /// `Some(id)` when written as `memory::*T`.
         memory: Option<ast::DefId>,
     },
     Array {
         of: TypeIndex,
         size: u32,
         mutable: bool,
-        /// `Some(id)` when written as `memory::[N]T`; `None` for untagged `[N]T`.
+        /// `Some(id)` when written as `memory::[N]T`.
         memory: Option<ast::DefId>,
     },
     Slice {
         of: TypeIndex,
         mutable: bool,
-        /// `Some(id)` when written as `memory::[]T`; `None` for untagged `[]T`.
+        /// `Some(id)` when written as `memory::[]T`.
         memory: Option<ast::DefId>,
     },
-    // Namespace types
     ImportModule {
         module_index: u32,
     },
@@ -87,7 +88,6 @@ pub enum Type {
     Enum {
         enum_index: u32,
     },
-    // Special types
     Memory {
         id: DefId,
         kind: MemoryKind,
@@ -95,20 +95,14 @@ pub enum Type {
     Trait {
         trait_index: u32,
     },
-    /// A type parameter `T` within a generic function. `param_index` is the
-    /// slot in the enclosing `Function::type_params`. Two uses of `T` in the
-    /// same function share one interned `TypeParam { 0 }` entry.
+    /// Index into `Function::type_params`. All uses of the same param in a function share one interned instance.
     TypeParam {
         param_index: u32,
     },
-    /// `M::Size` — the named associated type projected through a type parameter.
-    /// Stays opaque until monomorphisation substitutes the concrete type for `M`.
+    /// `M::Size` — opaque until monomorphisation substitutes `M`.
     AssocTypeProjection {
-        /// Index into the enclosing function's `type_params` (the `M` in `M::Size`).
         type_param_index: u32,
-        /// Which trait declares this associated type.
         trait_index: TraitIndex,
-        /// The associated type name (for display and impl lookup during monomorphisation).
         assoc_name: SymbolU32,
     },
 }
@@ -225,8 +219,6 @@ pub type GlobalIndex = u32;
 pub type ConstIndex = u32;
 pub type ModuleIndex = u32;
 pub type MemoryIndex = u32;
-/// `SignatureIndex` is now an alias for `TypeIndex` — the function type lives
-/// in the type pool.
 pub type SignatureIndex = TypeIndex;
 pub type EnumVariantIndex = u32;
 pub type TraitIndex = u32;
@@ -252,33 +244,25 @@ pub struct Constant {
 pub struct Trait {
     pub name: ast::Spanned<SymbolU32>,
     pub supertraits: Vec<TraitIndex>,
-    /// All items declared in the trait body, keyed by name.
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub members: HashMap<SymbolU32, ImplEntry>,
-    /// Bounds on each associated type, keyed by name.
-    /// Used during conformance checking to verify that the concrete type
-    /// provided by an impl satisfies all declared bounds.
+    /// Checked during conformance to verify impl-provided types satisfy declared bounds.
     #[cfg_attr(test, serde(skip))]
     pub assoc_type_bounds: HashMap<SymbolU32, Box<[TraitIndex]>>,
-    /// `DefId`s of all member items (functions and consts) — used during
-    /// `ensure_signature` to demand-resolve members before reading `members`.
+    /// Used to demand-resolve members before reading `members`.
     #[cfg_attr(test, serde(skip))]
     pub member_def_ids: Vec<ast::DefId>,
-    /// Associated-type values bound at each supertrait use site.
     /// E.g. `trait Memory32: Memory<Size = u32>` → {(Memory_idx, "Size") → u32}.
     #[cfg_attr(test, serde(skip))]
     pub supertrait_bindings: HashMap<(TraitIndex, SymbolU32), TypeIndex>,
 }
 
-/// A concrete implementation of a trait for a specific type:
-/// `impl Trait for Type { ... }`.
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TraitImpl {
     pub trait_index: TraitIndex,
     pub target: TypeIndex,
     pub members: HashMap<SymbolU32, ImplEntry>,
-    /// Source location of the trait name in the `impl Trait for Type` header,
-    /// used to anchor conformance diagnostics.
+    /// Span of the trait name in the header; anchors conformance diagnostics.
     #[cfg_attr(test, serde(skip))]
     pub span: TextSpan,
     #[cfg_attr(test, serde(skip))]
@@ -339,17 +323,13 @@ pub enum ExprKind {
         callee: Box<Expression>,
         arguments: Box<[Expression]>,
     },
-    /// A direct call to a generic function with resolved type arguments.
-    /// `type_args[i]` holds the concrete `TypeIndex` substituted for `TypeParam
-    /// { param_index: i }`.
+    /// `type_args[i]` = concrete type substituted for `TypeParam { param_index: i }`.
     GenericCall {
         id: DefId,
         type_args: Box<[TypeIndex]>,
         arguments: Box<[Expression]>,
     },
-    /// A method call on a generic trait method.
-    /// `type_args[0]` = Self type (receiver), `type_args[1..]` = explicit
-    /// generics.
+    /// `type_args[0]` = Self (receiver), `type_args[1..]` = explicit generics.
     GenericMethodCall {
         id: DefId,
         type_args: Box<[TypeIndex]>,
@@ -455,9 +435,7 @@ pub struct Local {
 #[derive(Clone, Copy, PartialEq)]
 pub enum BlockKind {
     Block,
-    /// Loop blocks have an implicit `continue` at the end.
-    /// Their type is inferred from `break` expressions, not the final
-    /// expression.
+    /// Type inferred from `break`, not the final expression.
     Loop,
 }
 
@@ -555,7 +533,6 @@ pub struct EnumVariant {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum SymbolKind {
-    // Types / namespaces
     ImportModule {
         module_index: u32,
     },
@@ -575,7 +552,6 @@ pub enum SymbolKind {
     Trait {
         trait_index: u32,
     },
-    // Values
     Global {
         global_index: GlobalIndex,
     },
@@ -642,23 +618,18 @@ pub enum ItemSource {
     External,
 }
 
-/// Classifies a source file for diagnostic purposes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
-    /// A library file (e.g. stdlib). Unused-item warnings are suppressed.
+    /// Unused-item warnings are suppressed.
     Library,
-    /// A user module. Unused-item warnings are emitted normally.
     Module,
 }
 
-/// The address width of a declared linear memory.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum MemoryKind {
-    /// 32-bit addressing
     Memory32,
-    /// 64-bit addressing
     Memory64,
 }
 
@@ -668,15 +639,11 @@ pub enum MemoryKind {
 pub enum ImplEntry {
     Method(FunctionIndex),
     AssociatedFn(FunctionIndex),
-    /// Compile-time constant; value is computed during MIR/codegen from the
-    /// type layout.
+    /// Value computed from type layout during codegen.
     AssociatedConst {
         ty: TypeIndex,
     },
-    /// An associated type. In `Trait::members` `ty` holds a `Type::TypeParam`
-    /// — a placeholder substituted when a concrete impl is resolved, analogous
-    /// to how `Self` works. In `TraitImpl::members` and `impl_members` `ty`
-    /// holds the concrete type the impl provides.
+    /// `ty` is `TypeParam` in trait declarations (a placeholder) and the concrete type in impls.
     AssociatedType {
         ty: TypeIndex,
     },
@@ -733,8 +700,6 @@ pub enum FunctionOrigin {
     TraitImpl { trait_impl_index: TraitImplIndex },
 }
 
-/// Metadata for a single generic type parameter, e.g. `T` in `fn foo<T:
-/// Bound>`.
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -750,7 +715,7 @@ pub struct Function {
     pub pub_span: Option<ast::TextSpan>,
     pub source: ItemSource,
     pub origin: FunctionOrigin,
-    /// Generic type parameters declared on this function. Empty = monomorphic.
+    /// Empty = monomorphic.
     pub type_params: Box<[TypeParamInfo]>,
     pub signature_index: SignatureIndex,
     pub name: ast::Spanned<SymbolU32>,
@@ -840,8 +805,6 @@ impl FunctionContext {
     }
 }
 
-/// Unescape a string literal, removing quotes and handling escape sequences.
-/// Supports basic Rust-like escape sequences: \n, \r, \t, \\, \", \'
 pub fn unescape_string(s: &str) -> String {
     // Remove surrounding quotes
     let s = if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
@@ -877,8 +840,6 @@ pub fn unescape_string(s: &str) -> String {
     result
 }
 
-/// Parses a char literal (e.g. `'a'`, `'\n'`) and returns the single character
-/// it represents, or `None` if it contains more than one logical character.
 #[cfg_attr(test, derive(Debug, PartialEq))]
 pub enum CharLiteralError {
     Empty,
@@ -1898,42 +1859,34 @@ enum ComputeState {
     Done,
 }
 
-/// A reference to any AST node that owns a `DefId`, used by the query system to
-/// resolve items on demand. Each variant captures exactly the data
-/// `ensure_signature` and `ensure_body` need without re-traversing the full
-/// AST.
+/// AST node reference for demand-driven resolution.
 #[derive(Clone)]
 enum AstNodeRef<'ast> {
-    /// Top-level `fn` (with body) or `fn` declaration (`#[intrinsic]`, no
-    /// body).
+    /// Top-level `fn` or `#[intrinsic]` declaration.
     Function {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
-    /// Method inside an `impl` block.
     ImplMethod {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
-    /// Function declared inside a `trait` block (with or without a default
-    /// body).
+    /// `trait` function with or without a default body.
     TraitFunction {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
-    /// Constant declared inside a `trait` block.
     TraitConst {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
-    /// Associated type declared inside a `trait` block: `type Name;` or `type Name: Bound;`
     TraitAssociatedType {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
@@ -1965,52 +1918,43 @@ enum AstNodeRef<'ast> {
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
-    /// Constant declared inside an `impl` block.
     ImplConst {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
-    /// The `impl Trait for Type { ... }` block itself — owns type resolution
-    /// and creates the `TraitImpl` entry.
+    /// Creates the `TraitImpl` entry when resolved.
     ImplTraitBlock {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
-    /// Method inside an `impl Trait for Type` block.
     ImplTraitMethod {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
-        /// `DefId` of the parent `ImplTraitBlock` — used to demand-resolve the
-        /// block before inserting into `TraitImpl.members`.
+        /// Parent `ImplTraitBlock` must be resolved before this can insert into `TraitImpl.members`.
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
-    /// Constant inside an `impl Trait for Type` block.
     ImplTraitConst {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
-    /// Associated type definition inside an `impl Trait for Type` block: `type Name = ConcreteType;`
     ImplTraitAssociatedType {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
-    /// The `trait Name: Bound { ... }` block itself — owns supertrait
-    /// resolution.
     Trait {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
         trait_index: TraitIndex,
         item: &'ast ast::Item,
     },
-    /// Function declared inside an `import` block.
     ImportedFunction {
         file_id: ast::FileId,
         module_path: Box<[ModuleIndex]>,
@@ -2067,15 +2011,10 @@ impl AstNodeRef<'_> {
 
 struct Builder<'ast, 'interner> {
     // ── traversal cursor ──────────────────────────────────────────────────────
-    /// Current file; saved/restored around every `ensure_signature` call.
+    // These four are saved/restored around every ensure_signature / ensure_body call.
     file_id: ast::FileId,
-    /// Current module path; saved/restored alongside `file_id`.
     module_scope: Vec<ModuleIndex>,
-    /// Type that `Self` resolves to; saved/restored alongside `file_id`.
     current_self_type: Option<TypeIndex>,
-    /// Type params in scope for the function being compiled; saved/restored
-    /// around `ensure_signature` / `ensure_body`. Allows `resolve_type("T")`
-    /// to return `Type::TypeParam { param_index }`.
     current_type_params: Vec<TypeParamInfo>,
 
     // ── infrastructure ────────────────────────────────────────────────────────
@@ -2083,24 +2022,18 @@ struct Builder<'ast, 'interner> {
     diagnostics: Vec<Diagnostic<FileId>>,
 
     // ── type / symbol system ──────────────────────────────────────────────────
-    /// Deduplicating pool for all `Type` values; intern once, compare by index.
     type_pool: TypePool,
-    /// Maps (namespace, symbol) → what it refers to in the current scope.
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
-    /// Method and const members of each type, keyed by name.
     impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
 
     // ── item tables ───────────────────────────────────────────────────────────
     functions: Vec<Function>,
-    /// O(1): function index for a given `DefId`.
     function_index_lookup: HashMap<DefId, FunctionIndex>,
 
     globals: Vec<Global>,
-    /// O(1): global index for a given `DefId`.
     global_index_lookup: HashMap<DefId, GlobalIndex>,
 
     memories: Vec<Memory>,
-    /// O(1): memory index for a given `DefId`.
     memory_index_lookup: HashMap<DefId, MemoryIndex>,
 
     structs: Vec<Struct>,
@@ -2112,19 +2045,15 @@ struct Builder<'ast, 'interner> {
 
     traits: Vec<Trait>,
     trait_impls: Vec<TraitImpl>,
-    /// O(1) query: "does type T implement trait X?"
     trait_impl_lookup: HashMap<(TypeIndex, TraitIndex), TraitImplIndex>,
-    /// O(1) query: "what trait impls does type T have?"
     type_trait_impls: HashMap<TypeIndex, Vec<TraitImplIndex>>,
 
     // ── demand-driven resolution ──────────────────────────────────────────────
-    /// AST node for every `DefId`-bearing item, populated in Phase 1.
+    /// Populated in Phase 1.
     ast_nodes: HashMap<ast::DefId, AstNodeRef<'ast>>,
-    /// Memoization state for `ensure_signature` — prevents re-entrant
-    /// processing.
+    /// Prevents re-entrant ensure_signature calls.
     sig_state: HashMap<ast::DefId, ComputeState>,
-    /// O(1): `TraitImplIndex` for an `impl Trait for Type` block's `DefId`.
-    /// Populated when the block resolves; read by its child methods and consts.
+    /// Maps ImplTraitBlock DefId → TraitImplIndex; populated when the block resolves.
     trait_impl_block_lookup: HashMap<ast::DefId, TraitImplIndex>,
 }
 
@@ -2151,9 +2080,6 @@ impl<'ast> Builder<'ast, '_> {
         self.symbol_lookup.get(&(ns, sym))
     }
 
-    /// Convert a `SymbolKind` that lives in the type namespace into a
-    /// `TypeIndex`. Returns `None` if the kind is not a type (caller should
-    /// emit an error).
     fn symbol_kind_to_type(&mut self, kind: SymbolKind) -> Option<TypeIndex> {
         match kind {
             SymbolKind::ImportModule { module_index } => {
@@ -2329,16 +2255,11 @@ impl<'ast> Builder<'ast, '_> {
                         }
                     };
 
-                    let bounds = self
-                        .current_type_params
-                        .get(param_index as usize)
-                        .map(|tp| tp.bounds.clone())
-                        .unwrap_or_default();
+                    let bounds = self.type_param_bounds(namespace_ty).to_owned();
 
-                    for &trait_index in bounds.iter() {
+                    for &trait_index in &bounds {
                         // Ensure all trait member signatures (including assoc types) are resolved.
-                        let def_ids =
-                            self.traits[trait_index as usize].member_def_ids.clone();
+                        let def_ids = self.traits[trait_index as usize].member_def_ids.clone();
                         for def_id in def_ids {
                             self.ensure_signature(def_id);
                         }
@@ -2375,14 +2296,11 @@ impl<'ast> Builder<'ast, '_> {
                         }
                     };
 
-                    let kind = self
-                        .modules
-                        .get(module_index as usize)
-                        .and_then(|m| {
-                            m.symbol_lookup
-                                .get(&(SymbolNamespace::Type, member_name))
-                                .cloned()
-                        });
+                    let kind = self.modules.get(module_index as usize).and_then(|m| {
+                        m.symbol_lookup
+                            .get(&(SymbolNamespace::Type, member_name))
+                            .cloned()
+                    });
 
                     match kind {
                         Some(SymbolKind::Pending(def_id)) => {
@@ -2392,9 +2310,7 @@ impl<'ast> Builder<'ast, '_> {
                                 .get(&(SymbolNamespace::Type, member_name))
                                 .cloned();
                             match kind {
-                                Some(k) => {
-                                    self.symbol_kind_to_type(k).unwrap_or(Type::ERROR_IDX)
-                                }
+                                Some(k) => self.symbol_kind_to_type(k).unwrap_or(Type::ERROR_IDX),
                                 None => Type::ERROR_IDX,
                             }
                         }
@@ -2418,15 +2334,24 @@ impl<'ast> Builder<'ast, '_> {
                     }
                     let resolved = self.type_pool.get(member_ty).clone();
                     match resolved {
-                        Type::Pointer { to, mutable, .. } => {
-                            self.type_pool.intern(Type::Pointer { to, mutable, memory: Some(id) })
-                        }
-                        Type::Slice { of, mutable, .. } => {
-                            self.type_pool.intern(Type::Slice { of, mutable, memory: Some(id) })
-                        }
-                        Type::Array { of, size, mutable, .. } => {
-                            self.type_pool.intern(Type::Array { of, size, mutable, memory: Some(id) })
-                        }
+                        Type::Pointer { to, mutable, .. } => self.type_pool.intern(Type::Pointer {
+                            to,
+                            mutable,
+                            memory: Some(id),
+                        }),
+                        Type::Slice { of, mutable, .. } => self.type_pool.intern(Type::Slice {
+                            of,
+                            mutable,
+                            memory: Some(id),
+                        }),
+                        Type::Array {
+                            of, size, mutable, ..
+                        } => self.type_pool.intern(Type::Array {
+                            of,
+                            size,
+                            mutable,
+                            memory: Some(id),
+                        }),
                         _ => {
                             self.diagnostics.push(
                                 Diagnostic::error()
@@ -2492,7 +2417,10 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 }
             }
-            ast::TypeExpression::TraitApplication { name, assoc_bindings } => {
+            ast::TypeExpression::TraitApplication {
+                name,
+                assoc_bindings,
+            } => {
                 // Resolve as the base trait; bindings (e.g. `Size = u32`) are
                 // parsed for correctness but not yet enforced by the type checker.
                 let base = Spanned {
@@ -2539,40 +2467,62 @@ impl<'ast> Builder<'ast, '_> {
             Type::F64 => "f64".to_string(),
             Type::U32 => "u32".to_string(),
             Type::U64 => "u64".to_string(),
-            Type::Pointer { to, mutable, memory } => {
+            Type::Pointer {
+                to,
+                mutable,
+                memory,
+            } => {
                 let (to, mutable, memory) = (*to, *mutable, *memory);
                 let mutability = if mutable { "mut " } else { "" };
                 let inner = format!("*{}{}", mutability, self.display_type(to));
                 match memory {
                     Some(id) => {
                         let idx = self.memory_index_lookup[&id] as usize;
-                        let name = self.interner.resolve(self.memories[idx].name.inner).unwrap_or("?");
+                        let name = self
+                            .interner
+                            .resolve(self.memories[idx].name.inner)
+                            .unwrap_or("?");
                         format!("{}::{}", name, inner)
                     }
                     None => inner,
                 }
             }
-            Type::Slice { of, mutable, memory } => {
+            Type::Slice {
+                of,
+                mutable,
+                memory,
+            } => {
                 let (of, mutable, memory) = (*of, *mutable, *memory);
                 let mutability = if mutable { "mut " } else { "" };
                 let inner = format!("[]{}{}", mutability, self.display_type(of));
                 match memory {
                     Some(id) => {
                         let idx = self.memory_index_lookup[&id] as usize;
-                        let name = self.interner.resolve(self.memories[idx].name.inner).unwrap_or("?");
+                        let name = self
+                            .interner
+                            .resolve(self.memories[idx].name.inner)
+                            .unwrap_or("?");
                         format!("{}::{}", name, inner)
                     }
                     None => inner,
                 }
             }
-            Type::Array { of, size, mutable, memory } => {
+            Type::Array {
+                of,
+                size,
+                mutable,
+                memory,
+            } => {
                 let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
                 let mutability = if mutable { "mut " } else { "" };
                 let inner = format!("[{}]{}{}", size, mutability, self.display_type(of));
                 match memory {
                     Some(id) => {
                         let idx = self.memory_index_lookup[&id] as usize;
-                        let name = self.interner.resolve(self.memories[idx].name.inner).unwrap_or("?");
+                        let name = self
+                            .interner
+                            .resolve(self.memories[idx].name.inner)
+                            .unwrap_or("?");
                         format!("{}::{}", name, inner)
                     }
                     None => inner,
@@ -2625,6 +2575,17 @@ impl<'ast> Builder<'ast, '_> {
                     .join(", ");
                 let result = self.display_type(signature.result());
                 format!("fn({}) -> {}", params, result)
+            }
+            Type::FunctionItem { id, .. } => {
+                let id = *id;
+                match self.function_index_lookup.get(&id) {
+                    Some(&fi) => self
+                        .interner
+                        .resolve(self.functions[fi as usize].name.inner)
+                        .unwrap_or("?")
+                        .to_string(),
+                    None => format!("fn#{}", id.as_u32()),
+                }
             }
             Type::TypeParam { param_index } => {
                 let param_index = *param_index;
@@ -2692,9 +2653,7 @@ impl<'ast> Builder<'ast, '_> {
 
     // ── pre-scan ──────────────────────────────────────────────────────────────
 
-    /// Lightweight first pass: registers every named item into `pending` and
-    /// `ast_nodes` without resolving any types.  Modules, traits, and imports
-    /// are handled eagerly because they are structural containers.
+    /// Phase 1: registers every named item into `ast_nodes` without resolving types.
     fn pre_scan_item(&mut self, item: &'ast ast::Item, file_id: ast::FileId) {
         let module_path: Box<[ModuleIndex]> = self.module_scope.clone().into_boxed_slice();
 
@@ -3086,8 +3045,7 @@ impl<'ast> Builder<'ast, '_> {
 
     // ── query: ensure_signature ───────────────────────────────────────────────
 
-    /// Resolve the *signature* (type information, not body) of the item
-    /// identified by `def_id`.  Idempotent; detects cycles via `sig_state`.
+    /// Resolves the signature of `def_id`. Idempotent; detects cycles via `sig_state`.
     fn ensure_signature(&mut self, def_id: ast::DefId) {
         match self.sig_state.get(&def_id) {
             Some(ComputeState::Done) => return,
@@ -3312,10 +3270,8 @@ impl<'ast> Builder<'ast, '_> {
                         );
                     } else {
                         let type_params = self.resolve_ast_type_params(&signature.type_params);
-                        let saved_type_params = std::mem::replace(
-                            &mut self.current_type_params,
-                            type_params.clone(),
-                        );
+                        let saved_type_params =
+                            std::mem::replace(&mut self.current_type_params, type_params.clone());
                         let (params, result) = self.build_function_signature(signature);
                         self.current_type_params = saved_type_params;
                         let signature_index =
@@ -4158,7 +4114,8 @@ impl<'ast> Builder<'ast, '_> {
                             .trait_impl_lookup
                             .contains_key(&(concrete_ty, bound_trait_index))
                         {
-                            let bound_name = self.interner
+                            let bound_name = self
+                                .interner
                                 .resolve(self.traits[bound_trait_index as usize].name.inner)
                                 .unwrap_or("?");
                             let type_name = self.display_type(concrete_ty);
@@ -4190,10 +4147,7 @@ impl<'ast> Builder<'ast, '_> {
 
     // ── query: ensure_body ────────────────────────────────────────────────────
 
-    /// Resolve the *body* of the item identified by `def_id`.
-    /// Unlike `ensure_signature`, this is NOT idempotent: it has no `Done`
-    /// guard, so calling it twice rebuilds the body and double-counts accesses.
-    /// Safe only because Phase 3 visits each `DefId` exactly once.
+    /// Resolves the body of `def_id`. Not idempotent — calling twice double-counts accesses.
     fn ensure_body(&mut self, def_id: ast::DefId) {
         self.ensure_signature(def_id);
 
@@ -4300,9 +4254,6 @@ impl<'ast> Builder<'ast, '_> {
         self.current_type_params = saved_type_params;
     }
 
-    /// Resolve AST type param declarations to `TypeParamInfo`, populating
-    /// `current_type_params` so that subsequent `resolve_type` calls can map
-    /// `T` → `Type::TypeParam { idx }`. Returns the resolved params.
     fn resolve_ast_type_params(&mut self, ast_params: &[ast::TypeParam]) -> Vec<TypeParamInfo> {
         ast_params
             .iter()
@@ -4395,7 +4346,11 @@ impl<'ast> Builder<'ast, '_> {
                 .copied()
                 .filter(|&t| t != Type::ERROR_IDX)
                 .unwrap_or(ty),
-            Type::AssocTypeProjection { type_param_index, assoc_name, .. } => {
+            Type::AssocTypeProjection {
+                type_param_index,
+                assoc_name,
+                ..
+            } => {
                 let receiver = type_args
                     .get(type_param_index as usize)
                     .copied()
@@ -4674,9 +4629,7 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    /// Evaluates a constant expression that must produce an integer value.
-    /// Only integer types (I32, I64, U32, U64) are supported; other types
-    /// cause a `todo!` panic. Non-constant expressions emit a diagnostic.
+    /// Evaluates a constant integer expression. Non-integer types panic; non-constant expressions emit a diagnostic.
     fn eval_impl_const_int(
         &mut self,
         expr: &ast::Spanned<ast::Expression>,
@@ -5576,16 +5529,10 @@ impl<'ast> Builder<'ast, '_> {
                 .members
                 .get(&member.inner)
                 .cloned(),
-            Type::TypeParam { param_index } => {
-                let bounds = self
-                    .current_type_params
-                    .get(param_index as usize)
-                    .map(|tp| tp.bounds.to_vec())
-                    .unwrap_or_default();
-                bounds
-                    .iter()
-                    .find_map(|&ti| self.traits[ti as usize].members.get(&member.inner).cloned())
-            }
+            Type::TypeParam { .. } => self
+                .type_param_bounds(object.ty)
+                .iter()
+                .find_map(|&ti| self.traits[ti as usize].members.get(&member.inner).cloned()),
             _ => self
                 .ensure_impl_members(object.ty)
                 .get(&member.inner)
@@ -5658,10 +5605,8 @@ impl<'ast> Builder<'ast, '_> {
         Err(())
     }
 
-    /// Ensures built-in constants (`SIZE`, `ALIGN`) are present for `ty` and
-    /// returns a reference to its impl-member map. This is the single entry
-    /// point for all impl-member lookups; never access `impl_members` directly
-    /// for namespace-style resolution.
+    /// Ensures `SIZE` and `ALIGN` are present for `ty` and returns its member map.
+    /// Always use this for impl-member lookups — never access `impl_members` directly.
     fn ensure_impl_members(&mut self, ty: TypeIndex) -> &HashMap<SymbolU32, ImplEntry> {
         let size_sym = self.interner.get_or_intern("SIZE");
         let already_seeded = self
@@ -5864,11 +5809,14 @@ impl<'ast> Builder<'ast, '_> {
                             kind: FunctionAccessKind::Reference,
                             span: member.span,
                         });
-
-                        let sig_ty = func.signature_index;
+                        let id = func.id;
+                        let ty = self.type_pool.intern(Type::FunctionItem {
+                            id,
+                            type_args: Box::new([]),
+                        });
                         Ok(Expression {
-                            kind: ExprKind::Function { id: func.id },
-                            ty: sig_ty,
+                            kind: ExprKind::Function { id },
+                            ty,
                             span: TextSpan::merge(namespace_expr.span, member.span),
                         })
                     }
@@ -6418,9 +6366,13 @@ impl<'ast> Builder<'ast, '_> {
                         kind: FunctionAccessKind::Reference,
                         span: expr.span,
                     });
-                    let ty = func.signature_index;
+                    let id = func.id;
+                    let ty = self.type_pool.intern(Type::FunctionItem {
+                        id,
+                        type_args: Box::new([]),
+                    });
                     Ok(Expression {
-                        kind: ExprKind::Function { id: func.id },
+                        kind: ExprKind::Function { id },
                         ty,
                         span: expr.span,
                     })
@@ -7742,23 +7694,215 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    /// Returns true when `arg_ty` is a `TypeParam` whose bounds include the
-    /// trait that `expected_ty` represents (`Trait { trait_index }`).
-    /// This makes a bounded TypeParam coercible to `impl Trait` parameters.
-    fn type_param_satisfies_bound(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
-        let Type::TypeParam { param_index } = *self.type_pool.get(arg_ty) else {
+    fn type_param_bounds(&self, ty: TypeIndex) -> &[TraitIndex] {
+        let Type::TypeParam { param_index } = *self.type_pool.get(ty) else {
+            return &[];
+        };
+        self.current_type_params
+            .get(param_index as usize)
+            .map(|tp| tp.bounds.as_ref())
+            .unwrap_or(&[])
+    }
+
+    /// True when a non-generic `FunctionItem` can coerce to the given `Function` type.
+    /// Generic functions (empty `type_args`) are rejected — they need explicit instantiation first.
+    fn coercible_fn_item_to_fn(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
+        let &Type::FunctionItem { id, ref type_args } = self.type_pool.get(arg_ty) else {
             return false;
         };
+        if !type_args.is_empty() {
+            return false;
+        }
+        if !matches!(self.type_pool.get(expected_ty), Type::Function { .. }) {
+            return false;
+        }
+        let fi = self.function_index_lookup[&id] as usize;
+        self.functions[fi].signature_index == expected_ty
+    }
+
+    /// True when `arg_ty` is a `TypeParam` whose bounds include the trait that `expected_ty` represents.
+    fn type_param_satisfies_bound(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
         let Type::Trait {
             trait_index: expected_trait,
         } = *self.type_pool.get(expected_ty)
         else {
             return false;
         };
-        self.current_type_params
-            .get(param_index as usize)
-            .map(|tp| tp.bounds.iter().any(|&b| b == expected_trait))
-            .unwrap_or(false)
+        self.type_param_bounds(arg_ty)
+            .iter()
+            .any(|&b| b == expected_trait)
+    }
+
+    /// Builds, infers type args, and checks arguments for a generic call.
+    /// `self_ty` always wins for slot 0; return-type expectation seeds type args first.
+    fn build_generic_call_arguments(
+        &mut self,
+        ctx: &mut FunctionContext,
+        arguments: &[Separated<Spanned<ast::Expression>>],
+        params: &[TypeIndex],
+        result_type: TypeIndex,
+        type_params_len: usize,
+        expected_result: Option<TypeIndex>,
+        self_ty: Option<TypeIndex>,
+    ) -> Result<(Box<[Expression]>, Vec<TypeIndex>), ()> {
+        // Phase 1: build with no hint so all argument types are known before
+        // any slot is filled — avoids left-to-right ordering issues.
+        let mut args: Box<[Expression]> = arguments
+            .iter()
+            .map(|argument| {
+                self.build_expression(
+                    ctx,
+                    &argument.inner,
+                    AccessContext {
+                        expected_type: None,
+                        access_kind: AccessKind::Read,
+                    },
+                )
+            })
+            .collect::<Result<Box<_>, _>>()?;
+
+        // Phase 2: infer type_args.
+        let mut type_args = vec![Type::UNKNOWN_IDX; type_params_len];
+
+        if let Some(expected) = expected_result {
+            if let Type::TypeParam { param_index } =
+                self.type_pool.pool[result_type as usize].clone()
+            {
+                type_args[param_index as usize] = expected;
+            }
+        }
+
+        for (arg, &param_ty) in args.iter().zip(params.iter()) {
+            if arg.ty == Type::UNKNOWN_IDX || arg.ty == Type::ERROR_IDX {
+                continue;
+            }
+            match self.type_pool.pool[param_ty as usize].clone() {
+                Type::TypeParam { param_index } => {
+                    let slot = &mut type_args[param_index as usize];
+                    if *slot == Type::UNKNOWN_IDX {
+                        *slot = arg.ty;
+                    }
+                }
+                Type::AssocTypeProjection {
+                    type_param_index,
+                    assoc_name,
+                    trait_index,
+                } => {
+                    if let Type::AssocTypeProjection {
+                        type_param_index: arg_tp,
+                        assoc_name: arg_assoc,
+                        trait_index: arg_trait,
+                    } = self.type_pool.pool[arg.ty as usize].clone()
+                    {
+                        if arg_assoc == assoc_name && arg_trait == trait_index {
+                            let slot = &mut type_args[type_param_index as usize];
+                            if *slot == Type::UNKNOWN_IDX {
+                                let tp_idx = self.type_pool.intern(Type::TypeParam {
+                                    param_index: arg_tp,
+                                });
+                                *slot = tp_idx;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Self is always authoritative; set it last so it can't be overridden
+        // by return-type seeding or argument inference.
+        if let Some(self_ty) = self_ty {
+            type_args[0] = self_ty;
+        }
+
+        // Phase 3: check / coerce against the now-complete type_args.
+        for (index, arg) in args.iter_mut().enumerate() {
+            let param_type = match params.get(index).copied() {
+                Some(p) => p,
+                None => continue,
+            };
+
+            let expected_type = match self.type_pool.pool[param_type as usize].clone() {
+                Type::TypeParam { param_index } => {
+                    match type_args.get(param_index as usize).copied() {
+                        Some(ty) if ty != Type::UNKNOWN_IDX => Some(ty),
+                        _ => None,
+                    }
+                }
+                Type::AssocTypeProjection {
+                    type_param_index,
+                    assoc_name,
+                    ..
+                } => {
+                    let receiver = type_args
+                        .get(type_param_index as usize)
+                        .copied()
+                        .unwrap_or(Type::UNKNOWN_IDX);
+                    if receiver == Type::UNKNOWN_IDX
+                        || matches!(
+                            self.type_pool.pool[receiver as usize],
+                            Type::TypeParam { .. }
+                        )
+                    {
+                        Some(param_type)
+                    } else {
+                        let resolved: Option<TypeIndex> = self
+                            .impl_members
+                            .get(&receiver)
+                            .and_then(|m| m.get(&assoc_name))
+                            .and_then(|e| {
+                                if let ImplEntry::AssociatedType { ty } = e {
+                                    Some(*ty)
+                                } else {
+                                    None
+                                }
+                            });
+                        match resolved {
+                            Some(t)
+                                if !matches!(
+                                    self.type_pool.pool[t as usize],
+                                    Type::TypeParam { .. }
+                                ) =>
+                            {
+                                Some(t)
+                            }
+                            _ => None,
+                        }
+                    }
+                }
+                _ => Some(param_type),
+            };
+
+            if let Some(expected) = expected_type {
+                if arg.ty == Type::UNKNOWN_IDX {
+                    self.coerce_untyped_expr(arg, expected)?;
+                } else if !self.type_pool.coercible_to(arg.ty, expected)
+                    && !self.type_param_satisfies_bound(arg.ty, expected)
+                    && !self.coercible_fn_item_to_fn(arg.ty, expected)
+                {
+                    self.diagnostics.push(
+                        TypeMistmatchDiagnostic {
+                            file_id: self.file_id,
+                            expected_type: expected,
+                            actual_type: arg.ty,
+                            span: arg.span,
+                        }
+                        .report(&self),
+                    );
+                }
+            } else if arg.ty == Type::UNKNOWN_IDX {
+                self.diagnostics.push(
+                    TypeAnnotationRequiredDiagnostic {
+                        file_id: self.file_id,
+                        span: arg.span,
+                    }
+                    .report(),
+                );
+                return Err(());
+            }
+        }
+
+        Ok((args, type_args))
     }
 
     fn build_call_arguments(
@@ -7772,23 +7916,26 @@ impl<'ast> Builder<'ast, '_> {
             .iter()
             .enumerate()
             .map(|(index, argument)| {
-                let param_ty: Option<TypeIndex> = params.get(index).copied();
-                // Resolve TypeParam params via type_args (indexed by param_index).
-                // For non-generic calls type_args is empty and TypeParam params are filtered
-                // out.
-                let expected_type = param_ty
-                    .map(|ty| match *self.type_pool.get(ty) {
-                        Type::TypeParam { param_index } => type_args
-                            .get(param_index as usize)
-                            .copied()
-                            .filter(|&t| t != Type::UNKNOWN_IDX)
-                            .unwrap_or(ty),
-                        Type::AssocTypeProjection { type_param_index, assoc_name, .. } => {
-                            // Resolve via the concrete receiver type's impl_members.
-                            let receiver = type_args
-                                .get(type_param_index as usize)
-                                .copied()
-                                .unwrap_or(Type::ERROR_IDX);
+                let expected_type = params.get(index).copied().and_then(|param_type| {
+                    match *self.type_pool.get(param_type) {
+                        Type::TypeParam { param_index } => {
+                            type_args.get(param_index as usize).copied()
+                        }
+                        Type::AssocTypeProjection {
+                            type_param_index,
+                            assoc_name,
+                            ..
+                        } => {
+                            let Some(receiver) = type_args.get(type_param_index as usize).copied()
+                            else {
+                                return Some(param_type);
+                            };
+                            // Receiver is itself a type param: keep the projection as
+                            // expected_type so structural equality is still enforced at the
+                            // call site.
+                            if matches!(*self.type_pool.get(receiver), Type::TypeParam { .. }) {
+                                return Some(param_type);
+                            }
                             self.impl_members
                                 .get(&receiver)
                                 .and_then(|m| m.get(&assoc_name))
@@ -7799,12 +7946,13 @@ impl<'ast> Builder<'ast, '_> {
                                         None
                                     }
                                 })
-                                .filter(|&t| !matches!(*self.type_pool.get(t), Type::TypeParam { .. }))
-                                .unwrap_or(ty)
+                                .filter(|&t| {
+                                    !matches!(*self.type_pool.get(t), Type::TypeParam { .. })
+                                })
                         }
-                        _ => ty,
-                    })
-                    .filter(|&ty| !matches!(*self.type_pool.get(ty), Type::TypeParam { .. } | Type::AssocTypeProjection { .. }));
+                        _ => Some(param_type),
+                    }
+                });
 
                 let mut argument = self.build_expression(
                     ctx,
@@ -7820,6 +7968,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.coerce_untyped_expr(&mut argument, expected_type)?;
                     } else if !self.type_pool.coercible_to(argument.ty, expected_type)
                         && !self.type_param_satisfies_bound(argument.ty, expected_type)
+                        && !self.coercible_fn_item_to_fn(argument.ty, expected_type)
                     {
                         self.diagnostics.push(
                             TypeMistmatchDiagnostic {
@@ -7870,6 +8019,9 @@ impl<'ast> Builder<'ast, '_> {
         )?;
         let signature_index = match self.type_pool.get(callee.ty) {
             Type::Function { .. } => callee.ty,
+            &Type::FunctionItem { id, .. } => {
+                self.functions[self.function_index_lookup[&id] as usize].signature_index
+            }
             _ => {
                 self.diagnostics.push(
                     CannotCallExpressionDiagnostic {
@@ -7902,13 +8054,8 @@ impl<'ast> Builder<'ast, '_> {
                         .members
                         .get(&member.inner)
                         .cloned(),
-                    Type::TypeParam { param_index } => {
-                        let bounds = self
-                            .current_type_params
-                            .get(param_index as usize)
-                            .map(|tp| tp.bounds.to_vec())
-                            .unwrap_or_default();
-                        bounds.iter().find_map(|&ti| {
+                    Type::TypeParam { .. } => {
+                        self.type_param_bounds(object.ty).iter().find_map(|&ti| {
                             self.traits[ti as usize].members.get(&member.inner).cloned()
                         })
                     }
@@ -7942,12 +8089,17 @@ impl<'ast> Builder<'ast, '_> {
 
                         let type_params_len = self.functions[func_index as usize].type_params.len();
                         if type_params_len > 0 {
-                            // Generic trait method: build type_args with Self at index 0.
-                            let mut type_args = vec![Type::UNKNOWN_IDX; type_params_len];
-                            type_args[0] = object.ty;
-                            let arguments =
-                                self.build_call_arguments(ctx, arguments, params, &type_args)?;
-                            let return_ty = self.resolve_ty_with_args(signature.result(), &type_args);
+                            let (arguments, type_args) = self.build_generic_call_arguments(
+                                ctx,
+                                arguments,
+                                params,
+                                signature.result(),
+                                type_params_len,
+                                expected_result,
+                                Some(object.ty),
+                            )?;
+                            let return_ty =
+                                self.resolve_ty_with_args(signature.result(), &type_args);
 
                             return Ok(Expression {
                                 kind: ExprKind::GenericMethodCall {
@@ -8001,47 +8153,20 @@ impl<'ast> Builder<'ast, '_> {
 
                     let type_params_len = self.functions[func_index as usize].type_params.len();
                     if type_params_len > 0 {
-                        let id = *id;
-                        let mut type_args = vec![Type::UNKNOWN_IDX; type_params_len];
-
-                        // Seed from the expected return type so `identity(42)` in an
-                        // `i32` context infers `T = i32` before arguments are built.
-                        if let Some(expected) = expected_result {
-                            if let Type::TypeParam { param_index } =
-                                *self.type_pool.get(signature.result())
-                            {
-                                type_args[param_index as usize] = expected;
-                            }
-                        }
-
-                        let arguments =
-                            self.build_call_arguments(ctx, arguments, params, &type_args)?;
-
-                        // Fill any slots not already covered by return-type seeding.
-                        for (arg, &param_ty) in arguments.iter().zip(params.iter()) {
-                            if let Type::TypeParam { param_index } = *self.type_pool.get(param_ty) {
-                                let slot = &mut type_args[param_index as usize];
-                                if *slot == Type::UNKNOWN_IDX
-                                    && arg.ty != Type::UNKNOWN_IDX
-                                    && arg.ty != Type::ERROR_IDX
-                                {
-                                    *slot = arg.ty;
-                                }
-                            }
-                        }
-
-                        let return_ty = match *self.type_pool.get(signature.result()) {
-                            Type::TypeParam { param_index } => type_args
-                                .get(param_index as usize)
-                                .copied()
-                                .filter(|&t| t != Type::UNKNOWN_IDX)
-                                .unwrap_or(signature.result()),
-                            _ => signature.result(),
-                        };
+                        let (arguments, type_args) = self.build_generic_call_arguments(
+                            ctx,
+                            arguments,
+                            params,
+                            signature.result(),
+                            type_params_len,
+                            expected_result,
+                            None,
+                        )?;
+                        let return_ty = self.resolve_ty_with_args(signature.result(), &type_args);
 
                         return Ok(Expression {
                             kind: ExprKind::GenericCall {
-                                id,
+                                id: *id,
                                 type_args: type_args.into_boxed_slice(),
                                 arguments,
                             },
@@ -8758,8 +8883,6 @@ impl<'ast> Builder<'ast, '_> {
     }
 }
 
-/// Interning pool for `Type` values. All type construction goes through here,
-/// guaranteeing deduplication and stable `TypeIndex` handles.
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TypePool {
     pool: Vec<Type>,
@@ -8815,12 +8938,10 @@ impl TypePool {
         &self.pool
     }
 
-    /// Returns `true` if a value of type `a` can be coerced to type `b`.
     pub fn coercible_to(&self, a: TypeIndex, b: TypeIndex) -> bool {
         a == b || a == Type::NEVER_IDX || a == Type::ERROR_IDX || b == Type::ERROR_IDX
     }
 
-    /// Unified type of `a` and `b`, or `Err` if they are incompatible.
     pub fn unify(&self, a: TypeIndex, b: TypeIndex) -> Result<TypeIndex, ()> {
         if a == b {
             return Ok(a);
@@ -8881,27 +9002,18 @@ pub struct TIR {
     pub memories: Vec<Memory>,
     pub traits: Vec<Trait>,
     pub trait_impls: Vec<TraitImpl>,
-    /// O(1) query: "does type T implement trait X?"
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub trait_impl_lookup: HashMap<(TypeIndex, TraitIndex), TraitImplIndex>,
-    /// O(1) query: "what trait impls does type T have?"
     pub type_trait_impls: HashMap<TypeIndex, Vec<TraitImplIndex>>,
-    /// Maps each function's `DefId` to its index in `functions`.
     #[cfg_attr(test, serde(skip))]
     pub function_index_lookup: HashMap<ast::DefId, FunctionIndex>,
-    /// Maps each global's `DefId` to its index in `globals`.
     #[cfg_attr(test, serde(skip))]
     pub global_index_lookup: HashMap<ast::DefId, GlobalIndex>,
 }
 
 impl TIR {
-    /// Build TIR from one or more ASTs processed in order.
-    ///
-    /// Pass stdlib ASTs before user ASTs. All items from every AST go through
-    /// the define pass first, then the build pass, so forward references across
-    /// files work as expected.
-    ///
-    /// `TIR::file_id` is set to the last AST's file ID (the primary user file).
+    /// Builds TIR from one or more ASTs in order. Pass stdlib ASTs first.
+    /// `TIR::file_id` is set to the last AST's file ID.
     pub fn build<'ast>(asts: &'ast [&'ast ast::AST], interner: &mut ast::StringInterner) -> TIR {
         assert!(!asts.is_empty(), "TIR::build requires at least one AST");
 

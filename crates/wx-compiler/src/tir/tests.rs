@@ -2097,6 +2097,44 @@ fn test_assoc_type_unconstrained_no_error() {
 }
 
 #[test]
+fn test_assoc_type_projection_forwarded_in_generic_wrapper() {
+    // A generic wrapper that passes a `C::Item` argument to another function
+    // also expecting `C::Item` must compile without errors.
+    // Previously, the expected_type was silently dropped to None when the
+    // receiver was itself a TypeParam, skipping the check entirely.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        fn process<C: Container>(item: C::Item) {
+            unreachable
+        }
+        fn wrap<C: Container>(item: C::Item) {
+            process(item)
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_assoc_type_projection_concrete_mismatch_in_generic_wrapper() {
+    // Passing a concrete `i32` where `C::Item` is expected must be a type
+    // error — even inside a generic wrapper where the receiver is a TypeParam.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        fn process<C: Container>(item: C::Item) {
+            unreachable
+        }
+        fn wrap<C: Container>(item: C::Item, n: i32) {
+            process(n)
+        }
+    "});
+    has_error(&case, "type mismatch: expected C::Item, got i32");
+}
+
+#[test]
 fn test_module_namespace_type_access() {
     // `module::Type` — a type accessed through a module namespace resolves
     // to the module's declared type without errors.
@@ -2321,4 +2359,202 @@ fn test_untagged_and_tagged_pointer_are_distinct_types() {
     let untagged = f.params[0].ty.inner;
     let tagged = f.params[1].ty.inner;
     assert_ne!(untagged, tagged, "*i32 and heap::*i32 must be distinct types");
+}
+
+// ── FunctionItem type tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_function_reference_has_function_item_type() {
+    // When a function name is used as a value (not immediately called), the
+    // resulting expression type must be `FunctionItem`, not `Function`. This
+    // ensures the compiler preserves the function's identity rather than
+    // exposing its raw (potentially TypeParam-polluted) signature.
+    let case = TestCase::new(indoc! {"
+        fn square(n: i32) -> i32 { n * n }
+        fn main() {
+            local f = square
+        }
+    "});
+    no_errors(&case);
+
+    let square_id = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("square"))
+        .expect("function 'square' not found")
+        .id;
+
+    let has_function_item = case.tir.type_pool.iter().any(|t| {
+        if let Type::FunctionItem { id, type_args } = t {
+            *id == square_id && type_args.is_empty()
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_function_item,
+        "expected Type::FunctionItem for 'square' in the type pool"
+    );
+}
+
+#[test]
+fn test_generic_function_reference_has_function_item_not_fn_pointer() {
+    // A reference to a generic function must produce `FunctionItem`, not
+    // `Function { signature: fn(TypeParam{0}) -> TypeParam{0} }`. The old
+    // representation leaked TypeParam internals and made it impossible to
+    // distinguish which function was being referenced.
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T { t }
+        fn main() {
+            local f = identity
+        }
+    "});
+    no_errors(&case);
+
+    let identity_id = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.interner.resolve(f.name.inner) == Some("identity"))
+        .expect("function 'identity' not found")
+        .id;
+
+    let has_function_item = case.tir.type_pool.iter().any(|t| {
+        matches!(t, Type::FunctionItem { id, .. } if *id == identity_id)
+    });
+    assert!(
+        has_function_item,
+        "expected Type::FunctionItem for generic 'identity'"
+    );
+
+    // The function's own signature_index is still fn(TypeParam{0}) -> TypeParam{0} in
+    // the pool (needed for the function body), but function *reference* expressions
+    // must use FunctionItem, not expose that raw signature as their value type.
+}
+
+#[test]
+fn test_indirect_call_via_function_item_local_compiles() {
+    // Storing a function in a local and calling it via the local is valid.
+    // `f` has type `FunctionItem`, but calling it works because
+    // `build_call_expression` resolves the signature through the function id.
+    let case = TestCase::new(indoc! {"
+        fn square(n: i32) -> i32 { n * n }
+        fn main() -> i32 {
+            local f = square
+            f(5)
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_function_item_type_error_label_names_function() {
+    // When a `FunctionItem` is passed where a concrete function-pointer type is
+    // expected, the error label must name the function ("identity"), not show
+    // its raw signature ("fn(T0) -> T0"). This verifies `display_type` for
+    // `Type::FunctionItem` returns the function name.
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T { t }
+        fn take_fn(f: fn(i32) -> i32) -> i32 { f(0) }
+        fn main() -> i32 {
+            take_fn(identity)
+        }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "expected a type error when passing FunctionItem where fn pointer expected"
+    );
+    assert!(
+        case.tir.diagnostics.iter().any(|d| {
+            d.labels
+                .iter()
+                .any(|l| l.message.contains("identity"))
+        }),
+        "error label must name the function 'identity', not show raw TypeParam signature"
+    );
+}
+
+#[test]
+fn test_two_functions_have_distinct_function_item_types() {
+    // Each distinct function must intern to a distinct `FunctionItem` TypeIndex.
+    // Sharing a type between different functions would break identity-based
+    // dispatch and type checking.
+    let case = TestCase::new(indoc! {"
+        fn square(n: i32) -> i32 { n * n }
+        fn double(n: i32) -> i32 { n + n }
+        fn main() {
+            local a = square
+            local b = double
+        }
+    "});
+    no_errors(&case);
+
+    let find_id = |name: &str| {
+        case.tir
+            .functions
+            .iter()
+            .find(|f| case.interner.resolve(f.name.inner) == Some(name))
+            .unwrap_or_else(|| panic!("function '{}' not found", name))
+            .id
+    };
+    let square_id = find_id("square");
+    let double_id = find_id("double");
+
+    let type_idx = |id: DefId| {
+        case.tir
+            .type_pool
+            .iter()
+            .enumerate()
+            .find_map(|(i, t)| {
+                if matches!(t, Type::FunctionItem { id: fid, .. } if *fid == id) {
+                    Some(i as TypeIndex)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("FunctionItem for {:?} not found", id))
+    };
+    assert_ne!(
+        type_idx(square_id),
+        type_idx(double_id),
+        "square and double must have distinct FunctionItem TypeIndex values"
+    );
+}
+
+#[test]
+fn test_function_item_coerces_to_matching_fn_pointer_type() {
+    // A FunctionItem must be implicitly coercible to a `fn(...)` parameter
+    // whose signature matches exactly. This is the `func_pointers.wx` pattern:
+    // passing a named function where a function-pointer argument is expected.
+    let case = TestCase::new(indoc! {"
+        fn add(a: i32, b: i32) -> i32 { a + b }
+        fn sub(a: i32, b: i32) -> i32 { a - b }
+        fn apply(binop: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
+            binop(a, b)
+        }
+        fn main() -> i32 {
+            local a = apply(add, 5, 10)
+            local b = apply(sub, 10, 5)
+            a + b
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_function_item_wrong_signature_is_error() {
+    // A FunctionItem must NOT coerce to a `fn(...)` type with a different
+    // signature — the arity or parameter types must match exactly.
+    let case = TestCase::new(indoc! {"
+        fn add(a: i32, b: i32) -> i32 { a + b }
+        fn apply(binop: fn(i32) -> i32, n: i32) -> i32 { binop(n) }
+        fn main() -> i32 {
+            apply(add, 5)
+        }
+    "});
+    has_error(&case, "type mismatch: add (fn(i32,i32)->i32) passed where fn(i32)->i32 expected");
 }

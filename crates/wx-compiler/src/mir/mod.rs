@@ -453,7 +453,7 @@ pub fn compute_layout(
             let sorted: Vec<tir::TypeIndex> = indexed.into_iter().map(|(ty, _)| ty).collect();
             aggregate_layout(types, structs, &sorted, ptr_size)
         }
-        tir::Type::Function { .. } => Layout::ptr(ptr_size),
+        tir::Type::Function { .. } | tir::Type::FunctionItem { .. } => Layout::ptr(ptr_size),
         tir::Type::Error
         | tir::Type::Unknown
         | tir::Type::ImportModule { .. }
@@ -873,6 +873,13 @@ impl<'tir> Builder<'tir> {
             tir::Type::Function { .. } => Type::Function {
                 signature_index: self.intern_tir_function_type(type_idx),
             },
+            tir::Type::FunctionItem { id, .. } => {
+                let fi = self.tir.function_index_lookup[&id] as usize;
+                let sig_idx = self.tir.functions[fi].signature_index;
+                Type::Function {
+                    signature_index: self.intern_tir_function_type(sig_idx),
+                }
+            }
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index } => {
                 let si = struct_index as usize;
