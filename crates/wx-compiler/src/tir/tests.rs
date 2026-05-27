@@ -127,7 +127,7 @@ fn test_build_with_crate_graph_lowers_child_module_items() {
 }
 
 #[test]
-fn test_build_with_crate_graph_cross_file_module_function_call_is_not_yet_resolved() {
+fn test_build_with_crate_graph_resolves_cross_file_module_function_call() {
     let case = TestCase::new_multi_file(
         "src/main.wx",
         indoc! {"
@@ -142,23 +142,11 @@ fn test_build_with_crate_graph_cross_file_module_function_call_is_not_yet_resolv
         &[("src/math.wx", "pub fn add() -> i32 { 1 }")],
     );
 
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error && d.message == "undeclared identifier"),
-        "expected current cross-file module call limitation to surface as an undeclared identifier error, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+    no_errors(&case);
 }
 
 #[test]
-fn test_build_with_crate_graph_cross_file_module_type_access_is_not_yet_resolved() {
+fn test_build_with_crate_graph_resolves_cross_file_module_type_access() {
     let case = TestCase::new_multi_file(
         "src/main.wx",
         indoc! {"
@@ -171,19 +159,7 @@ fn test_build_with_crate_graph_cross_file_module_type_access_is_not_yet_resolved
         &[("src/shapes.wx", "pub struct Circle {}")],
     );
 
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error && d.message == "undeclared type"),
-        "expected current cross-file module type limitation to surface as an undeclared type error, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+    no_errors(&case);
 }
 
 #[test]
@@ -2257,6 +2233,60 @@ fn test_assoc_type_projection_concrete_mismatch_in_generic_wrapper() {
 }
 
 #[test]
+fn test_assoc_type_projection_in_nested_function_type_wrapper() {
+    // Recursive substitution must also rebind projections nested inside
+    // function types, not only top-level parameter and result types.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        fn process<C: Container>(f: fn(C::Item) -> C::Item) {
+            unreachable
+        }
+        fn wrap<C: Container>(f: fn(C::Item) -> C::Item) {
+            process(f)
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_assoc_type_projection_in_tuple_wrapper() {
+    // Recursive substitution must also preserve projections nested inside
+    // tuple elements.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        fn process<C: Container>(pair: (C::Item, C::Item)) {
+            unreachable
+        }
+        fn wrap<C: Container>(pair: (C::Item, C::Item)) {
+            process(pair)
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_assoc_type_projection_in_pointer_wrapper() {
+    // Recursive substitution must also preserve projections nested under
+    // pointer types.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        fn process<C: Container>(ptr: *C::Item) {
+            unreachable
+        }
+        fn wrap<C: Container>(ptr: *C::Item) {
+            process(ptr)
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
 fn test_module_namespace_type_access() {
     // `module::Type` — a type accessed through a module namespace resolves
     // to the module's declared type without errors.
@@ -2614,6 +2644,35 @@ fn test_function_item_type_error_label_names_function() {
             .iter()
             .any(|d| { d.labels.iter().any(|l| l.message.contains("identity")) }),
         "error label must name the function 'identity', not show raw TypeParam signature"
+    );
+}
+
+#[test]
+fn test_missing_argument_uses_callee_type_param_names() {
+    let case = TestCase::new(indoc! {"
+        fn take<T>(value: T) {
+            unreachable
+        }
+
+        fn wrap<U>() {
+            take()
+        }
+    "});
+
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
+        "expected missing argument error"
+    );
+    assert!(
+        case.tir.diagnostics.iter().any(|d| {
+            d.notes
+                .iter()
+                .any(|note| note.contains("argument #1 of type `T` is missing"))
+        }),
+        "missing argument diagnostic should use callee type parameter name `T`"
     );
 }
 

@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/tir/tests.rs
+assertion_line: 1908
 expression: case.tir
 ---
 type_pool:
@@ -20,6 +21,8 @@ type_pool:
   - Bool
   - Char
   - TypeParam:
+      owner:
+        Function: 0
       param_index: 0
   - Function:
       signature:

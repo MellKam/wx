@@ -534,6 +534,15 @@ fn test_unclosed_delimiter() {
 }
 
 #[test]
+fn test_invalid_function_param_type_reports_parse_error() {
+    let case = TestCase::new(indoc! {"
+        fn f(x: =) {}
+    "});
+
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0002"]);
+}
+
+#[test]
 fn test_invalid_integer_literal() {
     let case = TestCase::new(indoc! {"
         fn f() -> i32 {

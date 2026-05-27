@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/tir/tests.rs
+assertion_line: 1672
 expression: case.tir
 ---
 type_pool:
@@ -22,6 +23,8 @@ type_pool:
   - Trait:
       trait_index: 0
   - TypeParam:
+      owner:
+        Function: 1
       param_index: 0
   - Function:
       signature:
@@ -29,10 +32,14 @@ type_pool:
           - 17
           - 8
         params_count: 1
+  - TypeParam:
+      owner:
+        Function: 3
+      param_index: 0
   - Function:
       signature:
         items:
-          - 17
+          - 19
           - 1
         params_count: 1
   - Struct:
@@ -42,7 +49,7 @@ type_pool:
   - Function:
       signature:
         items:
-          - 20
+          - 21
           - 1
         params_count: 1
   - Function:
@@ -142,7 +149,7 @@ functions:
       - name: 18
         bounds:
           - 1
-    signature_index: 19
+    signature_index: 20
     name:
       inner: 7
       span:
@@ -156,7 +163,7 @@ functions:
             start: 126
             end: 130
         ty:
-          inner: 17
+          inner: 19
           span:
             start: 126
             end: 130
@@ -172,7 +179,7 @@ functions:
       TraitImpl:
         trait_impl_index: 1
     type_params: []
-    signature_index: 22
+    signature_index: 23
     name:
       inner: 7
       span:
@@ -186,7 +193,7 @@ functions:
             start: 267
             end: 271
         ty:
-          inner: 20
+          inner: 21
           span:
             start: 267
             end: 271
@@ -210,7 +217,7 @@ functions:
                   span:
                     start: 267
                     end: 271
-                ty: 20
+                ty: 21
                 mut_span: ~
                 accesses:
                   - span:
@@ -242,13 +249,13 @@ functions:
                         GenericMethodCall:
                           id: 1
                           type_args:
-                            - 20
+                            - 21
                           object:
                             kind:
                               Local:
                                 scope_index: 0
                                 local_index: 0
-                            ty: 20
+                            ty: 21
                             span:
                               start: 287
                               end: 291
@@ -272,7 +279,7 @@ functions:
     source: Internal
     origin: Free
     type_params: []
-    signature_index: 23
+    signature_index: 24
     name:
       inner: 13
       span:
@@ -299,7 +306,7 @@ functions:
                   span:
                     start: 331
                     end: 332
-                ty: 20
+                ty: 21
                 mut_span: ~
                 accesses:
                   - span:
@@ -341,7 +348,7 @@ functions:
                               span:
                                 start: 353
                                 end: 354
-                      ty: 20
+                      ty: 21
                       span:
                         start: 335
                         end: 356
@@ -356,7 +363,7 @@ functions:
                         Local:
                           scope_index: 0
                           local_index: 0
-                      ty: 20
+                      ty: 21
                       span:
                         start: 362
                         end: 363
@@ -436,7 +443,7 @@ impl_members:
     19:
       AssociatedConst:
         ty: 8
-  20:
+  21:
     2:
       AssociatedConst:
         ty: 8
@@ -472,26 +479,26 @@ traits:
         Method: 1
 trait_impls:
   - trait_index: 0
-    target: 20
+    target: 21
     members:
       2:
         AssociatedConst:
           ty: 8
     file_id: 0
   - trait_index: 1
-    target: 20
+    target: 21
     members:
       7:
         Method: 2
     file_id: 0
 trait_impl_lookup:
-  ? - 20
+  ? - 21
     - 0
   : 0
-  ? - 20
+  ? - 21
     - 1
   : 1
 type_trait_impls:
-  20:
+  21:
     - 0
     - 1

@@ -866,7 +866,7 @@ impl<'tir> Builder<'tir> {
         };
 
         match self.tir.type_pool[type_idx as usize].clone() {
-            tir::Type::TypeParam { param_index } => {
+            tir::Type::TypeParam { param_index, .. } => {
                 let concrete = self.current_substitutions[param_index as usize];
                 self.lower_type_index(concrete)
             }
@@ -921,7 +921,7 @@ impl<'tir> Builder<'tir> {
 
     fn memory_index_from_arg(&self, type_idx: tir::TypeIndex) -> u32 {
         let resolved = match &self.tir.type_pool[type_idx as usize] {
-            tir::Type::TypeParam { param_index } => {
+            tir::Type::TypeParam { param_index, .. } => {
                 self.current_substitutions[*param_index as usize]
             }
             _ => type_idx,
@@ -1146,7 +1146,7 @@ impl<'tir> Builder<'tir> {
                 let concrete_type_args: Box<[tir::TypeIndex]> = type_args
                     .iter()
                     .map(|&ty| match &self.tir.type_pool[ty as usize] {
-                        tir::Type::TypeParam { param_index } => self
+                        tir::Type::TypeParam { param_index, .. } => self
                             .current_substitutions
                             .get(*param_index as usize)
                             .copied()
@@ -1196,7 +1196,7 @@ impl<'tir> Builder<'tir> {
             } => {
                 // Resolve object type through any active TypeParam substitution.
                 let resolved_obj_ty = match &self.tir.type_pool[object.ty as usize] {
-                    tir::Type::TypeParam { param_index } => {
+                    tir::Type::TypeParam { param_index, .. } => {
                         self.current_substitutions[*param_index as usize]
                     }
                     _ => object.ty,
@@ -1242,7 +1242,7 @@ impl<'tir> Builder<'tir> {
                 let resolved: Box<[tir::TypeIndex]> = type_args
                     .iter()
                     .map(|&ty| match &self.tir.type_pool[ty as usize] {
-                        tir::Type::TypeParam { param_index } => self
+                        tir::Type::TypeParam { param_index, .. } => self
                             .current_substitutions
                             .get(*param_index as usize)
                             .copied()

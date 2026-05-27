@@ -186,7 +186,6 @@ pub struct SourceModule {
     pub parent: Option<ModuleId>,
     pub children: Vec<ModuleId>,
     pub name: Option<SymbolU32>,
-    pub path: Box<[SymbolU32]>,
     pub file_id: FileId,
     pub file_path: PathBuf,
     pub ast: ast::AST,
@@ -227,6 +226,24 @@ impl CompilationGraph {
             asts.extend(crate_graph.modules.iter().map(|module| &module.ast));
         }
         asts
+    }
+}
+
+impl CrateGraph {
+    pub fn module_symbol_path(&self, module_id: ModuleId) -> Box<[SymbolU32]> {
+        let mut path = Vec::new();
+        let mut current = Some(module_id);
+
+        while let Some(id) = current {
+            let module = &self.modules[id.as_u32() as usize];
+            if let Some(name) = module.name {
+                path.push(name);
+            }
+            current = module.parent;
+        }
+
+        path.reverse();
+        path.into_boxed_slice()
     }
 }
 
@@ -390,7 +407,7 @@ fn load_crate_from_path(
         interner,
         id_generator,
     };
-    let root = loader.load_module(None, None, Vec::new(), entry_path.clone())?;
+    let root = loader.load_module(None, None, entry_path.clone())?;
 
     Ok(CrateGraph {
         id: crate_id,
@@ -422,8 +439,7 @@ fn load_crate_from_source(
         interner,
         id_generator,
     };
-    let root =
-        loader.load_module_with_source(None, None, Vec::new(), entry_path.clone(), source)?;
+    let root = loader.load_module_with_source(None, None, entry_path.clone(), source)?;
 
     Ok(CrateGraph {
         id: crate_id,
@@ -452,19 +468,17 @@ impl<'files, 'interner, 'source, S: FileSource + ?Sized> Loader<'files, 'interne
         &mut self,
         parent: Option<ModuleId>,
         name: Option<SymbolU32>,
-        path: Vec<SymbolU32>,
         file_path: PathBuf,
     ) -> Result<ModuleId, LoadError> {
         let source = self.file_source.read_to_string(&file_path)?;
 
-        self.load_module_with_source(parent, name, path, file_path, source)
+        self.load_module_with_source(parent, name, file_path, source)
     }
 
     fn load_module_with_source(
         &mut self,
         parent: Option<ModuleId>,
         name: Option<SymbolU32>,
-        path: Vec<SymbolU32>,
         file_path: PathBuf,
         source: String,
     ) -> Result<ModuleId, LoadError> {
@@ -502,7 +516,6 @@ impl<'files, 'interner, 'source, S: FileSource + ?Sized> Loader<'files, 'interne
             parent,
             children: Vec::new(),
             name,
-            path: path.clone().into_boxed_slice(),
             file_id,
             file_path: file_path.clone(),
             ast,
@@ -512,14 +525,7 @@ impl<'files, 'interner, 'source, S: FileSource + ?Sized> Loader<'files, 'interne
         for child_name in child_names {
             let child_path =
                 module_file_path(self.file_source, &file_path, child_name, self.interner)?;
-            let mut child_module_path = path.clone();
-            child_module_path.push(child_name);
-            let child_id = self.load_module(
-                Some(module_id),
-                Some(child_name),
-                child_module_path,
-                child_path,
-            )?;
+            let child_id = self.load_module(Some(module_id), Some(child_name), child_path)?;
             children.push(child_id);
         }
         self.modules[module_id.0 as usize].children = children;

@@ -1946,16 +1946,10 @@ impl<'input> Parser<'input> {
 
         let colon = parser.lexer.next_if(Token::Colon);
         let (ty, span) = match colon {
-            Some(colon) => {
-                let token = parser.lexer.peek();
-                match token.inner {
-                    Token::Identifier => {
-                        let ty = parser.parse_type_expression()?;
-                        let span = TextSpan::merge(name_span, ty.span);
-                        (Some(Box::new(ty)), span)
-                    }
-                    _ => (None, TextSpan::merge(name_span, colon.span)),
-                }
+            Some(_) => {
+                let ty = parser.parse_type_expression()?;
+                let span = TextSpan::merge(name_span, ty.span);
+                (Some(Box::new(ty)), span)
             }
             None => (None, name_span),
         };
