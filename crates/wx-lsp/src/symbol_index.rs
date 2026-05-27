@@ -511,7 +511,7 @@ fn index_expression(index: &mut SymbolIndex, func_idx: Option<FunctionIndex>, ex
 #[cfg(test)]
 mod tests {
     use string_interner::StringInterner;
-    use wx_compiler::ast;
+    use wx_compiler::{ast, vfs};
 
     use super::*;
 
@@ -520,7 +520,7 @@ mod tests {
         let source = "export fn add(a: i32, b: i32) -> i32 { a + b }";
 
         let mut interner = StringInterner::new();
-        let mut files = ast::Files::new();
+        let mut files = vfs::Files::new();
         let file_id = files
             .add("test.wx".to_string(), source.to_string())
             .unwrap();

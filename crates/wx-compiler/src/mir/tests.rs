@@ -1,13 +1,12 @@
 use indoc::indoc;
 
 use super::*;
-use crate::{ast, tir};
+use crate::{ast, tir, vfs};
 
 #[allow(unused)]
 struct TestCase {
     interner: ast::StringInterner,
-    files: ast::Files,
-    ast: ast::AST,
+    graph: vfs::CompilationGraph,
     tir: tir::TIR,
     mir: MIR,
 }
@@ -15,17 +14,17 @@ struct TestCase {
 impl TestCase {
     fn new(source: &str) -> Self {
         let mut interner = ast::StringInterner::new();
-        let mut files = ast::Files::new();
-        let file_id = files
-            .add("main.wx".to_string(), source.to_string())
-            .unwrap();
-        let ast = ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-        let tir = tir::TIR::build(&[&ast], &mut interner);
+        let graph = vfs::load_single_file_compilation(
+            "main.wx".to_string(),
+            source.to_string(),
+            &mut interner,
+        )
+        .unwrap();
+        let tir = tir::TIR::build(&graph, &mut interner);
         let mir = MIR::build(&tir, &interner);
         TestCase {
             interner,
-            files,
-            ast,
+            graph,
             tir,
             mir,
         }

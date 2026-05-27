@@ -3,13 +3,12 @@ use codespan_reporting::term::{self};
 use indoc::indoc;
 
 use super::*;
-use crate::{ast, mir, tir};
+use crate::{ast, mir, tir, vfs};
 
 #[allow(unused)]
 struct TestCase {
     interner: ast::StringInterner,
-    files: ast::Files,
-    ast: ast::AST,
+    graph: vfs::CompilationGraph,
     tir: tir::TIR,
     mir: mir::MIR,
     wasm: WasmModule,
@@ -19,11 +18,14 @@ struct TestCase {
 impl<'case> TestCase {
     fn new(source: &str) -> Self {
         let mut interner = ast::StringInterner::new();
-        let mut files = ast::Files::new();
-        let file_id = files
-            .add("main.wx".to_string(), source.to_string())
-            .unwrap();
-        let ast = ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+        let graph = vfs::load_single_file_compilation(
+            "main.wx".to_string(),
+            source.to_string(),
+            &mut interner,
+        )
+        .unwrap();
+        let crate_graph = graph.crate_graph(graph.entry_crate);
+        let ast = &crate_graph.modules[crate_graph.root.as_u32() as usize].ast;
         if ast.diagnostics.len() > 0
             && ast
                 .diagnostics
@@ -34,11 +36,12 @@ impl<'case> TestCase {
             let config = codespan_reporting::term::Config::default();
 
             for diagnostic in ast.diagnostics.iter() {
-                term::emit_to_io_write(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+                term::emit_to_io_write(&mut writer.lock(), &config, &graph.files, diagnostic)
+                    .unwrap();
             }
             std::process::exit(1);
         }
-        let tir = tir::TIR::build(&[&ast], &mut interner);
+        let tir = tir::TIR::build(&graph, &mut interner);
         if tir.diagnostics.len() > 0
             && tir
                 .diagnostics
@@ -49,7 +52,8 @@ impl<'case> TestCase {
             let config = codespan_reporting::term::Config::default();
 
             for diagnostic in tir.diagnostics.iter() {
-                term::emit_to_io_write(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+                term::emit_to_io_write(&mut writer.lock(), &config, &graph.files, diagnostic)
+                    .unwrap();
             }
             std::process::exit(1);
         }
@@ -61,8 +65,7 @@ impl<'case> TestCase {
 
         TestCase {
             interner,
-            files,
-            ast,
+            graph,
             tir,
             mir,
             wasm,

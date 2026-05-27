@@ -1,6 +1,7 @@
 use indoc::indoc;
 
 use super::*;
+use crate::vfs::Files;
 
 #[allow(unused)]
 struct TestCase {
@@ -16,7 +17,13 @@ impl TestCase {
         let file_id = files
             .add("main.wx".to_string(), source.to_string())
             .unwrap();
-        let ast = Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+        let mut id_generator = DefIdGenerator::new();
+        let ast = Parser::parse(
+            file_id,
+            &files.get(file_id).unwrap().source,
+            &mut interner,
+            &mut id_generator,
+        );
         TestCase {
             interner,
             files,
@@ -693,6 +700,20 @@ fn test_module_pub_items_and_associated_types() {
         impl_items.inner[0].inner.inner,
         ImplItem::AssociatedType { .. }
     ));
+}
+
+#[test]
+fn test_external_module_item() {
+    let case = TestCase::new("module math;");
+
+    assert!(case.ast.diagnostics.is_empty());
+
+    let Item::ModuleDeclaration { pub_span, name } = item(&case.ast, 0) else {
+        panic!("expected external module")
+    };
+
+    assert!(pub_span.is_none());
+    assert_eq!(case.interner.resolve(name.inner), Some("math"));
 }
 
 #[test]

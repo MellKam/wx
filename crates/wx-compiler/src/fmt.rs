@@ -192,7 +192,9 @@ impl Builder {
                 Item::Impl { .. } => todo!("fmt for impl items"),
                 Item::ImplTrait { .. } => todo!("fmt for impl trait items"),
                 Item::Const { .. } => todo!("fmt for const items"),
-                Item::Module { .. } => todo!("fmt for module items"),
+                Item::Module { .. } | Item::ModuleDeclaration { .. } => {
+                    todo!("fmt for module items")
+                }
                 Item::Trait { .. } => todo!("fmt for trait items"),
                 Item::Struct {
                     id: _,
@@ -879,7 +881,10 @@ impl Builder {
                 Node::Text("::".to_string()),
                 Self::build_type_expression(interner, &member.inner),
             ]),
-            TypeExpression::TraitApplication { name, assoc_bindings } => {
+            TypeExpression::TraitApplication {
+                name,
+                assoc_bindings,
+            } => {
                 let mut inner_parts: Vec<Node> = Vec::new();
                 for (i, sep) in assoc_bindings.inner.iter().enumerate() {
                     if i > 0 {
@@ -1052,6 +1057,7 @@ mod tests {
     use indoc::indoc;
 
     use super::*;
+    use crate::vfs::Files;
 
     #[allow(unused)]
     struct TestCase {
@@ -1067,7 +1073,13 @@ mod tests {
             let file_id = files
                 .add("main.wx".to_string(), source.to_string())
                 .unwrap();
-            let ast = Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
+            let mut id_generator = DefIdGenerator::new();
+            let ast = Parser::parse(
+                file_id,
+                &files.get(file_id).unwrap().source,
+                &mut interner,
+                &mut id_generator,
+            );
 
             TestCase {
                 interner,

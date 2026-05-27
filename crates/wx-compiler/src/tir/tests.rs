@@ -1,33 +1,57 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use codespan_reporting::diagnostic::Severity;
 use indoc::indoc;
 
 use super::*;
-use crate::ast::{AST, Files};
+use crate::vfs;
 
 #[allow(unused)]
 struct TestCase {
     interner: ast::StringInterner,
-    files: Files,
-    ast: AST,
+    graph: vfs::CompilationGraph,
     tir: TIR,
 }
 
 impl<'case> TestCase {
     fn new(source: &str) -> Self {
         let mut interner = ast::StringInterner::new();
-        let mut files = Files::new();
-
-        let file_id = files
-            .add("main.wx".to_string(), source.to_string())
-            .unwrap();
-        let ast = ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-
-        let tir = TIR::build(&[&ast], &mut interner);
+        let graph = vfs::load_single_file_compilation(
+            "main.wx".to_string(),
+            source.to_string(),
+            &mut interner,
+        )
+        .unwrap();
+        let tir = TIR::build(&graph, &mut interner);
 
         TestCase {
             interner,
-            files,
-            ast,
+            graph,
+            tir,
+        }
+    }
+
+    fn new_multi_file(entry_path: &str, source: &str, extra_files: &[(&str, &str)]) -> Self {
+        let mut workspace_files = HashMap::new();
+        for (path, source) in extra_files {
+            workspace_files.insert(PathBuf::from(path), (*source).to_string());
+        }
+        let file_source = vfs::VirtualFileSource::new(workspace_files);
+
+        let mut interner = ast::StringInterner::new();
+        let graph = vfs::load_single_file_compilation_with_source(
+            entry_path.to_string(),
+            source.to_string(),
+            &file_source,
+            &mut interner,
+        )
+        .unwrap();
+        let tir = TIR::build(&graph, &mut interner);
+
+        TestCase {
+            interner,
+            graph,
             tir,
         }
     }
@@ -84,6 +108,82 @@ fn test_parse_char_literal() {
         parse_char_literal("'ab'"),
         Err(CharLiteralError::TooLong)
     ));
+}
+
+#[test]
+fn test_build_with_crate_graph_lowers_child_module_items() {
+    let case = TestCase::new_multi_file(
+        "src/main.wx",
+        "module math;",
+        &[("src/math.wx", "fn add() -> i32 { 1 }")],
+    );
+
+    assert!(
+        case.tir
+            .functions
+            .iter()
+            .any(|function| case.interner.resolve(function.name.inner) == Some("add"))
+    );
+}
+
+#[test]
+fn test_build_with_crate_graph_cross_file_module_function_call_is_not_yet_resolved() {
+    let case = TestCase::new_multi_file(
+        "src/main.wx",
+        indoc! {"
+            module math;
+
+            fn main() -> i32 {
+                math::add()
+            }
+
+            export { main }
+        "},
+        &[("src/math.wx", "pub fn add() -> i32 { 1 }")],
+    );
+
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message == "undeclared identifier"),
+        "expected current cross-file module call limitation to surface as an undeclared identifier error, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_build_with_crate_graph_cross_file_module_type_access_is_not_yet_resolved() {
+    let case = TestCase::new_multi_file(
+        "src/main.wx",
+        indoc! {"
+            module shapes;
+
+            fn use_circle(circle: shapes::Circle) {
+                unreachable
+            }
+        "},
+        &[("src/shapes.wx", "pub struct Circle {}")],
+    );
+
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message == "undeclared type"),
+        "expected current cross-file module type limitation to surface as an undeclared type error, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -1036,7 +1136,8 @@ fn test_intrinsic_fn_declaration_is_valid() {
     );
 }
 
-// ── Memory namespace resolution ───────────────────────────────────────────────
+// ── Memory namespace resolution
+// ───────────────────────────────────────────────
 //
 // Minimal standard library preamble used by memory-related tests.
 
@@ -1078,13 +1179,18 @@ fn test_memory_index_const_resolves() {
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn test_memory_size_call_resolves() {
-    // `.size()` is a method from the Memory trait; calling it should produce no errors.
+    // `.size()` is a method from the Memory trait; calling it should produce no
+    // errors.
     let src = format!(
         "{STD}\n{}",
         indoc! {"
@@ -1096,13 +1202,18 @@ fn test_memory_size_call_resolves() {
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
 #[test]
 fn test_memory_grow_call_resolves() {
-    // `.grow()` is a method from the Memory trait; calling it should produce no errors.
+    // `.grow()` is a method from the Memory trait; calling it should produce no
+    // errors.
     let src = format!(
         "{STD}\n{}",
         indoc! {"
@@ -1114,7 +1225,11 @@ fn test_memory_grow_call_resolves() {
     assert!(
         case.tir.diagnostics.is_empty(),
         "unexpected diagnostics: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1139,7 +1254,8 @@ fn test_memory_unknown_member_is_error() {
 
 #[test]
 fn test_memory_as_value_in_expression() {
-    // Memory identifiers are valid value expressions (for method calls like MEM.grow(1)).
+    // Memory identifiers are valid value expressions (for method calls like
+    // MEM.grow(1)).
     let src = format!(
         "{STD}\n{}",
         indoc! {"
@@ -1158,8 +1274,8 @@ fn test_memory_as_value_in_expression() {
     );
 }
 
-// ── impl Trait errors ─────────────────────────────────────────────────────────
-
+// ── impl Trait errors
+// ─────────────────────────────────────────────────────────
 
 #[test]
 fn test_impl_struct_is_error() {
@@ -1192,7 +1308,8 @@ fn test_impl_undeclared_type_is_error() {
     );
 }
 
-// ── impl trait for type ───────────────────────────────────────────────────────
+// ── impl trait for type
+// ───────────────────────────────────────────────────────
 
 #[test]
 fn test_impl_trait_for_type_registers_trait_impl() {
@@ -1320,7 +1437,8 @@ fn test_impl_trait_function_origin_is_trait_impl() {
     );
 }
 
-// ── trait conformance check ───────────────────────────────────────────────────
+// ── trait conformance check
+// ───────────────────────────────────────────────────
 
 #[test]
 fn test_trait_conformance_missing_fn() {
@@ -1407,7 +1525,8 @@ fn test_trait_conformance_default_fn_not_required() {
     );
 }
 
-// ── supertrait bounds ─────────────────────────────────────────────────────────
+// ── supertrait bounds
+// ─────────────────────────────────────────────────────────
 
 #[test]
 fn test_supertrait_resolved() {
@@ -1536,7 +1655,8 @@ fn test_supertrait_satisfied_impl_no_errors() {
     );
 }
 
-// this is a temporary playground I'm using only for testing purposes, I will remove it later
+// this is a temporary playground I'm using only for testing purposes, I will
+// remove it later
 #[test]
 fn test_playground() {
     let case = TestCase::new(indoc! {"
@@ -1576,7 +1696,8 @@ fn test_playground() {
     insta::assert_yaml_snapshot!(case.tir);
 }
 
-// ── wasm module intrinsics ────────────────────────────────────────────────────
+// ── wasm module intrinsics
+// ────────────────────────────────────────────────────
 
 #[test]
 fn test_wasm_module_intrinsics_declare_cleanly() {
@@ -1632,7 +1753,8 @@ fn test_wasm_module_intrinsics_forward_ref_resolves() {
     );
 }
 
-// ── cyclic type dependency tests ──────────────────────────────────────────────
+// ── cyclic type dependency tests
+// ──────────────────────────────────────────────
 
 #[test]
 fn test_struct_direct_cycle_is_error() {
@@ -2307,10 +2429,18 @@ fn test_memory_tagged_nested_array() {
 
     let outer_ty = f.params[0].ty.inner;
     let (inner_ty, outer_tagged) = match &case.tir.type_pool[outer_ty as usize] {
-        Type::Array { of, size: 4, memory: Some(id), .. } if *id == heap_id => (*of, true),
+        Type::Array {
+            of,
+            size: 4,
+            memory: Some(id),
+            ..
+        } if *id == heap_id => (*of, true),
         _ => (0, false),
     };
-    assert!(outer_tagged, "outer array should be tagged with heap memory");
+    assert!(
+        outer_tagged,
+        "outer array should be tagged with heap memory"
+    );
     assert!(
         matches!(
             case.tir.type_pool[inner_ty as usize],
@@ -2332,7 +2462,10 @@ fn test_memory_tagged_non_pointer_is_error() {
             }
         "}
     ));
-    has_error(&case, "memory namespace can only prefix pointer, slice, or array");
+    has_error(
+        &case,
+        "memory namespace can only prefix pointer, slice, or array",
+    );
 }
 
 #[test]
@@ -2358,10 +2491,14 @@ fn test_untagged_and_tagged_pointer_are_distinct_types() {
 
     let untagged = f.params[0].ty.inner;
     let tagged = f.params[1].ty.inner;
-    assert_ne!(untagged, tagged, "*i32 and heap::*i32 must be distinct types");
+    assert_ne!(
+        untagged, tagged,
+        "*i32 and heap::*i32 must be distinct types"
+    );
 }
 
-// ── FunctionItem type tests ───────────────────────────────────────────────────
+// ── FunctionItem type tests
+// ───────────────────────────────────────────────────
 
 #[test]
 fn test_function_reference_has_function_item_type() {
@@ -2420,17 +2557,20 @@ fn test_generic_function_reference_has_function_item_not_fn_pointer() {
         .expect("function 'identity' not found")
         .id;
 
-    let has_function_item = case.tir.type_pool.iter().any(|t| {
-        matches!(t, Type::FunctionItem { id, .. } if *id == identity_id)
-    });
+    let has_function_item = case
+        .tir
+        .type_pool
+        .iter()
+        .any(|t| matches!(t, Type::FunctionItem { id, .. } if *id == identity_id));
     assert!(
         has_function_item,
         "expected Type::FunctionItem for generic 'identity'"
     );
 
-    // The function's own signature_index is still fn(TypeParam{0}) -> TypeParam{0} in
-    // the pool (needed for the function body), but function *reference* expressions
-    // must use FunctionItem, not expose that raw signature as their value type.
+    // The function's own signature_index is still fn(TypeParam{0}) ->
+    // TypeParam{0} in the pool (needed for the function body), but function
+    // *reference* expressions must use FunctionItem, not expose that raw
+    // signature as their value type.
 }
 
 #[test]
@@ -2469,11 +2609,10 @@ fn test_function_item_type_error_label_names_function() {
         "expected a type error when passing FunctionItem where fn pointer expected"
     );
     assert!(
-        case.tir.diagnostics.iter().any(|d| {
-            d.labels
-                .iter()
-                .any(|l| l.message.contains("identity"))
-        }),
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| { d.labels.iter().any(|l| l.message.contains("identity")) }),
         "error label must name the function 'identity', not show raw TypeParam signature"
     );
 }
@@ -2556,5 +2695,8 @@ fn test_function_item_wrong_signature_is_error() {
             apply(add, 5)
         }
     "});
-    has_error(&case, "type mismatch: add (fn(i32,i32)->i32) passed where fn(i32)->i32 expected");
+    has_error(
+        &case,
+        "type mismatch: add (fn(i32,i32)->i32) passed where fn(i32)->i32 expected",
+    );
 }

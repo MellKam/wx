@@ -4,9 +4,32 @@ use std::hash::Hash;
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use string_interner::symbol::SymbolU32;
 
-use crate::ast::{self, DefId, FileId, Separated, Spanned, TextSpan};
+use crate::ast::{self, DefId, Separated, Spanned, TextSpan};
+use crate::vfs::{CompilationGraph, FileId};
 
 pub type TypeIndex = u32;
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, PartialEq)]
+pub struct SourceSpan {
+    pub file_id: FileId,
+    pub span: TextSpan,
+}
+
+impl SourceSpan {
+    pub const fn new(file_id: FileId, span: TextSpan) -> Self {
+        Self { file_id, span }
+    }
+
+    fn primary_label(self) -> Label<FileId> {
+        Label::primary(self.file_id, self.span)
+    }
+
+    fn secondary_label(self) -> Label<FileId> {
+        Label::secondary(self.file_id, self.span)
+    }
+}
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -55,7 +78,8 @@ pub enum Type {
     Function {
         signature: FunctionSignature,
     },
-    /// Named function reference before coercion to a fn pointer. `type_args` is empty for uninstantiated generics.
+    /// Named function reference before coercion to a fn pointer. `type_args` is
+    /// empty for uninstantiated generics.
     FunctionItem {
         id: DefId,
         type_args: Box<[TypeIndex]>,
@@ -95,7 +119,8 @@ pub enum Type {
     Trait {
         trait_index: u32,
     },
-    /// Index into `Function::type_params`. All uses of the same param in a function share one interned instance.
+    /// Index into `Function::type_params`. All uses of the same param in a
+    /// function share one interned instance.
     TypeParam {
         param_index: u32,
     },
@@ -235,6 +260,7 @@ pub enum ConstValue {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Constant {
     pub id: DefId,
+    pub file_id: FileId,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<TypeIndex>,
     pub value: Option<ConstValue>,
@@ -242,17 +268,20 @@ pub struct Constant {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Trait {
+    pub file_id: FileId,
     pub name: ast::Spanned<SymbolU32>,
     pub supertraits: Vec<TraitIndex>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub members: HashMap<SymbolU32, ImplEntry>,
-    /// Checked during conformance to verify impl-provided types satisfy declared bounds.
+    /// Checked during conformance to verify impl-provided types satisfy
+    /// declared bounds.
     #[cfg_attr(test, serde(skip))]
     pub assoc_type_bounds: HashMap<SymbolU32, Box<[TraitIndex]>>,
     /// Used to demand-resolve members before reading `members`.
     #[cfg_attr(test, serde(skip))]
     pub member_def_ids: Vec<ast::DefId>,
-    /// E.g. `trait Memory32: Memory<Size = u32>` → {(Memory_idx, "Size") → u32}.
+    /// E.g. `trait Memory32: Memory<Size = u32>` → {(Memory_idx, "Size") →
+    /// u32}.
     #[cfg_attr(test, serde(skip))]
     pub supertrait_bindings: HashMap<(TraitIndex, SymbolU32), TypeIndex>,
 }
@@ -265,7 +294,6 @@ pub struct TraitImpl {
     /// Span of the trait name in the header; anchors conformance diagnostics.
     #[cfg_attr(test, serde(skip))]
     pub span: TextSpan,
-    #[cfg_attr(test, serde(skip))]
     pub file_id: FileId,
 }
 
@@ -323,7 +351,8 @@ pub enum ExprKind {
         callee: Box<Expression>,
         arguments: Box<[Expression]>,
     },
-    /// `type_args[i]` = concrete type substituted for `TypeParam { param_index: i }`.
+    /// `type_args[i]` = concrete type substituted for `TypeParam { param_index:
+    /// i }`.
     GenericCall {
         id: DefId,
         type_args: Box<[TypeIndex]>,
@@ -515,6 +544,7 @@ pub enum ExportItem {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Enum {
+    pub file_id: FileId,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: TypeIndex,
     pub variants: Box<[EnumVariant]>,
@@ -581,6 +611,7 @@ pub enum ImportValue {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Memory {
     pub id: DefId,
+    pub file_id: FileId,
     pub name: ast::Spanned<SymbolU32>,
     pub kind: MemoryKind,
     pub source: ItemSource,
@@ -588,6 +619,7 @@ pub struct Memory {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Module {
+    pub file_id: FileId,
     pub name: ast::Spanned<SymbolU32>,
     pub pub_span: Option<ast::TextSpan>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
@@ -596,6 +628,7 @@ pub struct Module {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct ImportModule {
+    pub file_id: FileId,
     pub external_name: ast::Spanned<SymbolU32>,
     pub internal_name: Option<ast::Spanned<SymbolU32>>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
@@ -643,7 +676,8 @@ pub enum ImplEntry {
     AssociatedConst {
         ty: TypeIndex,
     },
-    /// `ty` is `TypeParam` in trait declarations (a placeholder) and the concrete type in impls.
+    /// `ty` is `TypeParam` in trait declarations (a placeholder) and the
+    /// concrete type in impls.
     AssociatedType {
         ty: TypeIndex,
     },
@@ -712,6 +746,7 @@ pub struct TypeParamInfo {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Function {
     pub id: DefId,
+    pub file_id: FileId,
     pub pub_span: Option<ast::TextSpan>,
     pub source: ItemSource,
     pub origin: FunctionOrigin,
@@ -973,355 +1008,230 @@ define_diagnostic_codes! {
     }
 }
 
-struct MissingFunctionBodyDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
+fn report_missing_function_body(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::MissingFunctionBody.code())
+        .with_message("free function without a body")
+        .with_label(span.primary_label())
+        .with_note("provide a definition for the function: `{ <body> }`")
 }
 
-impl MissingFunctionBodyDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::MissingFunctionBody.code())
-            .with_message("free function without a body")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("provide a definition for the function: `{ <body> }`")
-    }
+fn report_invalid_memory_kind(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidMemoryKind.code())
+        .with_message("invalid memory kind")
+        .with_label(span.primary_label())
+        .with_note("expected `Memory32` or `Memory64`")
 }
 
-struct InvalidMemoryKindDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl InvalidMemoryKindDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::InvalidMemoryKind.code())
-            .with_message("invalid memory kind")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("expected `Memory32` or `Memory64`")
-    }
-}
-
-struct DuplicateDefinitionDiagnostic<'interner> {
-    file_id: FileId,
-    name: &'interner str,
+struct DuplicateDefinitionDiagnostic<'a> {
+    name: &'a str,
     namespace: SymbolNamespace,
-    first_definition: ast::TextSpan,
-    second_definition: ast::TextSpan,
+    first_definition: SourceSpan,
+    second_definition: SourceSpan,
 }
 
-impl DuplicateDefinitionDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
-        let namespace = match self.namespace {
-            SymbolNamespace::Type => "type",
-            SymbolNamespace::Value => "value",
-        };
-        Diagnostic::error()
-            .with_code(DiagnosticCode::DuplicateDefinition.code())
-            .with_message(format!(
-                "the name `{}` is defined multiple times",
-                self.name
-            ))
-            .with_label(Label::primary(self.file_id, self.second_definition))
-            .with_label(
-                Label::primary(self.file_id, self.first_definition).with_message(format!(
+fn report_duplicate_definition(
+    diagnostic: DuplicateDefinitionDiagnostic<'_>,
+) -> Diagnostic<FileId> {
+    let namespace = match diagnostic.namespace {
+        SymbolNamespace::Type => "type",
+        SymbolNamespace::Value => "value",
+    };
+    Diagnostic::error()
+        .with_code(DiagnosticCode::DuplicateDefinition.code())
+        .with_message(format!(
+            "the name `{}` is defined multiple times",
+            diagnostic.name
+        ))
+        .with_label(diagnostic.second_definition.primary_label())
+        .with_label(
+            diagnostic
+                .first_definition
+                .primary_label()
+                .with_message(format!(
                     "previous definition of the {} `{}` here",
-                    self.name, namespace
+                    diagnostic.name, namespace
                 )),
-            )
-    }
+        )
 }
 
-struct DuplicateParameterDiagnostic<'interner> {
-    file_id: FileId,
-    name: &'interner str,
-    first_definition: ast::TextSpan,
-    second_definition: ast::TextSpan,
+fn report_duplicate_parameter(
+    name: &str,
+    first_definition: SourceSpan,
+    second_definition: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::DuplicateDefinition.code())
+        .with_message(format!(
+            "identifier `{}` is bound more than once in this parameter list",
+            name
+        ))
+        .with_label(second_definition.primary_label())
+        .with_label(
+            first_definition
+                .secondary_label()
+                .with_message(format!("first use of `{}` as parameter", name)),
+        )
 }
 
-impl DuplicateParameterDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::DuplicateDefinition.code())
-            .with_message(format!(
-                "identifier `{}` is bound more than once in this parameter list",
-                self.name
-            ))
-            .with_label(Label::primary(self.file_id, self.second_definition))
-            .with_label(
-                Label::secondary(self.file_id, self.first_definition)
-                    .with_message(format!("first use of `{}` as parameter", self.name)),
-            )
-    }
+fn report_non_constant_global_initializer(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::NonConstantGlobalInitializer.code())
+        .with_message("global variable initializers can only contain constant expressions")
+        .with_label(span.primary_label())
 }
 
-struct NonConstantGlobalInitializerDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
+fn report_empty_char_literal(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidLiteral.code())
+        .with_message("empty character literal")
+        .with_label(span.primary_label())
 }
 
-impl NonConstantGlobalInitializerDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::NonConstantGlobalInitializer.code())
-            .with_message("global variable initializers can only contain constant expressions")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-struct EmptyCharLiteralDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl EmptyCharLiteralDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::InvalidLiteral.code())
-            .with_message("empty character literal")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-struct CharLiteralTooLongDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl CharLiteralTooLongDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::InvalidLiteral.code())
-            .with_message("character literal may only contain one codepoint")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("if you meant to write a string literal, use double quotes: `\"`, `\"`")
-    }
+fn report_char_literal_too_long(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidLiteral.code())
+        .with_message("character literal may only contain one codepoint")
+        .with_label(span.primary_label())
+        .with_note("if you meant to write a string literal, use double quotes: `\"`, `\"`")
 }
 
 struct TypeMistmatchDiagnostic {
-    file_id: FileId,
     expected_type: TypeIndex,
     actual_type: TypeIndex,
-    span: ast::TextSpan,
+    span: SourceSpan,
 }
 
-impl TypeMistmatchDiagnostic {
-    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::TypeMistmatch.code())
-            .with_message("type mismatch")
-            .with_label(
-                Label::primary(self.file_id, self.span).with_message(format!(
-                    "expected `{}`, found `{}`",
-                    builder.display_type(self.expected_type),
-                    builder.display_type(self.actual_type)
-                )),
-            )
-    }
+fn report_type_mistmatch(
+    builder: &Builder,
+    diagnostic: TypeMistmatchDiagnostic,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::TypeMistmatch.code())
+        .with_message("type mismatch")
+        .with_label(diagnostic.span.primary_label().with_message(format!(
+            "expected `{}`, found `{}`",
+            builder.display_type(diagnostic.expected_type),
+            builder.display_type(diagnostic.actual_type)
+        )))
 }
 
-struct TypeAnnotationRequiredDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
+fn report_type_annotation_required(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::TypeAnnotationRequired.code())
+        .with_message("type annotation required")
+        .with_label(span.primary_label())
 }
 
-impl TypeAnnotationRequiredDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::TypeAnnotationRequired.code())
-            .with_message("type annotation required")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_unused_variable(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::warning()
+        .with_code(DiagnosticCode::UnusedVariable.code())
+        .with_message("unused variable")
+        .with_label(span.primary_label())
 }
 
-struct UnusedVariableDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
+fn report_unused_function(name: String, span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::warning()
+        .with_code(DiagnosticCode::UnusedItem.code())
+        .with_message(format!("function `{}` is never used", name))
+        .with_label(span.primary_label())
 }
 
-impl UnusedVariableDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::warning()
-            .with_code(DiagnosticCode::UnusedVariable.code())
-            .with_message("unused variable")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_unused_global(name: String, span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::warning()
+        .with_code(DiagnosticCode::UnusedItem.code())
+        .with_message(format!("global variable `{}` is never used", name))
+        .with_label(span.primary_label())
 }
 
-struct UnusedFunctionDiagnostic {
-    file_id: FileId,
-    name: String,
-    span: ast::TextSpan,
+fn report_unnecessary_mutability(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::warning()
+        .with_code(DiagnosticCode::UnnecessaryMutability.code())
+        .with_message("unnecessary mutability")
+        .with_label(span.primary_label())
 }
 
-impl UnusedFunctionDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::warning()
-            .with_code(DiagnosticCode::UnusedItem.code())
-            .with_message(format!("function `{}` is never used", self.name))
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_unreachable_code(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::warning()
+        .with_code(DiagnosticCode::UnreachableCode.code())
+        .with_message("unreachable code")
+        .with_label(
+            span.primary_label()
+                .with_message("this code will never be executed"),
+        )
 }
 
-struct UnusedGlobalDiagnostic {
-    file_id: FileId,
-    name: String,
-    span: ast::TextSpan,
-}
-
-impl UnusedGlobalDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::warning()
-            .with_code(DiagnosticCode::UnusedItem.code())
-            .with_message(format!("global variable `{}` is never used", self.name))
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-struct UnnecessaryMutabilityDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl UnnecessaryMutabilityDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::warning()
-            .with_code(DiagnosticCode::UnnecessaryMutability.code())
-            .with_message("unnecessary mutability")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-struct UnreachableCodeDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl UnreachableCodeDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::warning()
-            .with_code(DiagnosticCode::UnreachableCode.code())
-            .with_message("unreachable code")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("this code will never be executed"),
-            )
-    }
-}
-
-struct UnusedValueDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl UnusedValueDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::UnusedValue.code())
-            .with_message("value must be used")
-            .with_label(Label::primary(self.file_id, self.span).with_message("value never used"))
-            .with_note("if you don't need the value, consider dropping it with assignment to `_`")
-    }
+fn report_unused_value(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UnusedValue.code())
+        .with_message("value must be used")
+        .with_label(span.primary_label().with_message("value never used"))
+        .with_note("if you don't need the value, consider dropping it with assignment to `_`")
 }
 
 struct IntegerLiteralOutOfRangeDiagnostic {
-    file_id: FileId,
     ty: TypeIndex,
     value: i64,
-    span: ast::TextSpan,
+    span: SourceSpan,
 }
 
-impl IntegerLiteralOutOfRangeDiagnostic {
-    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        // TODO: add the actual value and the type in the message, e.g.
-        // the literal `2_583` does not fit into the type `i8` whose range is
-        // `-128..=127` consider using the type `i16` instead
-        Diagnostic::error()
-            .with_code(DiagnosticCode::IntegerLiteralOutOfRange.code())
-            .with_message(format!(
-                "literal `{}` out of range for `{}`",
-                self.value,
-                builder.display_type(self.ty)
-            ))
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_integer_literal_out_of_range(
+    builder: &Builder,
+    diagnostic: IntegerLiteralOutOfRangeDiagnostic,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::IntegerLiteralOutOfRange.code())
+        .with_message(format!(
+            "literal `{}` out of range for `{}`",
+            diagnostic.value,
+            builder.display_type(diagnostic.ty)
+        ))
+        .with_label(diagnostic.span.primary_label())
 }
 
-struct UnableToCoerceDiagnostic {
-    file_id: FileId,
+fn report_unable_to_coerce(
+    builder: &Builder,
     target_type: TypeIndex,
-    span: ast::TextSpan,
+    span: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UnableToCoerce.code())
+        .with_message(format!(
+            "unable to coerce to type `{}`",
+            builder.display_type(target_type)
+        ))
+        .with_label(span.primary_label())
 }
 
-impl UnableToCoerceDiagnostic {
-    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::UnableToCoerce.code())
-            .with_message(format!(
-                "unable to coerce to type `{}`",
-                builder.display_type(self.target_type)
-            ))
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_integer_literal_for_float_type(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::IntegerLiteralForFloatType.code())
+        .with_message("cannot use an integer literal for a float type")
+        .with_label(span.primary_label())
+        .with_note("consider adding a decimal point, e.g. `1.0` instead of `1`")
 }
 
-struct IntegerLiteralForFloatTypeDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
+fn report_undeclared_identifier(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UndeclaredIdentifier.code())
+        .with_message("undeclared identifier")
+        .with_label(span.primary_label())
 }
 
-impl IntegerLiteralForFloatTypeDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::IntegerLiteralForFloatType.code())
-            .with_message("cannot use an integer literal for a float type")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("consider adding a decimal point, e.g. `1.0` instead of `1`")
-    }
+fn report_namespace_used_as_value(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::NamespaceUsedAsValue.code())
+        .with_message("expected a value, found a namespace")
+        .with_label(span.primary_label())
+        .with_note("use `::` to access members of this namespace")
 }
 
-struct UndeclaredIdentifierDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl UndeclaredIdentifierDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::UndeclaredIdentifier.code())
-            .with_message("undeclared identifier")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-struct NamespaceUsedAsValueDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl NamespaceUsedAsValueDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::NamespaceUsedAsValue.code())
-            .with_message("expected a value, found a namespace")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("use `::` to access members of this namespace")
-    }
-}
-
-struct UndeclaredTypeDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl UndeclaredTypeDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::UndeclaredType.code())
-            .with_message("undeclared type")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_undeclared_type(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UndeclaredType.code())
+        .with_message("undeclared type")
+        .with_label(span.primary_label())
 }
 
 struct BinaryOperatorCannotBeAppliedDiagnostic {
@@ -1330,18 +1240,22 @@ struct BinaryOperatorCannotBeAppliedDiagnostic {
     operand: Spanned<TypeIndex>,
 }
 
-impl BinaryOperatorCannotBeAppliedDiagnostic {
-    pub fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::BinaryOperatorCannotBeApplied.code())
-            .with_message(format!(
-                "operator `{}` cannot be applied to type `{}`",
-                self.operator.inner,
-                builder.display_type(self.operand.inner)
-            ))
-            .with_label(Label::primary(self.file_id, self.operand.span))
-            .with_label(Label::secondary(self.file_id, self.operator.span))
-    }
+fn report_binary_operator_cannot_be_applied(
+    builder: &Builder,
+    diagnostic: BinaryOperatorCannotBeAppliedDiagnostic,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::BinaryOperatorCannotBeApplied.code())
+        .with_message(format!(
+            "operator `{}` cannot be applied to type `{}`",
+            diagnostic.operator.inner,
+            builder.display_type(diagnostic.operand.inner)
+        ))
+        .with_label(Label::primary(diagnostic.file_id, diagnostic.operand.span))
+        .with_label(Label::secondary(
+            diagnostic.file_id,
+            diagnostic.operator.span,
+        ))
 }
 
 struct BinaryExpressionMistmatchDiagnostic {
@@ -1351,89 +1265,102 @@ struct BinaryExpressionMistmatchDiagnostic {
     right_type: Spanned<TypeIndex>,
 }
 
-impl BinaryExpressionMistmatchDiagnostic {
-    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        let left_type = builder.display_type(self.left_type.inner);
-        let right_type = builder.display_type(self.right_type.inner);
+fn report_binary_expression_mistmatch(
+    builder: &Builder,
+    diagnostic: BinaryExpressionMistmatchDiagnostic,
+) -> Diagnostic<FileId> {
+    let left_type_name = builder.display_type(diagnostic.left_type.inner);
+    let right_type_name = builder.display_type(diagnostic.right_type.inner);
 
-        let message = match self.operator.inner {
-            ast::BinaryOp::Add => format!("cannot add `{}` to `{}`", left_type, right_type),
-            ast::BinaryOp::Sub => format!("cannot subtract `{}` from `{}`", left_type, right_type),
-            ast::BinaryOp::Assign => format!("cannot assign `{}` to `{}`", left_type, right_type),
-            ast::BinaryOp::Mul => format!("cannot multiply `{}` by `{}`", left_type, right_type),
-            ast::BinaryOp::Div => format!("cannot divide `{}` by `{}`", left_type, right_type),
-            ast::BinaryOp::Rem => format!(
-                "cannot calculate the remainder of `{}` by `{}`",
-                left_type, right_type
-            ),
-            ast::BinaryOp::Eq
-            | ast::BinaryOp::NotEq
-            | ast::BinaryOp::Less
-            | ast::BinaryOp::LessEq
-            | ast::BinaryOp::Greater
-            | ast::BinaryOp::GreaterEq => {
-                format!("cannot compare `{}` to `{}`", left_type, right_type)
-            }
-            ast::BinaryOp::MulAssign => {
-                format!("cannot multiply-assign `{}` to `{}`", right_type, left_type)
-            }
-            ast::BinaryOp::DivAssign => {
-                format!("cannot divide-assign `{}` by `{}`", right_type, left_type)
-            }
-            ast::BinaryOp::RemAssign => {
-                format!(
-                    "cannot remainder-assign `{}` by `{}`",
-                    right_type, left_type
-                )
-            }
-            ast::BinaryOp::AddAssign => {
-                format!("cannot add-assign `{}` to `{}`", right_type, left_type)
-            }
-            ast::BinaryOp::SubAssign => {
-                format!(
-                    "cannot subtract-assign `{}` from `{}`",
-                    right_type, left_type
-                )
-            }
-            _ => {
-                format!(
-                    "cannot perform operation on `{}` and `{}`",
-                    left_type, right_type
-                )
-            }
-        };
+    let message = match diagnostic.operator.inner {
+        ast::BinaryOp::Add => format!("cannot add `{}` to `{}`", left_type_name, right_type_name),
+        ast::BinaryOp::Sub => format!(
+            "cannot subtract `{}` from `{}`",
+            left_type_name, right_type_name
+        ),
+        ast::BinaryOp::Assign => format!(
+            "cannot assign `{}` to `{}`",
+            left_type_name, right_type_name
+        ),
+        ast::BinaryOp::Mul => format!(
+            "cannot multiply `{}` by `{}`",
+            left_type_name, right_type_name
+        ),
+        ast::BinaryOp::Div => format!(
+            "cannot divide `{}` by `{}`",
+            left_type_name, right_type_name
+        ),
+        ast::BinaryOp::Rem => format!(
+            "cannot calculate the remainder of `{}` by `{}`",
+            left_type_name, right_type_name
+        ),
+        ast::BinaryOp::Eq
+        | ast::BinaryOp::NotEq
+        | ast::BinaryOp::Less
+        | ast::BinaryOp::LessEq
+        | ast::BinaryOp::Greater
+        | ast::BinaryOp::GreaterEq => {
+            format!(
+                "cannot compare `{}` to `{}`",
+                left_type_name, right_type_name
+            )
+        }
+        ast::BinaryOp::MulAssign => {
+            format!(
+                "cannot multiply-assign `{}` to `{}`",
+                right_type_name, left_type_name
+            )
+        }
+        ast::BinaryOp::DivAssign => {
+            format!(
+                "cannot divide-assign `{}` by `{}`",
+                right_type_name, left_type_name
+            )
+        }
+        ast::BinaryOp::RemAssign => format!(
+            "cannot remainder-assign `{}` by `{}`",
+            right_type_name, left_type_name
+        ),
+        ast::BinaryOp::AddAssign => {
+            format!(
+                "cannot add-assign `{}` to `{}`",
+                right_type_name, left_type_name
+            )
+        }
+        ast::BinaryOp::SubAssign => format!(
+            "cannot subtract-assign `{}` from `{}`",
+            right_type_name, left_type_name
+        ),
+        _ => format!(
+            "cannot perform operation on `{}` and `{}`",
+            left_type_name, right_type_name
+        ),
+    };
 
-        Diagnostic::error()
-            .with_message(message)
-            .with_label(
-                Label::secondary(self.file_id, self.left_type.span)
-                    .with_message(format!("`{}`", left_type)),
-            )
-            .with_label(
-                Label::primary(self.file_id, self.right_type.span)
-                    .with_message(format!("`{}`", right_type)),
-            )
-    }
+    Diagnostic::error()
+        .with_message(message)
+        .with_label(
+            Label::secondary(diagnostic.file_id, diagnostic.left_type.span)
+                .with_message(format!("`{}`", left_type_name)),
+        )
+        .with_label(
+            Label::primary(diagnostic.file_id, diagnostic.right_type.span)
+                .with_message(format!("`{}`", right_type_name)),
+        )
 }
 
-struct CannotCallExpressionDiagnostic {
-    file_id: FileId,
+fn report_cannot_call_expression(
+    builder: &Builder,
     ty: TypeIndex,
-    span: TextSpan,
-}
-
-impl CannotCallExpressionDiagnostic {
-    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::CannotCallExpression.code())
-            .with_message("call expression requires function")
-            .with_label(
-                Label::primary(self.file_id, self.span).with_message(format!(
-                    "expected function, found `{}`",
-                    builder.display_type(self.ty)
-                )),
-            )
-    }
+    span: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::CannotCallExpression.code())
+        .with_message("call expression requires function")
+        .with_label(span.primary_label().with_message(format!(
+            "expected function, found `{}`",
+            builder.display_type(ty)
+        )))
 }
 
 struct UnaryOperatorCannotBeAppliedDiagnostic {
@@ -1442,276 +1369,210 @@ struct UnaryOperatorCannotBeAppliedDiagnostic {
     operand: Spanned<TypeIndex>,
 }
 
-impl UnaryOperatorCannotBeAppliedDiagnostic {
-    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::UnaryOperatorCannotBeApplied.code())
-            .with_message(format!(
-                "operator `{}` cannot be applied to type `{}`",
-                self.operator.inner,
-                builder.display_type(self.operand.inner)
-            ))
-            .with_label(Label::primary(self.file_id, self.operand.span))
-            .with_label(Label::secondary(self.file_id, self.operator.span))
-    }
+fn report_unary_operator_cannot_be_applied(
+    builder: &Builder,
+    diagnostic: UnaryOperatorCannotBeAppliedDiagnostic,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UnaryOperatorCannotBeApplied.code())
+        .with_message(format!(
+            "operator `{}` cannot be applied to type `{}`",
+            diagnostic.operator.inner,
+            builder.display_type(diagnostic.operand.inner)
+        ))
+        .with_label(Label::primary(diagnostic.file_id, diagnostic.operand.span))
+        .with_label(Label::secondary(
+            diagnostic.file_id,
+            diagnostic.operator.span,
+        ))
 }
 
-struct UndeclaredLabelDiagnostic {
-    file_id: FileId,
-    span: TextSpan,
+fn report_undeclared_label(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UndeclaredLabel.code())
+        .with_message("undeclared label")
+        .with_label(span.primary_label())
 }
 
-impl UndeclaredLabelDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::UndeclaredLabel.code())
-            .with_message("undeclared label")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_break_outside_of_loop(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::BreakOutsideOfLoop.code())
+        .with_message("`break` outside of loop")
+        .with_label(span.primary_label())
+        .with_note("`break` is only allowed inside loops or labeled blocks")
 }
 
-struct BreakOutsideOfLoopDiagnostic {
-    file_id: FileId,
-    span: TextSpan,
+fn report_cannot_mutate_immutable(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::CannotMutateImmutable.code())
+        .with_message("cannot mutate immutable variable")
+        .with_label(span.primary_label())
 }
 
-impl BreakOutsideOfLoopDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        // TODO: we can break from if else expressions as well, so the message should be
-        // more general, e.g. "`break` outside of loop or labeled block"
-        Diagnostic::error()
-            .with_code(DiagnosticCode::BreakOutsideOfLoop.code())
-            .with_message("`break` outside of loop")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("`break` is only allowed inside loops or labeled blocks")
-    }
+fn report_invalid_assignment_target(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidAssignmentTarget.code())
+        .with_message("invalid assignment target")
+        .with_label(
+            span.primary_label()
+                .with_message("cannot assign to this expression"),
+        )
+        .with_note("assignment only allowed to a variable or `_`")
 }
 
-struct CannotMutateImmutableDiagnostic {
-    file_id: FileId,
-    span: TextSpan,
+fn report_duplicate_export(
+    name: &str,
+    first_export: SourceSpan,
+    second_export: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::DuplicateExport.code())
+        .with_message(format!("the name `{}` is exported multiple times", name))
+        .with_label(second_export.primary_label())
+        .with_label(
+            first_export
+                .secondary_label()
+                .with_message(format!("previous export of `{}` here", name)),
+        )
+        .with_note(format!(
+            "`{}` can only be exported once from this module",
+            name
+        ))
 }
 
-impl CannotMutateImmutableDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::CannotMutateImmutable.code())
-            .with_message("cannot mutate immutable variable")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_comparison_type_annotation_required(
+    left: SourceSpan,
+    right: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::ComparisonTypeAnnotationRequired.code())
+        .with_message("type annotation required")
+        .with_label(left.primary_label())
+        .with_label(right.primary_label())
+        .with_note("at least one side of the comparison must have a known type")
 }
 
-struct InvalidAssignmentTargetDiagnostic {
-    file_id: FileId,
-    span: TextSpan,
+fn report_cannot_export_item(name: &str, span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::CannotExportItem.code())
+        .with_message(format!("cannot export `{}`", name))
+        .with_label(span.primary_label())
+        .with_note("only functions and global variables can be exported")
 }
 
-impl InvalidAssignmentTargetDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::InvalidAssignmentTarget.code())
-            .with_message("invalid assignment target")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("cannot assign to this expression"),
-            )
-            .with_note("assignment only allowed to a variable or `_`")
-    }
-}
-
-struct DuplicateExportDiagnostic<'interner> {
-    file_id: FileId,
-    name: &'interner str,
-    first_export: TextSpan,
-    second_export: TextSpan,
-}
-
-impl DuplicateExportDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::DuplicateExport.code())
-            .with_message(format!(
-                "the name `{}` is exported multiple times",
-                self.name
-            ))
-            .with_label(Label::primary(self.file_id, self.second_export))
-            .with_label(
-                Label::secondary(self.file_id, self.first_export)
-                    .with_message(format!("previous export of `{}` here", self.name)),
-            )
-            .with_note(format!(
-                "`{}` can only be exported once from this module",
-                self.name
-            ))
-    }
-}
-
-struct ComparisonTypeAnnotationRequiredDiagnostic {
-    file_id: FileId,
-    left: TextSpan,
-    right: TextSpan,
-}
-
-impl ComparisonTypeAnnotationRequiredDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::ComparisonTypeAnnotationRequired.code())
-            .with_message("type annotation required")
-            .with_label(Label::primary(self.file_id, self.left))
-            .with_label(Label::primary(self.file_id, self.right))
-            .with_note("at least one side of the comparison must have a known type")
-    }
-}
-
-struct CannotExportItemDiagnostic<'interner> {
-    file_id: FileId,
-    name: &'interner str,
-    span: TextSpan,
-}
-
-impl CannotExportItemDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::CannotExportItem.code())
-            .with_message(format!("cannot export `{}`", self.name))
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("only functions and global variables can be exported")
-    }
-}
-
-struct NotANamespaceDiagnostic {
-    file_id: FileId,
-    span: TextSpan,
+fn report_not_a_namespace(
+    builder: &Builder,
+    span: SourceSpan,
     ty: TypeIndex,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::NotANamespace.code())
+        .with_message(format!(
+            "type `{}` is not a namespace",
+            builder.display_type(ty)
+        ))
+        .with_label(span.primary_label())
 }
 
-impl NotANamespaceDiagnostic {
-    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::NotANamespace.code())
-            .with_message(format!(
-                "type `{}` is not a namespace",
-                builder.display_type(self.ty)
-            ))
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_expected_trait(span: SourceSpan, kind: SymbolKind, name: String) -> Diagnostic<FileId> {
+    let found = match kind {
+        SymbolKind::Struct { .. } => "struct",
+        SymbolKind::Enum { .. } => "enum",
+        SymbolKind::ImportModule { .. } => "import module",
+        SymbolKind::Memory { .. } => "memory",
+        SymbolKind::Module { .. } => "module",
+        SymbolKind::Function { .. } => "function",
+        SymbolKind::Global { .. } => "global",
+        SymbolKind::Const { .. } => "constant",
+        SymbolKind::Pending(_) => unreachable!(),
+        _ => "value",
+    };
+    Diagnostic::error()
+        .with_code(DiagnosticCode::ExpectedTrait.code())
+        .with_message(format!("expected trait, found {} `{}`", found, name))
+        .with_label(span.primary_label())
 }
 
-struct ExpectedTraitDiagnostic {
-    file_id: FileId,
-    span: TextSpan,
-    kind: SymbolKind,
-    name: String,
-}
-
-impl ExpectedTraitDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        let found = match self.kind {
-            SymbolKind::Struct { .. } => "struct",
-            SymbolKind::Enum { .. } => "enum",
-            SymbolKind::ImportModule { .. } => "import module",
-            SymbolKind::Memory { .. } => "memory",
-            SymbolKind::Module { .. } => "module",
-            SymbolKind::Function { .. } => "function",
-            SymbolKind::Global { .. } => "global",
-            SymbolKind::Const { .. } => "constant",
-            SymbolKind::Pending(_) => unreachable!(),
-            _ => "value",
-        };
-        Diagnostic::error()
-            .with_code(DiagnosticCode::ExpectedTrait.code())
-            .with_message(format!("expected trait, found {} `{}`", found, self.name))
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-struct CyclicTypeDependencyDiagnostic {
-    file_id: FileId,
-    span: TextSpan,
-}
-
-impl CyclicTypeDependencyDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::CyclicTypeDependency.code())
-            .with_message("cyclic type dependency")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note(
-                "types cannot have infinite size; consider using a pointer to break the cycle",
-            )
-    }
+fn report_cyclic_type_dependency(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::CyclicTypeDependency.code())
+        .with_message("cyclic type dependency")
+        .with_label(span.primary_label())
+        .with_note("types cannot have infinite size; consider using a pointer to break the cycle")
 }
 
 struct ArgumentCountMismatchDiagnostic<'a> {
-    file_id: FileId,
     actual_count: usize,
     params: &'a [TypeIndex],
-    call_span: TextSpan,
+    call_span: SourceSpan,
     is_method: bool,
 }
 
-impl ArgumentCountMismatchDiagnostic<'_> {
-    fn report(self, builder: &Builder) -> Diagnostic<FileId> {
-        let mut diagnostic = Diagnostic::error()
-            .with_code(DiagnosticCode::ArgumentCountMismatch.code())
-            .with_message(format!(
-                "this {} takes {} {} but {} {} supplied",
-                if self.is_method { "method" } else { "function" },
-                self.params.len(),
-                if self.params.len() == 1 {
-                    "argument"
-                } else {
-                    "arguments"
-                },
-                self.actual_count,
-                if self.actual_count == 1 {
-                    "argument was"
-                } else {
-                    "arguments were"
-                },
-            ))
-            .with_label(Label::primary(self.file_id, self.call_span));
-
-        if self.actual_count < self.params.len() {
-            // Missing arguments
-            let missing_count = self.params.len() - self.actual_count;
-            let missing_types: Vec<String> = self.params[self.actual_count..]
-                .iter()
-                .map(|ty| builder.display_type(*ty))
-                .collect();
-
-            if missing_count == 1 {
-                diagnostic = diagnostic.with_note(format!(
-                    "argument #{} of type `{}` is missing",
-                    self.actual_count + 1,
-                    missing_types[0]
-                ));
+fn report_argument_count_mismatch(
+    builder: &Builder,
+    details: ArgumentCountMismatchDiagnostic<'_>,
+) -> Diagnostic<FileId> {
+    let mut diagnostic = Diagnostic::error()
+        .with_code(DiagnosticCode::ArgumentCountMismatch.code())
+        .with_message(format!(
+            "this {} takes {} {} but {} {} supplied",
+            if details.is_method {
+                "method"
             } else {
-                let types_str = missing_types.join("`, `");
-                diagnostic = diagnostic.with_note(format!(
-                    "{} arguments of type `{}` are missing",
-                    missing_count.to_string(),
-                    types_str
-                ));
-            }
+                "function"
+            },
+            details.params.len(),
+            if details.params.len() == 1 {
+                "argument"
+            } else {
+                "arguments"
+            },
+            details.actual_count,
+            if details.actual_count == 1 {
+                "argument was"
+            } else {
+                "arguments were"
+            },
+        ))
+        .with_label(details.call_span.primary_label());
+
+    if details.actual_count < details.params.len() {
+        let missing_count = details.params.len() - details.actual_count;
+        let missing_types: Vec<String> = details.params[details.actual_count..]
+            .iter()
+            .map(|ty| builder.display_type(*ty))
+            .collect();
+
+        if missing_count == 1 {
+            diagnostic = diagnostic.with_note(format!(
+                "argument #{} of type `{}` is missing",
+                details.actual_count + 1,
+                missing_types[0]
+            ));
         } else {
-            // Extra arguments
-            let extra_count = self.actual_count - self.params.len();
-            if extra_count == 1 {
-                diagnostic =
-                    diagnostic.with_note(format!("unexpected argument #{}", self.actual_count));
-            } else {
-                diagnostic = diagnostic.with_note(format!("{} unexpected arguments", extra_count));
-            }
+            let types_str = missing_types.join("`, `");
+            diagnostic = diagnostic.with_note(format!(
+                "{} arguments of type `{}` are missing",
+                missing_count, types_str
+            ));
         }
-
-        diagnostic
+    } else {
+        let extra_count = details.actual_count - details.params.len();
+        if extra_count == 1 {
+            diagnostic =
+                diagnostic.with_note(format!("unexpected argument #{}", details.actual_count));
+        } else {
+            diagnostic = diagnostic.with_note(format!("{} unexpected arguments", extra_count));
+        }
     }
+
+    diagnostic
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Global {
     pub id: DefId,
+    pub file_id: FileId,
     pub source: ItemSource,
     pub accesses: Vec<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
@@ -1730,45 +1591,38 @@ pub struct StructField {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Struct {
+    pub file_id: FileId,
     pub name: ast::Spanned<SymbolU32>,
     pub fields: Box<[StructField]>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, usize>,
 }
 
-struct DuplicateStructFieldDiagnostic<'a> {
-    file_id: FileId,
-    name: &'a str,
-    first_span: ast::TextSpan,
-    second_span: ast::TextSpan,
+fn report_duplicate_struct_field(
+    name: &str,
+    first_span: SourceSpan,
+    second_span: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::DuplicateStructField.code())
+        .with_message(format!("field `{}` is already declared", name))
+        .with_label(second_span.primary_label())
+        .with_label(
+            first_span
+                .secondary_label()
+                .with_message(format!("`{}` first declared here", name)),
+        )
 }
 
-impl DuplicateStructFieldDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::DuplicateStructField.code())
-            .with_message(format!("field `{}` is already declared", self.name))
-            .with_label(Label::primary(self.file_id, self.second_span))
-            .with_label(
-                Label::secondary(self.file_id, self.first_span)
-                    .with_message(format!("`{}` first declared here", self.name)),
-            )
-    }
-}
-
-struct NotAStructTypeDiagnostic {
+fn report_not_a_struct_type(
     file_id: FileId,
     name: String,
     span: ast::TextSpan,
-}
-
-impl NotAStructTypeDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::TypeMistmatch.code())
-            .with_message(format!("expected struct, found `{}`", self.name))
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::TypeMistmatch.code())
+        .with_message(format!("expected struct, found `{}`", name))
+        .with_label(Label::primary(file_id, span))
 }
 
 struct UnknownStructFieldDiagnostic<'a> {
@@ -1778,39 +1632,30 @@ struct UnknownStructFieldDiagnostic<'a> {
     field_span: ast::TextSpan,
 }
 
-impl UnknownStructFieldDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::UnknownStructField.code())
-            .with_message(format!(
-                "no such field `{}` in struct `{}`",
-                self.field_name, self.struct_name
-            ))
-            .with_label(Label::primary(self.file_id, self.field_span))
-    }
+fn report_unknown_struct_field(details: UnknownStructFieldDiagnostic<'_>) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UnknownStructField.code())
+        .with_message(format!(
+            "no such field `{}` in struct `{}`",
+            details.field_name, details.struct_name
+        ))
+        .with_label(Label::primary(details.file_id, details.field_span))
 }
 
-struct DuplicateStructFieldInitDiagnostic<'a> {
-    file_id: FileId,
-    field_name: &'a str,
-    first_span: ast::TextSpan,
-    second_span: ast::TextSpan,
-}
-
-impl DuplicateStructFieldInitDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::DuplicateStructFieldInit.code())
-            .with_message(format!(
-                "field `{}` specified more than once",
-                self.field_name
-            ))
-            .with_label(Label::primary(self.file_id, self.second_span))
-            .with_label(
-                Label::secondary(self.file_id, self.first_span)
-                    .with_message("first use of this field"),
-            )
-    }
+fn report_duplicate_struct_field_init(
+    field_name: &str,
+    first_span: SourceSpan,
+    second_span: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::DuplicateStructFieldInit.code())
+        .with_message(format!("field `{}` specified more than once", field_name))
+        .with_label(second_span.primary_label())
+        .with_label(
+            first_span
+                .secondary_label()
+                .with_message("first use of this field"),
+        )
 }
 
 struct MissingStructFieldsDiagnostic<'a> {
@@ -1820,37 +1665,28 @@ struct MissingStructFieldsDiagnostic<'a> {
     init_span: ast::TextSpan,
 }
 
-impl MissingStructFieldsDiagnostic<'_> {
-    fn report(self) -> Diagnostic<FileId> {
-        let fields_str = self
-            .missing_fields
-            .iter()
-            .map(|f| format!("`{}`", f))
-            .collect::<Vec<_>>()
-            .join(", ");
-        Diagnostic::error()
-            .with_code(DiagnosticCode::MissingStructFields.code())
-            .with_message(format!(
-                "missing fields {} in initializer of `{}`",
-                fields_str, self.struct_name
-            ))
-            .with_label(Label::primary(self.file_id, self.init_span))
-    }
+fn report_missing_struct_fields(details: MissingStructFieldsDiagnostic<'_>) -> Diagnostic<FileId> {
+    let fields_str = details
+        .missing_fields
+        .iter()
+        .map(|field| format!("`{}`", field))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Diagnostic::error()
+        .with_code(DiagnosticCode::MissingStructFields.code())
+        .with_message(format!(
+            "missing fields {} in initializer of `{}`",
+            fields_str, details.struct_name
+        ))
+        .with_label(Label::primary(details.file_id, details.init_span))
 }
 
-struct AssociatedTypeInInherentImplDiagnostic {
-    file_id: FileId,
-    span: ast::TextSpan,
-}
-
-impl AssociatedTypeInInherentImplDiagnostic {
-    fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::AssociatedTypeInInherentImpl.code())
-            .with_message("associated types are not allowed in inherent impl blocks")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_note("associated types can only be defined in `impl Trait for Type` blocks")
-    }
+fn report_associated_type_in_inherent_impl(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::AssociatedTypeInInherentImpl.code())
+        .with_message("associated types are not allowed in inherent impl blocks")
+        .with_label(span.primary_label())
+        .with_note("associated types can only be defined in `impl Trait for Type` blocks")
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -1864,99 +1700,100 @@ enum ComputeState {
 enum AstNodeRef<'ast> {
     /// Top-level `fn` or `#[intrinsic]` declaration.
     Function {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
     ImplMethod {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
     /// `trait` function with or without a default body.
     TraitFunction {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     TraitConst {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     TraitAssociatedType {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     Struct {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
     Enum {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
     Global {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
     Memory {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
     Const {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
     ImplConst {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
     /// Creates the `TraitImpl` entry when resolved.
     ImplTraitBlock {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         item: &'ast ast::Item,
     },
     ImplTraitMethod {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
-        /// Parent `ImplTraitBlock` must be resolved before this can insert into `TraitImpl.members`.
+        /// Parent `ImplTraitBlock` must be resolved before this can insert into
+        /// `TraitImpl.members`.
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
     ImplTraitConst {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
     ImplTraitAssociatedType {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
     Trait {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         trait_index: TraitIndex,
         item: &'ast ast::Item,
     },
     ImportedFunction {
-        file_id: ast::FileId,
+        file_id: FileId,
         module_path: Box<[ModuleIndex]>,
         import_module_index: u32,
         decl: &'ast ast::ImportDeclaration,
@@ -1964,7 +1801,7 @@ enum AstNodeRef<'ast> {
 }
 
 impl AstNodeRef<'_> {
-    fn file_id(&self) -> ast::FileId {
+    fn file_id(&self) -> FileId {
         match self {
             AstNodeRef::Function { file_id, .. }
             | AstNodeRef::ImplMethod { file_id, .. }
@@ -2012,7 +1849,7 @@ impl AstNodeRef<'_> {
 struct Builder<'ast, 'interner> {
     // ── traversal cursor ──────────────────────────────────────────────────────
     // These four are saved/restored around every ensure_signature / ensure_body call.
-    file_id: ast::FileId,
+    file_id: FileId,
     module_scope: Vec<ModuleIndex>,
     current_self_type: Option<TypeIndex>,
     current_type_params: Vec<TypeParamInfo>,
@@ -2053,7 +1890,8 @@ struct Builder<'ast, 'interner> {
     ast_nodes: HashMap<ast::DefId, AstNodeRef<'ast>>,
     /// Prevents re-entrant ensure_signature calls.
     sig_state: HashMap<ast::DefId, ComputeState>,
-    /// Maps ImplTraitBlock DefId → TraitImplIndex; populated when the block resolves.
+    /// Maps ImplTraitBlock DefId → TraitImplIndex; populated when the block
+    /// resolves.
     trait_impl_block_lookup: HashMap<ast::DefId, TraitImplIndex>,
 }
 
@@ -2124,13 +1962,11 @@ impl<'ast> Builder<'ast, '_> {
                 match self.lookup_symbol(SymbolNamespace::Type, symbol).cloned() {
                     Some(SymbolKind::Pending(def_id)) => {
                         if self.sig_state.get(&def_id) == Some(&ComputeState::InProgress) {
-                            self.diagnostics.push(
-                                CyclicTypeDependencyDiagnostic {
-                                    file_id: self.file_id,
-                                    span: type_expr.span,
-                                }
-                                .report(),
-                            );
+                            self.diagnostics
+                                .push(report_cyclic_type_dependency(SourceSpan::new(
+                                    self.file_id,
+                                    type_expr.span,
+                                )));
                             return Type::ERROR_IDX;
                         }
                         self.ensure_signature(def_id);
@@ -2151,13 +1987,11 @@ impl<'ast> Builder<'ast, '_> {
                     None => {}
                 }
 
-                self.diagnostics.push(
-                    UndeclaredTypeDiagnostic {
-                        file_id: self.file_id,
-                        span: type_expr.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_undeclared_type(SourceSpan::new(
+                        self.file_id,
+                        type_expr.span,
+                    )));
                 Type::ERROR_IDX
             }
             ast::TypeExpression::Function { params, result } => {
@@ -2274,13 +2108,11 @@ impl<'ast> Builder<'ast, '_> {
                         }
                     }
 
-                    self.diagnostics.push(
-                        UndeclaredTypeDiagnostic {
-                            file_id: self.file_id,
-                            span: member.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_undeclared_type(SourceSpan::new(
+                            self.file_id,
+                            member.span,
+                        )));
                     Type::ERROR_IDX
                 } else if let Some(module_index) = module_index {
                     // `module::Type`
@@ -2316,13 +2148,11 @@ impl<'ast> Builder<'ast, '_> {
                         }
                         Some(k) => self.symbol_kind_to_type(k).unwrap_or(Type::ERROR_IDX),
                         None => {
-                            self.diagnostics.push(
-                                UndeclaredTypeDiagnostic {
-                                    file_id: self.file_id,
-                                    span: member.span,
-                                }
-                                .report(),
-                            );
+                            self.diagnostics
+                                .push(report_undeclared_type(SourceSpan::new(
+                                    self.file_id,
+                                    member.span,
+                                )));
                             Type::ERROR_IDX
                         }
                     }
@@ -2394,25 +2224,19 @@ impl<'ast> Builder<'ast, '_> {
                     Some(SymbolKind::Pending(_)) => Type::ERROR_IDX,
                     Some(kind) => {
                         let name_str = self.interner.resolve(name.inner).unwrap().to_string();
-                        self.diagnostics.push(
-                            ExpectedTraitDiagnostic {
-                                file_id: self.file_id,
-                                span: name.span,
-                                kind,
-                                name: name_str,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics.push(report_expected_trait(
+                            SourceSpan::new(self.file_id, name.span),
+                            kind,
+                            name_str,
+                        ));
                         Type::ERROR_IDX
                     }
                     None => {
-                        self.diagnostics.push(
-                            UndeclaredTypeDiagnostic {
-                                file_id: self.file_id,
-                                span: name.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_undeclared_type(SourceSpan::new(
+                                self.file_id,
+                                name.span,
+                            )));
                         Type::ERROR_IDX
                     }
                 }
@@ -2610,37 +2434,49 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn get_symbol_span(&self, symbol: SymbolKind) -> TextSpan {
+    fn get_symbol_location(&self, symbol: SymbolKind) -> SourceSpan {
         match symbol {
             SymbolKind::Function { func_index } => {
                 let func = &self.functions[func_index as usize];
-                func.name.span
+                SourceSpan::new(func.file_id, func.name.span)
             }
             SymbolKind::Global { global_index } => {
                 let global = &self.globals[global_index as usize];
-                global.name.span
+                SourceSpan::new(global.file_id, global.name.span)
             }
             SymbolKind::Const { const_index } => {
                 let const_ = &self.constants[const_index as usize];
-                const_.name.span
+                SourceSpan::new(const_.file_id, const_.name.span)
             }
             SymbolKind::ImportModule { module_index } => {
                 let module = &self.import_modules[module_index as usize];
-                match &module.internal_name {
-                    Some(internal_name) => internal_name.span,
-                    None => module.external_name.span,
-                }
+                SourceSpan::new(
+                    module.file_id,
+                    match &module.internal_name {
+                        Some(internal_name) => internal_name.span,
+                        None => module.external_name.span,
+                    },
+                )
             }
-            SymbolKind::Enum { enum_index } => self.enums[enum_index as usize].name.span,
+            SymbolKind::Enum { enum_index } => {
+                let enum_ = &self.enums[enum_index as usize];
+                SourceSpan::new(enum_.file_id, enum_.name.span)
+            }
             SymbolKind::Struct { struct_index } => {
                 let s = &self.structs[struct_index as usize];
-                s.name.span
+                SourceSpan::new(s.file_id, s.name.span)
             }
-            SymbolKind::Module { module_index } => self.modules[module_index as usize].name.span,
-            SymbolKind::Trait { trait_index } => self.traits[trait_index as usize].name.span,
+            SymbolKind::Module { module_index } => {
+                let module = &self.modules[module_index as usize];
+                SourceSpan::new(module.file_id, module.name.span)
+            }
+            SymbolKind::Trait { trait_index } => {
+                let trait_ = &self.traits[trait_index as usize];
+                SourceSpan::new(trait_.file_id, trait_.name.span)
+            }
             SymbolKind::Memory { memory_index, .. } => {
                 let memory = &self.memories[memory_index as usize];
-                memory.name.span
+                SourceSpan::new(memory.file_id, memory.name.span)
             }
             // these are keywords and will be handled at the parser level
             SymbolKind::False
@@ -2653,8 +2489,9 @@ impl<'ast> Builder<'ast, '_> {
 
     // ── pre-scan ──────────────────────────────────────────────────────────────
 
-    /// Phase 1: registers every named item into `ast_nodes` without resolving types.
-    fn pre_scan_item(&mut self, item: &'ast ast::Item, file_id: ast::FileId) {
+    /// Phase 1: registers every named item into `ast_nodes` without resolving
+    /// types.
+    fn pre_scan_item(&mut self, item: &'ast ast::Item, file_id: FileId) {
         let module_path: Box<[ModuleIndex]> = self.module_scope.clone().into_boxed_slice();
 
         match item {
@@ -2775,6 +2612,7 @@ impl<'ast> Builder<'ast, '_> {
                 // Modules are structural — register eagerly and recurse.
                 let module_index = self.modules.len() as u32;
                 self.modules.push(Module {
+                    file_id,
                     name: name.clone(),
                     pub_span: *pub_span,
                     symbol_lookup: HashMap::new(),
@@ -2789,6 +2627,19 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 self.module_scope.pop();
             }
+            ast::Item::ModuleDeclaration { name, pub_span } => {
+                let module_index = self.modules.len() as u32;
+                self.modules.push(Module {
+                    file_id,
+                    name: name.clone(),
+                    pub_span: *pub_span,
+                    symbol_lookup: HashMap::new(),
+                });
+                self.insert_symbol(
+                    (SymbolNamespace::Type, name.inner),
+                    SymbolKind::Module { module_index },
+                );
+            }
             ast::Item::Trait {
                 id,
                 name,
@@ -2800,6 +2651,7 @@ impl<'ast> Builder<'ast, '_> {
                 // each item's DefId so ensure_signature can fill it in on demand.
                 let trait_index = self.traits.len() as u32;
                 self.traits.push(Trait {
+                    file_id,
                     name: name.clone(),
                     supertraits: Vec::new(),
                     members: HashMap::new(),
@@ -2902,13 +2754,10 @@ impl<'ast> Builder<'ast, '_> {
                             );
                         }
                         ast::ImplItem::AssociatedType { name, .. } => {
-                            self.diagnostics.push(
-                                AssociatedTypeInInherentImplDiagnostic {
-                                    file_id,
-                                    span: name.span,
-                                }
-                                .report(),
-                            );
+                            self.diagnostics
+                                .push(report_associated_type_in_inherent_impl(SourceSpan::new(
+                                    file_id, name.span,
+                                )));
                         }
                     }
                 }
@@ -2986,6 +2835,7 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 // Build the ImportModule container (empty lookup; ensure_signature fills it).
                 let import_module_obj = ImportModule {
+                    file_id,
                     external_name,
                     internal_name: alias.clone(),
                     lookup: HashMap::new(),
@@ -3045,7 +2895,8 @@ impl<'ast> Builder<'ast, '_> {
 
     // ── query: ensure_signature ───────────────────────────────────────────────
 
-    /// Resolves the signature of `def_id`. Idempotent; detects cycles via `sig_state`.
+    /// Resolves the signature of `def_id`. Idempotent; detects cycles via
+    /// `sig_state`.
     fn ensure_signature(&mut self, def_id: ast::DefId) {
         match self.sig_state.get(&def_id) {
             Some(ComputeState::Done) => return,
@@ -3086,23 +2937,22 @@ impl<'ast> Builder<'ast, '_> {
                     .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                     .cloned()
                 {
-                    let first_span = match existing {
+                    let first_definition = match existing {
                         SymbolKind::Struct { struct_index } => {
-                            self.structs[struct_index as usize].name.span
+                            let struct_ = &self.structs[struct_index as usize];
+                            SourceSpan::new(struct_.file_id, struct_.name.span)
                         }
-                        _ => name.span,
+                        _ => SourceSpan::new(self.file_id, name.span),
                     };
                     let name_str = self.interner.resolve(name.inner).unwrap();
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_duplicate_definition(
                         DuplicateDefinitionDiagnostic {
-                            file_id: self.file_id,
                             name: name_str,
                             namespace: SymbolNamespace::Type,
-                            first_definition: first_span,
-                            second_definition: name.span,
-                        }
-                        .report(),
-                    );
+                            first_definition,
+                            second_definition: SourceSpan::new(self.file_id, name.span),
+                        },
+                    ));
                     self.file_id = saved_file_id;
                     self.module_scope = saved_scope;
                     self.sig_state.insert(*id, ComputeState::Done);
@@ -3120,15 +2970,11 @@ impl<'ast> Builder<'ast, '_> {
                     let sym = field.name.inner;
                     if let Some(&first_span) = seen_fields.get(&sym) {
                         let fname = self.interner.resolve(sym).unwrap().to_string();
-                        self.diagnostics.push(
-                            DuplicateStructFieldDiagnostic {
-                                file_id: self.file_id,
-                                name: &fname,
-                                first_span,
-                                second_span: field.name.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics.push(report_duplicate_struct_field(
+                            &fname,
+                            SourceSpan::new(self.file_id, first_span),
+                            SourceSpan::new(self.file_id, field.name.span),
+                        ));
                         continue;
                     }
                     let field_ty = self.resolve_type(&field.ty);
@@ -3146,6 +2992,7 @@ impl<'ast> Builder<'ast, '_> {
 
                 let struct_index = self.structs.len() as u32;
                 self.structs.push(Struct {
+                    file_id: self.file_id,
                     name: name.clone(),
                     fields: tir_fields.into_boxed_slice(),
                     lookup: field_lookup,
@@ -3172,6 +3019,7 @@ impl<'ast> Builder<'ast, '_> {
                             None => Type::I32_IDX,
                         };
                         self.enums.push(Enum {
+                            file_id: self.file_id,
                             name: name.clone(),
                             ty,
                             variants: Box::new([]),
@@ -3199,7 +3047,7 @@ impl<'ast> Builder<'ast, '_> {
                         .lookup_symbol(SymbolNamespace::Value, signature.name.inner)
                         .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                         .cloned()
-                        .map(|k| self.get_symbol_span(k));
+                        .map(|k| self.get_symbol_location(k));
                     let type_params = self.resolve_ast_type_params(&signature.type_params);
                     let saved_type_params =
                         std::mem::replace(&mut self.current_type_params, type_params.clone());
@@ -3214,6 +3062,7 @@ impl<'ast> Builder<'ast, '_> {
                     };
                     self.functions.push(Function {
                         id: *id,
+                        file_id: self.file_id,
                         body: None,
                         origin,
                         type_params: type_params.into_boxed_slice(),
@@ -3228,18 +3077,19 @@ impl<'ast> Builder<'ast, '_> {
                     });
                     self.function_index_lookup.insert(*id, func_index);
                     match existing_span {
-                        Some(span) => {
+                        Some(first_definition) => {
                             let name = self.interner.resolve(signature.name.inner).unwrap();
-                            self.diagnostics.push(
+                            self.diagnostics.push(report_duplicate_definition(
                                 DuplicateDefinitionDiagnostic {
-                                    file_id: self.file_id,
                                     name,
                                     namespace: SymbolNamespace::Value,
-                                    first_definition: span,
-                                    second_definition: signature.name.span,
-                                }
-                                .report(),
-                            );
+                                    first_definition,
+                                    second_definition: SourceSpan::new(
+                                        self.file_id,
+                                        signature.name.span,
+                                    ),
+                                },
+                            ));
                         }
                         None => {
                             self.insert_symbol(
@@ -3261,13 +3111,11 @@ impl<'ast> Builder<'ast, '_> {
                         .iter()
                         .any(|&a| a == FunctionAttribute::Intrinsic)
                     {
-                        self.diagnostics.push(
-                            MissingFunctionBodyDiagnostic {
-                                file_id: self.file_id,
-                                span: signature.name.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_missing_function_body(SourceSpan::new(
+                                self.file_id,
+                                signature.name.span,
+                            )));
                     } else {
                         let type_params = self.resolve_ast_type_params(&signature.type_params);
                         let saved_type_params =
@@ -3284,6 +3132,7 @@ impl<'ast> Builder<'ast, '_> {
                         };
                         self.functions.push(Function {
                             id: *id,
+                            file_id: self.file_id,
                             body: None,
                             origin,
                             type_params: type_params.into_boxed_slice(),
@@ -3383,6 +3232,7 @@ impl<'ast> Builder<'ast, '_> {
                         .unwrap_or(false);
                     self.functions.push(Function {
                         id: *id,
+                        file_id: self.file_id,
                         body: None,
                         type_params: Box::new([]),
                         pub_span: *pub_span,
@@ -3522,6 +3372,7 @@ impl<'ast> Builder<'ast, '_> {
                     let func_index = self.functions.len() as u32;
                     self.functions.push(Function {
                         id: *id,
+                        file_id: self.file_id,
                         body: None,
                         pub_span: None,
                         origin: FunctionOrigin::Trait,
@@ -3548,9 +3399,9 @@ impl<'ast> Builder<'ast, '_> {
                 self.current_self_type = Some(self.type_pool.intern(Type::Trait { trait_index }));
                 if let ast::TraitItem::Const { id, name, ty } = item {
                     let ty_idx = self.resolve_type(ty);
-                    let const_index = self.constants.len() as u32;
                     self.constants.push(Constant {
                         id: *id,
+                        file_id: self.file_id,
                         name: name.clone(),
                         ty: Spanned {
                             inner: ty_idx,
@@ -3580,28 +3431,22 @@ impl<'ast> Builder<'ast, '_> {
                         .cloned()
                     {
                         let name_str = self.interner.resolve(name.inner).unwrap();
-                        let first_span = self.get_symbol_span(first_def);
-                        self.diagnostics.push(
+                        let first_definition = self.get_symbol_location(first_def);
+                        self.diagnostics.push(report_duplicate_definition(
                             DuplicateDefinitionDiagnostic {
-                                file_id: self.file_id,
                                 name: name_str,
                                 namespace: SymbolNamespace::Value,
-                                first_definition: first_span,
-                                second_definition: name.span,
-                            }
-                            .report(),
-                        );
+                                first_definition,
+                                second_definition: SourceSpan::new(self.file_id, name.span),
+                            },
+                        ));
                     } else {
                         let (ty, ty_span) = match ty {
                             Some(ty) => (self.resolve_type(ty), ty.span),
                             None => {
-                                self.diagnostics.push(
-                                    TypeAnnotationRequiredDiagnostic {
-                                        file_id: self.file_id,
-                                        span: name.span,
-                                    }
-                                    .report(),
-                                );
+                                self.diagnostics.push(report_type_annotation_required(
+                                    SourceSpan::new(self.file_id, name.span),
+                                ));
                                 (Type::ERROR_IDX, name.span)
                             }
                         };
@@ -3612,6 +3457,7 @@ impl<'ast> Builder<'ast, '_> {
                         );
                         self.globals.push(Global {
                             id: *id,
+                            file_id: self.file_id,
                             value: None,
                             source: ItemSource::Internal,
                             name: name.clone(),
@@ -3636,13 +3482,11 @@ impl<'ast> Builder<'ast, '_> {
                     let trait_index = match self.type_pool.pool[type_idx as usize] {
                         Type::Trait { trait_index } => trait_index,
                         _ => {
-                            self.diagnostics.push(
-                                InvalidMemoryKindDiagnostic {
-                                    file_id: self.file_id,
-                                    span: kind.span,
-                                }
-                                .report(),
-                            );
+                            self.diagnostics
+                                .push(report_invalid_memory_kind(SourceSpan::new(
+                                    self.file_id,
+                                    kind.span,
+                                )));
                             return;
                         }
                     };
@@ -3658,19 +3502,18 @@ impl<'ast> Builder<'ast, '_> {
                         "Memory32" => MemoryKind::Memory32,
                         "Memory64" => MemoryKind::Memory64,
                         _ => {
-                            self.diagnostics.push(
-                                InvalidMemoryKindDiagnostic {
-                                    file_id: self.file_id,
-                                    span: kind.span,
-                                }
-                                .report(),
-                            );
+                            self.diagnostics
+                                .push(report_invalid_memory_kind(SourceSpan::new(
+                                    self.file_id,
+                                    kind.span,
+                                )));
                             return;
                         }
                     };
                     let memory_index = self.memories.len() as u32;
                     self.memories.push(Memory {
                         id: *id,
+                        file_id: self.file_id,
                         kind: memory_kind,
                         name: name.clone(),
                         source: ItemSource::Internal,
@@ -3713,17 +3556,15 @@ impl<'ast> Builder<'ast, '_> {
                         .cloned()
                     {
                         let name_str = self.interner.resolve(name.inner).unwrap();
-                        let first_span = self.get_symbol_span(first_def);
-                        self.diagnostics.push(
+                        let first_definition = self.get_symbol_location(first_def);
+                        self.diagnostics.push(report_duplicate_definition(
                             DuplicateDefinitionDiagnostic {
-                                file_id: self.file_id,
                                 name: name_str,
                                 namespace: SymbolNamespace::Value,
-                                first_definition: first_span,
-                                second_definition: name.span,
-                            }
-                            .report(),
-                        );
+                                first_definition,
+                                second_definition: SourceSpan::new(self.file_id, name.span),
+                            },
+                        ));
                     } else {
                         let (ty_idx, ty_span) = match ty {
                             Some(ty) => (self.resolve_type(ty), ty.span),
@@ -3741,13 +3582,10 @@ impl<'ast> Builder<'ast, '_> {
                                 ExprKind::Int { value } => ConstValue::Int(*value),
                                 ExprKind::Float { value } => ConstValue::Float(*value),
                                 _ => {
-                                    self.diagnostics.push(
-                                        NonConstantGlobalInitializerDiagnostic {
-                                            file_id: self.file_id,
-                                            span: value.span,
-                                        }
-                                        .report(),
-                                    );
+                                    self.diagnostics
+                                        .push(report_non_constant_global_initializer(
+                                            SourceSpan::new(self.file_id, value.span),
+                                        ));
                                     return;
                                 }
                             };
@@ -3759,6 +3597,7 @@ impl<'ast> Builder<'ast, '_> {
                             let const_index = self.constants.len() as ConstIndex;
                             self.constants.push(Constant {
                                 id: *id,
+                                file_id: self.file_id,
                                 name: name.clone(),
                                 ty: ast::Spanned {
                                     inner: resolved_ty,
@@ -3787,6 +3626,7 @@ impl<'ast> Builder<'ast, '_> {
                     let func_index = self.functions.len() as u32;
                     self.functions.push(Function {
                         id: *id,
+                        file_id: self.file_id,
                         source: ItemSource::External,
                         origin: FunctionOrigin::Free,
                         signature_index,
@@ -3965,6 +3805,7 @@ impl<'ast> Builder<'ast, '_> {
                     };
                     self.functions.push(Function {
                         id: *id,
+                        file_id: self.file_id,
                         body: None,
                         type_params: Box::new([]),
                         pub_span: *pub_span,
@@ -4147,7 +3988,8 @@ impl<'ast> Builder<'ast, '_> {
 
     // ── query: ensure_body ────────────────────────────────────────────────────
 
-    /// Resolves the body of `def_id`. Not idempotent — calling twice double-counts accesses.
+    /// Resolves the body of `def_id`. Not idempotent — calling twice
+    /// double-counts accesses.
     fn ensure_body(&mut self, def_id: ast::DefId) {
         self.ensure_signature(def_id);
 
@@ -4210,7 +4052,48 @@ impl<'ast> Builder<'ast, '_> {
                 let saved_scope =
                     std::mem::replace(&mut self.module_scope, node.module_path().to_vec());
                 self.file_id = node.file_id();
-                let _ = self.build_item(item);
+
+                let ast::Item::Global { id, value, .. } = item else {
+                    unreachable!();
+                };
+
+                let global_index = self.global_index_lookup[id];
+                let global_ty = self.globals[global_index as usize].ty.inner;
+                let value_expr = match self.build_const_expression(value, global_ty) {
+                    Ok(value_expr) => value_expr,
+                    Err(_) => {
+                        self.file_id = saved_file_id;
+                        self.module_scope = saved_scope;
+                        return;
+                    }
+                };
+
+                match value_expr.ty {
+                    _ if value_expr.ty == Type::UNKNOWN_IDX => {
+                        self.diagnostics
+                            .push(report_type_annotation_required(SourceSpan::new(
+                                self.file_id,
+                                value.span,
+                            )));
+                    }
+                    ty if !self.type_pool.coercible_to(ty, global_ty) => {
+                        self.diagnostics.push(report_type_mistmatch(
+                            &self,
+                            TypeMistmatchDiagnostic {
+                                expected_type: global_ty,
+                                actual_type: ty,
+                                span: SourceSpan::new(self.file_id, value.span),
+                            },
+                        ));
+                    }
+                    _ => {
+                        self.globals[global_index as usize].value = Some(Box::new(ast::Spanned {
+                            inner: value_expr,
+                            span: value.span,
+                        }));
+                    }
+                }
+
                 self.file_id = saved_file_id;
                 self.module_scope = saved_scope;
                 return;
@@ -4298,15 +4181,11 @@ impl<'ast> Builder<'ast, '_> {
                 let name = &param.inner.inner.name;
                 if let Some(&first_span) = seen_params.get(&name.inner) {
                     let name_str = self.interner.resolve(name.inner).unwrap();
-                    self.diagnostics.push(
-                        DuplicateParameterDiagnostic {
-                            file_id: self.file_id,
-                            name: name_str,
-                            first_definition: first_span,
-                            second_definition: name.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics.push(report_duplicate_parameter(
+                        name_str,
+                        SourceSpan::new(self.file_id, first_span),
+                        SourceSpan::new(self.file_id, name.span),
+                    ));
                 } else {
                     seen_params.insert(name.inner, name.span);
                 }
@@ -4432,130 +4311,107 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn build_item(&mut self, item: &ast::Item) -> Result<(), ()> {
-        match item {
-            ast::Item::Global { id, value, .. } => {
-                let global_index = self.global_index_lookup[id];
-                let global_ty = self.globals[global_index as usize].ty.inner;
-                let value_expr = self.build_const_expression(value, global_ty)?;
+    fn build_exports(
+        &mut self,
+        entries: &ast::Grouped<Box<[Separated<Spanned<ast::ExportEntry>>]>>,
+    ) {
+        for entry in entries.inner.iter() {
+            let internal_name = &entry.inner.inner.name;
 
-                match value_expr.ty {
-                    _ if value_expr.ty == Type::UNKNOWN_IDX => {
-                        self.diagnostics.push(
-                            TypeAnnotationRequiredDiagnostic {
-                                file_id: self.file_id,
-                                span: value.span,
-                            }
-                            .report(),
-                        );
-                        return Err(());
-                    }
-                    ty if !self.type_pool.coercible_to(ty, global_ty) => {
-                        self.diagnostics.push(
-                            TypeMistmatchDiagnostic {
-                                file_id: self.file_id,
-                                expected_type: global_ty,
-                                actual_type: ty,
-                                span: value.span,
-                            }
-                            .report(&self),
-                        );
-                        return Err(());
-                    }
-                    _ => {}
+            let global_value = match self
+                .symbol_lookup
+                .get(&(SymbolNamespace::Value, internal_name.inner))
+            {
+                Some(value) => value.clone(),
+                None => {
+                    self.diagnostics
+                        .push(report_undeclared_identifier(SourceSpan::new(
+                            self.file_id,
+                            internal_name.span,
+                        )));
+                    continue;
                 }
+            };
 
-                self.globals[global_index as usize].value = Some(Box::new(ast::Spanned {
-                    inner: value_expr,
-                    span: value.span,
-                }));
+            let external_name = entry.inner.inner.alias.as_ref().map(|alias_span| {
+                let escaped_text = self.interner.resolve(alias_span.inner).unwrap();
+                let unescaped = unescape_string(escaped_text);
+                let symbol = self.interner.get_or_intern(&unescaped);
+                ast::Spanned {
+                    inner: symbol,
+                    span: alias_span.span,
+                }
+            });
 
-                Ok(())
-            }
-            ast::Item::Export { entries } => {
-                // Process exports - look up already-defined items and add them to exports
-                for entry in entries.inner.iter() {
-                    let internal_name = &entry.inner.inner.name;
+            let export_item = match global_value {
+                SymbolKind::Function { func_index } => {
+                    self.functions[func_index as usize]
+                        .accesses
+                        .push(FunctionAccess {
+                            caller: None,
+                            kind: FunctionAccessKind::Reference,
+                            span: internal_name.span,
+                        });
 
-                    // Look up the item to export
-                    let global_value = match self
-                        .symbol_lookup
-                        .get(&(SymbolNamespace::Value, internal_name.inner))
-                    {
-                        Some(value) => value.clone(),
-                        None => {
-                            self.diagnostics.push(
-                                UndeclaredIdentifierDiagnostic {
-                                    file_id: self.file_id,
-                                    span: internal_name.span,
-                                }
-                                .report(),
-                            );
-                            continue;
-                        }
-                    };
+                    ExportItem::Function {
+                        id: self.functions[func_index as usize].id,
+                        internal_name: internal_name.clone(),
+                        external_name,
+                    }
+                }
+                SymbolKind::Global { global_index } => {
+                    self.globals[global_index as usize]
+                        .accesses
+                        .push(internal_name.span);
 
-                    // Determine the export alias (or use the item name)
-                    let external_name = entry.inner.inner.alias.as_ref().map(|alias_span| {
-                        // Get the original escaped text from the interner (includes quotes)
-                        let escaped_text = self.interner.resolve(alias_span.inner).unwrap();
-                        let unescaped = unescape_string(escaped_text);
-                        let symbol = self.interner.get_or_intern(&unescaped);
-                        ast::Spanned {
-                            inner: symbol,
-                            span: alias_span.span,
-                        }
-                    });
+                    ExportItem::Global {
+                        id: self.globals[global_index as usize].id,
+                        internal_name: internal_name.clone(),
+                        external_name,
+                    }
+                }
+                SymbolKind::Memory { memory_index, .. } => ExportItem::Memory {
+                    id: self.memories[memory_index as usize].id,
+                    internal_name: internal_name.clone(),
+                    external_name,
+                },
+                _ => {
+                    self.diagnostics.push(report_cannot_export_item(
+                        self.interner.resolve(internal_name.inner).unwrap(),
+                        SourceSpan::new(self.file_id, internal_name.span),
+                    ));
+                    continue;
+                }
+            };
 
-                    // Create the export item
-                    let export_item = match global_value {
-                        SymbolKind::Function { func_index } => {
-                            self.functions[func_index as usize]
-                                .accesses
-                                .push(FunctionAccess {
-                                    caller: None,
-                                    kind: FunctionAccessKind::Reference,
-                                    span: internal_name.span,
-                                });
+            let (export_symbol, export_span) = match &export_item {
+                ExportItem::Function {
+                    internal_name,
+                    external_name,
+                    ..
+                }
+                | ExportItem::Global {
+                    internal_name,
+                    external_name,
+                    ..
+                }
+                | ExportItem::Memory {
+                    internal_name,
+                    external_name,
+                    ..
+                } => {
+                    if let Some(ext) = external_name {
+                        (ext.inner, ext.span)
+                    } else {
+                        (internal_name.inner, internal_name.span)
+                    }
+                }
+            };
 
-                            ExportItem::Function {
-                                id: self.functions[func_index as usize].id,
-                                internal_name: internal_name.clone(),
-                                external_name,
-                            }
-                        }
-                        SymbolKind::Global { global_index } => {
-                            self.globals[global_index as usize]
-                                .accesses
-                                .push(internal_name.span);
-
-                            ExportItem::Global {
-                                id: self.globals[global_index as usize].id,
-                                internal_name: internal_name.clone(),
-                                external_name,
-                            }
-                        }
-                        SymbolKind::Memory { memory_index, .. } => ExportItem::Memory {
-                            id: self.memories[memory_index as usize].id,
-                            internal_name: internal_name.clone(),
-                            external_name,
-                        },
-                        _ => {
-                            self.diagnostics.push(
-                                CannotExportItemDiagnostic {
-                                    file_id: self.file_id,
-                                    name: self.interner.resolve(internal_name.inner).unwrap(),
-                                    span: internal_name.span,
-                                }
-                                .report(),
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Check for duplicate exports based on external export name
-                    // The external name is either the alias or the internal name if no alias
-                    let (export_symbol, export_span) = match &export_item {
+            match self.exports.get(&export_symbol) {
+                Some(existing_export) => {
+                    let name = self.interner.resolve(export_symbol).unwrap();
+                    let first_export_span = match existing_export {
                         ExportItem::Function {
                             internal_name,
                             external_name,
@@ -4572,64 +4428,28 @@ impl<'ast> Builder<'ast, '_> {
                             ..
                         } => {
                             if let Some(ext) = external_name {
-                                (ext.inner, ext.span)
+                                ext.span
                             } else {
-                                (internal_name.inner, internal_name.span)
+                                internal_name.span
                             }
                         }
                     };
 
-                    match self.exports.get(&export_symbol) {
-                        Some(existing_export) => {
-                            let name = self.interner.resolve(export_symbol).unwrap();
-                            let first_export_span = match existing_export {
-                                ExportItem::Function {
-                                    internal_name,
-                                    external_name,
-                                    ..
-                                }
-                                | ExportItem::Global {
-                                    internal_name,
-                                    external_name,
-                                    ..
-                                }
-                                | ExportItem::Memory {
-                                    internal_name,
-                                    external_name,
-                                    ..
-                                } => {
-                                    if let Some(ext) = external_name {
-                                        ext.span
-                                    } else {
-                                        internal_name.span
-                                    }
-                                }
-                            };
-
-                            self.diagnostics.push(
-                                DuplicateExportDiagnostic {
-                                    file_id: self.file_id,
-                                    name,
-                                    first_export: first_export_span,
-                                    second_export: export_span,
-                                }
-                                .report(),
-                            );
-                            continue;
-                        }
-                        None => {
-                            self.exports.insert(export_symbol, export_item);
-                        }
-                    }
+                    self.diagnostics.push(report_duplicate_export(
+                        name,
+                        SourceSpan::new(self.file_id, first_export_span),
+                        SourceSpan::new(self.file_id, export_span),
+                    ));
                 }
-
-                Ok(())
+                None => {
+                    self.exports.insert(export_symbol, export_item);
+                }
             }
-            _ => Ok(()),
         }
     }
 
-    /// Evaluates a constant integer expression. Non-integer types panic; non-constant expressions emit a diagnostic.
+    /// Evaluates a constant integer expression. Non-integer types panic;
+    /// non-constant expressions emit a diagnostic.
     fn eval_impl_const_int(
         &mut self,
         expr: &ast::Spanned<ast::Expression>,
@@ -4652,13 +4472,11 @@ impl<'ast> Builder<'ast, '_> {
                     ast::UnaryOp::InvertSign => Ok(v.wrapping_neg()),
                     ast::UnaryOp::BitNot => Ok(!v),
                     ast::UnaryOp::Not => {
-                        self.diagnostics.push(
-                            NonConstantGlobalInitializerDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_non_constant_global_initializer(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                         Err(())
                     }
                 }
@@ -4682,25 +4500,21 @@ impl<'ast> Builder<'ast, '_> {
                     ast::BinaryOp::LeftShift => Ok(l.wrapping_shl(r as u32)),
                     ast::BinaryOp::RightShift => Ok(l.wrapping_shr(r as u32)),
                     _ => {
-                        self.diagnostics.push(
-                            NonConstantGlobalInitializerDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_non_constant_global_initializer(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                         Err(())
                     }
                 }
             }
             _ => {
-                self.diagnostics.push(
-                    NonConstantGlobalInitializerDiagnostic {
-                        file_id: self.file_id,
-                        span: expr.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_non_constant_global_initializer(SourceSpan::new(
+                        self.file_id,
+                        expr.span,
+                    )));
                 Err(())
             }
         }
@@ -4752,13 +4566,11 @@ impl<'ast> Builder<'ast, '_> {
                         }
                     }
                     _ => {
-                        self.diagnostics.push(
-                            NonConstantGlobalInitializerDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_non_constant_global_initializer(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                         Err(())
                     }
                 }
@@ -4812,13 +4624,11 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
             _ => {
-                self.diagnostics.push(
-                    NonConstantGlobalInitializerDiagnostic {
-                        file_id: self.file_id,
-                        span: expr.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_non_constant_global_initializer(SourceSpan::new(
+                        self.file_id,
+                        expr.span,
+                    )));
                 Err(())
             }
         }
@@ -4905,10 +4715,10 @@ impl<'ast> Builder<'ast, '_> {
             BlockState::Exhaustive(expressions) => {
                 self.report_local_warnings(&ctx.stack.scopes[ctx.scope_index as usize]);
                 if result.is_some() || expressions.len() < statements.len() {
-                    self.diagnostics.push(
-                        UnreachableCodeDiagnostic {
-                            file_id: self.file_id,
-                            span: TextSpan::merge(
+                    self.diagnostics
+                        .push(report_unreachable_code(SourceSpan::new(
+                            self.file_id,
+                            TextSpan::merge(
                                 match statements.get(expressions.len()) {
                                     Some(stmt) => stmt.inner.span,
                                     None => result.unwrap().span,
@@ -4918,9 +4728,7 @@ impl<'ast> Builder<'ast, '_> {
                                     None => statements.last().unwrap().inner.span,
                                 },
                             ),
-                        }
-                        .report(),
-                    );
+                        )));
                 }
 
                 let scope = &mut ctx.stack.scopes[ctx.scope_index as usize];
@@ -4979,15 +4787,14 @@ impl<'ast> Builder<'ast, '_> {
                     Some(expected_type)
                         if !self.type_pool.coercible_to(inferred_type, expected_type) =>
                     {
-                        self.diagnostics.push(
+                        self.diagnostics.push(report_type_mistmatch(
+                            &self,
                             TypeMistmatchDiagnostic {
-                                file_id: self.file_id,
                                 expected_type,
                                 actual_type: inferred_type,
-                                span: block.span,
-                            }
-                            .report(&self),
-                        );
+                                span: SourceSpan::new(self.file_id, block.span),
+                            },
+                        ));
                         return Err(());
                     }
                     _ => {}
@@ -5009,13 +4816,11 @@ impl<'ast> Builder<'ast, '_> {
     fn report_local_warnings(&mut self, block: &BlockScope) {
         for local in block.locals.iter() {
             if local.accesses.is_empty() && local.ty != Type::ERROR_IDX {
-                self.diagnostics.push(
-                    UnusedVariableDiagnostic {
-                        file_id: self.file_id,
-                        span: local.name.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_unused_variable(SourceSpan::new(
+                        self.file_id,
+                        local.name.span,
+                    )));
             }
 
             match local.mut_span {
@@ -5024,13 +4829,11 @@ impl<'ast> Builder<'ast, '_> {
                         access.kind == AccessKind::Write || access.kind == AccessKind::ReadWrite
                     }) =>
                 {
-                    self.diagnostics.push(
-                        UnnecessaryMutabilityDiagnostic {
-                            file_id: self.file_id,
-                            span: mut_span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_unnecessary_mutability(SourceSpan::new(
+                            self.file_id,
+                            mut_span,
+                        )));
                 }
                 _ => {}
             }
@@ -5157,14 +4960,10 @@ impl<'ast> Builder<'ast, '_> {
                     .resolve(function.name.inner)
                     .unwrap()
                     .to_string();
-                self.diagnostics.push(
-                    UnusedFunctionDiagnostic {
-                        file_id: self.file_id,
-                        name,
-                        span: function.name.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics.push(report_unused_function(
+                    name,
+                    SourceSpan::new(function.file_id, function.name.span),
+                ));
             }
         }
 
@@ -5175,14 +4974,10 @@ impl<'ast> Builder<'ast, '_> {
                     .resolve(global.name.inner)
                     .unwrap()
                     .to_string();
-                self.diagnostics.push(
-                    UnusedGlobalDiagnostic {
-                        file_id: self.file_id,
-                        name,
-                        span: global.name.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics.push(report_unused_global(
+                    name,
+                    SourceSpan::new(global.file_id, global.name.span),
+                ));
             }
         }
     }
@@ -5259,13 +5054,11 @@ impl<'ast> Builder<'ast, '_> {
             match scope.inferred_type.or(scope.expected_type) {
                 Some(ty) => return Ok(ty),
                 None => {
-                    self.diagnostics.push(
-                        TypeAnnotationRequiredDiagnostic {
-                            file_id: self.file_id,
-                            span: value.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_type_annotation_required(SourceSpan::new(
+                            self.file_id,
+                            value.span,
+                        )));
                     return Err(());
                 }
             }
@@ -5273,29 +5066,27 @@ impl<'ast> Builder<'ast, '_> {
         let result_type = value.ty;
         match scope.inferred_type {
             Some(inferred_type) if !self.type_pool.coercible_to(result_type, inferred_type) => {
-                self.diagnostics.push(
+                self.diagnostics.push(report_type_mistmatch(
+                    &self,
                     TypeMistmatchDiagnostic {
-                        file_id: self.file_id,
                         expected_type: inferred_type,
                         actual_type: result_type,
-                        span: value.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, value.span),
+                    },
+                ));
                 Ok(inferred_type)
             }
             Some(inferred) => Ok(inferred),
             None => match scope.expected_type {
                 Some(expected_type) if !self.type_pool.coercible_to(result_type, expected_type) => {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_type_mistmatch(
+                        &self,
                         TypeMistmatchDiagnostic {
-                            file_id: self.file_id,
                             expected_type,
                             actual_type: result_type,
-                            span: value.span,
-                        }
-                        .report(&self),
-                    );
+                            span: SourceSpan::new(self.file_id, value.span),
+                        },
+                    ));
                     Err(())
                 }
                 _ => Ok(result_type),
@@ -5347,22 +5138,17 @@ impl<'ast> Builder<'ast, '_> {
             scope.inferred_type = scope.inferred_type.or(Some(Type::NEVER_IDX));
             return Ok(value);
         } else if value.ty == Type::UNKNOWN_IDX {
-            self.diagnostics.push(
-                TypeAnnotationRequiredDiagnostic {
-                    file_id: self.file_id,
-                    span: value.span,
-                }
-                .report(),
-            );
+            self.diagnostics
+                .push(report_type_annotation_required(SourceSpan::new(
+                    self.file_id,
+                    value.span,
+                )));
             return Err(());
         }
-        self.diagnostics.push(
-            UnusedValueDiagnostic {
-                file_id: self.file_id,
-                span: value.span,
-            }
-            .report(),
-        );
+        self.diagnostics.push(report_unused_value(SourceSpan::new(
+            self.file_id,
+            value.span,
+        )));
         Ok(value)
     }
 
@@ -5429,23 +5215,19 @@ impl<'ast> Builder<'ast, '_> {
                         span: expr.span,
                     }),
                     Err(CharLiteralError::Empty) => {
-                        self.diagnostics.push(
-                            EmptyCharLiteralDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_empty_char_literal(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                         Err(())
                     }
                     Err(CharLiteralError::TooLong) => {
-                        self.diagnostics.push(
-                            CharLiteralTooLongDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_char_literal_too_long(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                         Err(())
                     }
                 }
@@ -5595,18 +5377,17 @@ impl<'ast> Builder<'ast, '_> {
             }
         }
 
-        self.diagnostics.push(
-            UndeclaredIdentifierDiagnostic {
-                file_id: self.file_id,
-                span: member.span,
-            }
-            .report(),
-        );
+        self.diagnostics
+            .push(report_undeclared_identifier(SourceSpan::new(
+                self.file_id,
+                member.span,
+            )));
         Err(())
     }
 
-    /// Ensures `SIZE` and `ALIGN` are present for `ty` and returns its member map.
-    /// Always use this for impl-member lookups — never access `impl_members` directly.
+    /// Ensures `SIZE` and `ALIGN` are present for `ty` and returns its member
+    /// map. Always use this for impl-member lookups — never access
+    /// `impl_members` directly.
     fn ensure_impl_members(&mut self, ty: TypeIndex) -> &HashMap<SymbolU32, ImplEntry> {
         let size_sym = self.interner.get_or_intern("SIZE");
         let already_seeded = self
@@ -5694,13 +5475,11 @@ impl<'ast> Builder<'ast, '_> {
         match *self.type_pool.get(namespace_ty) {
             Type::Memory { .. } => {
                 // The member was not found in impl_members (checked above), so it's unknown.
-                self.diagnostics.push(
-                    UndeclaredIdentifierDiagnostic {
-                        file_id: self.file_id,
-                        span: member.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_undeclared_identifier(SourceSpan::new(
+                        self.file_id,
+                        member.span,
+                    )));
                 Err(())
             }
             Type::Enum { enum_index } => {
@@ -5718,13 +5497,11 @@ impl<'ast> Builder<'ast, '_> {
                         span: ast::TextSpan::merge(namespace_expr.span, member.span),
                     }),
                     _ => {
-                        self.diagnostics.push(
-                            UndeclaredIdentifierDiagnostic {
-                                file_id: self.file_id,
-                                span: member.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_undeclared_identifier(SourceSpan::new(
+                                self.file_id,
+                                member.span,
+                            )));
                         Err(())
                     }
                 }
@@ -5783,13 +5560,11 @@ impl<'ast> Builder<'ast, '_> {
                         })
                     }
                     None => {
-                        self.diagnostics.push(
-                            UndeclaredIdentifierDiagnostic {
-                                file_id: self.file_id,
-                                span: member.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_undeclared_identifier(SourceSpan::new(
+                                self.file_id,
+                                member.span,
+                            )));
                         Err(())
                     }
                 }
@@ -5821,13 +5596,11 @@ impl<'ast> Builder<'ast, '_> {
                         })
                     }
                     _ => {
-                        self.diagnostics.push(
-                            UndeclaredIdentifierDiagnostic {
-                                file_id: self.file_id,
-                                span: member.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_undeclared_identifier(SourceSpan::new(
+                                self.file_id,
+                                member.span,
+                            )));
                         Err(())
                     }
                 }
@@ -5872,24 +5645,21 @@ impl<'ast> Builder<'ast, '_> {
                         span: TextSpan::merge(namespace_expr.span, member.span),
                     }),
                     _ => {
-                        self.diagnostics.push(
-                            UndeclaredIdentifierDiagnostic {
-                                file_id: self.file_id,
-                                span: member.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_undeclared_identifier(SourceSpan::new(
+                                self.file_id,
+                                member.span,
+                            )));
                         Err(())
                     }
                 }
             }
             _ => {
-                let diag = NotANamespaceDiagnostic {
-                    file_id: self.file_id,
-                    span: namespace_expr.span,
-                    ty: namespace_ty,
-                }
-                .report(self);
+                let diag = report_not_a_namespace(
+                    self,
+                    SourceSpan::new(self.file_id, namespace_expr.span),
+                    namespace_ty,
+                );
                 self.diagnostics.push(diag);
                 Err(())
             }
@@ -5970,15 +5740,14 @@ impl<'ast> Builder<'ast, '_> {
                     (Some(expected_type), Some(inferred_type))
                         if !self.type_pool.coercible_to(inferred_type, expected_type) =>
                     {
-                        self.diagnostics.push(
+                        self.diagnostics.push(report_type_mistmatch(
+                            &self,
                             TypeMistmatchDiagnostic {
-                                file_id: self.file_id,
                                 expected_type,
                                 actual_type: inferred_type,
-                                span: expr.span,
-                            }
-                            .report(&self),
-                        );
+                                span: SourceSpan::new(self.file_id, expr.span),
+                            },
+                        ));
                         return Err(());
                     }
                     _ => {}
@@ -6011,13 +5780,11 @@ impl<'ast> Builder<'ast, '_> {
             Some(label) => match ctx.resolve_label(label.inner) {
                 Some(scope_index) => scope_index,
                 None => {
-                    self.diagnostics.push(
-                        UndeclaredLabelDiagnostic {
-                            file_id: self.file_id,
-                            span: label.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_undeclared_label(SourceSpan::new(
+                            self.file_id,
+                            label.span,
+                        )));
                     return Err(());
                 }
             },
@@ -6095,15 +5862,14 @@ impl<'ast> Builder<'ast, '_> {
                 match self.type_pool.unify(then_block.ty, else_block.ty) {
                     Ok(ty) => (Some(else_block), ty),
                     Err(_) => {
-                        self.diagnostics.push(
+                        self.diagnostics.push(report_type_mistmatch(
+                            &self,
                             TypeMistmatchDiagnostic {
-                                file_id: self.file_id,
                                 expected_type: then_block.ty,
                                 actual_type: else_block.ty,
-                                span: ast_else_block.span,
-                            }
-                            .report(&self),
-                        );
+                                span: SourceSpan::new(self.file_id, ast_else_block.span),
+                            },
+                        ));
                         return Err(());
                     }
                 }
@@ -6165,15 +5931,14 @@ impl<'ast> Builder<'ast, '_> {
         } else if is_numeric_cast(value.ty, cast_type) {
             value.ty = cast_type;
         } else if value.ty != cast_type {
-            self.diagnostics.push(
+            self.diagnostics.push(report_type_mistmatch(
+                &self,
                 TypeMistmatchDiagnostic {
-                    file_id: self.file_id,
                     expected_type: cast_type,
                     actual_type: value.ty,
-                    span: value.span,
-                }
-                .report(&self),
-            );
+                    span: SourceSpan::new(self.file_id, value.span),
+                },
+            ));
             // Set the type to the cast target to avoid cascading errors
             value.ty = cast_type;
         }
@@ -6194,13 +5959,11 @@ impl<'ast> Builder<'ast, '_> {
             Some(label) => match ctx.resolve_label(label.inner) {
                 Some(scope_index) => scope_index,
                 None => {
-                    self.diagnostics.push(
-                        UndeclaredLabelDiagnostic {
-                            file_id: self.file_id,
-                            span: label.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_undeclared_label(SourceSpan::new(
+                            self.file_id,
+                            label.span,
+                        )));
 
                     // TODO: how to handle this better? we don't parse the value if the label is
                     // undeclared
@@ -6214,13 +5977,11 @@ impl<'ast> Builder<'ast, '_> {
             None => match ctx.get_closest_loop_block() {
                 Some(scope_index) => scope_index,
                 None => {
-                    self.diagnostics.push(
-                        BreakOutsideOfLoopDiagnostic {
-                            file_id: self.file_id,
-                            span: expr.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_break_outside_of_loop(SourceSpan::new(
+                            self.file_id,
+                            expr.span,
+                        )));
 
                     // TODO: same as above, we don't parse the value if the break is outside of a
                     // loop
@@ -6275,15 +6036,14 @@ impl<'ast> Builder<'ast, '_> {
                 match scope.inferred_type {
                     Some(inferred) => {
                         if !self.type_pool.coercible_to(Type::UNIT_IDX, inferred) {
-                            self.diagnostics.push(
+                            self.diagnostics.push(report_type_mistmatch(
+                                &self,
                                 TypeMistmatchDiagnostic {
-                                    file_id: self.file_id,
                                     expected_type: inferred,
                                     actual_type: Type::UNIT_IDX,
-                                    span: expr.span,
-                                }
-                                .report(&self),
-                            );
+                                    span: SourceSpan::new(self.file_id, expr.span),
+                                },
+                            ));
                         }
                     }
                     None => {
@@ -6417,13 +6177,11 @@ impl<'ast> Builder<'ast, '_> {
                 | SymbolKind::Enum { .. }
                 | SymbolKind::Module { .. }
                 | SymbolKind::Trait { .. } => {
-                    self.diagnostics.push(
-                        NamespaceUsedAsValueDiagnostic {
-                            file_id: self.file_id,
-                            span: expr.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_namespace_used_as_value(SourceSpan::new(
+                            self.file_id,
+                            expr.span,
+                        )));
                     return Ok(Expression {
                         kind: ExprKind::Error,
                         ty: Type::ERROR_IDX,
@@ -6433,13 +6191,11 @@ impl<'ast> Builder<'ast, '_> {
                 SymbolKind::Unreachable | SymbolKind::Pending(_) => unreachable!(),
                 // Struct names are type-namespace values, not usable as expressions
                 SymbolKind::Struct { .. } => {
-                    self.diagnostics.push(
-                        UndeclaredIdentifierDiagnostic {
-                            file_id: self.file_id,
-                            span: expr.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_undeclared_identifier(SourceSpan::new(
+                            self.file_id,
+                            expr.span,
+                        )));
                     Ok(Expression {
                         kind: ExprKind::Error,
                         ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
@@ -6448,13 +6204,11 @@ impl<'ast> Builder<'ast, '_> {
                 }
             },
             None => {
-                self.diagnostics.push(
-                    UndeclaredIdentifierDiagnostic {
-                        file_id: self.file_id,
-                        span: expr.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_undeclared_identifier(SourceSpan::new(
+                        self.file_id,
+                        expr.span,
+                    )));
 
                 Ok(Expression {
                     kind: ExprKind::Error,
@@ -6565,17 +6319,18 @@ impl<'ast> Builder<'ast, '_> {
                     })
                 } else {
                     let ty = operand.ty;
-                    self.diagnostics.push(
-                        UnaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.file_id,
-                            operator: operator.clone(),
-                            operand: Spanned {
-                                inner: ty,
-                                span: operand.span,
+                    self.diagnostics
+                        .push(report_unary_operator_cannot_be_applied(
+                            &self,
+                            UnaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.file_id,
+                                operator: operator.clone(),
+                                operand: Spanned {
+                                    inner: ty,
+                                    span: operand.span,
+                                },
                             },
-                        }
-                        .report(&self),
-                    );
+                        ));
                     Ok(Expression {
                         kind: ExprKind::Unary {
                             operator,
@@ -6615,23 +6370,20 @@ impl<'ast> Builder<'ast, '_> {
         if left.ty == Type::ERROR_IDX {
             // Error already reported
         } else if left.ty == Type::UNKNOWN_IDX {
-            self.diagnostics.push(
-                TypeAnnotationRequiredDiagnostic {
-                    file_id: self.file_id,
-                    span: left.span,
-                }
-                .report(),
-            );
+            self.diagnostics
+                .push(report_type_annotation_required(SourceSpan::new(
+                    self.file_id,
+                    left.span,
+                )));
         } else if left.ty != Type::BOOL_IDX {
-            self.diagnostics.push(
+            self.diagnostics.push(report_type_mistmatch(
+                &self,
                 TypeMistmatchDiagnostic {
-                    file_id: self.file_id,
                     expected_type: Type::BOOL_IDX,
                     actual_type: left.ty,
-                    span: left.span,
-                }
-                .report(&self),
-            );
+                    span: SourceSpan::new(self.file_id, left.span),
+                },
+            ));
         }
         let right = self.build_expression(
             ctx,
@@ -6644,23 +6396,20 @@ impl<'ast> Builder<'ast, '_> {
         if right.ty == Type::ERROR_IDX {
             // Error already reported
         } else if right.ty == Type::UNKNOWN_IDX {
-            self.diagnostics.push(
-                TypeAnnotationRequiredDiagnostic {
-                    file_id: self.file_id,
-                    span: right.span,
-                }
-                .report(),
-            );
+            self.diagnostics
+                .push(report_type_annotation_required(SourceSpan::new(
+                    self.file_id,
+                    right.span,
+                )));
         } else if right.ty != Type::BOOL_IDX {
-            self.diagnostics.push(
+            self.diagnostics.push(report_type_mistmatch(
+                &self,
                 TypeMistmatchDiagnostic {
-                    file_id: self.file_id,
                     expected_type: Type::BOOL_IDX,
                     actual_type: right.ty,
-                    span: right.span,
-                }
-                .report(&self),
-            );
+                    span: SourceSpan::new(self.file_id, right.span),
+                },
+            ));
         }
 
         Ok(Expression {
@@ -6723,17 +6472,18 @@ impl<'ast> Builder<'ast, '_> {
 
                         let ty = self.type_pool.get(expected_type);
                         if !ty.is_integer() && *ty != Type::Bool {
-                            self.diagnostics.push(
-                                BinaryOperatorCannotBeAppliedDiagnostic {
-                                    file_id: self.file_id,
-                                    operator: operator.clone(),
-                                    operand: Spanned {
-                                        inner: expected_type,
-                                        span: left.span,
+                            self.diagnostics
+                                .push(report_binary_operator_cannot_be_applied(
+                                    &self,
+                                    BinaryOperatorCannotBeAppliedDiagnostic {
+                                        file_id: self.file_id,
+                                        operator: operator.clone(),
+                                        operand: Spanned {
+                                            inner: expected_type,
+                                            span: left.span,
+                                        },
                                     },
-                                }
-                                .report(&self),
-                            );
+                                ));
                         }
 
                         Ok(Expression {
@@ -6747,13 +6497,11 @@ impl<'ast> Builder<'ast, '_> {
                         })
                     }
                     None => {
-                        self.diagnostics.push(
-                            TypeAnnotationRequiredDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_type_annotation_required(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                         Err(())
                     }
                 }
@@ -6761,17 +6509,18 @@ impl<'ast> Builder<'ast, '_> {
             (l, right_type) if l == Type::UNKNOWN_IDX => {
                 let ty = self.type_pool.get(right_type);
                 if !ty.is_integer() && *ty != Type::Bool {
-                    self.diagnostics.push(
-                        BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.file_id,
-                            operator: operator.clone(),
-                            operand: Spanned {
-                                inner: right_type,
-                                span: right.span,
+                    self.diagnostics
+                        .push(report_binary_operator_cannot_be_applied(
+                            &self,
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.file_id,
+                                operator: operator.clone(),
+                                operand: Spanned {
+                                    inner: right_type,
+                                    span: right.span,
+                                },
                             },
-                        }
-                        .report(&self),
-                    );
+                        ));
                 }
                 self.coerce_untyped_expr(&mut left, right_type)?;
 
@@ -6788,17 +6537,18 @@ impl<'ast> Builder<'ast, '_> {
             (left_type, r) if r == Type::UNKNOWN_IDX => {
                 let ty = self.type_pool.get(left_type);
                 if !ty.is_integer() && *ty != Type::Bool {
-                    self.diagnostics.push(
-                        BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.file_id,
-                            operator: operator.clone(),
-                            operand: Spanned {
-                                inner: left_type,
-                                span: left.span,
+                    self.diagnostics
+                        .push(report_binary_operator_cannot_be_applied(
+                            &self,
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.file_id,
+                                operator: operator.clone(),
+                                operand: Spanned {
+                                    inner: left_type,
+                                    span: left.span,
+                                },
                             },
-                        }
-                        .report(&self),
-                    );
+                        ));
                 }
                 self.coerce_untyped_expr(&mut right, left_type)?;
 
@@ -6828,7 +6578,8 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
             (left_type, right_type) => {
-                self.diagnostics.push(
+                self.diagnostics.push(report_binary_expression_mistmatch(
+                    &self,
                     BinaryExpressionMistmatchDiagnostic {
                         file_id: self.file_id,
                         left_type: Spanned {
@@ -6840,9 +6591,8 @@ impl<'ast> Builder<'ast, '_> {
                             inner: right_type,
                             span: right.span,
                         },
-                    }
-                    .report(&self),
-                );
+                    },
+                ));
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -6901,14 +6651,11 @@ impl<'ast> Builder<'ast, '_> {
                 span: expr.span,
             }),
             (l, r) if l == Type::UNKNOWN_IDX && r == Type::UNKNOWN_IDX => {
-                self.diagnostics.push(
-                    ComparisonTypeAnnotationRequiredDiagnostic {
-                        file_id: self.file_id,
-                        left: left.span,
-                        right: right.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_comparison_type_annotation_required(
+                        SourceSpan::new(self.file_id, left.span),
+                        SourceSpan::new(self.file_id, right.span),
+                    ));
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -6982,7 +6729,8 @@ impl<'ast> Builder<'ast, '_> {
             //     })
             // }
             (left_type, right_type) => {
-                self.diagnostics.push(
+                self.diagnostics.push(report_binary_expression_mistmatch(
+                    &self,
                     BinaryExpressionMistmatchDiagnostic {
                         file_id: self.file_id,
                         left_type: Spanned {
@@ -6994,9 +6742,8 @@ impl<'ast> Builder<'ast, '_> {
                             inner: right_type,
                             span: right.span,
                         },
-                    }
-                    .report(&self),
-                );
+                    },
+                ));
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -7041,25 +6788,21 @@ impl<'ast> Builder<'ast, '_> {
                 let local = match ctx.stack.get_mut_local(scope_index, local_index) {
                     Some(local) => local,
                     None => {
-                        self.diagnostics.push(
-                            UndeclaredIdentifierDiagnostic {
-                                file_id: self.file_id,
-                                span: left.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_undeclared_identifier(SourceSpan::new(
+                                self.file_id,
+                                left.span,
+                            )));
                         return Err(());
                     }
                 };
                 match local.mut_span {
                     None => {
-                        self.diagnostics.push(
-                            CannotMutateImmutableDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_cannot_mutate_immutable(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                     }
                     _ => {}
                 }
@@ -7077,7 +6820,8 @@ impl<'ast> Builder<'ast, '_> {
                 if right.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right, local_type)?;
                 } else if !self.type_pool.coercible_to(right.ty, local_type) {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_binary_expression_mistmatch(
+                        &self,
                         BinaryExpressionMistmatchDiagnostic {
                             file_id: self.file_id,
                             left_type: Spanned {
@@ -7089,9 +6833,8 @@ impl<'ast> Builder<'ast, '_> {
                                 inner: right.ty,
                                 span: right.span,
                             },
-                        }
-                        .report(&self),
-                    );
+                        },
+                    ));
                 }
 
                 Ok(Expression {
@@ -7109,13 +6852,11 @@ impl<'ast> Builder<'ast, '_> {
                 let global = &self.globals[global_index as usize];
                 match global.mut_span {
                     None => {
-                        self.diagnostics.push(
-                            CannotMutateImmutableDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_cannot_mutate_immutable(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                     }
                     _ => {}
                 }
@@ -7132,7 +6873,8 @@ impl<'ast> Builder<'ast, '_> {
                 if right.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right, global_type)?;
                 } else if !self.type_pool.coercible_to(right.ty, global_type) {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_binary_expression_mistmatch(
+                        &self,
                         BinaryExpressionMistmatchDiagnostic {
                             file_id: self.file_id,
                             left_type: Spanned {
@@ -7144,9 +6886,8 @@ impl<'ast> Builder<'ast, '_> {
                                 inner: right.ty,
                                 span: right.span,
                             },
-                        }
-                        .report(&self),
-                    );
+                        },
+                    ));
                 }
 
                 Ok(Expression {
@@ -7169,13 +6910,11 @@ impl<'ast> Builder<'ast, '_> {
                     },
                 )?;
                 if right.ty == Type::UNKNOWN_IDX {
-                    self.diagnostics.push(
-                        TypeAnnotationRequiredDiagnostic {
-                            file_id: self.file_id,
-                            span: right.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_type_annotation_required(SourceSpan::new(
+                            self.file_id,
+                            right.span,
+                        )));
                     return Err(());
                 }
                 let right_type = right.ty;
@@ -7195,13 +6934,11 @@ impl<'ast> Builder<'ast, '_> {
                 });
             }
             _ => {
-                self.diagnostics.push(
-                    InvalidAssignmentTargetDiagnostic {
-                        file_id: self.file_id,
-                        span: left.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_invalid_assignment_target(SourceSpan::new(
+                        self.file_id,
+                        left.span,
+                    )));
 
                 Ok(Expression {
                     kind: ExprKind::Error,
@@ -7242,13 +6979,11 @@ impl<'ast> Builder<'ast, '_> {
                 let local = match ctx.stack.get_mut_local(scope_index, local_index) {
                     Some(local) => local,
                     None => {
-                        self.diagnostics.push(
-                            UndeclaredIdentifierDiagnostic {
-                                file_id: self.file_id,
-                                span: left.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_undeclared_identifier(SourceSpan::new(
+                                self.file_id,
+                                left.span,
+                            )));
                         return Err(());
                     }
                 };
@@ -7273,28 +7008,27 @@ impl<'ast> Builder<'ast, '_> {
                     });
                 }
                 if !self.type_pool.get(local.ty).is_primitive() {
-                    self.diagnostics.push(
-                        BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.file_id,
-                            operator,
-                            operand: Spanned {
-                                inner: local.ty,
-                                span: left.span,
+                    self.diagnostics
+                        .push(report_binary_operator_cannot_be_applied(
+                            &self,
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.file_id,
+                                operator,
+                                operand: Spanned {
+                                    inner: local.ty,
+                                    span: left.span,
+                                },
                             },
-                        }
-                        .report(&self),
-                    );
+                        ));
 
                     return Err(());
                 }
                 if local.mut_span == None {
-                    self.diagnostics.push(
-                        CannotMutateImmutableDiagnostic {
-                            file_id: self.file_id,
-                            span: expr.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_cannot_mutate_immutable(SourceSpan::new(
+                            self.file_id,
+                            expr.span,
+                        )));
                 }
 
                 let local_type = local.ty;
@@ -7309,7 +7043,8 @@ impl<'ast> Builder<'ast, '_> {
                 if right.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right, local_type)?;
                 } else if !self.type_pool.coercible_to(right.ty, local_type) {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_binary_expression_mistmatch(
+                        &self,
                         BinaryExpressionMistmatchDiagnostic {
                             file_id: self.file_id,
                             left_type: Spanned {
@@ -7321,9 +7056,8 @@ impl<'ast> Builder<'ast, '_> {
                                 inner: right.ty,
                                 span: right.span,
                             },
-                        }
-                        .report(&self),
-                    );
+                        },
+                    ));
                 }
 
                 Ok(Expression {
@@ -7341,29 +7075,28 @@ impl<'ast> Builder<'ast, '_> {
                 let global = self.globals.get(global_index as usize).unwrap();
 
                 if !self.type_pool.get(global.ty.inner).is_primitive() {
-                    self.diagnostics.push(
-                        BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.file_id,
-                            operator,
-                            operand: Spanned {
-                                inner: global.ty.inner,
-                                span: left.span,
+                    self.diagnostics
+                        .push(report_binary_operator_cannot_be_applied(
+                            &self,
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.file_id,
+                                operator,
+                                operand: Spanned {
+                                    inner: global.ty.inner,
+                                    span: left.span,
+                                },
                             },
-                        }
-                        .report(&self),
-                    );
+                        ));
 
                     return Err(());
                 }
 
                 if global.mut_span == None {
-                    self.diagnostics.push(
-                        CannotMutateImmutableDiagnostic {
-                            file_id: self.file_id,
-                            span: expr.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_cannot_mutate_immutable(SourceSpan::new(
+                            self.file_id,
+                            expr.span,
+                        )));
                 }
 
                 let global_type = global.ty.inner;
@@ -7378,7 +7111,8 @@ impl<'ast> Builder<'ast, '_> {
                 if right.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right, global_type)?;
                 } else if !self.type_pool.coercible_to(right.ty, global_type) {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_binary_expression_mistmatch(
+                        &self,
                         BinaryExpressionMistmatchDiagnostic {
                             file_id: self.file_id,
                             left_type: Spanned {
@@ -7390,9 +7124,8 @@ impl<'ast> Builder<'ast, '_> {
                                 inner: right.ty,
                                 span: right.span,
                             },
-                        }
-                        .report(&self),
-                    );
+                        },
+                    ));
                 }
 
                 Ok(Expression {
@@ -7406,13 +7139,11 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
             _ => {
-                self.diagnostics.push(
-                    InvalidAssignmentTargetDiagnostic {
-                        file_id: self.file_id,
-                        span: left.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_invalid_assignment_target(SourceSpan::new(
+                        self.file_id,
+                        left.span,
+                    )));
 
                 Ok(Expression {
                     kind: ExprKind::Error,
@@ -7455,15 +7186,14 @@ impl<'ast> Builder<'ast, '_> {
                         Some(expected_type)
                             if !self.type_pool.coercible_to(inferred_type, expected_type) =>
                         {
-                            self.diagnostics.push(
+                            self.diagnostics.push(report_type_mistmatch(
+                                &self,
                                 TypeMistmatchDiagnostic {
-                                    file_id: self.file_id,
                                     expected_type,
                                     actual_type: inferred_type,
-                                    span: value.span,
-                                }
-                                .report(&self),
-                            );
+                                    span: SourceSpan::new(self.file_id, value.span),
+                                },
+                            ));
                             return Err(());
                         }
                         _ => {}
@@ -7492,15 +7222,14 @@ impl<'ast> Builder<'ast, '_> {
                     Some(expected_type)
                         if self.type_pool.coercible_to(inferred_type, expected_type) =>
                     {
-                        self.diagnostics.push(
+                        self.diagnostics.push(report_type_mistmatch(
+                            &self,
                             TypeMistmatchDiagnostic {
-                                file_id: self.file_id,
                                 expected_type,
                                 actual_type: inferred_type,
-                                span: expr.span,
-                            }
-                            .report(&self),
-                        );
+                                span: SourceSpan::new(self.file_id, expr.span),
+                            },
+                        ));
                         return Err(());
                     }
                     _ => {}
@@ -7565,30 +7294,29 @@ impl<'ast> Builder<'ast, '_> {
                         span: expr.span,
                     }),
                     None => {
-                        self.diagnostics.push(
-                            TypeAnnotationRequiredDiagnostic {
-                                file_id: self.file_id,
-                                span: expr.span,
-                            }
-                            .report(),
-                        );
+                        self.diagnostics
+                            .push(report_type_annotation_required(SourceSpan::new(
+                                self.file_id,
+                                expr.span,
+                            )));
                         Err(())
                     }
                 }
             }
             (l, ty) if l == Type::UNKNOWN_IDX => {
                 if !self.type_pool.get(ty).is_primitive() {
-                    self.diagnostics.push(
-                        BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.file_id,
-                            operator: operator.clone(),
-                            operand: Spanned {
-                                inner: ty,
-                                span: right.span,
+                    self.diagnostics
+                        .push(report_binary_operator_cannot_be_applied(
+                            &self,
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.file_id,
+                                operator: operator.clone(),
+                                operand: Spanned {
+                                    inner: ty,
+                                    span: right.span,
+                                },
                             },
-                        }
-                        .report(&self),
-                    );
+                        ));
 
                     return Ok(Expression {
                         kind: ExprKind::Binary {
@@ -7627,24 +7355,20 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
             (l, _) if l == Type::NEVER_IDX => {
-                self.diagnostics.push(
-                    UnreachableCodeDiagnostic {
-                        file_id: self.file_id,
-                        span: right.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_unreachable_code(SourceSpan::new(
+                        self.file_id,
+                        right.span,
+                    )));
 
                 Ok(left)
             }
             (_, r) if r == Type::NEVER_IDX => {
-                self.diagnostics.push(
-                    UnreachableCodeDiagnostic {
-                        file_id: self.file_id,
-                        span: operator.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_unreachable_code(SourceSpan::new(
+                        self.file_id,
+                        operator.span,
+                    )));
 
                 Ok(right)
             }
@@ -7662,7 +7386,8 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
             (left_type, right_type) => {
-                self.diagnostics.push(
+                self.diagnostics.push(report_binary_expression_mistmatch(
+                    &self,
                     BinaryExpressionMistmatchDiagnostic {
                         file_id: self.file_id,
                         left_type: Spanned {
@@ -7674,9 +7399,8 @@ impl<'ast> Builder<'ast, '_> {
                             inner: right_type,
                             span: right.span,
                         },
-                    }
-                    .report(&self),
-                );
+                    },
+                ));
 
                 match access_ctx.expected_type {
                     Some(expected_type) => Ok(Expression {
@@ -7704,8 +7428,9 @@ impl<'ast> Builder<'ast, '_> {
             .unwrap_or(&[])
     }
 
-    /// True when a non-generic `FunctionItem` can coerce to the given `Function` type.
-    /// Generic functions (empty `type_args`) are rejected — they need explicit instantiation first.
+    /// True when a non-generic `FunctionItem` can coerce to the given
+    /// `Function` type. Generic functions (empty `type_args`) are rejected
+    /// — they need explicit instantiation first.
     fn coercible_fn_item_to_fn(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
         let &Type::FunctionItem { id, ref type_args } = self.type_pool.get(arg_ty) else {
             return false;
@@ -7720,7 +7445,8 @@ impl<'ast> Builder<'ast, '_> {
         self.functions[fi].signature_index == expected_ty
     }
 
-    /// True when `arg_ty` is a `TypeParam` whose bounds include the trait that `expected_ty` represents.
+    /// True when `arg_ty` is a `TypeParam` whose bounds include the trait that
+    /// `expected_ty` represents.
     fn type_param_satisfies_bound(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
         let Type::Trait {
             trait_index: expected_trait,
@@ -7734,7 +7460,8 @@ impl<'ast> Builder<'ast, '_> {
     }
 
     /// Builds, infers type args, and checks arguments for a generic call.
-    /// `self_ty` always wins for slot 0; return-type expectation seeds type args first.
+    /// `self_ty` always wins for slot 0; return-type expectation seeds type
+    /// args first.
     fn build_generic_call_arguments(
         &mut self,
         ctx: &mut FunctionContext,
@@ -7880,24 +7607,21 @@ impl<'ast> Builder<'ast, '_> {
                     && !self.type_param_satisfies_bound(arg.ty, expected)
                     && !self.coercible_fn_item_to_fn(arg.ty, expected)
                 {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_type_mistmatch(
+                        &self,
                         TypeMistmatchDiagnostic {
-                            file_id: self.file_id,
                             expected_type: expected,
                             actual_type: arg.ty,
-                            span: arg.span,
-                        }
-                        .report(&self),
-                    );
+                            span: SourceSpan::new(self.file_id, arg.span),
+                        },
+                    ));
                 }
             } else if arg.ty == Type::UNKNOWN_IDX {
-                self.diagnostics.push(
-                    TypeAnnotationRequiredDiagnostic {
-                        file_id: self.file_id,
-                        span: arg.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_type_annotation_required(SourceSpan::new(
+                        self.file_id,
+                        arg.span,
+                    )));
                 return Err(());
             }
         }
@@ -7970,26 +7694,23 @@ impl<'ast> Builder<'ast, '_> {
                         && !self.type_param_satisfies_bound(argument.ty, expected_type)
                         && !self.coercible_fn_item_to_fn(argument.ty, expected_type)
                     {
-                        self.diagnostics.push(
+                        self.diagnostics.push(report_type_mistmatch(
+                            &self,
                             TypeMistmatchDiagnostic {
-                                file_id: self.file_id,
                                 expected_type,
                                 actual_type: argument.ty,
-                                span: argument.span,
-                            }
-                            .report(&self),
-                        );
+                                span: SourceSpan::new(self.file_id, argument.span),
+                            },
+                        ));
                     }
                 } else if argument.ty == Type::UNKNOWN_IDX {
                     // Argument passed to a TypeParam parameter with no concrete type
                     // and no inference from context — require an explicit annotation.
-                    self.diagnostics.push(
-                        TypeAnnotationRequiredDiagnostic {
-                            file_id: self.file_id,
-                            span: argument.span,
-                        }
-                        .report(),
-                    );
+                    self.diagnostics
+                        .push(report_type_annotation_required(SourceSpan::new(
+                            self.file_id,
+                            argument.span,
+                        )));
                     return Err(());
                 }
 
@@ -8023,14 +7744,11 @@ impl<'ast> Builder<'ast, '_> {
                 self.functions[self.function_index_lookup[&id] as usize].signature_index
             }
             _ => {
-                self.diagnostics.push(
-                    CannotCallExpressionDiagnostic {
-                        file_id: self.file_id,
-                        span: ast_callee.span,
-                        ty: callee.ty,
-                    }
-                    .report(&self),
-                );
+                self.diagnostics.push(report_cannot_call_expression(
+                    &self,
+                    callee.ty,
+                    SourceSpan::new(self.file_id, ast_callee.span),
+                ));
 
                 return Ok(Expression {
                     kind: ExprKind::Call {
@@ -8075,16 +7793,15 @@ impl<'ast> Builder<'ast, '_> {
                         let id = self.functions[func_index as usize].id;
                         let params = &signature.params()[1..];
                         if arguments.len() != params.len() {
-                            self.diagnostics.push(
+                            self.diagnostics.push(report_argument_count_mismatch(
+                                &self,
                                 ArgumentCountMismatchDiagnostic {
-                                    file_id: self.file_id,
                                     actual_count: arguments.len(),
                                     params,
-                                    call_span: callee.span,
+                                    call_span: SourceSpan::new(self.file_id, callee.span),
                                     is_method: true,
-                                }
-                                .report(&self),
-                            );
+                                },
+                            ));
                         }
 
                         let type_params_len = self.functions[func_index as usize].type_params.len();
@@ -8133,16 +7850,15 @@ impl<'ast> Builder<'ast, '_> {
             _ => {
                 let params = signature.params();
                 if arguments.len() != params.len() {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_argument_count_mismatch(
+                        &self,
                         ArgumentCountMismatchDiagnostic {
-                            file_id: self.file_id,
                             actual_count: arguments.len(),
                             params,
-                            call_span: callee.span,
+                            call_span: SourceSpan::new(self.file_id, callee.span),
                             is_method: false,
-                        }
-                        .report(&self),
-                    );
+                        },
+                    ));
                 }
 
                 if let ExprKind::Function { id } = &callee.kind {
@@ -8221,13 +7937,11 @@ impl<'ast> Builder<'ast, '_> {
 
         let ty: TypeIndex = match (value.ty, expected_type) {
             (v, None) if v == Type::UNKNOWN_IDX => {
-                self.diagnostics.push(
-                    TypeAnnotationRequiredDiagnostic {
-                        file_id: self.file_id,
-                        span: name.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_type_annotation_required(SourceSpan::new(
+                        self.file_id,
+                        name.span,
+                    )));
                 // Use Error type for recovery - this allows later references to work
                 // without cascading "undeclared identifier" errors
                 Type::ERROR_IDX
@@ -8241,15 +7955,14 @@ impl<'ast> Builder<'ast, '_> {
                 if self.type_pool.coercible_to(actual_type, expected_type) {
                     expected_type
                 } else {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_type_mistmatch(
+                        &self,
                         TypeMistmatchDiagnostic {
-                            file_id: self.file_id,
                             expected_type,
                             actual_type,
-                            span: value.span,
-                        }
-                        .report(&self),
-                    );
+                            span: SourceSpan::new(self.file_id, value.span),
+                        },
+                    ));
                     expected_type // Recover by using the expected type
                 }
             }
@@ -8308,43 +8021,40 @@ impl<'ast> Builder<'ast, '_> {
 
         if target_idx == Type::I32_IDX {
             if value > i32::MAX as i64 || value < i32::MIN as i64 {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::I32_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::I32_IDX;
             Ok(())
         } else if target_idx == Type::I64_IDX {
             if value > i64::MAX || value < i64::MIN {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::I64_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::I64_IDX;
             Ok(())
         } else if target_idx == Type::U32_IDX {
             if value > u32::MAX as i64 || value < 0 {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::U32_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::U32_IDX;
             Ok(())
@@ -8352,106 +8062,95 @@ impl<'ast> Builder<'ast, '_> {
             // i64 is at most i64::MAX which always fits in u64; only negative values are
             // invalid
             if value < 0 {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::U64_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::U64_IDX;
             Ok(())
         } else if target_idx == Type::U8_IDX {
             if value < 0 || value > u8::MAX as i64 {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::U8_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::U8_IDX;
             Ok(())
         } else if target_idx == Type::I8_IDX {
             if value < i8::MIN as i64 || value > i8::MAX as i64 {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::I8_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::I8_IDX;
             Ok(())
         } else if target_idx == Type::U16_IDX {
             if value < 0 || value > u16::MAX as i64 {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::U16_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::U16_IDX;
             Ok(())
         } else if target_idx == Type::I16_IDX {
             if value < i16::MIN as i64 || value > i16::MAX as i64 {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::I16_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::I16_IDX;
             Ok(())
         } else if target_idx == Type::CHAR_IDX {
             if value < 0 || value > u32::MAX as i64 {
-                self.diagnostics.push(
+                self.diagnostics.push(report_integer_literal_out_of_range(
+                    &self,
                     IntegerLiteralOutOfRangeDiagnostic {
-                        file_id: self.file_id,
                         ty: Type::CHAR_IDX,
                         value,
-                        span: expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, expr.span),
+                    },
+                ));
             }
             expr.ty = Type::CHAR_IDX;
             Ok(())
         } else if target_idx == Type::F32_IDX || target_idx == Type::F64_IDX {
-            self.diagnostics.push(
-                IntegerLiteralForFloatTypeDiagnostic {
-                    file_id: self.file_id,
-                    span: expr.span,
-                }
-                .report(),
-            );
+            self.diagnostics
+                .push(report_integer_literal_for_float_type(SourceSpan::new(
+                    self.file_id,
+                    expr.span,
+                )));
             Err(())
         } else {
-            self.diagnostics.push(
-                UnableToCoerceDiagnostic {
-                    file_id: self.file_id,
-                    target_type: target_idx,
-                    span: expr.span,
-                }
-                .report(&self),
-            );
+            self.diagnostics.push(report_unable_to_coerce(
+                &self,
+                target_idx,
+                SourceSpan::new(self.file_id, expr.span),
+            ));
             Err(())
         }
     }
@@ -8470,14 +8169,11 @@ impl<'ast> Builder<'ast, '_> {
             expr.ty = Type::F64_IDX;
             Ok(())
         } else {
-            self.diagnostics.push(
-                UnableToCoerceDiagnostic {
-                    file_id: self.file_id,
-                    target_type: target_idx,
-                    span: expr.span,
-                }
-                .report(&self),
-            );
+            self.diagnostics.push(report_unable_to_coerce(
+                &self,
+                target_idx,
+                SourceSpan::new(self.file_id, expr.span),
+            ));
             Err(())
         }
     }
@@ -8496,14 +8192,11 @@ impl<'ast> Builder<'ast, '_> {
             ast::UnaryOp::BitNot | ast::UnaryOp::InvertSign => {
                 let is_valid = target_idx == Type::I32_IDX || target_idx == Type::I64_IDX;
                 if !is_valid {
-                    self.diagnostics.push(
-                        UnableToCoerceDiagnostic {
-                            file_id: self.file_id,
-                            target_type: target_idx,
-                            span: expr.span,
-                        }
-                        .report(&self),
-                    );
+                    self.diagnostics.push(report_unable_to_coerce(
+                        &self,
+                        target_idx,
+                        SourceSpan::new(self.file_id, expr.span),
+                    ));
                     return Err(());
                 }
             }
@@ -8531,14 +8224,11 @@ impl<'ast> Builder<'ast, '_> {
         match operator {
             operator if operator.is_arithmetic() => {
                 if !self.type_pool.get(target_idx).is_primitive() {
-                    self.diagnostics.push(
-                        UnableToCoerceDiagnostic {
-                            file_id: self.file_id,
-                            target_type: target_idx,
-                            span: expr.span,
-                        }
-                        .report(&self),
-                    );
+                    self.diagnostics.push(report_unable_to_coerce(
+                        &self,
+                        target_idx,
+                        SourceSpan::new(self.file_id, expr.span),
+                    ));
                     return Err(());
                 }
             }
@@ -8548,14 +8238,11 @@ impl<'ast> Builder<'ast, '_> {
                     || target_idx == Type::U32_IDX
                     || target_idx == Type::U64_IDX;
                 if !is_integer {
-                    self.diagnostics.push(
-                        UnableToCoerceDiagnostic {
-                            file_id: self.file_id,
-                            target_type: target_idx,
-                            span: expr.span,
-                        }
-                        .report(&self),
-                    );
+                    self.diagnostics.push(report_unable_to_coerce(
+                        &self,
+                        target_idx,
+                        SourceSpan::new(self.file_id, expr.span),
+                    ));
                     return Err(());
                 }
             }
@@ -8588,24 +8275,19 @@ impl<'ast> Builder<'ast, '_> {
         {
             Some(SymbolKind::Struct { struct_index }) => struct_index,
             Some(_) => {
-                self.diagnostics.push(
-                    NotAStructTypeDiagnostic {
-                        file_id: self.file_id,
-                        name: self.interner.resolve(name.inner).unwrap().to_string(),
-                        span: name.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics.push(report_not_a_struct_type(
+                    self.file_id,
+                    self.interner.resolve(name.inner).unwrap().to_string(),
+                    name.span,
+                ));
                 return Err(());
             }
             None => {
-                self.diagnostics.push(
-                    UndeclaredIdentifierDiagnostic {
-                        file_id: self.file_id,
-                        span: name.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_undeclared_identifier(SourceSpan::new(
+                        self.file_id,
+                        name.span,
+                    )));
                 return Err(());
             }
         };
@@ -8634,29 +8316,24 @@ impl<'ast> Builder<'ast, '_> {
             {
                 Some(idx) => idx,
                 None => {
-                    self.diagnostics.push(
+                    self.diagnostics.push(report_unknown_struct_field(
                         UnknownStructFieldDiagnostic {
                             file_id: self.file_id,
                             struct_name: &struct_name,
                             field_name,
                             field_span: field.name.span,
-                        }
-                        .report(),
-                    );
+                        },
+                    ));
                     continue;
                 }
             };
 
             if let Some(first_span) = first_mention[field_index] {
-                self.diagnostics.push(
-                    DuplicateStructFieldInitDiagnostic {
-                        file_id: self.file_id,
-                        field_name: &field_name,
-                        first_span,
-                        second_span: field.name.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics.push(report_duplicate_struct_field_init(
+                    &field_name,
+                    SourceSpan::new(self.file_id, first_span),
+                    SourceSpan::new(self.file_id, field.name.span),
+                ));
                 continue;
             }
             // Mark this field as mentioned (by its name span) before building the value,
@@ -8696,15 +8373,14 @@ impl<'ast> Builder<'ast, '_> {
                     Err(_) => continue,
                 }
             } else if !self.type_pool.coercible_to(field_expr.ty, expected_ty) {
-                self.diagnostics.push(
+                self.diagnostics.push(report_type_mistmatch(
+                    &self,
                     TypeMistmatchDiagnostic {
-                        file_id: self.file_id,
                         expected_type: expected_ty,
                         actual_type: field_expr.ty,
-                        span: field_expr.span,
-                    }
-                    .report(&self),
-                );
+                        span: SourceSpan::new(self.file_id, field_expr.span),
+                    },
+                ));
                 continue;
             }
 
@@ -8724,15 +8400,14 @@ impl<'ast> Builder<'ast, '_> {
         let ty = self.type_pool.intern(Type::Struct { struct_index });
 
         if !missing.is_empty() {
-            self.diagnostics.push(
+            self.diagnostics.push(report_missing_struct_fields(
                 MissingStructFieldsDiagnostic {
                     file_id: self.file_id,
                     struct_name: &struct_name,
                     missing_fields: missing,
                     init_span,
-                }
-                .report(),
-            );
+                },
+            ));
         }
 
         // If any field was mentioned but failed to build (type error, coercion error,
@@ -8847,26 +8522,22 @@ impl<'ast> Builder<'ast, '_> {
         let elements = match self.type_pool.get(object.ty) {
             Type::Tuple { elements } => elements.clone(),
             _ => {
-                self.diagnostics.push(
-                    UndeclaredIdentifierDiagnostic {
-                        file_id: self.file_id,
-                        span: field.span,
-                    }
-                    .report(),
-                );
+                self.diagnostics
+                    .push(report_undeclared_identifier(SourceSpan::new(
+                        self.file_id,
+                        field.span,
+                    )));
                 return Err(());
             }
         };
 
         let idx = field.inner as usize;
         if idx >= elements.len() {
-            self.diagnostics.push(
-                UndeclaredIdentifierDiagnostic {
-                    file_id: self.file_id,
-                    span: field.span,
-                }
-                .report(),
-            );
+            self.diagnostics
+                .push(report_undeclared_identifier(SourceSpan::new(
+                    self.file_id,
+                    field.span,
+                )));
             return Err(());
         }
 
@@ -8981,7 +8652,6 @@ impl TypePool {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TIR {
-    pub file_id: ast::FileId,
     #[cfg_attr(test, serde(skip))]
     pub id_generator: ast::DefIdGenerator,
     pub type_pool: Vec<Type>,
@@ -9012,9 +8682,9 @@ pub struct TIR {
 }
 
 impl TIR {
-    /// Builds TIR from one or more ASTs in order. Pass stdlib ASTs first.
-    /// `TIR::file_id` is set to the last AST's file ID.
-    pub fn build<'ast>(asts: &'ast [&'ast ast::AST], interner: &mut ast::StringInterner) -> TIR {
+    /// Builds TIR from a full compilation graph.
+    pub fn build(compilation: &CompilationGraph, interner: &mut ast::StringInterner) -> TIR {
+        let asts = compilation.asts_in_build_order();
         assert!(!asts.is_empty(), "TIR::build requires at least one AST");
 
         let mut symbol_lookup = HashMap::new();
@@ -9070,7 +8740,7 @@ impl TIR {
         };
 
         // Phase 1: register all top-level items into ast_nodes / pending
-        for ast in asts.iter() {
+        for ast in asts.iter().copied() {
             for item in ast.items.iter() {
                 builder.pre_scan_item(&item.inner.inner, ast.file_id);
             }
@@ -9093,20 +8763,18 @@ impl TIR {
         builder.check_trait_conformance();
 
         // Phase 4: process exports (must run after all signatures are resolved)
-        for ast in asts.iter() {
+        for ast in asts.iter().copied() {
             builder.file_id = ast.file_id;
             for item in ast.items.iter() {
-                if matches!(item.inner.inner, ast::Item::Export { .. }) {
-                    let _ = builder.build_item(&item.inner.inner);
+                if let ast::Item::Export { entries } = &item.inner.inner {
+                    builder.build_exports(entries);
                 }
             }
         }
 
         builder.report_unused_items();
 
-        let primary_file_id = asts.last().unwrap().file_id;
         TIR {
-            file_id: primary_file_id,
             type_pool: builder.type_pool.pool,
             import_modules: builder.import_modules,
             enums: builder.enums,
@@ -9124,7 +8792,7 @@ impl TIR {
             globals: builder.globals,
             function_index_lookup: builder.function_index_lookup,
             global_index_lookup: builder.global_index_lookup,
-            id_generator: asts.last().unwrap().id_generator,
+            id_generator: compilation.id_generator,
         }
     }
 }

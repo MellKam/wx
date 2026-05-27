@@ -23,40 +23,32 @@ fn main() {
         .get_one::<String>("path")
         .expect("Path argument is required");
 
-    let file_content = match std::fs::read_to_string(file_path) {
-        Ok(content) => content,
-        Err(e) => {
-            eprintln!("Error reading file {}: {}", file_path, e);
+    let filename = file_path.split('/').last().unwrap().to_string();
+    let mut interner = StringInterner::new();
+
+    let compilation = match vfs::load_compilation(std::path::Path::new(file_path), &mut interner) {
+        Ok(compilation) => compilation,
+        Err(vfs::LoadError::ReadFailed { path }) => {
+            eprintln!("Error reading file {}", path.display());
+            std::process::exit(1);
+        }
+        Err(other) => {
+            eprintln!("Failed to load compilation: {:?}", other);
             std::process::exit(1);
         }
     };
 
-    let filename = file_path.split('/').last().unwrap().to_string();
+    let ast_diagnostics: Vec<_> = compilation
+        .crates
+        .iter()
+        .flat_map(|crate_graph| crate_graph.diagnostics.iter())
+        .collect();
 
-    let mut files = ast::Files::new();
-    let mut interner = StringInterner::new();
-
-    let stdlib_id = files
-        .add(wx_compiler::STDLIB_FILENAME.to_string(), wx_compiler::STDLIB_SOURCE.to_string())
-        .unwrap();
-    let stdlib_ast = ast::Parser::parse(
-        stdlib_id,
-        &files.get(stdlib_id).unwrap().source,
-        &mut interner,
-    );
-
-    let main_file = files.add(filename.clone(), file_content).unwrap();
-    let ast = ast::Parser::parse(
-        main_file,
-        &files.get(main_file).unwrap().source,
-        &mut interner,
-    );
-
-    if !ast.diagnostics.is_empty() {
+    if !ast_diagnostics.is_empty() {
         let writer = StandardStream::stderr(ColorChoice::Always);
         let config = codespan_reporting::term::Config::default();
 
-        let has_errors = ast.diagnostics.iter().any(|d| {
+        let has_errors = ast_diagnostics.iter().any(|d| {
             matches!(
                 d.severity,
                 codespan_reporting::diagnostic::Severity::Error
@@ -64,8 +56,9 @@ fn main() {
             )
         });
 
-        for diagnostic in ast.diagnostics.iter() {
-            term::emit_to_write_style(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+        for diagnostic in ast_diagnostics {
+            term::emit_to_write_style(&mut writer.lock(), &config, &compilation.files, diagnostic)
+                .unwrap();
         }
 
         if has_errors {
@@ -73,7 +66,7 @@ fn main() {
         }
     }
 
-    let tir = tir::TIR::build(&[&stdlib_ast, &ast], &mut interner);
+    let tir = tir::TIR::build(&compilation, &mut interner);
 
     if !tir.diagnostics.is_empty() {
         let writer = StandardStream::stderr(ColorChoice::Always);
@@ -88,7 +81,8 @@ fn main() {
         });
 
         for diagnostic in tir.diagnostics.iter() {
-            term::emit_to_write_style(&mut writer.lock(), &config, &files, diagnostic).unwrap();
+            term::emit_to_write_style(&mut writer.lock(), &config, &compilation.files, diagnostic)
+                .unwrap();
         }
 
         if has_errors {

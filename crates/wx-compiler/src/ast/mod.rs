@@ -1,6 +1,7 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
-use codespan_reporting::files;
 use string_interner::symbol::SymbolU32;
+
+use crate::vfs::FileId;
 
 #[derive(Copy, Clone, PartialEq)]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -41,101 +42,6 @@ impl TextSpan {
 impl Into<core::ops::Range<usize>> for TextSpan {
     fn into(self) -> core::ops::Range<usize> {
         self.start as usize..self.end as usize
-    }
-}
-
-#[derive(Clone)]
-pub struct File {
-    pub name: String,
-    pub source: String,
-    line_starts: Vec<usize>,
-}
-
-impl File {
-    fn line_start(&self, line_index: usize) -> Result<usize, files::Error> {
-        match line_index.cmp(&self.line_starts.len()) {
-            core::cmp::Ordering::Less => Ok(*self
-                .line_starts
-                .get(line_index)
-                .expect("failed despite previous check")),
-            core::cmp::Ordering::Equal => Ok(self.source.len()),
-            core::cmp::Ordering::Greater => Err(files::Error::LineTooLarge {
-                given: line_index,
-                max: self.line_starts.len() - 1,
-            }),
-        }
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct FileId(u32);
-
-pub struct Files {
-    files: Vec<File>,
-}
-
-impl Files {
-    pub fn new() -> Files {
-        Files { files: Vec::new() }
-    }
-
-    pub fn add(&mut self, name: String, source: String) -> Option<FileId> {
-        let file_id = FileId(u32::try_from(self.files.len()).ok()?);
-        let line_starts = files::line_starts(&source).collect();
-
-        self.files.push(File {
-            name,
-            line_starts,
-            source,
-        });
-
-        Some(file_id)
-    }
-
-    pub fn get(&self, file_id: FileId) -> Result<&File, files::Error> {
-        self.files
-            .get(file_id.0 as usize)
-            .ok_or(files::Error::FileMissing)
-    }
-
-    pub fn update(&mut self, file_id: FileId, source: String) {
-        if let Some(file) = self.files.get_mut(file_id.0 as usize) {
-            file.line_starts = files::line_starts(&source).collect();
-            file.source = source;
-        }
-    }
-}
-
-impl<'files> files::Files<'files> for Files {
-    type FileId = FileId;
-    type Name = &'files str;
-    type Source = &'files str;
-
-    fn name(&'files self, file_id: FileId) -> Result<Self::Name, files::Error> {
-        Ok(self.get(file_id)?.name.as_ref())
-    }
-
-    fn source(&'files self, file_id: FileId) -> Result<Self::Source, files::Error> {
-        Ok(&self.get(file_id)?.source)
-    }
-
-    fn line_index(&self, file_id: FileId, byte_index: usize) -> Result<usize, files::Error> {
-        self.get(file_id)?
-            .line_starts
-            .binary_search(&byte_index)
-            .or_else(|next_line| Ok(next_line - 1))
-    }
-
-    fn line_range(
-        &self,
-        file_id: FileId,
-        line_index: usize,
-    ) -> Result<core::ops::Range<usize>, files::Error> {
-        let file = self.get(file_id)?;
-        let line_start = file.line_start(line_index)?;
-        let next_line_start = file.line_start(line_index + 1)?;
-
-        Ok(line_start..next_line_start)
     }
 }
 
@@ -309,61 +215,34 @@ define_diagnostic_codes! {
     }
 }
 
-pub struct UnexpectedTokenDiagnostic {
-    pub file_id: FileId,
-    pub received: Spanned<Token>,
-    pub expected: Token,
+fn report_unexpected_token(
+    file_id: FileId,
+    received: Spanned<Token>,
+    expected: Token,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UnexpectedToken.code())
+        .with_message(format!(
+            "expected `{}`, found `{}`",
+            expected, received.inner
+        ))
+        .with_label(
+            Label::primary(file_id, received.span).with_message(format!("expected `{}`", expected)),
+        )
 }
 
-impl UnexpectedTokenDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::UnexpectedToken.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message(format!(
-                "expected `{}`, found `{}`",
-                self.expected, self.received.inner
-            ))
-            .with_label(
-                Label::primary(self.file_id, self.received.span)
-                    .with_message(format!("expected `{}`", self.expected)),
-            )
-    }
-}
-
-pub struct UnknownTokenDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl UnknownTokenDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::UnknownToken.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("unknown token")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct MissingSeparatorDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-    pub separator: Token,
-}
-
-impl MissingSeparatorDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::warning()
-            .with_code(DiagnosticCode::MissingSeparator.code())
-            .with_message("missing separator")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message(format!("consider adding `{}` here", self.separator)),
-            )
-    }
+fn report_missing_separator(
+    file_id: FileId,
+    span: TextSpan,
+    separator: Token,
+) -> Diagnostic<FileId> {
+    Diagnostic::warning()
+        .with_code(DiagnosticCode::MissingSeparator.code())
+        .with_message("missing separator")
+        .with_label(
+            Label::primary(file_id, span)
+                .with_message(format!("consider adding `{}` here", separator)),
+        )
 }
 
 pub struct UnclosedDelimiterDiagnostic {
@@ -373,212 +252,109 @@ pub struct UnclosedDelimiterDiagnostic {
     pub expected_close_span: TextSpan,
 }
 
-impl UnclosedDelimiterDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::UnclosedDelimiter.code())
-            .with_message("unclosed delimiter")
-            .with_label(
-                Label::primary(self.file_id, self.expected_close_span)
-                    .with_message(format!("consider adding `{}` here", self.close_token)),
-            )
-            .with_label(
-                Label::secondary(self.file_id, self.open_span).with_message("unclosed delimiter"),
-            )
-    }
+fn report_unclosed_delimiter(details: UnclosedDelimiterDiagnostic) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UnclosedDelimiter.code())
+        .with_message("unclosed delimiter")
+        .with_label(
+            Label::primary(details.file_id, details.expected_close_span)
+                .with_message(format!("consider adding `{}` here", details.close_token)),
+        )
+        .with_label(
+            Label::secondary(details.file_id, details.open_span).with_message("unclosed delimiter"),
+        )
 }
 
-pub struct InvalidIntegerLiteralDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
+fn report_invalid_integer_literal(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidLiteral.code())
+        .with_message("invalid integer literal")
+        .with_label(Label::primary(file_id, span))
 }
 
-impl InvalidIntegerLiteralDiagnostic {
-    const CODE: &'static str = DiagnosticCode::InvalidLiteral.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("invalid integer literal")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_invalid_float_literal(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidLiteral.code())
+        .with_message("invalid float literal")
+        .with_label(Label::primary(file_id, span))
 }
 
-pub struct InvalidFloatLiteralDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
+fn report_incomplete_binary_expression(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::IncompleteExpression.code())
+        .with_message("incomplete binary expression")
+        .with_label(Label::primary(file_id, span))
+        .with_label(
+            Label::secondary(file_id, span)
+                .with_message("consider adding a right-hand side operand"),
+        )
 }
 
-impl InvalidFloatLiteralDiagnostic {
-    const CODE: &'static str = DiagnosticCode::InvalidLiteral.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("invalid float literal")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
+fn report_incomplete_unary_expression(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::IncompleteExpression.code())
+        .with_message("incomplete unary expression")
+        .with_label(Label::primary(file_id, span))
+        .with_label(Label::secondary(file_id, span).with_message("consider adding an operand"))
 }
 
-pub struct IncompleteBinaryExpressionDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
+fn report_chained_comparisons(
+    file_id: FileId,
+    first_operator_span: TextSpan,
+    second_operator_span: TextSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::ChainedComparison.code())
+        .with_message("comparison operators cannot be chained")
+        .with_label(Label::primary(file_id, first_operator_span))
+        .with_label(Label::primary(file_id, second_operator_span))
+        .with_note("consider using logical operator like `&&` or `||` to split the comparisons or use parentheses to group them")
 }
 
-impl IncompleteBinaryExpressionDiagnostic {
-    const CODE: &'static str = DiagnosticCode::IncompleteExpression.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("incomplete binary expression")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_label(
-                Label::secondary(self.file_id, self.span)
-                    .with_message("consider adding a right-hand side operand"),
-            )
-    }
+fn report_reserved_identifier(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::ReservedIdentifier.code())
+        .with_message("cannot use keyword as identifier")
+        .with_label(Label::primary(file_id, span))
 }
 
-pub struct IncompleteUnaryExpressionDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
+fn report_invalid_namespace(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code("invalid-namespace")
+        .with_message("invalid namespace")
+        .with_label(
+            Label::primary(file_id, span).with_message("namespace must be a valid identifier"),
+        )
 }
 
-impl IncompleteUnaryExpressionDiagnostic {
-    const CODE: &'static str = DiagnosticCode::IncompleteExpression.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("incomplete unary expression")
-            .with_label(Label::primary(self.file_id, self.span))
-            .with_label(
-                Label::secondary(self.file_id, self.span)
-                    .with_message("consider adding an operand"),
-            )
-    }
+fn report_invalid_item(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidItem.code())
+        .with_message("invalid item")
+        .with_label(Label::primary(file_id, span))
 }
 
-pub struct ChainedComparisonsDiagnostic {
-    pub file_id: FileId,
-    pub first_operator_span: TextSpan,
-    pub second_operator_span: TextSpan,
+fn report_missing_local_initializer(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::MissingInitializer.code())
+        .with_message("missing initial value for local variable")
+        .with_note("example syntax: local x: i32 = 0")
+        .with_label(Label::primary(file_id, span))
 }
 
-impl ChainedComparisonsDiagnostic {
-    const CODE: &'static str = DiagnosticCode::ChainedComparison.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("comparison operators cannot be chained")
-            .with_label(Label::primary(self.file_id, self.first_operator_span))
-            .with_label(Label::primary(self.file_id, self.second_operator_span))
-            .with_note("consider using logical operator like `&&` or `||` to split the comparisons or use parentheses to group them")
-    }
+fn report_missing_global_initializer(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::MissingInitializer.code())
+        .with_message("missing initial value for global variable")
+        .with_note("example syntax: global x: i32 = 0")
+        .with_label(Label::primary(file_id, span))
 }
 
-pub struct ReservedIdentifierDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl ReservedIdentifierDiagnostic {
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(DiagnosticCode::ReservedIdentifier.code())
-            .with_message("cannot use keyword as identifier")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct InvalidNamespaceDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl InvalidNamespaceDiagnostic {
-    const CODE: &'static str = "invalid-namespace";
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("invalid namespace")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("namespace must be a valid identifier"),
-            )
-    }
-}
-
-pub struct InvalidItemDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl InvalidItemDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::InvalidItem.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("invalid item")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct MissingLocalInitializerDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl MissingLocalInitializerDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::MissingInitializer.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("missing initial value for local variable")
-            .with_note("example syntax: local x: i32 = 0")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct MissingGlobalInitializerDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl MissingGlobalInitializerDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::MissingInitializer.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("missing initial value for global variable")
-            .with_note("example syntax: global x: i32 = 0")
-            .with_label(Label::primary(self.file_id, self.span))
-    }
-}
-
-pub struct InvalidAttributeDiagnostic {
-    pub file_id: FileId,
-    pub span: TextSpan,
-}
-
-impl InvalidAttributeDiagnostic {
-    pub const CODE: &'static str = DiagnosticCode::InvalidAttribute.code();
-
-    pub fn report(self) -> Diagnostic<FileId> {
-        Diagnostic::error()
-            .with_code(Self::CODE)
-            .with_message("invalid attribute")
-            .with_label(
-                Label::primary(self.file_id, self.span)
-                    .with_message("expected attribute name here"),
-            )
-    }
+fn report_invalid_attribute(file_id: FileId, span: TextSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidAttribute.code())
+        .with_message("invalid attribute")
+        .with_label(Label::primary(file_id, span).with_message("expected attribute name here"))
 }
 
 struct Lexer<'a> {
@@ -1613,6 +1389,10 @@ pub enum Item {
         name: Spanned<SymbolU32>,
         items: Grouped<Box<[Separated<Spanned<Item>>]>>,
     },
+    ModuleDeclaration {
+        pub_span: Option<TextSpan>,
+        name: Spanned<SymbolU32>,
+    },
     Trait {
         id: DefId,
         pub_span: Option<TextSpan>,
@@ -1636,7 +1416,8 @@ impl Item {
             Item::Global { .. }
             | Item::Const { .. }
             | Item::Memory { .. }
-            | Item::FunctionDeclaration { .. } => false,
+            | Item::FunctionDeclaration { .. }
+            | Item::ModuleDeclaration { .. } => false,
             Item::Function { .. }
             | Item::Export { .. }
             | Item::Import { .. }
@@ -1655,8 +1436,6 @@ pub struct AST {
     pub file_id: FileId,
     pub diagnostics: Vec<Diagnostic<FileId>>,
     pub items: Vec<Separated<Spanned<Item>>>,
-    #[cfg_attr(test, serde(skip))]
-    pub id_generator: DefIdGenerator,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
@@ -1790,6 +1569,7 @@ pub struct Parser<'input> {
     lexer: Lexer<'input>,
     interner: &'input mut StringInterner,
     ast: AST,
+    id_generator: &'input mut DefIdGenerator,
 }
 
 struct SeparatedGroup<T> {
@@ -1819,15 +1599,14 @@ impl<T> SeparatedGroup<T> {
                     Some(last) => TextSpan::new(last.inner.span.end, last.inner.span.end),
                     None => TextSpan::new(open_span.end, open_span.end),
                 };
-                parser.ast.diagnostics.push(
+                parser.ast.diagnostics.push(report_unclosed_delimiter(
                     UnclosedDelimiterDiagnostic {
                         file_id: parser.ast.file_id,
                         close_token: self.close_token,
                         open_span,
                         expected_close_span,
-                    }
-                    .report(),
-                );
+                    },
+                ));
                 break expected_close_span;
             }
 
@@ -1855,15 +1634,14 @@ impl<T> SeparatedGroup<T> {
 
             if next_token.inner == Token::Eof {
                 let eof_span = TextSpan::new(item.span.end, item.span.end);
-                parser.ast.diagnostics.push(
+                parser.ast.diagnostics.push(report_unclosed_delimiter(
                     UnclosedDelimiterDiagnostic {
                         file_id: parser.ast.file_id,
                         close_token: self.close_token,
                         open_span,
                         expected_close_span: eof_span,
-                    }
-                    .report(),
-                );
+                    },
+                ));
                 items.push(Separated {
                     inner: item,
                     separator: None,
@@ -1877,14 +1655,11 @@ impl<T> SeparatedGroup<T> {
                 .unwrap_or(true);
 
             if should_warn {
-                parser.ast.diagnostics.push(
-                    MissingSeparatorDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: TextSpan::new(item.span.end, item.span.end),
-                        separator: self.separator_token,
-                    }
-                    .report(),
-                );
+                parser.ast.diagnostics.push(report_missing_separator(
+                    parser.ast.file_id,
+                    TextSpan::new(item.span.end, item.span.end),
+                    self.separator_token,
+                ));
             }
             items.push(Separated {
                 inner: item,
@@ -1928,6 +1703,7 @@ impl<'input> Parser<'input> {
         file_id: FileId,
         source: &'input str,
         interner: &'input mut StringInterner,
+        id_generator: &'input mut DefIdGenerator,
     ) -> AST {
         let mut parser = Self {
             source,
@@ -1937,8 +1713,8 @@ impl<'input> Parser<'input> {
                 file_id,
                 diagnostics: Vec::new(),
                 items: Vec::new(),
-                id_generator: DefIdGenerator::new(),
             },
+            id_generator,
         };
 
         loop {
@@ -2020,16 +1796,13 @@ impl<'input> Parser<'input> {
             }
         };
 
-        self.ast.diagnostics.push(
-            InvalidItemDiagnostic {
-                file_id: self.ast.file_id,
-                span: match end_token {
-                    Some(end_token) => TextSpan::merge(start_token.span, end_token.span),
-                    None => start_token.span,
-                },
-            }
-            .report(),
-        );
+        self.ast.diagnostics.push(report_invalid_item(
+            self.ast.file_id,
+            match end_token {
+                Some(end_token) => TextSpan::merge(start_token.span, end_token.span),
+                None => start_token.span,
+            },
+        ));
 
         handler
     }
@@ -2066,14 +1839,11 @@ impl<'input> Parser<'input> {
         if token.inner == expected_token {
             Ok(token)
         } else {
-            self.ast.diagnostics.push(
-                UnexpectedTokenDiagnostic {
-                    file_id: self.ast.file_id,
-                    received: token,
-                    expected: expected_token,
-                }
-                .report(),
-            );
+            self.ast.diagnostics.push(report_unexpected_token(
+                self.ast.file_id,
+                token,
+                expected_token,
+            ));
             Err(())
         }
     }
@@ -2084,14 +1854,11 @@ impl<'input> Parser<'input> {
         if token.inner == expected_token {
             Ok(token)
         } else {
-            self.ast.diagnostics.push(
-                UnexpectedTokenDiagnostic {
-                    file_id: self.ast.file_id,
-                    received: token,
-                    expected: expected_token,
-                }
-                .report(),
-            );
+            self.ast.diagnostics.push(report_unexpected_token(
+                self.ast.file_id,
+                token,
+                expected_token,
+            ));
             Err(())
         }
     }
@@ -2100,13 +1867,9 @@ impl<'input> Parser<'input> {
         let text = span.extract_str(self.source);
         match Keyword::try_from(text) {
             Ok(_) => {
-                self.ast.diagnostics.push(
-                    ReservedIdentifierDiagnostic {
-                        file_id: self.ast.file_id,
-                        span,
-                    }
-                    .report(),
-                );
+                self.ast
+                    .diagnostics
+                    .push(report_reserved_identifier(self.ast.file_id, span));
             }
             Err(_) => {}
         }
@@ -2124,13 +1887,10 @@ impl<'input> Parser<'input> {
             let open_bracket = parser.next_expect(Token::OpenBracket)?;
             let name_token = parser.lexer.peek();
             if name_token.inner != Token::Identifier {
-                parser.ast.diagnostics.push(
-                    InvalidAttributeDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: name_token.span,
-                    }
-                    .report(),
-                );
+                parser.ast.diagnostics.push(report_invalid_attribute(
+                    parser.ast.file_id,
+                    name_token.span,
+                ));
                 return Err(());
             }
             let name_span = parser.lexer.next().span;
@@ -2139,15 +1899,14 @@ impl<'input> Parser<'input> {
                 .get_or_intern(name_span.extract_str(parser.source));
             let close_token = parser.lexer.peek();
             if close_token.inner != Token::CloseBracket {
-                parser.ast.diagnostics.push(
+                parser.ast.diagnostics.push(report_unclosed_delimiter(
                     UnclosedDelimiterDiagnostic {
                         file_id: parser.ast.file_id,
                         open_span: open_bracket.span,
                         close_token: Token::CloseBracket,
                         expected_close_span: close_token.span,
-                    }
-                    .report(),
-                );
+                    },
+                ));
                 return Err(());
             }
             parser.lexer.next();
@@ -2173,13 +1932,10 @@ impl<'input> Parser<'input> {
         match Keyword::try_from(text) {
             Ok(Keyword::SelfKw) | Err(_) => {}
             Ok(_) => {
-                parser.ast.diagnostics.push(
-                    ReservedIdentifierDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: name_span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_reserved_identifier(parser.ast.file_id, name_span));
             }
         }
 
@@ -2272,15 +2028,14 @@ impl<'input> Parser<'input> {
                 break;
             }
             if peeked.inner == Token::Eof {
-                self.ast.diagnostics.push(
-                    UnclosedDelimiterDiagnostic {
+                self.ast
+                    .diagnostics
+                    .push(report_unclosed_delimiter(UnclosedDelimiterDiagnostic {
                         file_id: self.ast.file_id,
                         open_span,
                         close_token: Token::RightArrow,
                         expected_close_span: peeked.span,
-                    }
-                    .report(),
-                );
+                    }));
                 break;
             }
 
@@ -2325,15 +2080,14 @@ impl<'input> Parser<'input> {
                 break self.lexer.next().span;
             }
             if peeked.inner == Token::Eof {
-                self.ast.diagnostics.push(
-                    UnclosedDelimiterDiagnostic {
+                self.ast
+                    .diagnostics
+                    .push(report_unclosed_delimiter(UnclosedDelimiterDiagnostic {
                         file_id: self.ast.file_id,
                         open_span,
                         close_token: Token::RightArrow,
                         expected_close_span: peeked.span,
-                    }
-                    .report(),
-                );
+                    }));
                 break peeked.span;
             }
 
@@ -2364,13 +2118,13 @@ impl<'input> Parser<'input> {
                     attributes: Box::new([]),
                     signature: signature.inner,
                     block,
-                    id: parser.ast.id_generator.generate(),
+                    id: parser.id_generator.generate(),
                 },
                 None => Item::FunctionDeclaration {
                     pub_span: None,
                     attributes: Box::new([]),
                     signature: signature.inner,
-                    id: parser.ast.id_generator.generate(),
+                    id: parser.id_generator.generate(),
                 },
             },
             span,
@@ -2501,14 +2255,11 @@ impl<'input> Parser<'input> {
             Token::OpenParen => self.parse_tuple_or_paren_type_expression(),
             _ => {
                 let token = self.lexer.next();
-                self.ast.diagnostics.push(
-                    UnexpectedTokenDiagnostic {
-                        file_id: self.ast.file_id,
-                        received: token,
-                        expected: Token::Identifier,
-                    }
-                    .report(),
-                );
+                self.ast.diagnostics.push(report_unexpected_token(
+                    self.ast.file_id,
+                    token,
+                    Token::Identifier,
+                ));
                 Err(())
             }
         }
@@ -2538,13 +2289,10 @@ impl<'input> Parser<'input> {
                     .extract_str(self.source)
                     .parse::<usize>()
                     .map_err(|_| {
-                        self.ast.diagnostics.push(
-                            InvalidIntegerLiteralDiagnostic {
-                                file_id: self.ast.file_id,
-                                span: size_token.span,
-                            }
-                            .report(),
-                        );
+                        self.ast.diagnostics.push(report_invalid_integer_literal(
+                            self.ast.file_id,
+                            size_token.span,
+                        ));
                     })?;
                 let size = Spanned {
                     inner: size_value,
@@ -2564,14 +2312,11 @@ impl<'input> Parser<'input> {
                 })
             }
             _ => {
-                self.ast.diagnostics.push(
-                    UnexpectedTokenDiagnostic {
-                        file_id: self.ast.file_id,
-                        received: next,
-                        expected: Token::CloseBracket,
-                    }
-                    .report(),
-                );
+                self.ast.diagnostics.push(report_unexpected_token(
+                    self.ast.file_id,
+                    next,
+                    Token::CloseBracket,
+                ));
                 Err(())
             }
         }
@@ -2790,13 +2535,10 @@ impl<'input> Parser<'input> {
         match Keyword::try_from(text) {
             Ok(Keyword::SelfKw) | Err(_) => {}
             Ok(_) => {
-                parser.ast.diagnostics.push(
-                    ReservedIdentifierDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: token.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_reserved_identifier(parser.ast.file_id, token.span));
             }
         }
         let symbol = parser.interner.get_or_intern(text);
@@ -2890,14 +2632,11 @@ impl<'input> Parser<'input> {
                 })
             }
             _ => {
-                parser.ast.diagnostics.push(
-                    UnexpectedTokenDiagnostic {
-                        file_id: parser.ast.file_id,
-                        received: token,
-                        expected: Token::Identifier,
-                    }
-                    .report(),
-                );
+                parser.ast.diagnostics.push(report_unexpected_token(
+                    parser.ast.file_id,
+                    token,
+                    Token::Identifier,
+                ));
                 Err(())
             }
         }
@@ -2917,13 +2656,13 @@ impl<'input> Parser<'input> {
         let right = match parser.parse_expression(bp) {
             Ok(expr) => expr,
             Err(_) => {
-                parser.ast.diagnostics.push(
-                    IncompleteBinaryExpressionDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: operator_token.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_incomplete_binary_expression(
+                        parser.ast.file_id,
+                        operator_token.span,
+                    ));
                 return Err(());
             }
         };
@@ -2934,14 +2673,11 @@ impl<'input> Parser<'input> {
                     operator: left_operator,
                     ..
                 } if BindingPower::from(left_operator.inner) == BindingPower::Comparison => {
-                    parser.ast.diagnostics.push(
-                        ChainedComparisonsDiagnostic {
-                            file_id: parser.ast.file_id,
-                            first_operator_span: left_operator.span,
-                            second_operator_span: operator_token.span,
-                        }
-                        .report(),
-                    );
+                    parser.ast.diagnostics.push(report_chained_comparisons(
+                        parser.ast.file_id,
+                        left_operator.span,
+                        operator_token.span,
+                    ));
                 }
                 _ => {}
             }
@@ -2950,14 +2686,11 @@ impl<'input> Parser<'input> {
                     operator: right_operator,
                     ..
                 } if BindingPower::from(right_operator.inner) == BindingPower::Comparison => {
-                    parser.ast.diagnostics.push(
-                        ChainedComparisonsDiagnostic {
-                            file_id: parser.ast.file_id,
-                            first_operator_span: operator_token.span,
-                            second_operator_span: right_operator.span,
-                        }
-                        .report(),
-                    );
+                    parser.ast.diagnostics.push(report_chained_comparisons(
+                        parser.ast.file_id,
+                        operator_token.span,
+                        right_operator.span,
+                    ));
                 }
                 _ => {}
             }
@@ -3019,13 +2752,10 @@ impl<'input> Parser<'input> {
         let value = match value {
             Some(value) => value,
             None => {
-                parser.ast.diagnostics.push(
-                    InvalidIntegerLiteralDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: token.span,
-                    }
-                    .report(),
-                );
+                parser.ast.diagnostics.push(report_invalid_integer_literal(
+                    parser.ast.file_id,
+                    token.span,
+                ));
 
                 0
             }
@@ -3047,13 +2777,10 @@ impl<'input> Parser<'input> {
         let value = match value {
             Some(value) => value,
             None => {
-                parser.ast.diagnostics.push(
-                    InvalidIntegerLiteralDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: token.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_invalid_float_literal(parser.ast.file_id, token.span));
 
                 0.0
             }
@@ -3199,13 +2926,13 @@ impl<'input> Parser<'input> {
         let operand = match parser.parse_expression(BindingPower::Unary) {
             Ok(operand) => operand,
             Err(_) => {
-                parser.ast.diagnostics.push(
-                    IncompleteUnaryExpressionDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: operator_token.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_incomplete_unary_expression(
+                        parser.ast.file_id,
+                        operator_token.span,
+                    ));
                 return Err(());
             }
         };
@@ -3393,13 +3120,10 @@ impl<'input> Parser<'input> {
                 }
             }
             _ => {
-                parser.ast.diagnostics.push(
-                    InvalidNamespaceDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: left.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_invalid_namespace(parser.ast.file_id, left.span));
                 return Err(());
             }
         };
@@ -3479,13 +3203,13 @@ impl<'input> Parser<'input> {
             })
             .map_err(|_| {
                 let token = parser.lexer.peek();
-                parser.ast.diagnostics.push(
-                    MissingLocalInitializerDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: token.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_missing_local_initializer(
+                        parser.ast.file_id,
+                        token.span,
+                    ));
             })?;
 
         let span = TextSpan::merge(local_keyword.span, value.span);
@@ -3529,13 +3253,13 @@ impl<'input> Parser<'input> {
             .and_then(|_| parser.parse_expression(BindingPower::Default))
             .map_err(|_| {
                 let token = parser.lexer.peek();
-                parser.ast.diagnostics.push(
-                    MissingGlobalInitializerDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: token.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_missing_global_initializer(
+                        parser.ast.file_id,
+                        token.span,
+                    ));
             })?;
 
         let span = TextSpan::merge(global_keyword.span, value.span);
@@ -3545,7 +3269,7 @@ impl<'input> Parser<'input> {
                 name,
                 ty,
                 value: Box::new(value),
-                id: parser.ast.id_generator.generate(),
+                id: parser.id_generator.generate(),
             },
             span,
         })
@@ -3568,7 +3292,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(const_span, value.span);
         Ok(Spanned {
             inner: Item::Const {
-                id: parser.ast.id_generator.generate(),
+                id: parser.id_generator.generate(),
                 name: Spanned {
                     inner: name_symbol,
                     span: name_span,
@@ -3656,15 +3380,14 @@ impl<'input> Parser<'input> {
         let repr = if let Some(open_arrow) = parser.lexer.next_if(Token::LeftArrow) {
             let type_expr = parser.parse_type_expression()?;
             if parser.lexer.next_if(Token::RightArrow).is_none() {
-                parser.ast.diagnostics.push(
+                parser.ast.diagnostics.push(report_unclosed_delimiter(
                     UnclosedDelimiterDiagnostic {
                         file_id: parser.ast.file_id,
                         open_span: open_arrow.span,
                         close_token: Token::RightArrow,
                         expected_close_span: type_expr.span.end_position(),
-                    }
-                    .report(),
-                );
+                    },
+                ));
             }
             Some(Box::new(type_expr))
         } else {
@@ -3709,7 +3432,7 @@ impl<'input> Parser<'input> {
 
         Ok(Spanned {
             inner: Item::Enum {
-                id: parser.ast.id_generator.generate(),
+                id: parser.id_generator.generate(),
                 repr,
                 name: Spanned {
                     inner: name_symbol,
@@ -3759,7 +3482,7 @@ impl<'input> Parser<'input> {
                 let span = TextSpan::merge(type_span, ty.span);
                 Ok(Spanned {
                     inner: ImplItem::AssociatedType {
-                        id: parser.ast.id_generator.generate(),
+                        id: parser.id_generator.generate(),
                         name: Spanned {
                             inner: name_symbol,
                             span: name_span,
@@ -3788,7 +3511,7 @@ impl<'input> Parser<'input> {
                 let span = TextSpan::merge(const_span, value.span);
                 Ok(Spanned {
                     inner: ImplItem::Const {
-                        id: parser.ast.id_generator.generate(),
+                        id: parser.id_generator.generate(),
                         name: Spanned {
                             inner: name_symbol,
                             span: name_span,
@@ -3827,7 +3550,7 @@ impl<'input> Parser<'input> {
                 let method_span = TextSpan::merge(fn_span, block.span);
                 Ok(Spanned {
                     inner: ImplItem::Method {
-                        id: parser.ast.id_generator.generate(),
+                        id: parser.id_generator.generate(),
                         pub_span,
                         attributes: attrs,
                         signature: FunctionSignature {
@@ -3846,14 +3569,11 @@ impl<'input> Parser<'input> {
             }
             _ => {
                 let token = parser.lexer.next();
-                parser.ast.diagnostics.push(
-                    UnexpectedTokenDiagnostic {
-                        file_id: parser.ast.file_id,
-                        received: token,
-                        expected: Token::Identifier,
-                    }
-                    .report(),
-                );
+                parser.ast.diagnostics.push(report_unexpected_token(
+                    parser.ast.file_id,
+                    token,
+                    Token::Identifier,
+                ));
                 Err(())
             }
         }
@@ -3888,7 +3608,7 @@ impl<'input> Parser<'input> {
         match target {
             Some(target) => Ok(Spanned {
                 inner: Item::ImplTrait {
-                    id: parser.ast.id_generator.generate(),
+                    id: parser.id_generator.generate(),
                     items,
                     target,
                     trait_name: first_ty,
@@ -3981,7 +3701,7 @@ impl<'input> Parser<'input> {
                         );
                         Ok(Spanned {
                             inner: TraitItem::AssociatedType {
-                                id: parser.ast.id_generator.generate(),
+                                id: parser.id_generator.generate(),
                                 name: Spanned {
                                     inner: name_symbol,
                                     span: name_span,
@@ -4000,7 +3720,7 @@ impl<'input> Parser<'input> {
                         let span = TextSpan::merge(const_span, ty.span);
                         Ok(Spanned {
                             inner: TraitItem::Const {
-                                id: parser.ast.id_generator.generate(),
+                                id: parser.id_generator.generate(),
                                 name: Spanned {
                                     inner: name_symbol,
                                     span: name_span,
@@ -4027,7 +3747,7 @@ impl<'input> Parser<'input> {
 
                         Ok(Spanned {
                             inner: TraitItem::Function {
-                                id: parser.ast.id_generator.generate(),
+                                id: parser.id_generator.generate(),
                                 pub_span,
                                 attributes: attrs,
                                 signature: signature.inner,
@@ -4038,14 +3758,11 @@ impl<'input> Parser<'input> {
                     }
                     _ => {
                         let token = parser.lexer.next();
-                        parser.ast.diagnostics.push(
-                            UnexpectedTokenDiagnostic {
-                                file_id: parser.ast.file_id,
-                                received: token,
-                                expected: Token::Identifier,
-                            }
-                            .report(),
-                        );
+                        parser.ast.diagnostics.push(report_unexpected_token(
+                            parser.ast.file_id,
+                            token,
+                            Token::Identifier,
+                        ));
                         Err(())
                     }
                 }
@@ -4057,7 +3774,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(trait_span, items.close);
         Ok(Spanned {
             inner: Item::Trait {
-                id: parser.ast.id_generator.generate(),
+                id: parser.id_generator.generate(),
                 pub_span: None,
                 name,
                 supertraits,
@@ -4111,7 +3828,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(struct_span, fields.close);
         Ok(Spanned {
             inner: Item::Struct {
-                id: parser.ast.id_generator.generate(),
+                id: parser.id_generator.generate(),
                 pub_span: None,
                 name: Spanned {
                     inner: name_symbol,
@@ -4155,12 +3872,12 @@ impl<'input> Parser<'input> {
             }
             Some(Keyword::Module) => {
                 let mut item = Parser::parse_module_item(parser)?;
-                if let Item::Module {
-                    pub_span: ref mut ps,
-                    ..
-                } = item.inner
-                {
-                    *ps = Some(pub_span);
+                match &mut item.inner {
+                    Item::Module { pub_span: ps, .. }
+                    | Item::ModuleDeclaration { pub_span: ps, .. } => {
+                        *ps = Some(pub_span);
+                    }
+                    _ => unreachable!(),
                 }
                 Ok(item)
             }
@@ -4176,13 +3893,10 @@ impl<'input> Parser<'input> {
                 Ok(item)
             }
             _ => {
-                parser.ast.diagnostics.push(
-                    InvalidItemDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: pub_span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_invalid_item(parser.ast.file_id, pub_span));
                 Err(())
             }
         }
@@ -4205,7 +3919,7 @@ impl<'input> Parser<'input> {
             inner: Item::Memory {
                 name,
                 kind: Box::new(kind),
-                id: parser.ast.id_generator.generate(),
+                id: parser.id_generator.generate(),
             },
             span,
         })
@@ -4235,7 +3949,7 @@ impl<'input> Parser<'input> {
                 mut_span,
                 name,
                 ty: Box::new(type_expr),
-                id: self.ast.id_generator.generate(),
+                id: self.id_generator.generate(),
             },
             span,
         })
@@ -4255,7 +3969,7 @@ impl<'input> Parser<'input> {
             inner: ImportDeclaration::Memory {
                 name,
                 kind: Box::new(kind),
-                id: self.ast.id_generator.generate(),
+                id: self.id_generator.generate(),
             },
             span,
         })
@@ -4273,7 +3987,7 @@ impl<'input> Parser<'input> {
                     external_name: None,
                     declaration: ImportDeclaration::Function {
                         signature: signature.inner,
-                        id: parser.ast.id_generator.generate(),
+                        id: parser.id_generator.generate(),
                     },
                 },
                 span: signature.span,
@@ -4297,13 +4011,10 @@ impl<'input> Parser<'input> {
                     span: decl.span,
                 }),
             _ => {
-                parser.ast.diagnostics.push(
-                    InvalidItemDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: token.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_invalid_item(parser.ast.file_id, token.span));
                 Err(())
             }
         }
@@ -4327,13 +4038,10 @@ impl<'input> Parser<'input> {
                 Ok(item)
             }
             Err(()) => {
-                parser.ast.diagnostics.push(
-                    InvalidItemDiagnostic {
-                        file_id: parser.ast.file_id,
-                        span: token.span,
-                    }
-                    .report(),
-                );
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_invalid_item(parser.ast.file_id, token.span));
                 Err(())
             }
         }
@@ -4345,27 +4053,40 @@ impl<'input> Parser<'input> {
         let name_span = parser.next_expect(Token::Identifier)?.span;
         let name_symbol = parser.intern_identifier(name_span);
 
-        let items = SeparatedGroup {
-            open_token: Token::OpenBrace,
-            close_token: Token::CloseBrace,
-            separator_token: Token::SemiColon,
-            item_handler: Parser::parse_module_body_item,
-            should_warn_missing_separator: None,
-        }
-        .parse(parser)?;
+        if parser.lexer.peek().inner == Token::OpenBrace {
+            let items = SeparatedGroup {
+                open_token: Token::OpenBrace,
+                close_token: Token::CloseBrace,
+                separator_token: Token::SemiColon,
+                item_handler: Parser::parse_module_body_item,
+                should_warn_missing_separator: None,
+            }
+            .parse(parser)?;
 
-        let span = TextSpan::merge(module_span, items.close);
-        Ok(Spanned {
-            inner: Item::Module {
-                pub_span: None,
-                name: Spanned {
-                    inner: name_symbol,
-                    span: name_span,
+            let span = TextSpan::merge(module_span, items.close);
+            Ok(Spanned {
+                inner: Item::Module {
+                    pub_span: None,
+                    name: Spanned {
+                        inner: name_symbol,
+                        span: name_span,
+                    },
+                    items,
                 },
-                items,
-            },
-            span,
-        })
+                span,
+            })
+        } else {
+            Ok(Spanned {
+                inner: Item::ModuleDeclaration {
+                    pub_span: None,
+                    name: Spanned {
+                        inner: name_symbol,
+                        span: name_span,
+                    },
+                },
+                span: TextSpan::merge(module_span, name_span),
+            })
+        }
     }
 
     fn parse_import_block(parser: &mut Parser) -> Result<Spanned<Item>, ()> {

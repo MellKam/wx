@@ -2,6 +2,7 @@ pub mod ast;
 pub mod codegen;
 pub mod fmt;
 pub mod mir;
+pub mod vfs;
 pub mod opt;
 #[cfg(test)]
 pub mod testing;

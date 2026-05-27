@@ -32,6 +32,7 @@ use lsp_types::{
 };
 use string_interner::StringInterner;
 use string_interner::backend::StringBackend;
+use wx_compiler::vfs::{FileId, Files};
 
 mod symbol_index;
 
@@ -74,14 +75,14 @@ struct DocumentData {
 
 struct ServerState {
     documents: HashMap<Uri, DocumentData>,
-    files: wx_compiler::ast::Files,
+    files: Files,
 }
 
 impl ServerState {
     fn new() -> Self {
         ServerState {
             documents: HashMap::new(),
-            files: wx_compiler::ast::Files::new(),
+            files: Files::new(),
         }
     }
 }
@@ -470,8 +471,8 @@ fn main_loop(
 }
 
 fn compile_document(
-    files: &wx_compiler::ast::Files,
-    file_id: wx_compiler::ast::FileId,
+    files: &Files,
+    file_id: FileId,
 ) -> DocumentData {
     let mut interner = StringInterner::new();
     let source = &files.get(file_id).unwrap().source;
@@ -506,8 +507,8 @@ fn compile_document(
 fn convert_diagnostic(
     doc: &DocumentData,
     uri: &Uri,
-    files: &wx_compiler::ast::Files,
-    diagnostic: &codespan_reporting::diagnostic::Diagnostic<wx_compiler::ast::FileId>,
+    files: &Files,
+    diagnostic: &codespan_reporting::diagnostic::Diagnostic<FileId>,
 ) -> Diagnostic {
     let severity = match diagnostic.severity {
         codespan_reporting::diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
@@ -595,7 +596,7 @@ fn convert_diagnostic(
 fn convert_diagnostics(
     doc: &DocumentData,
     uri: &Uri,
-    files: &wx_compiler::ast::Files,
+    files: &Files,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -621,8 +622,8 @@ fn convert_diagnostics(
 }
 
 fn span_to_range(
-    files: &wx_compiler::ast::Files,
-    file_id: wx_compiler::ast::FileId,
+    files: &Files,
+    file_id: FileId,
     span: Option<core::ops::Range<usize>>,
 ) -> Range {
     let zero = Position {
@@ -642,8 +643,8 @@ fn span_to_range(
 }
 
 fn offset_to_position(
-    files: &wx_compiler::ast::Files,
-    file_id: wx_compiler::ast::FileId,
+    files: &Files,
+    file_id: FileId,
     offset: u32,
 ) -> Position {
     use codespan_reporting::files::Files as _;
@@ -660,8 +661,8 @@ fn offset_to_position(
 }
 
 fn position_to_offset(
-    files: &wx_compiler::ast::Files,
-    file_id: wx_compiler::ast::FileId,
+    files: &Files,
+    file_id: FileId,
     position: Position,
 ) -> Option<u32> {
     use codespan_reporting::files::Files as _;
@@ -1706,8 +1707,8 @@ fn handle_semantic_tokens(
 fn collect_namespace_tokens(
     expr: &wx_compiler::tir::Expression,
     namespaces: &[wx_compiler::tir::Namespace],
-    files: &wx_compiler::ast::Files,
-    file_id: wx_compiler::ast::FileId,
+    files: &Files,
+    file_id: FileId,
     tokens: &mut Vec<(Position, u32, u32)>,
 ) {
     use wx_compiler::tir::ExprKind;

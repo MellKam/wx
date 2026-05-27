@@ -2,7 +2,6 @@
 source: crates/wx-compiler/src/tir/tests.rs
 expression: case.tir
 ---
-file_id: 0
 type_pool:
   - Error
   - Unit
@@ -42,6 +41,7 @@ type_pool:
       module_index: 0
 functions:
   - id: 1
+    file_id: 0
     pub_span: ~
     source: External
     origin: Free
@@ -85,6 +85,7 @@ functions:
     attributes: []
     body: ~
   - id: 2
+    file_id: 0
     pub_span: ~
     source: Internal
     origin: Free
@@ -161,7 +162,8 @@ functions:
           end: 169
 globals: []
 import_modules:
-  - external_name:
+  - file_id: 0
+    external_name:
       inner: 12
       span:
         start: 47
@@ -207,7 +209,8 @@ diagnostics:
         message: ""
     notes: []
 structs:
-  - name:
+  - file_id: 0
+    name:
       inner: 1
       span:
         start: 11

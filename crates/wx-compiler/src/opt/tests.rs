@@ -13,7 +13,7 @@ use crate::mir::{self, MIR};
 use crate::opt::builder::Builder;
 use crate::opt::scheduler::{Instruction, Scheduler};
 use crate::opt::{ControlNode, DataNodeKind, ScalarType, StackResult};
-use crate::{ast, tir};
+use crate::{ast, tir, vfs};
 
 // ── Test harness
 // ──────────────────────────────────────────────────────────────
@@ -39,12 +39,13 @@ impl TestCase {
 impl TestCase {
     fn new(source: &str) -> Self {
         let mut interner = ast::StringInterner::new();
-        let mut files = ast::Files::new();
-        let file_id = files
-            .add("main.wx".to_string(), source.to_string())
-            .unwrap();
-        let ast = ast::Parser::parse(file_id, &files.get(file_id).unwrap().source, &mut interner);
-        let tir = tir::TIR::build(&[&ast], &mut interner);
+        let graph = vfs::load_single_file_compilation(
+            "main.wx".to_string(),
+            source.to_string(),
+            &mut interner,
+        )
+        .unwrap();
+        let tir = tir::TIR::build(&graph, &mut interner);
         let mir = MIR::build(&tir, &interner);
         TestCase { mir }
     }

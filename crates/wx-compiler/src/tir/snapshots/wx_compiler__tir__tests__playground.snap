@@ -2,7 +2,6 @@
 source: crates/wx-compiler/src/tir/tests.rs
 expression: case.tir
 ---
-file_id: 0
 type_pool:
   - Error
   - Unit
@@ -53,6 +52,7 @@ type_pool:
         params_count: 0
 functions:
   - id: 1
+    file_id: 0
     pub_span: ~
     source: Internal
     origin: Trait
@@ -134,6 +134,7 @@ functions:
           start: 60
           end: 86
   - id: 3
+    file_id: 0
     pub_span: ~
     source: Internal
     origin: Trait
@@ -164,6 +165,7 @@ functions:
     attributes: []
     body: ~
   - id: 8
+    file_id: 0
     pub_span: ~
     source: Internal
     origin:
@@ -265,6 +267,7 @@ functions:
           start: 273
           end: 305
   - id: 10
+    file_id: 0
     pub_span: ~
     source: Internal
     origin: Free
@@ -395,7 +398,8 @@ diagnostics:
         message: ""
     notes: []
 structs:
-  - name:
+  - file_id: 0
+    name:
       inner: 8
       span:
         start: 143
@@ -442,7 +446,8 @@ impl_members:
       Method: 2
 memories: []
 traits:
-  - name:
+  - file_id: 0
+    name:
       inner: 1
       span:
         start: 6
@@ -454,7 +459,8 @@ traits:
           ty: 8
       4:
         Method: 0
-  - name:
+  - file_id: 0
+    name:
       inner: 6
       span:
         start: 96
@@ -471,11 +477,13 @@ trait_impls:
       2:
         AssociatedConst:
           ty: 8
+    file_id: 0
   - trait_index: 1
     target: 20
     members:
       7:
         Method: 2
+    file_id: 0
 trait_impl_lookup:
   ? - 20
     - 0
