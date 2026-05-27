@@ -2210,16 +2210,16 @@ impl<'ast> Builder<'ast, '_> {
                     return Type::ERROR_IDX;
                 }
 
-                let (type_param, module_index, memory_id) =
-                    match *self.type_pool.get(namespace_ty) {
-                        Type::TypeParam {
-                            ref owner,
-                            param_index,
-                        } => (Some((owner.clone(), param_index)), None, None),
-                        Type::Module { module_index } => (None, Some(module_index), None),
-                        Type::Memory { id, .. } => (None, None, Some(id)),
-                        _ => (None, None, None),
-                    };
+                let (type_param, module_index, memory_id) = match *self.type_pool.get(namespace_ty)
+                {
+                    Type::TypeParam {
+                        ref owner,
+                        param_index,
+                    } => (Some((owner.clone(), param_index)), None, None),
+                    Type::Module { module_index } => (None, Some(module_index), None),
+                    Type::Memory { id, .. } => (None, None, Some(id)),
+                    _ => (None, None, None),
+                };
 
                 if let Some((owner, param_index)) = type_param {
                     // `M::AssocType` — look through trait bounds on type param M
@@ -2474,8 +2474,8 @@ impl<'ast> Builder<'ast, '_> {
                 Some(AstNodeRef::TraitAssociatedType {
                     trait_index, item, ..
                 }) => match item {
-                    ast::TraitItem::AssociatedType { name, .. } if param_index == 0 => self
-                        .traits[*trait_index as usize]
+                    ast::TraitItem::AssociatedType { name, .. } if param_index == 0 => self.traits
+                        [*trait_index as usize]
                         .assoc_type_bounds
                         .get(&name.inner)
                         .map(|bounds| bounds.as_ref())
@@ -2583,12 +2583,7 @@ impl<'ast> Builder<'ast, '_> {
             } => {
                 let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
                 let mutability = if mutable { "mut " } else { "" };
-                let inner = format!(
-                    "[{}]{}{}",
-                    size,
-                    mutability,
-                    self.display_type(of)
-                );
+                let inner = format!("[{}]{}{}", size, mutability, self.display_type(of));
                 match memory {
                     Some(id) => {
                         let idx = self.memory_index_lookup[&id] as usize;
@@ -4130,10 +4125,7 @@ impl<'ast> Builder<'ast, '_> {
                 let resolve_context = resolve_context
                     .with_self_type(Some(self.type_pool.intern(Type::Trait { trait_index })));
                 if let ast::TraitItem::AssociatedType {
-                    id,
-                    name,
-                    bounds,
-                    ..
+                    id, name, bounds, ..
                 } = item
                 {
                     // Resolve each bound TypeExpression to a TraitIndex.
@@ -4386,12 +4378,10 @@ impl<'ast> Builder<'ast, '_> {
         let saved_file_id = self.file_id;
         self.file_id = node.file_id();
 
-        let resolve_context = resolve_context
-            .with_self_type(self_type)
-            .with_type_params(
-                TypeParamOwner::Function(self.functions[func_index as usize].id),
-                self.functions[func_index as usize].type_params.to_vec(),
-            );
+        let resolve_context = resolve_context.with_self_type(self_type).with_type_params(
+            TypeParamOwner::Function(self.functions[func_index as usize].id),
+            self.functions[func_index as usize].type_params.to_vec(),
+        );
 
         match self.build_function_body(resolve_context, sig, body_expr, func_index) {
             Ok(body) => {
@@ -4497,14 +4487,14 @@ impl<'ast> Builder<'ast, '_> {
         fallback: TypeIndex,
     ) -> TypeIndex {
         match self.type_pool.get(receiver) {
-            Type::TypeParam { owner, param_index } => self.type_pool.intern(
-                Type::AssocTypeProjection {
+            Type::TypeParam { owner, param_index } => {
+                self.type_pool.intern(Type::AssocTypeProjection {
                     owner: owner.clone(),
                     type_param_index: *param_index,
                     trait_index,
                     assoc_name,
-                },
-            ),
+                })
+            }
             _ => self
                 .impl_members
                 .get(&receiver)
@@ -4580,7 +4570,10 @@ impl<'ast> Builder<'ast, '_> {
                     ty
                 }
             }
-            Type::FunctionItem { id, type_args: item_args } => {
+            Type::FunctionItem {
+                id,
+                type_args: item_args,
+            } => {
                 let mut changed = false;
                 let substituted: Box<[TypeIndex]> = item_args
                     .iter()
@@ -4653,12 +4646,18 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn substitute_expected_type(&mut self, ty: TypeIndex, type_args: &[TypeIndex]) -> Option<TypeIndex> {
+    fn substitute_expected_type(
+        &mut self,
+        ty: TypeIndex,
+        type_args: &[TypeIndex],
+    ) -> Option<TypeIndex> {
         match self.type_pool.get(ty) {
-            Type::TypeParam { param_index, .. } => match type_args.get(*param_index as usize).copied() {
-                Some(t) if t != Type::UNKNOWN_IDX && t != Type::ERROR_IDX => Some(t),
-                _ => None,
-            },
+            Type::TypeParam { param_index, .. } => {
+                match type_args.get(*param_index as usize).copied() {
+                    Some(t) if t != Type::UNKNOWN_IDX && t != Type::ERROR_IDX => Some(t),
+                    _ => None,
+                }
+            }
             _ => Some(self.substitute_type(ty, type_args)),
         }
     }
@@ -4682,7 +4681,10 @@ impl<'ast> Builder<'ast, '_> {
             return;
         }
 
-        match (self.type_pool.get(pattern_ty).clone(), self.type_pool.get(actual_ty).clone()) {
+        match (
+            self.type_pool.get(pattern_ty).clone(),
+            self.type_pool.get(actual_ty).clone(),
+        ) {
             (Type::TypeParam { param_index, .. }, _) => {
                 self.seed_type_arg_slot(type_args, param_index, actual_ty);
             }
@@ -5581,7 +5583,11 @@ impl<'ast> Builder<'ast, '_> {
         BlockState::Incomplete(expressions.into_boxed_slice())
     }
 
-    fn infer_block_type(&mut self, scope: &BlockScope, value: &Expression) -> Result<TypeIndex, ()> {
+    fn infer_block_type(
+        &mut self,
+        scope: &BlockScope,
+        value: &Expression,
+    ) -> Result<TypeIndex, ()> {
         if value.ty == Type::UNKNOWN_IDX {
             match scope.inferred_type.or(scope.expected_type) {
                 Some(ty) => return Ok(ty),
@@ -6547,8 +6553,7 @@ impl<'ast> Builder<'ast, '_> {
                 )
                 .and_then(|mut value| {
                     let scope = ctx.stack.scopes.get_mut(scope_index as usize).unwrap();
-                    let inferred_type =
-                        self.infer_block_type(scope, &value)?;
+                    let inferred_type = self.infer_block_type(scope, &value)?;
                     if value.ty == Type::UNKNOWN_IDX {
                         self.coerce_untyped_expr(&mut value, inferred_type)?;
                     }
@@ -7713,8 +7718,7 @@ impl<'ast> Builder<'ast, '_> {
                 )
                 .and_then(|mut value| {
                     let scope = ctx.stack.scopes.get_mut(0).unwrap();
-                    let inferred_type =
-                        self.infer_block_type(scope, &value)?;
+                    let inferred_type = self.infer_block_type(scope, &value)?;
                     scope.inferred_type = Some(inferred_type);
                     if value.ty == Type::UNKNOWN_IDX {
                         self.coerce_untyped_expr(&mut value, inferred_type)?;
@@ -7986,11 +7990,7 @@ impl<'ast> Builder<'ast, '_> {
 
     /// True when `arg_ty` is a `TypeParam` whose bounds include the trait that
     /// `expected_ty` represents.
-    fn type_param_satisfies_bound(
-        &self,
-        arg_ty: TypeIndex,
-        expected_ty: TypeIndex,
-    ) -> bool {
+    fn type_param_satisfies_bound(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
         let Type::Trait {
             trait_index: expected_trait,
         } = *self.type_pool.get(expected_ty)
@@ -8113,9 +8113,7 @@ impl<'ast> Builder<'ast, '_> {
 
                 if let Some(expected_type) = expected_type {
                     if argument.ty == Type::UNKNOWN_IDX {
-                        self.coerce_untyped_expr(&mut argument,
-                            expected_type,
-                        )?;
+                        self.coerce_untyped_expr(&mut argument, expected_type)?;
                     } else if !self.type_pool.coercible_to(argument.ty, expected_type)
                         && !self.type_param_satisfies_bound(argument.ty, expected_type)
                         && !self.coercible_fn_item_to_fn(argument.ty, expected_type)
@@ -8198,12 +8196,11 @@ impl<'ast> Builder<'ast, '_> {
                         .members
                         .get(&member.inner)
                         .cloned(),
-                    Type::TypeParam { .. } => self
-                        .type_param_bounds(object.ty)
-                        .iter()
-                        .find_map(|&ti| {
+                    Type::TypeParam { .. } => {
+                        self.type_param_bounds(object.ty).iter().find_map(|&ti| {
                             self.traits[ti as usize].members.get(&member.inner).cloned()
-                        }),
+                        })
+                    }
                     _ => self
                         .impl_members
                         .get(&object.ty)
@@ -8423,15 +8420,9 @@ impl<'ast> Builder<'ast, '_> {
         target_idx: TypeIndex,
     ) -> Result<(), ()> {
         match expression.kind {
-            ExprKind::Int { .. } => {
-                self.coerce_untyped_int_expr(expression, target_idx)
-            }
-            ExprKind::Float { .. } => {
-                self.coerce_untyped_float_expr(expression, target_idx)
-            }
-            ExprKind::Unary { .. } => {
-                self.coerce_untyped_unary_expr(expression, target_idx)
-            }
+            ExprKind::Int { .. } => self.coerce_untyped_int_expr(expression, target_idx),
+            ExprKind::Float { .. } => self.coerce_untyped_float_expr(expression, target_idx),
+            ExprKind::Unary { .. } => self.coerce_untyped_unary_expr(expression, target_idx),
             ExprKind::Binary { .. } => {
                 self.coerce_untyped_binary_expression(expression, target_idx)
             }
@@ -8441,7 +8432,11 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn coerce_untyped_int_expr(&mut self, expr: &mut Expression, target_idx: TypeIndex) -> Result<(), ()> {
+    fn coerce_untyped_int_expr(
+        &mut self,
+        expr: &mut Expression,
+        target_idx: TypeIndex,
+    ) -> Result<(), ()> {
         let value = match expr.kind {
             ExprKind::Int { value } => value,
             _ => unreachable!(),
@@ -8583,7 +8578,11 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn coerce_untyped_float_expr(&mut self, expr: &mut Expression, target_idx: TypeIndex) -> Result<(), ()> {
+    fn coerce_untyped_float_expr(
+        &mut self,
+        expr: &mut Expression,
+        target_idx: TypeIndex,
+    ) -> Result<(), ()> {
         if target_idx == Type::F32_IDX {
             // TODO: add a diagnostic if the literal is out of range
             expr.ty = Type::F32_IDX;
