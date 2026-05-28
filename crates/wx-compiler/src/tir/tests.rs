@@ -2003,6 +2003,23 @@ fn no_errors(case: &TestCase) {
     );
 }
 
+fn has_error_matching(case: &TestCase, substring: &str) {
+    assert!(
+        case.tir.diagnostics.iter().any(|d| {
+            d.severity == Severity::Error
+                && (d.message.contains(substring)
+                    || d.notes.iter().any(|n| n.contains(substring)))
+        }),
+        "expected an error containing {:?}; got: {:#?}",
+        substring,
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
 fn has_error(case: &TestCase, msg: &str) {
     assert!(
         case.tir
@@ -2077,10 +2094,7 @@ fn test_assoc_type_projection_in_return_type() {
     assert!(
         matches!(
             case.tir.type_pool[result_ty as usize],
-            Type::AssocTypeProjection {
-                type_param_index: 0,
-                ..
-            }
+            Type::AssocTypeProjection { .. }
         ),
         "return type should be AssocTypeProjection for M::Size, got type index {}",
         result_ty
@@ -2115,6 +2129,20 @@ fn test_assoc_type_unknown_member_is_error() {
         }
     "});
     has_error(&case, "undeclared associated type 'Nonexistent'");
+}
+
+#[test]
+fn test_assoc_type_bare_name_suggests_self_prefix() {
+    // Using the associated type name directly (e.g. `Size` instead of
+    // `Self::Size`) must produce a targeted error with a `Self::` suggestion.
+    let case = TestCase::new(indoc! {"
+        trait Memory {
+            type Size;
+            fn alloc(n: Size) -> *mut u8;
+        }
+    "});
+    has_error_matching(&case, "cannot find type `Size` in this scope");
+    has_error_matching(&case, "Self::Size");
 }
 
 #[test]

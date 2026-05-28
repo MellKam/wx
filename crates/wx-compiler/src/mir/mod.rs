@@ -17,7 +17,7 @@ pub type AggregateIndex = u32;
 pub type StringIndex = u32;
 
 #[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ExprKind {
     Noop,
     Bool {
@@ -188,8 +188,8 @@ pub enum ExprKind {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum Type {
     I32,
     I64,
@@ -210,7 +210,7 @@ pub enum Type {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Expression {
     pub kind: ExprKind,
     pub ty: Type,
@@ -367,7 +367,7 @@ impl AggregatePool {
 }
 
 /// Memory layout of a type: size in bytes and required alignment in bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
     pub size: u32,
     pub align: u32,
@@ -462,6 +462,7 @@ pub fn compute_layout(
         | tir::Type::Memory { .. }
         | tir::Type::Trait { .. }
         | tir::Type::TypeParam { .. }
+        | tir::Type::AssociatedType { .. }
         | tir::Type::AssocTypeProjection { .. } => {
             panic!("compute_layout called on non-value type")
         }
@@ -561,7 +562,11 @@ impl LayoutCache {
 }
 
 impl MIR {
-    pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
+    pub fn build(
+        tir: &tir::TIR,
+        interner: &ast::StringInterner,
+        id_generator: ast::DefIdGenerator,
+    ) -> MIR {
         // Memory index remap: each memory's DefId → its position in tir.memories
         // which equals the WebAssembly linear-memory index.
         let memory_id_remap: HashMap<ast::DefId, u32> = tir
@@ -581,7 +586,7 @@ impl MIR {
             signature_pool: Vec::new(),
             signature_index_lookup: HashMap::new(),
             current_substitutions: Box::new([]),
-            mono_registry: MonoRegistry::new(tir.id_generator),
+            mono_registry: MonoRegistry::new(id_generator),
             current_function_id: None,
             call_edges: Vec::new(),
         };
@@ -880,6 +885,27 @@ impl<'tir> Builder<'tir> {
                     signature_index: self.intern_tir_function_type(sig_idx),
                 }
             }
+            tir::Type::AssocTypeProjection {
+                param_index,
+                assoc_name,
+                ..
+            } => {
+                let receiver = self.current_substitutions[param_index as usize];
+                let concrete = self
+                    .tir
+                    .impl_members
+                    .get(&receiver)
+                    .and_then(|m| m.get(&assoc_name))
+                    .and_then(|e| {
+                        if let tir::ImplEntry::AssociatedType { ty } = e {
+                            Some(*ty)
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("no impl found for associated type projection during MIR lowering");
+                self.lower_type_index(concrete)
+            }
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index } => {
                 let si = struct_index as usize;
@@ -915,7 +941,7 @@ impl<'tir> Builder<'tir> {
                 let aggregate_index = self.aggregate_pool.add(Aggregate { values: fields });
                 Type::Aggregate { aggregate_index }
             }
-            other => unimplemented!("lower_type_index: unhandled TIR type {:?}", other),
+            _ => unreachable!(),
         }
     }
 
@@ -928,7 +954,7 @@ impl<'tir> Builder<'tir> {
         };
         match &self.tir.type_pool[resolved as usize] {
             tir::Type::Memory { id, .. } => self.memory_id_remap[id],
-            x => unreachable!("intrinsic argument is not a Memory type {x:?}"),
+            _ => unreachable!(),
         }
     }
 

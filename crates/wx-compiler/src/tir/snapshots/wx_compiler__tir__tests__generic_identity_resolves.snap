@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/tir/tests.rs
-assertion_line: 1908
 expression: case.tir
 ---
 type_pool:
@@ -30,6 +29,7 @@ type_pool:
           - 16
           - 16
         params_count: 1
+diagnostics: []
 functions:
   - id: 0
     file_id: 0
@@ -106,15 +106,15 @@ functions:
           start: 30
           end: 39
 globals: []
+memories: []
 import_modules: []
 enums: []
 modules: []
 exports: {}
-diagnostics: []
 structs: []
 impl_members: {}
-memories: []
 traits: []
 trait_impls: []
 trait_impl_lookup: {}
 type_trait_impls: {}
+constants: []

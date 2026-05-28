@@ -90,7 +90,7 @@ fn main() {
         }
     }
 
-    let mir = mir::MIR::build(&tir, &interner);
+    let mir = mir::MIR::build(&tir, &interner, compilation.id_generator);
     let module = codegen::Builder::build(&mir, &interner).unwrap();
     let bytecode = module.encode();
 

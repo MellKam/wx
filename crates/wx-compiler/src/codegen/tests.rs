@@ -58,7 +58,7 @@ impl<'case> TestCase {
             std::process::exit(1);
         }
         // insta::assert_yaml_snapshot!(tir.functions);
-        let mir = mir::MIR::build(&tir, &interner);
+        let mir = mir::MIR::build(&tir, &interner, graph.id_generator);
         // insta::assert_yaml_snapshot!(mir);
         let wasm = Builder::build(&mir, &interner).unwrap();
         let bytecode = wasm.encode();

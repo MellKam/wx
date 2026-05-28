@@ -27,6 +27,7 @@ trait Memory {
     wasm::memory_grow(self, delta)
   }
 
+  #[inline]
   fn size(self) -> Self::Size {
     wasm::memory_size(self)
   }
