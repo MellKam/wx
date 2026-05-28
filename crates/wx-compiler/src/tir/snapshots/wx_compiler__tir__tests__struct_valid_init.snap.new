@@ -1,0 +1,149 @@
+---
+source: crates/wx-compiler/src/tir/tests.rs
+assertion_line: 482
+expression: case.tir
+---
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - U8
+  - I8
+  - U16
+  - I16
+  - U32
+  - I32
+  - U64
+  - I64
+  - F32
+  - F64
+  - Bool
+  - Char
+  - Struct:
+      struct_index: 0
+  - Function:
+      signature:
+        items:
+          - 16
+        params_count: 0
+diagnostics: []
+functions:
+  - id: 1
+    file_id: 0
+    pub_span: ~
+    source: Internal
+    origin: Free
+    type_params: []
+    signature_index: 17
+    name:
+      inner: 5
+      span:
+        start: 53
+        end: 57
+    params: []
+    result:
+      inner: 16
+      span:
+        start: 63
+        end: 68
+    accesses:
+      - caller: ~
+        kind: Reference
+        span:
+          start: 109
+          end: 113
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals: []
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                StructInit:
+                  struct_index: 0
+                  fields:
+                    - kind:
+                        Int:
+                          value: 1
+                      ty: 9
+                      span:
+                        start: 87
+                        end: 88
+                    - kind:
+                        Int:
+                          value: 2
+                      ty: 9
+                      span:
+                        start: 93
+                        end: 94
+              ty: 16
+              span:
+                start: 75
+                end: 96
+        ty: 16
+        span:
+          start: 69
+          end: 98
+globals: []
+memories: []
+import_modules: []
+enums: []
+modules: []
+exports:
+  5:
+    Function:
+      internal_name:
+        inner: 5
+        span:
+          start: 109
+          end: 113
+      external_name: ~
+      id: 1
+structs:
+  - file_id: 0
+    name:
+      inner: 1
+      span:
+        start: 7
+        end: 12
+    fields:
+      - name:
+          inner: 2
+          span:
+            start: 23
+            end: 24
+        ty:
+          inner: 9
+          span:
+            start: 26
+            end: 29
+      - name:
+          inner: 4
+          span:
+            start: 39
+            end: 40
+        ty:
+          inner: 9
+          span:
+            start: 42
+            end: 45
+    lookup:
+      2: 0
+      4: 1
+impl_members: {}
+traits: []
+trait_impls: []
+trait_impl_lookup: {}
+type_trait_impls: {}
+constants: []

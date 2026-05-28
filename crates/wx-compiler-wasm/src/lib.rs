@@ -19,7 +19,7 @@ pub fn compile(filename: String, source: String) -> Result<Vec<u8>, JsValue> {
     if !hir.diagnostics.is_empty() {
         return Err(serde_wasm_bindgen::to_value(&hir.diagnostics).unwrap());
     }
-    let mir = mir::MIR::build(&hir, &interner);
+    let mir = mir::MIR::build(&hir, &interner, compilation.id_generator);
     let module = codegen::Builder::build(&mir, &interner).unwrap();
     let bytecode = module.encode();
 

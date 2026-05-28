@@ -1,0 +1,246 @@
+---
+source: crates/wx-compiler/src/tir/tests.rs
+assertion_line: 257
+expression: case.tir
+---
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - U8
+  - I8
+  - U16
+  - I16
+  - U32
+  - I32
+  - U64
+  - I64
+  - F32
+  - F64
+  - Bool
+  - Char
+  - Slice:
+      of: 4
+      mutable: false
+      memory: ~
+  - Function:
+      signature:
+        items:
+          - 8
+          - 8
+          - 1
+        params_count: 2
+  - Function:
+      signature:
+        items:
+          - 1
+        params_count: 0
+  - Struct:
+      struct_index: 0
+  - ImportModule:
+      module_index: 0
+diagnostics:
+  - severity: Error
+    code: E1007
+    message: undeclared identifier
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 132
+          end: 135
+        message: ""
+    notes: []
+  - severity: Error
+    code: E1007
+    message: undeclared identifier
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 159
+          end: 165
+        message: ""
+    notes: []
+functions:
+  - id: 1
+    file_id: 0
+    pub_span: ~
+    source: External
+    origin: Free
+    type_params: []
+    signature_index: 17
+    name:
+      inner: 5
+      span:
+        start: 66
+        end: 69
+    params:
+      - mut_span: ~
+        name:
+          inner: 6
+          span:
+            start: 70
+            end: 73
+        ty:
+          inner: 8
+          span:
+            start: 75
+            end: 78
+      - mut_span: ~
+        name:
+          inner: 8
+          span:
+            start: 80
+            end: 83
+        ty:
+          inner: 8
+          span:
+            start: 85
+            end: 88
+    result: ~
+    accesses:
+      - caller: 2
+        kind: Reference
+        span:
+          start: 152
+          end: 155
+    attributes: []
+    body: ~
+  - id: 2
+    file_id: 0
+    pub_span: ~
+    source: Internal
+    origin: Free
+    type_params: []
+    signature_index: 18
+    name:
+      inner: 9
+      span:
+        start: 97
+        end: 101
+    params: []
+    result: ~
+    accesses:
+      - caller: ~
+        kind: Reference
+        span:
+          start: 180
+          end: 184
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals: []
+            inferred_type: 1
+            expected_type: 1
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions:
+              - kind:
+                  Call:
+                    callee:
+                      kind:
+                        NamespaceAccess:
+                          ty:
+                            inner: 20
+                            span:
+                              start: 143
+                              end: 150
+                          member:
+                            inner: 5
+                            span:
+                              start: 152
+                              end: 155
+                      ty: 17
+                      span:
+                        start: 143
+                        end: 155
+                    arguments:
+                      - kind:
+                          Int:
+                            value: 0
+                        ty: 8
+                        span:
+                          start: 156
+                          end: 157
+                      - kind: Error
+                        ty: 8
+                        span:
+                          start: 159
+                          end: 165
+                ty: 1
+                span:
+                  start: 143
+                  end: 166
+            result: ~
+        ty: 1
+        span:
+          start: 104
+          end: 169
+globals: []
+memories: []
+import_modules:
+  - file_id: 0
+    external_name:
+      inner: 12
+      span:
+        start: 47
+        end: 56
+    internal_name: ~
+    lookup:
+      5:
+        Function:
+          id: 1
+enums: []
+modules: []
+exports:
+  9:
+    Function:
+      internal_name:
+        inner: 9
+        span:
+          start: 180
+          end: 184
+      external_name: ~
+      id: 2
+structs:
+  - file_id: 0
+    name:
+      inner: 1
+      span:
+        start: 11
+        end: 17
+    fields:
+      - name:
+          inner: 2
+          span:
+            start: 24
+            end: 29
+        ty:
+          inner: 16
+          span:
+            start: 31
+            end: 35
+    lookup:
+      2: 0
+impl_members:
+  19:
+    18:
+      AssociatedConst:
+        ty: 8
+    19:
+      AssociatedConst:
+        ty: 8
+  20: {}
+traits: []
+trait_impls: []
+trait_impl_lookup: {}
+type_trait_impls: {}
+constants: []

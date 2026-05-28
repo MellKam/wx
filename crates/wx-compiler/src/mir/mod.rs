@@ -462,7 +462,7 @@ pub fn compute_layout(
         | tir::Type::Memory { .. }
         | tir::Type::Trait { .. }
         | tir::Type::TypeParam { .. }
-        | tir::Type::AssocTypeProjection { .. } => {
+        | tir::Type::AssociatedType { .. } => {
             panic!("compute_layout called on non-value type")
         }
     }
@@ -561,7 +561,7 @@ impl LayoutCache {
 }
 
 impl MIR {
-    pub fn build(tir: &tir::TIR, interner: &ast::StringInterner) -> MIR {
+    pub fn build(tir: &tir::TIR, interner: &ast::StringInterner, id_generator: ast::DefIdGenerator) -> MIR {
         // Memory index remap: each memory's DefId → its position in tir.memories
         // which equals the WebAssembly linear-memory index.
         let memory_id_remap: HashMap<ast::DefId, u32> = tir
@@ -581,7 +581,7 @@ impl MIR {
             signature_pool: Vec::new(),
             signature_index_lookup: HashMap::new(),
             current_substitutions: Box::new([]),
-            mono_registry: MonoRegistry::new(tir.id_generator),
+            mono_registry: MonoRegistry::new(id_generator),
             current_function_id: None,
             call_edges: Vec::new(),
         };

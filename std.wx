@@ -32,6 +32,29 @@ trait Memory {
   }
 }
 
+signature Memory<Size: PointerSize> {
+  const MEMORY_INDEX: u32;
+  const DATA_END: Self::*mut u8;
+
+  fn grow(self, delta: Size) -> Size {
+    wasm::memory_grow(self, delta)
+  }
+}
+
+signature Iterator<Item> {
+  fn next(&mut self) -> Option<Item>;
+}
+
+impl<T> Iterator<T> for Vec<T> {
+  fn next(&mut self) -> Option<T> {
+    if self.is_empty() {
+      None
+    } else {
+      Some(self.remove(0))
+    }
+  }
+}
+
 impl char {
   #[inline]
   pub fn to_ascii_uppercase(self) -> char {

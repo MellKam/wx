@@ -2054,7 +2054,7 @@ fn test_assoc_type_declared_in_trait() {
 #[test]
 fn test_assoc_type_projection_in_return_type() {
     // `fn foo<M: Memory>() -> M::Size` — the return type must resolve to
-    // `AssocTypeProjection` (no error diagnostics).
+    // `AssociatedType` (no error diagnostics).
     let case = TestCase::new(indoc! {"
         trait PointerSize {}
         trait Memory {
@@ -2077,12 +2077,9 @@ fn test_assoc_type_projection_in_return_type() {
     assert!(
         matches!(
             case.tir.type_pool[result_ty as usize],
-            Type::AssocTypeProjection {
-                type_param_index: 0,
-                ..
-            }
+            Type::AssociatedType { .. }
         ),
-        "return type should be AssocTypeProjection for M::Size, got type index {}",
+        "return type should be AssociatedType for M::Size, got type index {}",
         result_ty
     );
 }
@@ -2090,7 +2087,7 @@ fn test_assoc_type_projection_in_return_type() {
 #[test]
 fn test_assoc_type_projection_in_param_type() {
     // `fn foo<M: Memory>(size: M::Size)` — the parameter type resolves to
-    // `AssocTypeProjection` without errors.
+    // `AssociatedType` without errors.
     let case = TestCase::new(indoc! {"
         trait PointerSize {}
         trait Memory {

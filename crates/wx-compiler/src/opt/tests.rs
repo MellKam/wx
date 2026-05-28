@@ -46,7 +46,7 @@ impl TestCase {
         )
         .unwrap();
         let tir = tir::TIR::build(&graph, &mut interner);
-        let mir = MIR::build(&tir, &interner);
+        let mir = MIR::build(&tir, &interner, graph.id_generator);
         TestCase { mir }
     }
 
