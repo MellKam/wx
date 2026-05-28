@@ -1,0 +1,15 @@
+[package]
+name = "wx-lsp-next"
+version = "0.0.1"
+authors = ["Artem Melnyk <melkam464@gmail.com>"]
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+lsp-server = "0.7.9"
+lsp-types = { version = "0.97.0", features = ["proposed"] }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+wx-compiler = { path = "../wx-compiler" }
+codespan-reporting = "0.13.1"
+url = "2.5"

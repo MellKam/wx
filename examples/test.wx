@@ -1,11 +1,5 @@
-import "console" {
-  fn log(message: string);
+
+fn add(a: i32, b: i32) -> i32 {
+  a + b
 }
 
-fn main() {
-  console::log("hello world");
-}
-
-export {
-  main
-}

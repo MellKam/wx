@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { workspace, ExtensionContext, commands, window } from "vscode";
 import {
@@ -8,6 +9,29 @@ import {
 } from "vscode-languageclient/node";
 
 let client: LanguageClient;
+
+function resolveServerBinary(context: ExtensionContext): string {
+	const devBinaryName =
+		process.platform === "win32" ? "wx-lsp-next.exe" : "wx-lsp-next";
+	const packagedBinaryName =
+		process.platform === "win32" ? "wx-lsp.exe" : "wx-lsp";
+	const devBinary = path.resolve(
+		context.extensionPath,
+		"..",
+		"target",
+		"debug",
+		devBinaryName,
+	);
+	const packagedBinary = context.asAbsolutePath(
+		path.join("bin", packagedBinaryName),
+	);
+
+	if (fs.existsSync(devBinary)) {
+		return devBinary;
+	}
+
+	return packagedBinary;
+}
 
 async function startServer(serverModule: string) {
 	const serverOptions: ServerOptions = {
@@ -44,8 +68,7 @@ async function startServer(serverModule: string) {
 export function activate(context: ExtensionContext) {
 	console.log("WX Language Server extension is activating...");
 
-	const binaryName = process.platform === "win32" ? "wx-lsp.exe" : "wx-lsp";
-	const serverModule = context.asAbsolutePath(path.join("bin", binaryName));
+	const serverModule = resolveServerBinary(context);
 	console.log("serverModule:", serverModule);
 
 	// Register restart server command

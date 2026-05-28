@@ -1,0 +1,7 @@
+module test;
+
+fn main() {
+  local b = test::add(2, 3);
+
+  b
+}
