@@ -138,6 +138,13 @@ pub enum Type {
         trait_index: TraitIndex,
         assoc_name: SymbolU32,
     },
+    /// `M::Size` in a function signature: a projection carrying the owning type
+    /// param's index so `substitute_type` resolves it in a single pass.
+    AssocTypeProjection {
+        trait_index: TraitIndex,
+        assoc_name: SymbolU32,
+        param_index: u32,
+    },
 }
 
 impl Type {
@@ -603,6 +610,13 @@ pub enum SymbolKind {
     False,
     Unreachable,
     Placeholder,
+    /// Resolved form of a trait associated type (`type Size`). Replaces
+    /// `Pending` in the symbol lookup after `ensure_signature` processes the
+    /// declaration, so bare uses of `Size` as a type identifier don't stall.
+    TraitAssocType {
+        trait_index: TraitIndex,
+        assoc_name: SymbolU32,
+    },
     /// Registered during pre-scan but not yet resolved; replaced by the real
     /// kind when `ensure_signature` runs for this `DefId`.
     Pending(ast::DefId),
@@ -1246,6 +1260,16 @@ fn report_undeclared_type(span: SourceSpan) -> Diagnostic<FileId> {
         .with_label(span.primary_label())
 }
 
+fn report_bare_assoc_type(span: SourceSpan, name: &str) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::UndeclaredType.code())
+        .with_message(format!("cannot find type `{name}` in this scope"))
+        .with_label(span.primary_label())
+        .with_note(format!(
+            "you might have meant to use the associated type: `Self::{name}`"
+        ))
+}
+
 struct BinaryOperatorCannotBeAppliedDiagnostic {
     file_id: FileId,
     operator: Spanned<ast::BinaryOp>,
@@ -1444,7 +1468,7 @@ fn report_expected_trait(span: SourceSpan, kind: SymbolKind, name: String) -> Di
         SymbolKind::Function { .. } => "function",
         SymbolKind::Global { .. } => "global",
         SymbolKind::Const { .. } => "constant",
-        SymbolKind::Pending(_) => unreachable!(),
+        SymbolKind::Pending(_) | SymbolKind::TraitAssocType { .. } => unreachable!(),
         _ => "value",
     };
     Diagnostic::error()
@@ -2054,8 +2078,8 @@ impl<'ast> Builder<'ast, '_> {
                 let function = &self.tir.functions[func_index as usize];
                 Some(function.signature_index)
             }
-            SymbolKind::Pending(_)
-            | SymbolKind::False
+            SymbolKind::TraitAssocType { .. } | SymbolKind::Pending(_) => None,
+            SymbolKind::False
             | SymbolKind::True
             | SymbolKind::Unreachable
             | SymbolKind::Placeholder => unreachable!(),
@@ -2095,14 +2119,33 @@ impl<'ast> Builder<'ast, '_> {
                             return Type::ERROR_IDX;
                         }
                         self.ensure_signature(def_id);
-                        if let Some(kind) = self
+                        match self
                             .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
                             .cloned()
                         {
-                            if let Some(ty) = self.symbol_kind_to_type(kind) {
-                                return ty;
+                            Some(SymbolKind::TraitAssocType { assoc_name, .. }) => {
+                                let name = self.interner.resolve(assoc_name).unwrap_or("?");
+                                self.tir.diagnostics.push(report_bare_assoc_type(
+                                    SourceSpan::new(resolve_context.file_id, type_expr.span),
+                                    name,
+                                ));
+                                return Type::ERROR_IDX;
                             }
+                            Some(kind) => {
+                                if let Some(ty) = self.symbol_kind_to_type(kind) {
+                                    return ty;
+                                }
+                            }
+                            None => {}
                         }
+                        return Type::ERROR_IDX;
+                    }
+                    Some(SymbolKind::TraitAssocType { assoc_name, .. }) => {
+                        let name = self.interner.resolve(assoc_name).unwrap_or("?");
+                        self.tir.diagnostics.push(report_bare_assoc_type(
+                            SourceSpan::new(resolve_context.file_id, type_expr.span),
+                            name,
+                        ));
                         return Type::ERROR_IDX;
                     }
                     Some(kind) => {
@@ -2220,7 +2263,8 @@ impl<'ast> Builder<'ast, '_> {
                             .to_owned();
 
                         for &trait_index in &bounds {
-                            // Ensure all trait member signatures (including assoc types) are resolved.
+                            // Ensure all trait member signatures (including assoc types) are
+                            // resolved.
                             let def_ids =
                                 self.tir.traits[trait_index as usize].member_def_ids.clone();
                             for def_id in def_ids {
@@ -2231,9 +2275,10 @@ impl<'ast> Builder<'ast, '_> {
                                 .members
                                 .get(&member_name)
                             {
-                                return self.intern_type(Type::AssociatedType {
+                                return self.intern_type(Type::AssocTypeProjection {
                                     trait_index,
                                     assoc_name: member_name,
+                                    param_index: *param_index,
                                 });
                             }
                         }
@@ -2504,6 +2549,10 @@ impl<'ast> Builder<'ast, '_> {
             SymbolKind::Memory { memory_index, .. } => {
                 let memory = &self.tir.memories[memory_index as usize];
                 SourceSpan::new(memory.file_id, memory.name.span)
+            }
+            SymbolKind::TraitAssocType { trait_index, .. } => {
+                let trait_ = &self.tir.traits[trait_index as usize];
+                SourceSpan::new(trait_.file_id, trait_.name.span)
             }
             // these are keywords and will be handled at the parser level
             SymbolKind::False
@@ -3959,6 +4008,22 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir.traits[trait_index as usize]
                         .members
                         .insert(name.inner, ImplEntry::AssociatedType { ty: placeholder });
+
+                    // Replace Pending with TraitAssocType only if it's still our
+                    // own Pending — never clobber a same-named resolved symbol.
+                    if matches!(
+                        self.lookup_symbol(&resolve_context, SymbolNamespace::Type, name.inner),
+                        Some(SymbolKind::Pending(d)) if *d == *id
+                    ) {
+                        self.insert_symbol(
+                            &resolve_context,
+                            (SymbolNamespace::Type, name.inner),
+                            SymbolKind::TraitAssocType {
+                                trait_index,
+                                assoc_name: name.inner,
+                            },
+                        );
+                    }
                 }
             }
 
@@ -4288,35 +4353,6 @@ impl<'ast> Builder<'ast, '_> {
         (params, result)
     }
 
-    fn substitute_assoc_type_projection(
-        &mut self,
-        receiver: TypeIndex,
-        assoc_name: SymbolU32,
-        trait_index: TraitIndex,
-        fallback: TypeIndex,
-    ) -> TypeIndex {
-        match &self.tir.type_pool[receiver as usize] {
-            Type::TypeParam { owner, param_index } => self.intern_type(Type::AssociatedType {
-                trait_index,
-                assoc_name,
-            }),
-            _ => self
-                .tir
-                .impl_members
-                .get(&receiver)
-                .and_then(|m| m.get(&assoc_name))
-                .and_then(|e| {
-                    if let ImplEntry::AssociatedType { ty } = e {
-                        Some(*ty)
-                    } else {
-                        None
-                    }
-                })
-                .filter(|&t| !matches!(&self.tir.type_pool[t as usize], Type::TypeParam { .. }))
-                .unwrap_or(fallback),
-        }
-    }
-
     fn substitute_type(&mut self, ty: TypeIndex, type_args: &[TypeIndex]) -> TypeIndex {
         match self.tir.type_pool[ty as usize].clone() {
             Type::TypeParam { param_index, .. } => type_args
@@ -4324,16 +4360,31 @@ impl<'ast> Builder<'ast, '_> {
                 .copied()
                 .filter(|&t| t != Type::ERROR_IDX)
                 .unwrap_or(ty),
-            Type::AssociatedType {
-                trait_index,
+            Type::AssociatedType { .. } => ty,
+            Type::AssocTypeProjection {
+                param_index,
                 assoc_name,
+                ..
             } => {
-                todo!();
-                // let receiver = type_args
-                //     .get(type_param_index as usize)
-                //     .copied()
-                //     .unwrap_or(Type::ERROR_IDX);
-                // self.substitute_assoc_type_projection(receiver, assoc_name, trait_index, ty)
+                let receiver = type_args.get(param_index as usize).copied().unwrap_or(ty);
+                if matches!(
+                    self.tir.type_pool[receiver as usize],
+                    Type::TypeParam { .. }
+                ) {
+                    return ty;
+                }
+                self.tir
+                    .impl_members
+                    .get(&receiver)
+                    .and_then(|m| m.get(&assoc_name))
+                    .and_then(|e| {
+                        if let ImplEntry::AssociatedType { ty: concrete } = e {
+                            Some(*concrete)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(ty)
             }
             Type::Tuple { elements } => {
                 let mut changed = false;
@@ -4494,15 +4545,19 @@ impl<'ast> Builder<'ast, '_> {
                 self.seed_type_arg_slot(type_args, param_index, actual_ty);
             }
             (
-                Type::AssociatedType {
+                Type::AssocTypeProjection {
                     assoc_name,
                     trait_index,
+                    param_index,
                 },
-                Type::AssociatedType {
+                Type::AssocTypeProjection {
                     assoc_name: actual_assoc,
                     trait_index: actual_trait,
+                    param_index: actual_param,
                 },
-            ) if assoc_name == actual_assoc && trait_index == actual_trait => {}
+            ) if assoc_name == actual_assoc
+                && trait_index == actual_trait
+                && param_index == actual_param => {}
             (Type::Tuple { elements: pattern }, Type::Tuple { elements: actual })
                 if pattern.len() == actual.len() =>
             {
@@ -6557,7 +6612,9 @@ impl<'ast> Builder<'ast, '_> {
                         span: expr.span,
                     });
                 }
-                SymbolKind::Unreachable | SymbolKind::Pending(_) => unreachable!(),
+                SymbolKind::Unreachable
+                | SymbolKind::TraitAssocType { .. }
+                | SymbolKind::Pending(_) => unreachable!(),
                 // Struct names are type-namespace values, not usable as expressions
                 SymbolKind::Struct { .. } => {
                     self.tir
@@ -8877,7 +8934,7 @@ impl<'ast> Builder<'ast, '_> {
     }
 }
 
-struct TypeFormatter<'a> {
+pub struct TypeFormatter<'a> {
     tir: &'a TIR,
     interner: &'a ast::StringInterner,
 }
@@ -8888,42 +8945,46 @@ impl<'a> TypeFormatter<'a> {
     }
 
     pub fn display_type(&self, idx: TypeIndex) -> String {
-        match &self.tir.type_pool[idx as usize].clone() {
-            Type::Unknown => "unknown".to_string(),
-            Type::Error => "error".to_string(),
-            Type::Unit => "unit".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::Char => "char".to_string(),
-            Type::U8 => "u8".to_string(),
-            Type::I8 => "i8".to_string(),
-            Type::U16 => "u16".to_string(),
-            Type::I16 => "i16".to_string(),
-            Type::Never => "never".to_string(),
-            Type::I32 => "i32".to_string(),
-            Type::I64 => "i64".to_string(),
-            Type::F32 => "f32".to_string(),
-            Type::F64 => "f64".to_string(),
-            Type::U32 => "u32".to_string(),
-            Type::U64 => "u64".to_string(),
+        let mut s = String::new();
+        self.write_type(&mut s, idx);
+        s
+    }
+
+    fn write_type(&self, f: &mut impl std::fmt::Write, idx: TypeIndex) {
+        match &self.tir.type_pool[idx as usize] {
+            Type::Unknown => f.write_str("unknown").unwrap(),
+            Type::Error => f.write_str("error").unwrap(),
+            Type::Unit => f.write_str("unit").unwrap(),
+            Type::Bool => f.write_str("bool").unwrap(),
+            Type::Char => f.write_str("char").unwrap(),
+            Type::U8 => f.write_str("u8").unwrap(),
+            Type::I8 => f.write_str("i8").unwrap(),
+            Type::U16 => f.write_str("u16").unwrap(),
+            Type::I16 => f.write_str("i16").unwrap(),
+            Type::Never => f.write_str("never").unwrap(),
+            Type::I32 => f.write_str("i32").unwrap(),
+            Type::I64 => f.write_str("i64").unwrap(),
+            Type::F32 => f.write_str("f32").unwrap(),
+            Type::F64 => f.write_str("f64").unwrap(),
+            Type::U32 => f.write_str("u32").unwrap(),
+            Type::U64 => f.write_str("u64").unwrap(),
             Type::Pointer {
                 to,
                 mutable,
                 memory,
             } => {
                 let (to, mutable, memory) = (*to, *mutable, *memory);
-                let mutability = if mutable { "mut " } else { "" };
-                let inner = format!("*{}{}", mutability, self.display_type(to));
-                match memory {
-                    Some(id) => {
-                        let idx = self.tir.memory_index_lookup[&id] as usize;
-                        let name = self
-                            .interner
-                            .resolve(self.tir.memories[idx].name.inner)
-                            .unwrap_or("?");
-                        format!("{}::{}", name, inner)
-                    }
-                    None => inner,
+                if let Some(id) = memory {
+                    let mi = self.tir.memory_index_lookup[&id] as usize;
+                    let name = self
+                        .interner
+                        .resolve(self.tir.memories[mi].name.inner)
+                        .unwrap_or("?");
+                    write!(f, "{}::*{}", name, if mutable { "mut " } else { "" }).unwrap();
+                } else {
+                    write!(f, "*{}", if mutable { "mut " } else { "" }).unwrap();
                 }
+                self.write_type(f, to);
             }
             Type::Slice {
                 of,
@@ -8931,19 +8992,17 @@ impl<'a> TypeFormatter<'a> {
                 memory,
             } => {
                 let (of, mutable, memory) = (*of, *mutable, *memory);
-                let mutability = if mutable { "mut " } else { "" };
-                let inner = format!("[]{}{}", mutability, self.display_type(of));
-                match memory {
-                    Some(id) => {
-                        let idx = self.tir.memory_index_lookup[&id] as usize;
-                        let name = self
-                            .interner
-                            .resolve(self.tir.memories[idx].name.inner)
-                            .unwrap_or("?");
-                        format!("{}::{}", name, inner)
-                    }
-                    None => inner,
+                if let Some(id) = memory {
+                    let mi = self.tir.memory_index_lookup[&id] as usize;
+                    let name = self
+                        .interner
+                        .resolve(self.tir.memories[mi].name.inner)
+                        .unwrap_or("?");
+                    write!(f, "{}::[]{}", name, if mutable { "mut " } else { "" }).unwrap();
+                } else {
+                    write!(f, "[]{}", if mutable { "mut " } else { "" }).unwrap();
                 }
+                self.write_type(f, of);
             }
             Type::Array {
                 of,
@@ -8952,95 +9011,122 @@ impl<'a> TypeFormatter<'a> {
                 memory,
             } => {
                 let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
-                let mutability = if mutable { "mut " } else { "" };
-                let inner = format!("[{}]{}{}", size, mutability, self.display_type(of));
-                match memory {
-                    Some(id) => {
-                        let idx = self.tir.memory_index_lookup[&id] as usize;
-                        let name = self
-                            .interner
-                            .resolve(self.tir.memories[idx].name.inner)
-                            .unwrap_or("?");
-                        format!("{}::{}", name, inner)
-                    }
-                    None => inner,
+                if let Some(id) = memory {
+                    let mi = self.tir.memory_index_lookup[&id] as usize;
+                    let name = self
+                        .interner
+                        .resolve(self.tir.memories[mi].name.inner)
+                        .unwrap_or("?");
+                    write!(
+                        f,
+                        "{}::[{}]{}",
+                        name,
+                        size,
+                        if mutable { "mut " } else { "" }
+                    )
+                    .unwrap();
+                } else {
+                    write!(f, "[{}]{}", size, if mutable { "mut " } else { "" }).unwrap();
                 }
+                self.write_type(f, of);
             }
             Type::Tuple { elements } => {
-                let elems = elements
-                    .iter()
-                    .map(|&e| self.display_type(e))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("({})", elems)
+                let elements: Vec<TypeIndex> = elements.iter().copied().collect();
+                f.write_char('(').unwrap();
+                for (i, e) in elements.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ").unwrap();
+                    }
+                    self.write_type(f, *e);
+                }
+                f.write_char(')').unwrap();
             }
             Type::Struct { struct_index } => {
-                let s = &self.tir.structs[*struct_index as usize];
-                self.interner.resolve(s.name.inner).unwrap().to_string()
+                let name = self
+                    .interner
+                    .resolve(self.tir.structs[*struct_index as usize].name.inner)
+                    .unwrap();
+                f.write_str(name).unwrap();
             }
             Type::ImportModule { module_index } => {
                 let module = &self.tir.import_modules[*module_index as usize];
-                let name = module
+                let sym = module
                     .internal_name
                     .as_ref()
                     .map(|x| x.inner)
                     .unwrap_or(module.external_name.inner);
-                self.interner.resolve(name).unwrap().to_string()
+                f.write_str(self.interner.resolve(sym).unwrap()).unwrap();
             }
             Type::Enum { enum_index } => {
-                let enum_ = &self.tir.enums[*enum_index as usize];
-                self.interner.resolve(enum_.name.inner).unwrap().to_string()
+                let name = self
+                    .interner
+                    .resolve(self.tir.enums[*enum_index as usize].name.inner)
+                    .unwrap();
+                f.write_str(name).unwrap();
             }
             Type::Memory { kind, .. } => match kind {
-                MemoryKind::Memory32 => "Memory32".to_string(),
-                MemoryKind::Memory64 => "Memory64".to_string(),
+                MemoryKind::Memory32 => f.write_str("Memory32").unwrap(),
+                MemoryKind::Memory64 => f.write_str("Memory64").unwrap(),
             },
             Type::Trait { trait_index } => {
-                let t = &self.tir.traits[*trait_index as usize];
-                self.interner.resolve(t.name.inner).unwrap().to_string()
+                let name = self
+                    .interner
+                    .resolve(self.tir.traits[*trait_index as usize].name.inner)
+                    .unwrap();
+                f.write_str(name).unwrap();
             }
             Type::Module { module_index } => {
-                let m = &self.tir.modules[*module_index as usize];
-                self.interner.resolve(m.name.inner).unwrap().to_string()
+                let name = self
+                    .interner
+                    .resolve(self.tir.modules[*module_index as usize].name.inner)
+                    .unwrap();
+                f.write_str(name).unwrap();
             }
             Type::Function { signature } => {
-                let params = signature
-                    .params()
-                    .iter()
-                    .copied()
-                    .map(|p| self.display_type(p))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let result = self.display_type(signature.result());
-                format!("fn({}) -> {}", params, result)
+                let params: Vec<TypeIndex> = signature.params().iter().copied().collect();
+                let result = signature.result();
+                f.write_str("fn(").unwrap();
+                for (i, &p) in params.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ").unwrap();
+                    }
+                    self.write_type(f, p);
+                }
+                f.write_str(") -> ").unwrap();
+                self.write_type(f, result);
             }
             Type::FunctionItem { id, .. } => {
-                let func_index = self.tir.function_index_lookup[id];
-                self.interner
-                    .resolve(self.tir.functions[func_index as usize].name.inner)
-                    .unwrap()
-                    .to_string()
+                let fi = self.tir.function_index_lookup[id] as usize;
+                let name = self
+                    .interner
+                    .resolve(self.tir.functions[fi].name.inner)
+                    .unwrap();
+                f.write_str(name).unwrap();
             }
             Type::TypeParam { owner, param_index } => {
                 let symbol = match owner {
                     TypeParamOwner::Function(def_id) => {
-                        let func_index = self.tir.function_index_lookup[&def_id];
-                        self.tir.functions[func_index as usize].type_params[*param_index as usize]
-                            .name
+                        let fi = self.tir.function_index_lookup[def_id] as usize;
+                        self.tir.functions[fi].type_params[*param_index as usize].name
                     }
                     TypeParamOwner::Struct(_) => todo!("struct type parameters not supported yet"),
                 };
-
-                self.interner.resolve(symbol).unwrap().to_string()
+                f.write_str(self.interner.resolve(symbol).unwrap()).unwrap();
             }
             Type::AssociatedType {
                 assoc_name,
                 trait_index,
+            }
+            | Type::AssocTypeProjection {
+                assoc_name,
+                trait_index,
+                ..
             } => {
-                let trait_ = &self.tir.traits[*trait_index as usize];
-                let trait_name = self.interner.resolve(trait_.name.inner).unwrap();
-                let assoc_name = self.interner.resolve(*assoc_name).unwrap();
-                format!("{}::{}", trait_name, assoc_name)
+                let assoc_sym = *assoc_name;
+                let trait_name_sym = self.tir.traits[*trait_index as usize].name.inner;
+                let trait_name = self.interner.resolve(trait_name_sym).unwrap();
+                let assoc = self.interner.resolve(assoc_sym).unwrap();
+                write!(f, "{}::{}", trait_name, assoc).unwrap();
             }
         }
     }
@@ -9080,6 +9166,10 @@ pub struct TIR {
 }
 
 impl TIR {
+    pub fn formatter<'a>(&'a self, interner: &'a ast::StringInterner) -> TypeFormatter<'a> {
+        TypeFormatter::new(self, interner)
+    }
+
     /// Builds TIR from a full compilation graph.
     pub fn build(compilation: &CompilationGraph, interner: &mut ast::StringInterner) -> TIR {
         let source_modules: Vec<_> = compilation

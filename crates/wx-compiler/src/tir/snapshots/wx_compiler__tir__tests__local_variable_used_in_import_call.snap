@@ -39,6 +39,29 @@ type_pool:
       struct_index: 0
   - ImportModule:
       module_index: 0
+diagnostics:
+  - severity: Error
+    code: E1007
+    message: undeclared identifier
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 132
+          end: 135
+        message: ""
+    notes: []
+  - severity: Error
+    code: E1007
+    message: undeclared identifier
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 159
+          end: 165
+        message: ""
+    notes: []
 functions:
   - id: 1
     file_id: 0
@@ -161,6 +184,7 @@ functions:
           start: 104
           end: 169
 globals: []
+memories: []
 import_modules:
   - file_id: 0
     external_name:
@@ -185,29 +209,6 @@ exports:
           end: 184
       external_name: ~
       id: 2
-diagnostics:
-  - severity: Error
-    code: E1007
-    message: undeclared identifier
-    labels:
-      - style: Primary
-        file_id: 0
-        range:
-          start: 132
-          end: 135
-        message: ""
-    notes: []
-  - severity: Error
-    code: E1007
-    message: undeclared identifier
-    labels:
-      - style: Primary
-        file_id: 0
-        range:
-          start: 159
-          end: 165
-        message: ""
-    notes: []
 structs:
   - file_id: 0
     name:
@@ -237,8 +238,8 @@ impl_members:
       AssociatedConst:
         ty: 8
   20: {}
-memories: []
 traits: []
 trait_impls: []
 trait_impl_lookup: {}
 type_trait_impls: {}
+constants: []

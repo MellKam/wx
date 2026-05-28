@@ -26,6 +26,35 @@ type_pool:
         items:
           - 16
         params_count: 0
+diagnostics:
+  - severity: Error
+    code: E1026
+    message: "field `ptr` specified more than once"
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 90
+          end: 93
+        message: ""
+      - style: Secondary
+        file_id: 0
+        range:
+          start: 82
+          end: 85
+        message: first use of this field
+    notes: []
+  - severity: Error
+    code: E1027
+    message: "missing fields `len` in initializer of `str`"
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 75
+          end: 99
+        message: ""
+    notes: []
 functions:
   - id: 1
     file_id: 0
@@ -80,6 +109,7 @@ functions:
           start: 69
           end: 101
 globals: []
+memories: []
 import_modules: []
 enums: []
 modules: []
@@ -93,35 +123,6 @@ exports:
           end: 116
       external_name: ~
       id: 1
-diagnostics:
-  - severity: Error
-    code: E1026
-    message: "field `ptr` specified more than once"
-    labels:
-      - style: Primary
-        file_id: 0
-        range:
-          start: 90
-          end: 93
-        message: ""
-      - style: Secondary
-        file_id: 0
-        range:
-          start: 82
-          end: 85
-        message: first use of this field
-    notes: []
-  - severity: Error
-    code: E1027
-    message: "missing fields `len` in initializer of `str`"
-    labels:
-      - style: Primary
-        file_id: 0
-        range:
-          start: 75
-          end: 99
-        message: ""
-    notes: []
 structs:
   - file_id: 0
     name:
@@ -154,8 +155,8 @@ structs:
       2: 0
       4: 1
 impl_members: {}
-memories: []
 traits: []
 trait_impls: []
 trait_impl_lookup: {}
 type_trait_impls: {}
+constants: []

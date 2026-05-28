@@ -10,12 +10,12 @@ use lsp_server::{
 use lsp_types::notification::Notification as _;
 use lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents,
-    HoverProviderCapability, InitializeParams, Location, MarkedString, NumberOrString, Position,
-    PublishDiagnosticsParams, Range, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri,
+    HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind,
+    NumberOrString, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 use wx_compiler::ast::{self};
-use wx_compiler::tir::{ExprKind, Expression, TIR, TypeIndex};
+use wx_compiler::tir::{ExprKind, Expression, Type as TirType, TIR, TypeIndex};
 use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
 
 #[cfg(debug_assertions)]
@@ -51,6 +51,7 @@ struct AnalysisResult {
 struct CompiledRoot {
     graph: vfs::CompilationGraph,
     tir: TIR,
+    interner: ast::StringInterner,
 }
 
 struct OverlayFileSource<'a> {
@@ -236,7 +237,11 @@ fn compile_root(state: &ServerState, root: &Path) -> Result<CompiledRoot, LoadEr
     let mut interner = ast::StringInterner::new();
     let graph = vfs::load_compilation_with_source(root, &overlay_source, &mut interner)?;
     let tir = TIR::build(&graph, &mut interner);
-    Ok(CompiledRoot { graph, tir })
+    Ok(CompiledRoot {
+        graph,
+        tir,
+        interner,
+    })
 }
 
 fn analysis_from_compiled_root(compiled: &CompiledRoot) -> AnalysisResult {
@@ -449,7 +454,9 @@ fn add_compiler_diagnostic(
         format!("{}\n{}", diagnostic.message, label_messages.join("\n"))
     };
 
-    let related_information = diagnostic_related_information(files, diagnostic);
+    let primary_uri = path_to_uri(&path);
+    let related_information =
+        diagnostic_related_information(files, diagnostic, primary_uri.as_ref(), range);
 
     grouped.entry(path).or_default().push(Diagnostic {
         range,
@@ -470,35 +477,38 @@ fn add_compiler_diagnostic(
 fn diagnostic_related_information(
     files: &vfs::Files,
     diagnostic: &CodeDiagnostic<FileId>,
+    primary_uri: Option<&Uri>,
+    primary_range: Range,
 ) -> Option<Vec<DiagnosticRelatedInformation>> {
-    let infos: Vec<_> = diagnostic
-        .labels
-        .iter()
-        .filter_map(|label| {
-            let path = PathBuf::from(files.name(label.file_id).ok()?);
-            let uri = path_to_uri(&path)?;
-            let range = span_to_range(
-                files,
-                label.file_id,
-                label.range.start as u32,
-                label.range.end as u32,
-            )?;
-            let message = if label.message.is_empty() {
-                match label.style {
-                    LabelStyle::Primary => "primary location".to_string(),
-                    LabelStyle::Secondary => "related location".to_string(),
-                }
-            } else {
-                label.message.clone()
-            };
-
-            Some(DiagnosticRelatedInformation {
-                location: Location { uri, range },
-                message,
-            })
+    let label_infos = diagnostic.labels.iter().filter_map(|label| {
+        if label.message.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(files.name(label.file_id).ok()?);
+        let uri = path_to_uri(&path)?;
+        let range = span_to_range(
+            files,
+            label.file_id,
+            label.range.start as u32,
+            label.range.end as u32,
+        )?;
+        Some(DiagnosticRelatedInformation {
+            location: Location { uri, range },
+            message: label.message.clone(),
         })
-        .collect();
+    });
 
+    // Notes (e.g. "help: use Self::Size") have no span of their own — attach
+    // them to the primary error location, matching rust-analyzer's behaviour.
+    let note_infos = diagnostic.notes.iter().filter_map(|note| {
+        let uri = primary_uri?.clone();
+        Some(DiagnosticRelatedInformation {
+            location: Location { uri, range: primary_range },
+            message: note.clone(),
+        })
+    });
+
+    let infos: Vec<_> = label_infos.chain(note_infos).collect();
     (!infos.is_empty()).then_some(infos)
 }
 
@@ -524,16 +534,25 @@ fn handle_hover(state: &ServerState, params: &lsp_types::HoverParams) -> Option<
         params.text_document_position_params.position,
     )?;
 
-    let hover_text = hover_text_at_offset(&compiled.tir, file_id, offset)?;
+    let hover_text = hover_text_at_offset(&compiled.tir, &compiled.interner, file_id, offset)?;
     let range = span_to_range(&compiled.graph.files, file_id, offset, offset)?;
 
     Some(Hover {
-        contents: HoverContents::Scalar(MarkedString::String(hover_text)),
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("```wx\n{hover_text}\n```"),
+        }),
         range: Some(range),
     })
 }
 
-fn hover_text_at_offset(tir: &TIR, file_id: FileId, offset: u32) -> Option<String> {
+fn hover_text_at_offset(
+    tir: &TIR,
+    interner: &ast::StringInterner,
+    file_id: FileId,
+    offset: u32,
+) -> Option<String> {
+    let fmt = tir.formatter(interner);
     let mut best: Option<(u32, String)> = None;
 
     for function in tir
@@ -545,16 +564,26 @@ fn hover_text_at_offset(tir: &TIR, file_id: FileId, offset: u32) -> Option<Strin
             offer_hover(
                 &mut best,
                 function.name.span,
-                format!("type: {}", tir.display_type(function.signature_index)),
+                fmt.display_type(function.signature_index),
             );
         }
 
         for param in function.params.iter() {
             if span_contains(param.name.span, offset) || span_contains(param.ty.span, offset) {
+                let type_str = fmt.display_type(param.ty.inner);
+                let hover = if matches!(
+                    tir.type_pool[param.ty.inner as usize],
+                    TirType::Function { .. }
+                ) {
+                    type_str
+                } else {
+                    let name = interner.resolve(param.name.inner).unwrap_or("_");
+                    format!("{name}: {type_str}")
+                };
                 offer_hover(
                     &mut best,
                     merge_spans(param.name.span, param.ty.span),
-                    format!("type: {}", tir.display_type(param.ty.inner)),
+                    hover,
                 );
             }
         }
@@ -564,14 +593,14 @@ fn hover_text_at_offset(tir: &TIR, file_id: FileId, offset: u32) -> Option<Strin
                 offer_hover(
                     &mut best,
                     result.span,
-                    format!("type: {}", tir.display_type(result.inner)),
+                    fmt.display_type(result.inner),
                 );
             }
         }
 
         if let Some(body) = &function.body {
             if let Some((span, ty)) = find_expression_type_at_offset(&body.block, offset) {
-                offer_hover(&mut best, span, format!("type: {}", tir.display_type(ty)));
+                offer_hover(&mut best, span, fmt.display_type(ty));
             }
 
             for scope in &body.stack.scopes {
@@ -585,7 +614,7 @@ fn hover_text_at_offset(tir: &TIR, file_id: FileId, offset: u32) -> Option<Strin
                         offer_hover(
                             &mut best,
                             local.name.span,
-                            format!("type: {}", tir.display_type(local.ty)),
+                            fmt.display_type(local.ty),
                         );
                     }
                 }
@@ -602,7 +631,7 @@ fn hover_text_at_offset(tir: &TIR, file_id: FileId, offset: u32) -> Option<Strin
             offer_hover(
                 &mut best,
                 merge_spans(global.name.span, global.ty.span),
-                format!("type: {}", tir.display_type(global.ty.inner)),
+                fmt.display_type(global.ty.inner),
             );
         }
 
@@ -614,13 +643,13 @@ fn hover_text_at_offset(tir: &TIR, file_id: FileId, offset: u32) -> Option<Strin
             offer_hover(
                 &mut best,
                 global.name.span,
-                format!("type: {}", tir.display_type(global.ty.inner)),
+                fmt.display_type(global.ty.inner),
             );
         }
 
         if let Some(value) = &global.value {
             if let Some((span, ty)) = find_expression_type_at_offset(&value.inner, offset) {
-                offer_hover(&mut best, span, format!("type: {}", tir.display_type(ty)));
+                offer_hover(&mut best, span, fmt.display_type(ty));
             }
         }
     }

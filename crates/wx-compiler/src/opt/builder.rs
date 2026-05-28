@@ -691,7 +691,7 @@ impl<'mir> Builder<'mir> {
     ) -> StackResult {
         let callee_sig = match callee_expr.ty {
             mir::Type::Function { signature_index } => signature_index,
-            ty => unreachable!("callee expression must have Function type, got {:?}", ty),
+            _ => unreachable!(),
         };
         let callee = self
             .build_expr(block_idx, bindings, callee_expr)

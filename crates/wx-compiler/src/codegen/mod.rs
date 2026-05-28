@@ -361,10 +361,7 @@ impl TryFrom<mir::Type> for ValueType {
             mir::Type::U64 => Ok(ValueType::I64),
             mir::Type::Pointer => Ok(ValueType::I32),
             mir::Type::Function { .. } => Ok(ValueType::I32),
-            ty => {
-                eprintln!("Unsupported type in codegen: {:?}", ty);
-                Err(())
-            }
+            _ => unreachable!(),
         }
     }
 }

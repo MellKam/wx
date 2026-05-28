@@ -101,7 +101,8 @@ impl StackResult {
 /// All variants except `GlobalGet`, `MemorySize`, `CallResult`,
 /// `MemoryGrowResult`, and `LoopParam` are inserted into the CSE map; identical
 /// computations reuse the same node.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug))]
 pub enum DataNodeKind {
     // ── Constants ──────────────────────────────────────────────────────────
     Int {
@@ -416,7 +417,8 @@ pub enum ControlNode {
         args: Box<[DataNodeIndex]>,
         result: StackResult,
         /// MIR signature index for this call; used by the scheduler to emit
-        /// `CallIndirectSym` when the callee is not a statically known `FunctionRef`.
+        /// `CallIndirectSym` when the callee is not a statically known
+        /// `FunctionRef`.
         callee_sig: u32,
     },
     IfElse {

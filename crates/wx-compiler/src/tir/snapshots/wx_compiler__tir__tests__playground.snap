@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/tir/tests.rs
-assertion_line: 1672
 expression: case.tir
 ---
 type_pool:
@@ -57,6 +56,18 @@ type_pool:
         items:
           - 1
         params_count: 0
+diagnostics:
+  - severity: Warning
+    code: W1001
+    message: unused variable
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 47
+          end: 51
+        message: ""
+    notes: []
 functions:
   - id: 1
     file_id: 0
@@ -379,6 +390,7 @@ functions:
           start: 319
           end: 373
 globals: []
+memories: []
 import_modules: []
 enums: []
 modules: []
@@ -392,18 +404,6 @@ exports:
           end: 388
       external_name: ~
       id: 10
-diagnostics:
-  - severity: Warning
-    code: W1001
-    message: unused variable
-    labels:
-      - style: Primary
-        file_id: 0
-        range:
-          start: 47
-          end: 51
-        message: ""
-    notes: []
 structs:
   - file_id: 0
     name:
@@ -451,7 +451,6 @@ impl_members:
       Method: 0
     7:
       Method: 2
-memories: []
 traits:
   - file_id: 0
     name:
@@ -502,3 +501,17 @@ type_trait_impls:
   21:
     - 0
     - 1
+constants:
+  - id: 0
+    file_id: 0
+    name:
+      inner: 2
+      span:
+        start: 24
+        end: 28
+    ty:
+      inner: 8
+      span:
+        start: 30
+        end: 33
+    value: ~

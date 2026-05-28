@@ -3,5 +3,21 @@ module test;
 fn main() {
   local b = test::add(2, 3);
 
+  local x = "gwgew";
+  local y = 'a';
+
+  _ = i32::add(2, 3);
+
   b
+}
+
+impl i32 {
+  fn add(a: i32, b: i32) -> i32 {
+    a + b
+  }
+}
+
+trait Mem {
+    type Size;
+    fn alloc(n: Self::Size) -> *mut u8;  // bare `Size` — triggers the crash
 }

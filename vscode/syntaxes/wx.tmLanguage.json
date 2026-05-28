@@ -2,27 +2,15 @@
 	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
 	"name": "WX",
 	"patterns": [
-		{
-			"include": "#comments"
-		},
-		{
-			"include": "#keywords"
-		},
-		{
-			"include": "#types"
-		},
-		{
-			"include": "#numbers"
-		},
-		{
-			"include": "#strings"
-		},
-		{
-			"include": "#functions"
-		},
-		{
-			"include": "#identifiers"
-		}
+		{ "include": "#comments" },
+		{ "include": "#keywords" },
+		{ "include": "#types" },
+		{ "include": "#pointers" },
+		{ "include": "#numbers" },
+		{ "include": "#strings" },
+		{ "include": "#chars" },
+		{ "include": "#functions" },
+		{ "include": "#identifiers" }
 	],
 	"repository": {
 		"comments": {
@@ -49,7 +37,15 @@
 			"patterns": [
 				{
 					"name": "storage.type.wx",
-					"match": "\\b(i32|i64|f32|f64|u32|u64|bool|never|unit|string)\\b"
+					"match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|char|never|unit|string)\\b"
+				}
+			]
+		},
+		"pointers": {
+			"patterns": [
+				{
+					"name": "keyword.operator.pointer.wx",
+					"match": "\\*(?:mut\\b)?"
 				}
 			]
 		},
@@ -77,6 +73,14 @@
 							"match": "\\\\."
 						}
 					]
+				}
+			]
+		},
+		"chars": {
+			"patterns": [
+				{
+					"name": "string.quoted.single.wx",
+					"match": "'(?:\\\\.|[^'\\\\])*'"
 				}
 			]
 		},

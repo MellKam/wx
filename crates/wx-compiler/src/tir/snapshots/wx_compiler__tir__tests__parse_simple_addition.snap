@@ -26,6 +26,7 @@ type_pool:
           - 9
           - 9
         params_count: 2
+diagnostics: []
 functions:
   - id: 0
     file_id: 0
@@ -152,6 +153,7 @@ functions:
           start: 30
           end: 39
 globals: []
+memories: []
 import_modules: []
 enums: []
 modules: []
@@ -178,11 +180,10 @@ exports:
           start: 62
           end: 68
       id: 0
-diagnostics: []
 structs: []
 impl_members: {}
-memories: []
 traits: []
 trait_impls: []
 trait_impl_lookup: {}
 type_trait_impls: {}
+constants: []

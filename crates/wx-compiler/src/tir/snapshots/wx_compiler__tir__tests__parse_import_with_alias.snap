@@ -33,6 +33,7 @@ type_pool:
         params_count: 0
   - ImportModule:
       module_index: 0
+diagnostics: []
 functions:
   - id: 0
     file_id: 0
@@ -165,6 +166,7 @@ functions:
           start: 91
           end: 118
 globals: []
+memories: []
 import_modules:
   - file_id: 0
     external_name:
@@ -193,12 +195,11 @@ exports:
           end: 133
       external_name: ~
       id: 1
-diagnostics: []
 structs: []
 impl_members:
   18: {}
-memories: []
 traits: []
 trait_impls: []
 trait_impl_lookup: {}
 type_trait_impls: {}
+constants: []

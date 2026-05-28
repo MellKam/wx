@@ -462,12 +462,7 @@ fn test_sched_constant_folding() {
     "});
     let body = case.schedule();
 
-    assert_eq!(
-        body.len(),
-        1,
-        "expected [I32Const(7)]; got {:#?}",
-        body
-    );
+    assert_eq!(body.len(), 1, "expected [I32Const(7)]; got {:#?}", body);
     assert!(matches!(body[0], Instruction::I32Const(7)));
 }
 
@@ -578,7 +573,11 @@ fn test_sched_if_else() {
         matches!(body[np + 1], Instruction::LocalGet(_)),
         "expected LocalGet after End"
     );
-    assert_eq!(body.len(), np + 2, "LocalGet after End must be the last instruction");
+    assert_eq!(
+        body.len(),
+        np + 2,
+        "LocalGet after End must be the last instruction"
+    );
 }
 
 /// `fn loop_count() -> i32 { local mut i: i32 = 0; loop { if i >= 10 { break i
@@ -964,7 +963,8 @@ fn test_sched_phi_identity_no_local_set() {
     "});
     let body = case.schedule();
 
-    // Exactly one LocalSet (the post-End capture) — no phi-join sets inside branches.
+    // Exactly one LocalSet (the post-End capture) — no phi-join sets inside
+    // branches.
     let local_sets: Vec<_> = body
         .iter()
         .filter(|i| matches!(i, Instruction::LocalSet(_)))
@@ -992,7 +992,10 @@ fn test_sched_phi_identity_no_local_set() {
         "expected End instruction; got {:#?}",
         body
     );
-    assert!(!matches!(body.last().unwrap(), Instruction::Return), "trailing Return must be stripped");
+    assert!(
+        !matches!(body.last().unwrap(), Instruction::Return),
+        "trailing Return must be stripped"
+    );
 }
 
 /// A loop with two mutated variables must emit write-backs for both before the
@@ -1035,7 +1038,10 @@ fn test_sched_loop_two_vars_writebacks() {
         body
     );
 
-    assert!(!matches!(body.last().unwrap(), Instruction::Return), "trailing Return must be stripped");
+    assert!(
+        !matches!(body.last().unwrap(), Instruction::Return),
+        "trailing Return must be stripped"
+    );
 }
 
 /// `fn no_else(x: i32) -> i32 { local mut y: i32 = 0; if x > 0 { y = x + 1 }
@@ -1096,7 +1102,11 @@ fn test_sched_if_else_phi_stores() {
         "expected LocalGet after End; got {:#?}",
         &body[end_pos + 1]
     );
-    assert_eq!(body.len(), end_pos + 2, "LocalGet after End must be the last instruction");
+    assert_eq!(
+        body.len(),
+        end_pos + 2,
+        "LocalGet after End must be the last instruction"
+    );
 }
 
 // ── Snapshot test
@@ -1305,7 +1315,10 @@ fn test_sched_call_result_spilled() {
         spill_local
     );
 
-    assert!(!matches!(body.last().unwrap(), Instruction::Return), "trailing Return must be stripped");
+    assert!(
+        !matches!(body.last().unwrap(), Instruction::Return),
+        "trailing Return must be stripped"
+    );
 }
 
 /// Snapshot the full instruction sequence for a two-argument direct call.
