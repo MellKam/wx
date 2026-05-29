@@ -49,6 +49,7 @@ functions:
     accesses:
       - caller: ~
         kind: Reference
+        file_id: 0
         span:
           start: 109
           end: 113
@@ -111,6 +112,7 @@ exports:
       id: 1
 structs:
   - file_id: 0
+    pub_span: ~
     name:
       inner: 1
       span:
@@ -140,6 +142,15 @@ structs:
     lookup:
       2: 0
       4: 1
+    accesses:
+      - file_id: 0
+        span:
+          start: 63
+          end: 68
+      - file_id: 0
+        span:
+          start: 75
+          end: 80
 impl_members: {}
 traits: []
 trait_impls: []

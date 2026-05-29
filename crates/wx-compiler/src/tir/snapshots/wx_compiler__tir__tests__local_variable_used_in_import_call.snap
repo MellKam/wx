@@ -102,6 +102,7 @@ functions:
     accesses:
       - caller: 2
         kind: DirectCall
+        file_id: 0
         span:
           start: 152
           end: 155
@@ -124,6 +125,7 @@ functions:
     accesses:
       - caller: ~
         kind: Reference
+        file_id: 0
         span:
           start: 180
           end: 184
@@ -214,6 +216,9 @@ exports:
       id: 2
 structs:
   - file_id: 0
+    pub_span:
+      start: 0
+      end: 3
     name:
       inner: 1
       span:
@@ -232,6 +237,7 @@ structs:
             end: 35
     lookup:
       2: 0
+    accesses: []
 impl_members:
   19:
     18:
@@ -250,6 +256,7 @@ type_trait_impls: {}
 constants:
   - id: 3
     file_id: 0
+    pub_span: ~
     name:
       inner: 18
       span:
@@ -261,8 +268,10 @@ constants:
         start: 0
         end: 0
     value: ~
+    accesses: []
   - id: 4
     file_id: 0
+    pub_span: ~
     name:
       inner: 19
       span:
@@ -274,3 +283,4 @@ constants:
         start: 0
         end: 0
     value: ~
+    accesses: []

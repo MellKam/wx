@@ -742,19 +742,6 @@ fn test_tuple_return_wat() {
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
 
-#[test]
-fn test_tuple_field_access_wat() {
-    // `.0` / `.1` on a tuple local must map to the correct `local.get` slots.
-    let case = TestCase::new(indoc! {"
-        fn swap(a: i32, b: i32) -> (i32, i32) {
-            local t: (i32, i32) = (a, b);
-            (t.1, t.0)
-        }
-
-        export { swap }
-    "});
-    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
-}
 
 #[test]
 fn test_tuple_block_result_wat() {
@@ -1027,32 +1014,6 @@ fn test_struct_returned_from_call() {
     assert_eq!(run.call(&mut store, ()).unwrap(), 40); // (3+10) + (7+20)
 }
 
-#[test]
-fn test_tuple_returned_from_call() {
-    // Calls a wx function that returns a tuple, then accesses .0 / .1.
-    // Same AggregateCallResult path as structs.
-    let case = TestCase::new(indoc! {"
-        fn divmod(a: i32, b: i32) -> (i32, i32) {
-            (a / b, a % b)
-        }
-
-        fn run() -> i32 {
-            local r = divmod(17, 5);
-            r.0 * 10 + r.1
-        }
-
-        export { run }
-    "});
-
-    let engine = wasmtime::Engine::default();
-    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
-    let mut store = wasmtime::Store::new(&engine, ());
-    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let run = instance
-        .get_typed_func::<(), i32>(&mut store, "run")
-        .unwrap();
-    assert_eq!(run.call(&mut store, ()).unwrap(), 32); // 3*10 + 2
-}
 
 #[test]
 fn test_struct_chained_transforms() {

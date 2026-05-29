@@ -1601,58 +1601,6 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
-            tir::ExprKind::TupleFieldAccess {
-                object,
-                field_index,
-            } => {
-                let phys_index = self
-                    .layout_cache
-                    .get_or_compute(object.ty, &self.tir.type_pool, &self.tir.structs)
-                    .decl_to_phys[*field_index as usize];
-                let field_ty = self.lower_type_index(expr.ty);
-
-                match &object.kind {
-                    tir::ExprKind::Local {
-                        scope_index,
-                        local_index,
-                    } => Expression {
-                        kind: ExprKind::AggregateGet {
-                            scope_index: *scope_index,
-                            local_index: *local_index,
-                            value_index: phys_index,
-                        },
-                        ty: field_ty,
-                    },
-                    _ => {
-                        let object_ty = self.lower_type_index(object.ty);
-                        let object_lowered = self.lower_expression(func_ctx, object, sink);
-
-                        let temp_idx = func_ctx.frame[0].locals.len() as u32;
-                        func_ctx.frame[0].locals.push(Local {
-                            ty: object_ty,
-                            mutability: Mutability::Immutable,
-                        });
-
-                        sink.push(Expression {
-                            kind: ExprKind::LocalSet {
-                                scope_index: 0,
-                                local_index: temp_idx,
-                                value: Box::new(object_lowered),
-                            },
-                            ty: Type::Unit,
-                        });
-
-                        Expression {
-                            kind: ExprKind::AggregateGet {
-                                scope_index: 0,
-                                local_index: temp_idx,
-                                value_index: phys_index,
-                            },
-                            ty: field_ty,
-                        }
-                    }
-                }
-            }
             tir::ExprKind::IfElse {
                 condition,
                 then_block,

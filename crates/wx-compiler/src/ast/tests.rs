@@ -81,6 +81,17 @@ fn local_definition_value<'a>(
     &value.inner
 }
 
+fn local_definition_pattern<'a>(
+    statements: &'a Grouped<Box<[Separated<Spanned<Statement>>]>>,
+    index: usize,
+) -> &'a Pattern {
+    let Statement::LocalDefinition { pattern, .. } = &statements.inner[index].inner.inner else {
+        panic!("expected local definition")
+    };
+
+    &pattern.inner
+}
+
 fn struct_fields(ast: &AST, index: usize) -> &Grouped<Box<[Separated<Spanned<StructField>>]>> {
     let Item::Struct { fields, .. } = item(ast, index) else {
         panic!("expected struct item")
@@ -368,13 +379,12 @@ fn test_struct_init() {
 }
 
 #[test]
-fn test_grouping_tuple_and_tuple_field_access() {
+fn test_grouping_and_tuple_expressions() {
     let case = TestCase::new(indoc! {"
         fn shapes(x: i32, y: i32) {
             local grouped = (x);
             local single = (x,);
             local pair = (x, y);
-            local first = pair.0;
         }
     "});
 
@@ -391,13 +401,6 @@ fn test_grouping_tuple_and_tuple_field_access() {
     assert!(matches!(
         local_definition_value(statements, 2),
         Expression::Tuple { elements } if elements.len() == 2
-    ));
-    assert!(matches!(
-        local_definition_value(statements, 3),
-        Expression::TupleFieldAccess {
-            field: Spanned { inner: 0, .. },
-            ..
-        }
     ));
 }
 
@@ -534,6 +537,105 @@ fn test_numeric_literal_forms() {
         local_definition_value(statements, 2),
         Expression::Int { value: 1_000_000 }
     ));
+}
+
+// ── Patterns ─────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_pattern_simple_binding() {
+    let case = TestCase::new(indoc! {"
+        fn f(v: i32) {
+            local x = v;
+            local mut y = v;
+            local _ = v;
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let stmts = function_block(&case.ast, 0);
+
+    assert!(matches!(
+        local_definition_pattern(stmts, 0),
+        Pattern::Binding { mut_span: None, name } if case.interner.resolve(name.inner) == Some("x")
+    ));
+    assert!(matches!(
+        local_definition_pattern(stmts, 1),
+        Pattern::Binding { mut_span: Some(_), name } if case.interner.resolve(name.inner) == Some("y")
+    ));
+    assert!(matches!(local_definition_pattern(stmts, 2), Pattern::Wildcard));
+}
+
+#[test]
+fn test_pattern_tuple_destructuring() {
+    let case = TestCase::new(indoc! {"
+        fn f(pair: (i32, i32)) {
+            local (a, b) = pair;
+            local (mut c, _) = pair;
+            local (x, (y, z)) = pair;
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let stmts = function_block(&case.ast, 0);
+
+    let Pattern::Tuple { elements } = local_definition_pattern(stmts, 0) else {
+        panic!("expected tuple pattern")
+    };
+    assert_eq!(elements.inner.len(), 2);
+    assert!(matches!(&elements.inner[0].inner.inner, Pattern::Binding { mut_span: None, .. }));
+    assert!(matches!(&elements.inner[1].inner.inner, Pattern::Binding { mut_span: None, .. }));
+
+    let Pattern::Tuple { elements } = local_definition_pattern(stmts, 1) else {
+        panic!("expected tuple pattern")
+    };
+    assert!(matches!(&elements.inner[0].inner.inner, Pattern::Binding { mut_span: Some(_), .. }));
+    assert!(matches!(&elements.inner[1].inner.inner, Pattern::Wildcard));
+
+    let Pattern::Tuple { elements } = local_definition_pattern(stmts, 2) else {
+        panic!("expected tuple pattern")
+    };
+    assert!(matches!(&elements.inner[1].inner.inner, Pattern::Tuple { .. }));
+}
+
+#[test]
+fn test_pattern_struct_destructuring() {
+    let case = TestCase::new(indoc! {"
+        fn f(p: Point) {
+            local Point { x, y } = p;
+            local Point { x: a, y: b } = p;
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let stmts = function_block(&case.ast, 0);
+
+    let Pattern::Struct { name, fields } = local_definition_pattern(stmts, 0) else {
+        panic!("expected struct pattern")
+    };
+    assert_eq!(case.interner.resolve(name.inner), Some("Point"));
+    assert_eq!(fields.inner.len(), 2);
+    assert!(fields.inner[0].inner.inner.pattern.is_none(), "shorthand field should have no sub-pattern");
+    assert!(fields.inner[1].inner.inner.pattern.is_none(), "shorthand field should have no sub-pattern");
+
+    let Pattern::Struct { fields, .. } = local_definition_pattern(stmts, 1) else {
+        panic!("expected struct pattern")
+    };
+    assert!(fields.inner[0].inner.inner.pattern.is_some(), "renamed field should have sub-pattern");
+    assert!(fields.inner[1].inner.inner.pattern.is_some(), "renamed field should have sub-pattern");
+}
+
+#[test]
+fn test_pattern_with_type_annotation() {
+    let case = TestCase::new(indoc! {"
+        fn f(pair: (i32, i32)) {
+            local (a, b): (i32, i32) = pair;
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let stmts = function_block(&case.ast, 0);
+
+    let Statement::LocalDefinition { pattern, ty, .. } = &stmts.inner[0].inner.inner else {
+        panic!("expected local definition")
+    };
+    assert!(matches!(pattern.inner, Pattern::Tuple { .. }));
+    assert!(ty.is_some(), "type annotation should be present");
 }
 
 // ── Diagnostics ──────────────────────────────────────────────────────────────

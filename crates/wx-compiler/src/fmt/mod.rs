@@ -101,6 +101,7 @@ impl Builder {
                 Node::Concat(items.into())
             }
             Item::Global {
+                pub_span,
                 mut_span,
                 name,
                 ty: type_annotation,
@@ -109,6 +110,7 @@ impl Builder {
             } => Self::build_global_definition(
                 interner,
                 source,
+                *pub_span,
                 *mut_span,
                 name,
                 type_annotation,
@@ -128,11 +130,12 @@ impl Builder {
                 .into(),
             ),
             Item::Enum {
+                pub_span,
                 repr,
                 name,
                 variants,
                 ..
-            } => Self::build_enum_definition(interner, source, repr, name, variants),
+            } => Self::build_enum_definition(interner, source, *pub_span, repr, name, variants),
             Item::Impl { target, items } => {
                 Self::build_impl_definition(interner, source, target, items)
             }
@@ -143,8 +146,12 @@ impl Builder {
                 ..
             } => Self::build_impl_trait_definition(interner, source, trait_name, target, items),
             Item::Const {
-                name, ty, value, ..
-            } => Self::build_const_definition(interner, source, name, ty, value),
+                pub_span,
+                name,
+                ty,
+                value,
+                ..
+            } => Self::build_const_definition(interner, source, *pub_span, name, ty, value),
             Item::Module {
                 pub_span,
                 name,
@@ -541,14 +548,17 @@ impl Builder {
     fn build_const_definition(
         interner: &StringInterner,
         source: &str,
+        pub_span: Option<TextSpan>,
         name: &Spanned<SymbolU32>,
         ty: &Option<Box<Spanned<TypeExpression>>>,
         value: &Spanned<Expression>,
     ) -> Node {
-        let mut nodes = vec![
-            Node::StaticText("const "),
-            Self::symbol(interner, name.inner),
-        ];
+        let mut nodes = Vec::new();
+        if pub_span.is_some() {
+            nodes.push(Node::StaticText("pub "));
+        }
+        nodes.push(Node::StaticText("const "));
+        nodes.push(Self::symbol(interner, name.inner));
 
         if let Some(ty) = ty {
             nodes.push(Node::StaticText(": "));
@@ -564,14 +574,17 @@ impl Builder {
     fn build_enum_definition(
         interner: &StringInterner,
         source: &str,
+        pub_span: Option<TextSpan>,
         repr: &Option<Box<Spanned<TypeExpression>>>,
         name: &Spanned<SymbolU32>,
         variants: &Grouped<Box<[Separated<Spanned<EnumVariant>>]>>,
     ) -> Node {
-        let mut nodes = vec![
-            Node::StaticText("enum "),
-            Self::symbol(interner, name.inner),
-        ];
+        let mut nodes = Vec::new();
+        if pub_span.is_some() {
+            nodes.push(Node::StaticText("pub "));
+        }
+        nodes.push(Node::StaticText("enum "));
+        nodes.push(Self::symbol(interner, name.inner));
 
         if let Some(repr) = repr {
             nodes.push(Node::StaticText(": "));
@@ -635,6 +648,7 @@ impl Builder {
         items.push(Node::StaticText(" {"));
 
         if !fields.inner.is_empty() {
+            let field_count = fields.inner.len();
             let field_items = fields
                 .inner
                 .iter()
@@ -651,26 +665,25 @@ impl Builder {
                         interner,
                         &field.inner.inner.ty.inner,
                     ));
-                    if index + 1 < fields.inner.len() {
-                        nodes.push(Node::StaticText(","));
-                    } else {
-                        nodes.push(Node::IfBreak(','));
+                    nodes.push(Node::StaticText(","));
+                    let mut result = vec![Node::Concat(nodes.into())];
+                    if index + 1 < field_count {
+                        result.push(Node::HardLine);
                     }
-
-                    vec![Node::Concat(nodes.into()), Node::SoftLine]
+                    result
                 })
                 .collect::<Vec<_>>();
 
             items.push(Node::Indent(Box::new(Node::Concat(
-                std::iter::once(Node::Line)
+                std::iter::once(Node::HardLine)
                     .chain(field_items)
                     .collect::<Box<[_]>>(),
             ))));
-            items.push(Node::Line);
+            items.push(Node::HardLine);
         }
 
         items.push(Node::StaticText("}"));
-        Node::Group(Box::new(Node::Concat(items.into())))
+        Node::Concat(items.into())
     }
 
     fn build_export_definition(
@@ -738,6 +751,27 @@ impl Builder {
     ) {
         out.push(Node::StaticText("fn "));
         out.push(Self::symbol(interner, signature.name.inner));
+
+        if !signature.type_params.is_empty() {
+            out.push(Node::StaticText("<"));
+            for (index, param) in signature.type_params.iter().enumerate() {
+                out.push(Self::symbol(interner, param.name.inner));
+                if !param.bounds.is_empty() {
+                    out.push(Node::StaticText(": "));
+                    for (bi, bound) in param.bounds.iter().enumerate() {
+                        out.push(Self::build_type_expression(interner, &bound.inner));
+                        if bi + 1 < param.bounds.len() {
+                            out.push(Node::StaticText(" + "));
+                        }
+                    }
+                }
+                if index + 1 < signature.type_params.len() {
+                    out.push(Node::StaticText(", "));
+                }
+            }
+            out.push(Node::StaticText(">"));
+        }
+
         out.push(Node::StaticText("("));
 
         if signature.params.inner.len() > 0 {
@@ -777,12 +811,16 @@ impl Builder {
     fn build_global_definition(
         interner: &StringInterner,
         source: &str,
+        pub_span: Option<TextSpan>,
         mut_span: Option<TextSpan>,
         name: &Spanned<SymbolU32>,
         type_annotation: &Option<Box<Spanned<TypeExpression>>>,
         value: &Box<Spanned<Expression>>,
     ) -> Node {
         let mut items = Vec::new();
+        if pub_span.is_some() {
+            items.push(Node::StaticText("pub "));
+        }
         items.push(Node::StaticText("global "));
         if mut_span.is_some() {
             items.push(Node::StaticText("mut "));
@@ -1005,53 +1043,64 @@ impl Builder {
                 items.push(Self::symbol(interner, member.inner));
                 Node::Concat(items.into())
             }
-            Expression::TupleFieldAccess { object, field } => Node::Concat(
-                vec![
-                    Self::build_expression(interner, source, object),
-                    Node::StaticText("."),
-                    Node::SourceText(field.span),
-                ]
-                .into(),
-            ),
             Expression::StructInit { name, fields } => {
                 let mut items = Vec::new();
                 items.push(Self::symbol(interner, name.inner));
                 items.push(Node::StaticText("::{"));
 
-                if !fields.inner.is_empty() {
-                    let field_items = fields
+                let has_block_value = fields.inner.iter().any(|f| {
+                    f.inner
                         .inner
-                        .iter()
-                        .enumerate()
-                        .flat_map(|(index, field)| {
-                            let mut nodes = Vec::new();
-                            nodes.push(Self::symbol(interner, field.inner.inner.name.inner));
-
-                            if let Some(value) = &field.inner.inner.value {
-                                nodes.push(Node::StaticText(": "));
-                                nodes.push(Self::build_expression(interner, source, value));
-                            }
-
-                            if index + 1 < fields.inner.len() {
-                                nodes.push(Node::StaticText(","));
+                        .value
+                        .as_ref()
+                        .is_some_and(|v| v.inner.is_block_like())
+                });
+                if !fields.inner.is_empty() {
+                    let field_count = fields.inner.len();
+                    let mut field_items: Vec<Node> = Vec::new();
+                    for (index, field) in fields.inner.iter().enumerate() {
+                        field_items.push(Self::symbol(interner, field.inner.inner.name.inner));
+                        if let Some(value) = &field.inner.inner.value {
+                            field_items.push(Node::StaticText(": "));
+                            field_items.push(Self::build_expression(interner, source, value));
+                        }
+                        let is_last = index + 1 == field_count;
+                        if !is_last || has_block_value {
+                            field_items.push(Node::StaticText(","));
+                        } else {
+                            field_items.push(Node::IfBreak(','));
+                        }
+                        if !is_last {
+                            field_items.push(if has_block_value {
+                                Node::HardLine
                             } else {
-                                nodes.push(Node::IfBreak(','));
-                            }
-
-                            vec![Node::Concat(nodes.into()), Node::SoftLine]
-                        })
-                        .collect::<Vec<_>>();
+                                Node::SoftLine
+                            });
+                        }
+                    }
 
                     items.push(Node::Indent(Box::new(Node::Concat(
-                        std::iter::once(Node::Line)
-                            .chain(field_items)
-                            .collect::<Box<[_]>>(),
+                        std::iter::once(if has_block_value {
+                            Node::HardLine
+                        } else {
+                            Node::SoftLine
+                        })
+                        .chain(field_items)
+                        .collect::<Box<[_]>>(),
                     ))));
-                    items.push(Node::Line);
+                    items.push(if has_block_value {
+                        Node::HardLine
+                    } else {
+                        Node::SoftLine
+                    });
                 }
 
                 items.push(Node::StaticText("}"));
-                Node::Group(Box::new(Node::Concat(items.into())))
+                if has_block_value {
+                    Node::Concat(items.into())
+                } else {
+                    Node::Group(Box::new(Node::Concat(items.into())))
+                }
             }
             Expression::TypeApplication { callee, args } => {
                 let mut items = Vec::new();
@@ -1110,23 +1159,57 @@ impl Builder {
         }
     }
 
+    fn build_pattern(out: &mut Vec<Node>, interner: &StringInterner, pattern: &Pattern) {
+        match pattern {
+            Pattern::Wildcard => out.push(Node::StaticText("_")),
+            Pattern::Binding { mut_span, name } => {
+                if mut_span.is_some() {
+                    out.push(Node::StaticText("mut "));
+                }
+                out.push(Self::symbol(interner, name.inner));
+            }
+            Pattern::Tuple { elements } => {
+                out.push(Node::StaticText("("));
+                for (i, element) in elements.inner.iter().enumerate() {
+                    if i > 0 {
+                        out.push(Node::StaticText(", "));
+                    }
+                    Self::build_pattern(out, interner, &element.inner.inner);
+                }
+                out.push(Node::StaticText(")"));
+            }
+            Pattern::Struct { name, fields } => {
+                out.push(Self::symbol(interner, name.inner));
+                out.push(Node::StaticText(" {"));
+                for (i, field) in fields.inner.iter().enumerate() {
+                    if i > 0 {
+                        out.push(Node::StaticText(", "));
+                    } else {
+                        out.push(Node::StaticText(" "));
+                    }
+                    out.push(Self::symbol(interner, field.inner.inner.name.inner));
+                    if let Some(pat) = &field.inner.inner.pattern {
+                        out.push(Node::StaticText(": "));
+                        Self::build_pattern(out, interner, &pat.inner);
+                    }
+                }
+                if !fields.inner.is_empty() {
+                    out.push(Node::StaticText(" "));
+                }
+                out.push(Node::StaticText("}"));
+            }
+        }
+    }
+
     fn build_statement(interner: &StringInterner, source: &str, statement: &Statement) -> Node {
         match statement {
             Statement::Expression(expression) => {
                 Self::build_expression(interner, source, expression)
             }
-            Statement::LocalDefinition {
-                mut_span,
-                name,
-                ty: type_annotation,
-                value,
-            } => {
+            Statement::LocalDefinition { pattern, ty: type_annotation, value } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("local "));
-                if mut_span.is_some() {
-                    items.push(Node::StaticText("mut "));
-                }
-                items.push(Self::symbol(interner, name.inner));
+                Self::build_pattern(&mut items, interner, &pattern.inner);
                 if let Some(annotation) = type_annotation {
                     items.push(Node::StaticText(": "));
                     items.push(Self::build_type_expression(interner, &annotation.inner));
@@ -1480,362 +1563,4 @@ pub fn format(
 }
 
 #[cfg(test)]
-mod tests {
-    use indoc::indoc;
-
-    use super::*;
-    use crate::vfs::Files;
-
-    #[allow(unused)]
-    struct TestCase {
-        interner: StringInterner,
-        files: Files,
-        ast: AST,
-    }
-
-    impl<'case> TestCase {
-        fn new(source: &str) -> Self {
-            let mut interner = StringInterner::new();
-            let mut files = Files::new();
-            let file_id = files
-                .add("main.wx".to_string(), source.to_string())
-                .unwrap();
-            let mut id_generator = DefIdGenerator::new();
-            let ast = Parser::parse(
-                file_id,
-                &files.get(file_id).unwrap().source,
-                &mut interner,
-                &mut id_generator,
-            );
-
-            TestCase {
-                interner,
-                files,
-                ast,
-            }
-        }
-    }
-
-    #[test]
-    fn test_format_simple_function() {
-        let case = TestCase::new(indoc! {"
-            fn add(a: i32, b: i32) -> i32 { 
-                a + b
-            }
-
-            export { add, add as \"plus\", minus }
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 40,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                fn add(a: i32, b: i32) -> i32 {
-                    a + b
-                }
-
-                export {
-                    add,
-                    add as \"plus\",
-                    minus
-                }
-            "}
-        );
-    }
-
-    #[test]
-    fn test_format_import_block() {
-        let case = TestCase::new(indoc! {"
-            import \"math\" {
-                fn sqrt(f64) -> f64;
-                fn pow(base: f64, exponent: f64) -> f64;
-                fn log(x: string);
-            }
-
-            fn main() {
-                local x = sqrt(2.0);
-                local y = pow(x, 2.0);
-            }
-
-            export { main }
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 80,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                import \"math\" {
-                    fn sqrt(f64) -> f64;
-                    fn pow(base: f64, exponent: f64) -> f64;
-                    fn log(x: string);
-                }
-
-                fn main() {
-                    local x = sqrt(2.0);
-                    local y = pow(x, 2.0);
-                }
-
-                export {
-                    main
-                }
-            "}
-        );
-    }
-
-    #[test]
-    fn test_format_single_import_function_stays_inline() {
-        let case = TestCase::new(indoc! {"
-            import \"console\" {
-                fn log(message: string);
-            }
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 80,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                import \"console\" {
-                    fn log(message: string);
-                }
-            "}
-        );
-    }
-
-    #[test]
-    fn test_format_module_items() {
-        let case = TestCase::new(indoc! {"
-            pub module wasm {
-                pub fn answer() -> i32 {
-                    42
-                }
-
-                fn helper() {}
-            }
-
-            module math;
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 80,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                pub module wasm {
-                    pub fn answer() -> i32 {
-                        42
-                    }
-
-                    fn helper() {}
-                }
-
-                module math;
-            "}
-        );
-    }
-
-    #[test]
-    fn test_format_impl_items() {
-        let case = TestCase::new(indoc! {"
-            impl i32 {
-                #[inline]
-                pub fn double(self) -> i32 {
-                    self * 2
-                }
-
-                const ZERO: i32 = 0;
-            }
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 80,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                impl i32 {
-                    #[inline]
-                    pub fn double(self) -> i32 {
-                        self * 2
-                    }
-
-                    const ZERO: i32 = 0;
-                }
-            "}
-        );
-    }
-
-    #[test]
-    fn test_format_trait_items() {
-        let case = TestCase::new(indoc! {"
-            pub trait Widget: Drawable + Sized {
-                type Output: Show + Clone;
-
-                const SIZE: u32;
-
-                fn render(self);
-
-                #[inline]
-                fn grow(self, delta: u32) -> u32 {
-                    delta
-                }
-            }
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 80,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                pub trait Widget: Drawable + Sized {
-                    type Output: Show + Clone;
-
-                    const SIZE: u32;
-
-                    fn render(self);
-
-                    #[inline]
-                    fn grow(self, delta: u32) -> u32 {
-                        delta
-                    }
-                }
-            "}
-        );
-    }
-
-    #[test]
-    fn test_format_const_items() {
-        let case = TestCase::new(indoc! {"
-            const MAX: i32 = 100;
-
-            const ANSWER = 42;
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 80,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                const MAX: i32 = 100;
-
-                const ANSWER = 42;
-            "}
-        );
-    }
-
-    #[test]
-    fn test_format_enum_items() {
-        let case = TestCase::new(indoc! {"
-            enum Status: i32 {
-                Foo,
-                Bar = 1,
-                Baz,
-            }
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 80,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                enum Status: i32 {
-                    Foo,
-                    Bar = 1,
-                    Baz,
-                }
-            "}
-        );
-    }
-
-    #[test]
-    fn test_format_impl_trait_items() {
-        let case = TestCase::new(indoc! {"
-            impl Iterator for Range {
-                type Item = i32;
-
-                fn next(self) -> Self::Item {
-                    0
-                }
-            }
-        "});
-        let output = format(
-            &case.ast,
-            &case.interner,
-            &case.files.get(case.ast.file_id).unwrap().source,
-            RendererConfig {
-                max_line_width: 80,
-                indent_width: 4,
-                trailing_comma: true,
-            },
-        );
-        assert_eq!(
-            output,
-            indoc! {"
-                impl Iterator for Range {
-                    type Item = i32;
-
-                    fn next(self) -> Self::Item {
-                        0
-                    }
-                }
-            "}
-        );
-    }
-}
+mod tests;

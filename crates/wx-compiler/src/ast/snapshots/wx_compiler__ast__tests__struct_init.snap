@@ -78,9 +78,15 @@ items:
                     - inner:
                         inner:
                           LocalDefinition:
-                            mut_span: ~
-                            name:
-                              inner: 5
+                            pattern:
+                              inner:
+                                Binding:
+                                  mut_span: ~
+                                  name:
+                                    inner: 5
+                                    span:
+                                      start: 36
+                                      end: 40
                               span:
                                 start: 36
                                 end: 40
@@ -151,9 +157,15 @@ items:
                     - inner:
                         inner:
                           LocalDefinition:
-                            mut_span: ~
-                            name:
-                              inner: 7
+                            pattern:
+                              inner:
+                                Binding:
+                                  mut_span: ~
+                                  name:
+                                    inner: 7
+                                    span:
+                                      start: 77
+                                      end: 82
                               span:
                                 start: 77
                                 end: 82
@@ -212,9 +224,15 @@ items:
                     - inner:
                         inner:
                           LocalDefinition:
-                            mut_span: ~
-                            name:
-                              inner: 8
+                            pattern:
+                              inner:
+                                Binding:
+                                  mut_span: ~
+                                  name:
+                                    inner: 8
+                                    span:
+                                      start: 112
+                                      end: 117
                               span:
                                 start: 112
                                 end: 117

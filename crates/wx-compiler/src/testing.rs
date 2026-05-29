@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 
 /// Serializes a HashMap with keys sorted for deterministic snapshot output.
-pub fn serialize_sorted_map<K, V, S>(
-    map: &HashMap<K, V>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+pub fn serialize_sorted_map<K, V, S>(map: &HashMap<K, V>, serializer: S) -> Result<S::Ok, S::Error>
 where
     K: Ord + serde::Serialize,
     V: serde::Serialize,

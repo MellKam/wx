@@ -997,10 +997,6 @@ pub enum Expression {
         object: Box<Spanned<Expression>>,
         member: Spanned<SymbolU32>,
     },
-    TupleFieldAccess {
-        object: Box<Spanned<Expression>>,
-        field: Spanned<u32>,
-    },
     /// `return {expr}`
     Return {
         value: Option<Box<Spanned<Expression>>>,
@@ -1138,13 +1134,39 @@ pub enum TypeExpression {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+pub struct PatternField {
+    pub name: Spanned<SymbolU32>,
+    /// `None` = shorthand `{ x }`, same as `{ x: x }`
+    pub pattern: Option<Spanned<Pattern>>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum Pattern {
+    /// `_`
+    Wildcard,
+    /// `[mut] name`
+    Binding {
+        mut_span: Option<TextSpan>,
+        name: Spanned<SymbolU32>,
+    },
+    /// `(pat, pat, ...)`
+    Tuple {
+        elements: Grouped<Box<[Separated<Spanned<Pattern>>]>>,
+    },
+    /// `Name { field, other: pat, ... }`
+    Struct {
+        name: Spanned<SymbolU32>,
+        fields: Grouped<Box<[Separated<Spanned<PatternField>>]>>,
+    },
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub enum Statement {
     /// `{expr}`
     Expression(Box<Spanned<Expression>>),
-    /// `local (mut)? {identifier}(: {type})? = {expr}`
+    /// `local <pattern> [: type] = {expr}`
     LocalDefinition {
-        mut_span: Option<TextSpan>,
-        name: Spanned<SymbolU32>,
+        pattern: Spanned<Pattern>,
         ty: Option<Box<Spanned<TypeExpression>>>,
         value: Box<Spanned<Expression>>,
     },
@@ -1337,6 +1359,7 @@ pub enum Item {
     },
     Global {
         id: DefId,
+        pub_span: Option<TextSpan>,
         mut_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
         ty: Option<Box<Spanned<TypeExpression>>>,
@@ -1352,6 +1375,7 @@ pub enum Item {
     },
     Enum {
         id: DefId,
+        pub_span: Option<TextSpan>,
         repr: Option<Box<Spanned<TypeExpression>>>,
         name: Spanned<SymbolU32>,
         variants: Grouped<Box<[Separated<Spanned<EnumVariant>>]>>,
@@ -1380,6 +1404,7 @@ pub enum Item {
     },
     Const {
         id: DefId,
+        pub_span: Option<TextSpan>,
         name: Spanned<SymbolU32>,
         ty: Option<Box<Spanned<TypeExpression>>>,
         value: Box<Spanned<Expression>>,
@@ -2608,23 +2633,6 @@ impl<'input> Parser<'input> {
                     span,
                 })
             }
-            Token::Int => {
-                let index = token
-                    .span
-                    .extract_str(parser.source)
-                    .parse::<u32>()
-                    .unwrap();
-                Ok(Spanned {
-                    inner: Expression::TupleFieldAccess {
-                        object: Box::new(object),
-                        field: Spanned {
-                            inner: index,
-                            span: token.span,
-                        },
-                    },
-                    span,
-                })
-            }
             _ => {
                 parser.ast.diagnostics.push(report_unexpected_token(
                     parser.ast.file_id,
@@ -3162,28 +3170,91 @@ impl<'input> Parser<'input> {
         })
     }
 
+    fn parse_pattern_field(parser: &mut Parser) -> Result<Spanned<PatternField>, ()> {
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name = Spanned { inner: parser.intern_identifier(name_span), span: name_span };
+        let pattern = if parser.lexer.next_if(Token::Colon).is_some() {
+            Some(Parser::parse_pattern(parser)?)
+        } else {
+            None
+        };
+        let span = match &pattern {
+            Some(p) => TextSpan::merge(name_span, p.span),
+            None => name_span,
+        };
+        Ok(Spanned { inner: PatternField { name, pattern }, span })
+    }
+
+    fn parse_pattern(parser: &mut Parser) -> Result<Spanned<Pattern>, ()> {
+        let token = parser.lexer.peek();
+        match token.inner {
+            Token::OpenParen => {
+                let elements = SeparatedGroup {
+                    open_token: Token::OpenParen,
+                    close_token: Token::CloseParen,
+                    separator_token: Token::Comma,
+                    should_warn_missing_separator: None,
+                    item_handler: Parser::parse_pattern,
+                }
+                .parse(parser)?;
+                let span = TextSpan::merge(elements.open, elements.close);
+                Ok(Spanned { inner: Pattern::Tuple { elements }, span })
+            }
+            Token::Identifier => {
+                let text = token.span.extract_str(parser.source);
+                if text == "_" {
+                    let span = parser.lexer.next().span;
+                    return Ok(Spanned { inner: Pattern::Wildcard, span });
+                }
+                if let Ok(Keyword::Mut) = Keyword::try_from(text) {
+                    let mut_token = parser.lexer.next();
+                    let name_span = parser.next_expect(Token::Identifier)?.span;
+                    let name = Spanned { inner: parser.intern_identifier(name_span), span: name_span };
+                    let span = TextSpan::merge(mut_token.span, name_span);
+                    return Ok(Spanned {
+                        inner: Pattern::Binding { mut_span: Some(mut_token.span), name },
+                        span,
+                    });
+                }
+                let name_token = parser.lexer.next();
+                let name = Spanned { inner: parser.intern_identifier(name_token.span), span: name_token.span };
+                if parser.lexer.peek().inner == Token::OpenBrace {
+                    let fields = SeparatedGroup {
+                        open_token: Token::OpenBrace,
+                        close_token: Token::CloseBrace,
+                        separator_token: Token::Comma,
+                        should_warn_missing_separator: None,
+                        item_handler: Parser::parse_pattern_field,
+                    }
+                    .parse(parser)?;
+                    let span = TextSpan::merge(name_token.span, fields.close);
+                    Ok(Spanned { inner: Pattern::Struct { name, fields }, span })
+                } else {
+                    Ok(Spanned {
+                        inner: Pattern::Binding { mut_span: None, name },
+                        span: name_token.span,
+                    })
+                }
+            }
+            _ => {
+                let token = parser.lexer.next();
+                parser.ast.diagnostics.push(report_unexpected_token(
+                    parser.ast.file_id,
+                    token,
+                    Token::Identifier,
+                ));
+                Err(())
+            }
+        }
+    }
+
     fn parse_local_definition_statement(parser: &mut Parser) -> Result<Spanned<Statement>, ()> {
         let local_keyword = parser.lexer.next();
-        let token = parser.lexer.peek();
-        let mut_span = match Keyword::try_from(token.span.extract_str(parser.source)) {
-            Ok(Keyword::Mut) => {
-                let mut_token = parser.lexer.next();
-                Some(mut_token.span)
-            }
-            _ => None,
-        };
 
-        let name_span = parser.next_expect(Token::Identifier)?.span;
-        let name = Spanned {
-            inner: parser.intern_identifier(name_span),
-            span: name_span,
-        };
+        let pattern = Parser::parse_pattern(parser)?;
 
         let ty = match parser.lexer.next_if(Token::Colon) {
-            Some(_) => {
-                let ty = parser.parse_type_expression()?;
-                Some(Box::new(ty))
-            }
+            Some(_) => Some(Box::new(parser.parse_type_expression()?)),
             None => None,
         };
 
@@ -3191,29 +3262,18 @@ impl<'input> Parser<'input> {
             .lexer
             .next_if(Token::Eq)
             .ok_or(())
-            .and_then(|_| {
-                let expr = parser.parse_expression(BindingPower::Default)?;
-                Ok(expr)
-            })
+            .and_then(|_| parser.parse_expression(BindingPower::Default))
             .map_err(|_| {
                 let token = parser.lexer.peek();
-                parser
-                    .ast
-                    .diagnostics
-                    .push(report_missing_local_initializer(
-                        parser.ast.file_id,
-                        token.span,
-                    ));
+                parser.ast.diagnostics.push(report_missing_local_initializer(
+                    parser.ast.file_id,
+                    token.span,
+                ));
             })?;
 
         let span = TextSpan::merge(local_keyword.span, value.span);
         Ok(Spanned {
-            inner: Statement::LocalDefinition {
-                mut_span,
-                name,
-                ty,
-                value: Box::new(value),
-            },
+            inner: Statement::LocalDefinition { pattern, ty, value: Box::new(value) },
             span,
         })
     }
@@ -3259,6 +3319,7 @@ impl<'input> Parser<'input> {
         let span = TextSpan::merge(global_keyword.span, value.span);
         Ok(Spanned {
             inner: Item::Global {
+                pub_span: None,
                 mut_span,
                 name,
                 ty,
@@ -3287,6 +3348,7 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: Item::Const {
                 id: parser.id_generator.generate(),
+                pub_span: None,
                 name: Spanned {
                     inner: name_symbol,
                     span: name_span,
@@ -3416,6 +3478,7 @@ impl<'input> Parser<'input> {
         Ok(Spanned {
             inner: Item::Enum {
                 id: parser.id_generator.generate(),
+                pub_span: None,
                 repr,
                 name: Spanned {
                     inner: name_symbol,
@@ -3871,6 +3934,27 @@ impl<'input> Parser<'input> {
                     ..
                 } = item.inner
                 {
+                    *ps = Some(pub_span);
+                }
+                Ok(item)
+            }
+            Some(Keyword::Global) => {
+                let mut item = Parser::parse_global_definition_item(parser)?;
+                if let Item::Global { pub_span: ref mut ps, .. } = item.inner {
+                    *ps = Some(pub_span);
+                }
+                Ok(item)
+            }
+            Some(Keyword::Enum) => {
+                let mut item = Parser::parse_enum_item(parser)?;
+                if let Item::Enum { pub_span: ref mut ps, .. } = item.inner {
+                    *ps = Some(pub_span);
+                }
+                Ok(item)
+            }
+            Some(Keyword::Const) => {
+                let mut item = Parser::parse_const_item(parser)?;
+                if let Item::Const { pub_span: ref mut ps, .. } = item.inner {
                     *ps = Some(pub_span);
                 }
                 Ok(item)

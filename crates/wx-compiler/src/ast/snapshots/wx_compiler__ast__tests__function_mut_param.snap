@@ -65,13 +65,19 @@ items:
                     - inner:
                         inner:
                           LocalDefinition:
-                            mut_span:
-                              start: 43
-                              end: 46
-                            name:
-                              inner: 4
+                            pattern:
+                              inner:
+                                Binding:
+                                  mut_span:
+                                    start: 43
+                                    end: 46
+                                  name:
+                                    inner: 4
+                                    span:
+                                      start: 47
+                                      end: 50
                               span:
-                                start: 47
+                                start: 43
                                 end: 50
                             ty:
                               inner:

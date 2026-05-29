@@ -71,11 +71,13 @@ functions:
     accesses:
       - caller: ~
         kind: Reference
+        file_id: 0
         span:
           start: 50
           end: 53
       - caller: ~
         kind: Reference
+        file_id: 0
         span:
           start: 55
           end: 58

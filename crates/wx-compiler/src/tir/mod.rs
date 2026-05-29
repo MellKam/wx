@@ -268,9 +268,11 @@ pub type TraitImplIndex = u32;
 pub struct Constant {
     pub id: ast::DefId,
     pub file_id: FileId,
+    pub pub_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<TypeIndex>,
     pub value: Option<Box<Expression>>,
+    pub accesses: Vec<SourceSpan>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -422,10 +424,6 @@ pub enum ExprKind {
     TupleInit {
         elements: Box<[Expression]>,
     },
-    TupleFieldAccess {
-        object: Box<Expression>,
-        field_index: u32,
-    },
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -480,9 +478,17 @@ pub enum BlockKind {
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
+pub struct BlockLabel {
+    pub name: SymbolU32,
+    pub span: ast::TextSpan,
+    pub accesses: Vec<ast::TextSpan>,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct BlockScope {
     pub kind: BlockKind,
-    pub label: Option<SymbolU32>,
+    pub label: Option<BlockLabel>,
     pub parent: Option<ScopeIndex>,
     pub locals: Vec<Local>,
     pub inferred_type: Option<TypeIndex>,
@@ -555,6 +561,7 @@ pub enum ExportItem {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Enum {
     pub file_id: FileId,
+    pub pub_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: TypeIndex,
     pub variants: Box<[EnumVariant]>,
@@ -567,6 +574,7 @@ pub struct Enum {
 pub struct EnumVariant {
     pub name: ast::Spanned<SymbolU32>,
     pub value: Box<Expression>,
+    pub accesses: Vec<SourceSpan>,
 }
 
 #[derive(Clone, Copy)]
@@ -741,6 +749,7 @@ pub struct FunctionAccess {
     // if the caller is `None`, this access is from an export
     pub caller: Option<DefId>,
     pub kind: FunctionAccessKind,
+    pub file_id: FileId,
     pub span: ast::TextSpan,
 }
 
@@ -833,7 +842,7 @@ impl FunctionContext {
 
         loop {
             let scope = &self.stack.scopes[scope_index as usize];
-            if scope.label == Some(symbol) {
+            if scope.label.as_ref().is_some_and(|l| l.name == symbol) {
                 return Some(scope_index);
             }
 
@@ -993,7 +1002,7 @@ define_diagnostic_codes! {
         UnusedValue => "E1003",
         IntegerLiteralOutOfRange => "E1004",
         UnableToCoerce => "E1005",
-        IntegerLiteralForFloatType => "E1006",
+        LiteralTypeMismatch => "E1006",
         UndeclaredIdentifier => "E1007",
         BinaryOperatorCannotBeApplied => "E1008",
         CannotCallExpression => "E1009",
@@ -1027,7 +1036,15 @@ define_diagnostic_codes! {
         MissingTraitImplItem => "E1033",
         MissingSupertraitImpl => "E1034",
         AssociatedTypeInInherentImpl => "E1035",
+        MissingEnumRepr => "E1036",
     }
+}
+
+fn report_missing_enum_repr(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::MissingEnumRepr.code())
+        .with_message("enum requires a repr type")
+        .with_label(span.primary_label().with_message("add `: <type>` here"))
 }
 
 fn report_missing_function_body(span: SourceSpan) -> Diagnostic<FileId> {
@@ -1153,20 +1170,6 @@ fn report_unused_variable(span: SourceSpan) -> Diagnostic<FileId> {
         .with_label(span.primary_label())
 }
 
-fn report_unused_function(name: String, span: SourceSpan) -> Diagnostic<FileId> {
-    Diagnostic::warning()
-        .with_code(DiagnosticCode::UnusedItem.code())
-        .with_message(format!("function `{}` is never used", name))
-        .with_label(span.primary_label())
-}
-
-fn report_unused_global(name: String, span: SourceSpan) -> Diagnostic<FileId> {
-    Diagnostic::warning()
-        .with_code(DiagnosticCode::UnusedItem.code())
-        .with_message(format!("global variable `{}` is never used", name))
-        .with_label(span.primary_label())
-}
-
 fn report_unnecessary_mutability(span: SourceSpan) -> Diagnostic<FileId> {
     Diagnostic::warning()
         .with_code(DiagnosticCode::UnnecessaryMutability.code())
@@ -1228,10 +1231,18 @@ fn report_unable_to_coerce(
 
 fn report_integer_literal_for_float_type(span: SourceSpan) -> Diagnostic<FileId> {
     Diagnostic::error()
-        .with_code(DiagnosticCode::IntegerLiteralForFloatType.code())
+        .with_code(DiagnosticCode::LiteralTypeMismatch.code())
         .with_message("cannot use an integer literal for a float type")
         .with_label(span.primary_label())
         .with_note("consider adding a decimal point, e.g. `1.0` instead of `1`")
+}
+
+fn report_float_literal_for_integer_type(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::LiteralTypeMismatch.code())
+        .with_message("cannot use a float literal for an integer type")
+        .with_label(span.primary_label())
+        .with_note("remove the decimal point, e.g. `1` instead of `1.0`")
 }
 
 fn report_undeclared_identifier(span: SourceSpan) -> Diagnostic<FileId> {
@@ -1554,9 +1565,10 @@ pub struct Global {
     pub id: DefId,
     pub file_id: FileId,
     pub source: ItemSource,
-    pub accesses: Vec<ast::TextSpan>,
+    pub accesses: Vec<SourceSpan>,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<TypeIndex>,
+    pub pub_span: Option<ast::TextSpan>,
     pub mut_span: Option<ast::TextSpan>,
     pub value: Option<Box<ast::Spanned<Expression>>>,
 }
@@ -1572,10 +1584,12 @@ pub struct StructField {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Struct {
     pub file_id: FileId,
+    pub pub_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
     pub fields: Box<[StructField]>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, usize>,
+    pub accesses: Vec<SourceSpan>,
 }
 
 fn report_duplicate_struct_field(
@@ -2130,6 +2144,11 @@ impl<'ast> Builder<'ast, '_> {
                             }
                             Some(kind) => {
                                 if let Some(ty) = self.symbol_kind_to_type(kind) {
+                                    if let Type::Struct { struct_index } = self.tir.type_pool[ty as usize] {
+                                        self.tir.structs[struct_index as usize]
+                                            .accesses
+                                            .push(SourceSpan::new(resolve_context.file_id, type_expr.span));
+                                    }
                                     return ty;
                                 }
                             }
@@ -2147,6 +2166,11 @@ impl<'ast> Builder<'ast, '_> {
                     }
                     Some(kind) => {
                         if let Some(ty) = self.symbol_kind_to_type(kind) {
+                            if let Type::Struct { struct_index } = self.tir.type_pool[ty as usize] {
+                                self.tir.structs[struct_index as usize]
+                                    .accesses
+                                    .push(SourceSpan::new(resolve_context.file_id, type_expr.span));
+                            }
                             return ty;
                         }
                     }
@@ -3064,9 +3088,11 @@ impl<'ast> Builder<'ast, '_> {
                 let struct_index = self.tir.structs.len() as u32;
                 self.tir.structs.push(Struct {
                     file_id: self.file_id,
+                    pub_span: *pub_span,
                     name: name.clone(),
                     fields: tir_fields.into_boxed_slice(),
                     lookup: field_lookup,
+                    accesses: Vec::new(),
                 });
                 self.insert_symbol(
                     &resolve_context,
@@ -3080,7 +3106,14 @@ impl<'ast> Builder<'ast, '_> {
             AstNodeRef::Enum { item, .. } => {
                 // TODO: full enum lowering; for now just register the name so
                 // resolve_type can find it.
-                if let ast::Item::Enum { id, name, repr, .. } = item {
+                if let ast::Item::Enum {
+                    id,
+                    pub_span,
+                    name,
+                    repr,
+                    ..
+                } = item
+                {
                     if !matches!(
                         self.lookup_symbol(&resolve_context, SymbolNamespace::Type, name.inner),
                         Some(k) if !matches!(k, SymbolKind::Pending(_))
@@ -3088,10 +3121,16 @@ impl<'ast> Builder<'ast, '_> {
                         let enum_index = self.tir.enums.len() as u32;
                         let ty = match repr {
                             Some(r) => self.resolve_type(&resolve_context, &**r),
-                            None => Type::I32_IDX,
+                            None => {
+                                self.tir.diagnostics.push(report_missing_enum_repr(
+                                    SourceSpan::new(self.file_id, name.span),
+                                ));
+                                Type::ERROR_IDX
+                            }
                         };
                         self.tir.enums.push(Enum {
                             file_id: self.file_id,
+                            pub_span: *pub_span,
                             name: name.clone(),
                             ty,
                             variants: Box::new([]),
@@ -3267,12 +3306,14 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir.constants.push(Constant {
                             id: *id,
                             file_id: self.file_id,
+                            pub_span: None,
                             name: name.clone(),
                             ty: ast::Spanned {
                                 inner: resolved_ty,
                                 span: name.span,
                             },
                             value: Some(Box::new(value_expr)),
+                            accesses: Vec::new(),
                         });
                         self.tir.const_index_lookup.insert(*id, const_index);
                         self.tir.impl_members.entry(self_type).or_default().insert(
@@ -3514,12 +3555,14 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir.constants.push(Constant {
                         id: *id,
                         file_id: self.file_id,
+                        pub_span: None,
                         name: name.clone(),
                         ty: Spanned {
                             inner: ty_idx,
                             span: ty.span,
                         },
                         value: None,
+                        accesses: Vec::new(),
                     });
                     self.tir.const_index_lookup.insert(*id, const_index);
                     self.tir.traits[trait_index as usize].members.insert(
@@ -3535,6 +3578,7 @@ impl<'ast> Builder<'ast, '_> {
             // ── global ────────────────────────────────────────────────────────
             AstNodeRef::Global { item, .. } => {
                 if let ast::Item::Global {
+                    pub_span,
                     mut_span,
                     name,
                     ty,
@@ -3583,6 +3627,7 @@ impl<'ast> Builder<'ast, '_> {
                                 inner: ty,
                                 span: ty_span,
                             },
+                            pub_span: *pub_span,
                             mut_span: mut_span.clone(),
                             accesses: Vec::new(),
                         });
@@ -3663,6 +3708,7 @@ impl<'ast> Builder<'ast, '_> {
             AstNodeRef::Const { item, .. } => {
                 if let ast::Item::Const {
                     id,
+                    pub_span,
                     name,
                     ty,
                     value,
@@ -3686,32 +3732,28 @@ impl<'ast> Builder<'ast, '_> {
                     } else {
                         let (ty_idx, ty_span) = match ty {
                             Some(ty) => (self.resolve_type(&resolve_context, ty), ty.span),
-                            None => (Type::UNKNOWN_IDX, name.span),
+                            None => {
+                                self.tir.diagnostics.push(report_type_annotation_required(
+                                    SourceSpan::new(self.file_id, name.span),
+                                ));
+                                (Type::ERROR_IDX, name.span)
+                            }
                         };
-                        if let Ok(value_expr) = self.build_const_expression(
-                            &resolve_context,
-                            value,
-                            if ty_idx == Type::UNKNOWN_IDX {
-                                Type::ERROR_IDX
-                            } else {
-                                ty_idx
-                            },
-                        ) {
-                            let resolved_ty = if ty_idx == Type::UNKNOWN_IDX {
-                                value_expr.ty
-                            } else {
-                                ty_idx
-                            };
+                        if let Ok(value_expr) =
+                            self.build_const_expression(&resolve_context, value, ty_idx)
+                        {
                             let const_index = self.tir.constants.len() as ConstIndex;
                             self.tir.constants.push(Constant {
                                 id: *id,
                                 file_id: self.file_id,
+                                pub_span: *pub_span,
                                 name: name.clone(),
                                 ty: ast::Spanned {
-                                    inner: resolved_ty,
+                                    inner: ty_idx,
                                     span: ty_span,
                                 },
                                 value: Some(Box::new(value_expr)),
+                                accesses: Vec::new(),
                             });
                             self.tir.const_index_lookup.insert(*id, const_index);
                             self.insert_symbol(
@@ -3974,12 +4016,14 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir.constants.push(Constant {
                             id: *id,
                             file_id: self.file_id,
+                            pub_span: None,
                             name: name.clone(),
                             ty: ast::Spanned {
                                 inner: resolved_ty,
                                 span: name.span,
                             },
                             value: Some(Box::new(value_expr)),
+                            accesses: Vec::new(),
                         });
                         self.tir.const_index_lookup.insert(*id, const_index);
                         let entry = ImplEntry::AssociatedConst {
@@ -4762,6 +4806,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(FunctionAccess {
                             caller: None,
                             kind: FunctionAccessKind::Reference,
+                            file_id: self.file_id,
                             span: internal_name.span,
                         });
 
@@ -4774,7 +4819,7 @@ impl<'ast> Builder<'ast, '_> {
                 SymbolKind::Global { global_index } => {
                     self.tir.globals[global_index as usize]
                         .accesses
-                        .push(internal_name.span);
+                        .push(SourceSpan::new(self.file_id, internal_name.span));
 
                     ExportItem::Global {
                         id: self.tir.globals[global_index as usize].id,
@@ -4872,11 +4917,25 @@ impl<'ast> Builder<'ast, '_> {
                 ty: expected_type,
                 span: expr.span,
             }),
-            ast::Expression::Float { value } => Ok(Expression {
-                kind: ExprKind::Float { value: *value },
-                ty: expected_type,
-                span: expr.span,
-            }),
+            ast::Expression::Float { value } => {
+                let is_float_type = expected_type == Type::F32_IDX
+                    || expected_type == Type::F64_IDX
+                    || expected_type == Type::ERROR_IDX;
+                if !is_float_type {
+                    self.tir
+                        .diagnostics
+                        .push(report_float_literal_for_integer_type(SourceSpan::new(
+                            self.file_id,
+                            expr.span,
+                        )));
+                    return Err(());
+                }
+                Ok(Expression {
+                    kind: ExprKind::Float { value: *value },
+                    ty: expected_type,
+                    span: expr.span,
+                })
+            }
             ast::Expression::Identifier { symbol } => {
                 // Allow references to global constants like true/false
                 match self
@@ -4894,10 +4953,15 @@ impl<'ast> Builder<'ast, '_> {
                         span: expr.span,
                     }),
                     Some(SymbolKind::Const { const_index }) => {
-                        let constant = &self.tir.constants[const_index as usize];
+                        let constant = &mut self.tir.constants[const_index as usize];
+                        constant
+                            .accesses
+                            .push(SourceSpan::new(self.file_id, expr.span));
+                        let id = constant.id;
+                        let ty = constant.ty.inner;
                         Ok(Expression {
-                            kind: ExprKind::Const { id: constant.id },
-                            ty: constant.ty.inner,
+                            kind: ExprKind::Const { id },
+                            ty,
                             span: expr.span,
                         })
                     }
@@ -5293,6 +5357,8 @@ impl<'ast> Builder<'ast, '_> {
     }
 
     fn report_unused_items(&mut self) {
+        let code = DiagnosticCode::UnusedItem.code();
+
         for function in self.tir.functions.iter() {
             if function.accesses.is_empty()
                 && function.pub_span.is_none()
@@ -5302,29 +5368,60 @@ impl<'ast> Builder<'ast, '_> {
                     FunctionOrigin::Trait | FunctionOrigin::Module
                 )
             {
-                let name = self
-                    .interner
-                    .resolve(function.name.inner)
-                    .unwrap()
-                    .to_string();
-                self.tir.diagnostics.push(report_unused_function(
-                    name,
-                    SourceSpan::new(function.file_id, function.name.span),
-                ));
+                let name = self.interner.resolve(function.name.inner).unwrap();
+                self.tir.diagnostics.push(
+                    Diagnostic::warning()
+                        .with_code(code)
+                        .with_message(format!("function `{}` is never used", name))
+                        .with_label(
+                            SourceSpan::new(function.file_id, function.name.span).primary_label(),
+                        ),
+                );
             }
         }
 
         for global in self.tir.globals.iter() {
             if global.source == ItemSource::Internal && global.accesses.is_empty() {
-                let name = self
-                    .interner
-                    .resolve(global.name.inner)
-                    .unwrap()
-                    .to_string();
-                self.tir.diagnostics.push(report_unused_global(
-                    name,
-                    SourceSpan::new(global.file_id, global.name.span),
-                ));
+                let name = self.interner.resolve(global.name.inner).unwrap();
+                self.tir.diagnostics.push(
+                    Diagnostic::warning()
+                        .with_code(code)
+                        .with_message(format!("global variable `{}` is never used", name))
+                        .with_label(
+                            SourceSpan::new(global.file_id, global.name.span).primary_label(),
+                        ),
+                );
+            }
+        }
+
+        for constant in self.tir.constants.iter() {
+            if constant.pub_span.is_none()
+                && constant.accesses.is_empty()
+                && constant.value.is_some()
+            {
+                let name = self.interner.resolve(constant.name.inner).unwrap();
+                self.tir.diagnostics.push(
+                    Diagnostic::warning()
+                        .with_code(code)
+                        .with_message(format!("const `{}` is never used", name))
+                        .with_label(
+                            SourceSpan::new(constant.file_id, constant.name.span).primary_label(),
+                        ),
+                );
+            }
+        }
+
+        for struct_ in self.tir.structs.iter() {
+            if struct_.pub_span.is_none() && struct_.accesses.is_empty() {
+                let name = self.interner.resolve(struct_.name.inner).unwrap();
+                self.tir.diagnostics.push(
+                    Diagnostic::warning()
+                        .with_code(code)
+                        .with_message(format!("struct `{}` is never constructed", name))
+                        .with_label(
+                            SourceSpan::new(struct_.file_id, struct_.name.span).primary_label(),
+                        ),
+                );
             }
         }
     }
@@ -5610,9 +5707,6 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::ObjectAccess { object, member } => {
                 self.build_object_access_expression(func_ctx, object, member.clone(), access_ctx)
             }
-            ast::Expression::TupleFieldAccess { object, field } => {
-                self.build_tuple_field_access_expression(func_ctx, object, field.clone())
-            }
             ast::Expression::Return { .. } => self.build_return_expression(func_ctx, expr),
             ast::Expression::Block { .. } => func_ctx.enter_block(
                 BlockScope {
@@ -5686,6 +5780,7 @@ impl<'ast> Builder<'ast, '_> {
                 func.accesses.push(FunctionAccess {
                     caller: Some(caller_id),
                     kind: FunctionAccessKind::Reference,
+                    file_id: self.file_id,
                     span: member.span,
                 });
                 let ty = func.signature_index;
@@ -5778,6 +5873,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir.constants.push(Constant {
                     id: size_id,
                     file_id: self.file_id,
+                    pub_span: None,
                     name: ast::Spanned {
                         inner: size_sym,
                         span: dummy_span,
@@ -5787,12 +5883,14 @@ impl<'ast> Builder<'ast, '_> {
                         span: dummy_span,
                     },
                     value: None,
+                    accesses: Vec::new(),
                 });
                 self.tir.const_index_lookup.insert(size_id, size_index);
                 let align_index = self.tir.constants.len() as ConstIndex;
                 self.tir.constants.push(Constant {
                     id: align_id,
                     file_id: self.file_id,
+                    pub_span: None,
                     name: ast::Spanned {
                         inner: align_sym,
                         span: dummy_span,
@@ -5802,6 +5900,7 @@ impl<'ast> Builder<'ast, '_> {
                         span: dummy_span,
                     },
                     value: None,
+                    accesses: Vec::new(),
                 });
                 self.tir.const_index_lookup.insert(align_id, align_index);
                 let members = self.tir.impl_members.entry(ty).or_default();
@@ -5846,6 +5945,11 @@ impl<'ast> Builder<'ast, '_> {
             .cloned()
         {
             Some(ImplEntry::AssociatedConst { id, ty }) => {
+                if let Some(ci) = self.tir.const_index_lookup.get(&id).copied() {
+                    self.tir.constants[ci as usize]
+                        .accesses
+                        .push(SourceSpan::new(self.file_id, member.span));
+                }
                 return Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
                         namespace: namespace_spanned,
@@ -5865,6 +5969,7 @@ impl<'ast> Builder<'ast, '_> {
                 func.accesses.push(FunctionAccess {
                     caller: Some(caller_id),
                     kind: FunctionAccessKind::Reference,
+                    file_id: self.file_id,
                     span: member.span,
                 });
                 let func_id = func.id;
@@ -5940,6 +6045,7 @@ impl<'ast> Builder<'ast, '_> {
                             .push(FunctionAccess {
                                 caller: Some(caller_id),
                                 kind: FunctionAccessKind::Reference,
+                                file_id: self.file_id,
                                 span: member.span,
                             });
                         let signature_index =
@@ -5960,7 +6066,9 @@ impl<'ast> Builder<'ast, '_> {
                     Some(ImportValue::Global { id }) => {
                         let global_index = self.tir.global_index_lookup[&id];
                         let global = &mut self.tir.globals[global_index as usize];
-                        global.accesses.push(member.span);
+                        global
+                            .accesses
+                            .push(SourceSpan::new(self.file_id, member.span));
                         let ty = global.ty.inner;
                         Ok(Expression {
                             kind: ExprKind::NamespaceAccess {
@@ -6008,6 +6116,7 @@ impl<'ast> Builder<'ast, '_> {
                         func.accesses.push(FunctionAccess {
                             caller: Some(caller_id),
                             kind: FunctionAccessKind::Reference,
+                            file_id: self.file_id,
                             span: member.span,
                         });
                         let func_id = func.id;
@@ -6052,6 +6161,7 @@ impl<'ast> Builder<'ast, '_> {
                             .push(FunctionAccess {
                                 caller: Some(caller_id),
                                 kind: FunctionAccessKind::Reference,
+                                file_id: self.file_id,
                                 span: member.span,
                             });
                         let func_id = self.tir.functions[func_index as usize].id;
@@ -6069,18 +6179,25 @@ impl<'ast> Builder<'ast, '_> {
                             span: TextSpan::merge(namespace_expr.span, member.span),
                         })
                     }
-                    Some(ImplEntry::AssociatedConst { id, ty }) => Ok(Expression {
-                        kind: ExprKind::NamespaceAccess {
-                            namespace: namespace_spanned,
-                            member: Box::new(Expression {
-                                kind: ExprKind::Const { id },
-                                ty,
-                                span: member.span,
-                            }),
-                        },
-                        ty,
-                        span: TextSpan::merge(namespace_expr.span, member.span),
-                    }),
+                    Some(ImplEntry::AssociatedConst { id, ty }) => {
+                        if let Some(ci) = self.tir.const_index_lookup.get(&id).copied() {
+                            self.tir.constants[ci as usize]
+                                .accesses
+                                .push(SourceSpan::new(self.file_id, member.span));
+                        }
+                        Ok(Expression {
+                            kind: ExprKind::NamespaceAccess {
+                                namespace: namespace_spanned,
+                                member: Box::new(Expression {
+                                    kind: ExprKind::Const { id },
+                                    ty,
+                                    span: member.span,
+                                }),
+                            },
+                            ty,
+                            span: TextSpan::merge(namespace_expr.span, member.span),
+                        })
+                    }
                     _ => {
                         self.tir
                             .diagnostics
@@ -6120,7 +6237,11 @@ impl<'ast> Builder<'ast, '_> {
         match block.inner {
             ast::Expression::Block { .. } => ctx.enter_block(
                 BlockScope {
-                    label: Some(label.inner),
+                    label: Some(BlockLabel {
+                        name: label.inner,
+                        span: label.span,
+                        accesses: Vec::new(),
+                    }),
                     kind: BlockKind::Block,
                     parent: Some(ctx.scope_index),
                     locals: Vec::new(),
@@ -6165,7 +6286,11 @@ impl<'ast> Builder<'ast, '_> {
 
         func_ctx.enter_block(
             BlockScope {
-                label: label.map(|l| l.inner),
+                label: label.map(|l| BlockLabel {
+                    name: l.inner,
+                    span: l.span,
+                    accesses: Vec::new(),
+                }),
                 kind: BlockKind::Loop,
                 parent: Some(func_ctx.scope_index),
                 locals: Vec::new(),
@@ -6218,7 +6343,13 @@ impl<'ast> Builder<'ast, '_> {
 
         let scope_index = match label {
             Some(label) => match ctx.resolve_label(label.inner) {
-                Some(scope_index) => scope_index,
+                Some(scope_index) => {
+                    if let Some(block_label) = ctx.stack.scopes[scope_index as usize].label.as_mut()
+                    {
+                        block_label.accesses.push(label.span);
+                    }
+                    scope_index
+                }
                 None => {
                     self.tir
                         .diagnostics
@@ -6269,7 +6400,11 @@ impl<'ast> Builder<'ast, '_> {
         let then_block = match then_block.inner {
             ast::Expression::Block { .. } => ctx.enter_block(
                 BlockScope {
-                    label: label.clone().map(|l| l.inner),
+                    label: label.clone().map(|l| BlockLabel {
+                        name: l.inner,
+                        span: l.span,
+                        accesses: Vec::new(),
+                    }),
                     kind: BlockKind::Block,
                     parent: Some(ctx.scope_index),
                     locals: Vec::new(),
@@ -6288,7 +6423,11 @@ impl<'ast> Builder<'ast, '_> {
                 let else_block = match ast_else_block.inner {
                     ast::Expression::Block { .. } => ctx.enter_block(
                         BlockScope {
-                            label: label.map(|l| l.inner),
+                            label: label.map(|l| BlockLabel {
+                                name: l.inner,
+                                span: l.span,
+                                accesses: Vec::new(),
+                            }),
                             kind: BlockKind::Block,
                             parent: Some(ctx.scope_index),
                             locals: Vec::new(),
@@ -6397,7 +6536,13 @@ impl<'ast> Builder<'ast, '_> {
 
         let scope_index = match label {
             Some(label) => match ctx.resolve_label(label.inner) {
-                Some(scope_index) => scope_index,
+                Some(scope_index) => {
+                    if let Some(block_label) = ctx.stack.scopes[scope_index as usize].label.as_mut()
+                    {
+                        block_label.accesses.push(label.span);
+                    }
+                    scope_index
+                }
                 None => {
                     self.tir
                         .diagnostics
@@ -6567,6 +6712,7 @@ impl<'ast> Builder<'ast, '_> {
                     func.accesses.push(FunctionAccess {
                         caller: Some(caller_id),
                         kind: FunctionAccessKind::Reference,
+                        file_id: self.file_id,
                         span: expr.span,
                     });
                     let func_id = func.id;
@@ -6582,7 +6728,9 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 SymbolKind::Global { global_index } => {
                     let global = &mut self.tir.globals[global_index as usize];
-                    global.accesses.push(expr.span);
+                    global
+                        .accesses
+                        .push(SourceSpan::new(self.file_id, expr.span));
 
                     Ok(Expression {
                         kind: ExprKind::Global { id: global.id },
@@ -6591,10 +6739,15 @@ impl<'ast> Builder<'ast, '_> {
                     })
                 }
                 SymbolKind::Const { const_index } => {
-                    let constant = &self.tir.constants[const_index as usize];
+                    let constant = &mut self.tir.constants[const_index as usize];
+                    constant
+                        .accesses
+                        .push(SourceSpan::new(self.file_id, expr.span));
+                    let id = constant.id;
+                    let ty = constant.ty.inner;
                     Ok(Expression {
-                        kind: ExprKind::Const { id: constant.id },
-                        ty: constant.ty.inner,
+                        kind: ExprKind::Const { id },
+                        ty,
                         span: expr.span,
                     })
                 }
@@ -8289,13 +8442,21 @@ impl<'ast> Builder<'ast, '_> {
         stmt: &Separated<Spanned<ast::Statement>>,
     ) -> Result<Expression, ()> {
         let (mut_span, name, ty, value) = match &stmt.inner.inner {
-            ast::Statement::LocalDefinition {
-                mut_span,
-                name,
-                ty,
-                value,
-                ..
-            } => (mut_span.clone(), name.clone(), ty, value),
+            ast::Statement::LocalDefinition { pattern, ty, value } => {
+                match &pattern.inner {
+                    ast::Pattern::Binding { mut_span, name } => {
+                        (mut_span.clone(), name.clone(), ty, value)
+                    }
+                    _ => {
+                        self.tir.diagnostics.push(
+                            codespan_reporting::diagnostic::Diagnostic::error()
+                                .with_message("pattern destructuring in locals is not yet supported")
+                                .with_label(Label::primary(self.file_id, pattern.span)),
+                        );
+                        return Err(());
+                    }
+                }
+            }
             _ => unreachable!(),
         };
 
@@ -8810,6 +8971,9 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         let ty = self.intern_type(Type::Struct { struct_index });
+        self.tir.structs[struct_index as usize]
+            .accesses
+            .push(SourceSpan::new(self.file_id, name.span));
 
         // If any field was mentioned but failed to build (type error, coercion error,
         // …), its slot is still None even though first_mention is Some. Return
@@ -8902,57 +9066,6 @@ impl<'ast> Builder<'ast, '_> {
             },
             ty,
             span,
-        })
-    }
-
-    fn build_tuple_field_access_expression(
-        &mut self,
-        func_ctx: &mut FunctionContext,
-        object_expr: &ast::Spanned<ast::Expression>,
-        field: ast::Spanned<u32>,
-    ) -> Result<Expression, ()> {
-        let object = self.build_expression(
-            func_ctx,
-            object_expr,
-            AccessContext {
-                expected_type: None,
-                access_kind: AccessKind::Read,
-            },
-        )?;
-
-        let elements = match &self.tir.type_pool[object.ty as usize] {
-            Type::Tuple { elements } => elements.clone(),
-            _ => {
-                self.tir
-                    .diagnostics
-                    .push(report_undeclared_identifier(SourceSpan::new(
-                        self.file_id,
-                        field.span,
-                    )));
-                return Err(());
-            }
-        };
-
-        let idx = field.inner as usize;
-        if idx >= elements.len() {
-            self.tir
-                .diagnostics
-                .push(report_undeclared_identifier(SourceSpan::new(
-                    self.file_id,
-                    field.span,
-                )));
-            return Err(());
-        }
-
-        let field_ty = elements[idx];
-        let result_span = ast::TextSpan::merge(object_expr.span, field.span);
-        Ok(Expression {
-            kind: ExprKind::TupleFieldAccess {
-                object: Box::new(object),
-                field_index: field.inner,
-            },
-            ty: field_ty,
-            span: result_span,
         })
     }
 }

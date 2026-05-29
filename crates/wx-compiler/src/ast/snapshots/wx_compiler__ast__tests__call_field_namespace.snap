@@ -84,9 +84,15 @@ items:
                     - inner:
                         inner:
                           LocalDefinition:
-                            mut_span: ~
-                            name:
-                              inner: 6
+                            pattern:
+                              inner:
+                                Binding:
+                                  mut_span: ~
+                                  name:
+                                    inner: 6
+                                    span:
+                                      start: 44
+                                      end: 47
                               span:
                                 start: 44
                                 end: 47
@@ -118,9 +124,15 @@ items:
                     - inner:
                         inner:
                           LocalDefinition:
-                            mut_span: ~
-                            name:
-                              inner: 7
+                            pattern:
+                              inner:
+                                Binding:
+                                  mut_span: ~
+                                  name:
+                                    inner: 7
+                                    span:
+                                      start: 66
+                                      end: 69
                               span:
                                 start: 66
                                 end: 69
@@ -152,9 +164,15 @@ items:
                     - inner:
                         inner:
                           LocalDefinition:
-                            mut_span: ~
-                            name:
-                              inner: 8
+                            pattern:
+                              inner:
+                                Binding:
+                                  mut_span: ~
+                                  name:
+                                    inner: 8
+                                    span:
+                                      start: 88
+                                      end: 93
                               span:
                                 start: 88
                                 end: 93
@@ -186,9 +204,15 @@ items:
                     - inner:
                         inner:
                           LocalDefinition:
-                            mut_span: ~
-                            name:
-                              inner: 9
+                            pattern:
+                              inner:
+                                Binding:
+                                  mut_span: ~
+                                  name:
+                                    inner: 9
+                                    span:
+                                      start: 111
+                                      end: 113
                               span:
                                 start: 111
                                 end: 113

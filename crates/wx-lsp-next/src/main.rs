@@ -10,7 +10,8 @@ use lsp_server::{
 };
 use lsp_types::notification::Notification as _;
 use lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DocumentFormattingParams,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
+    DocumentFormattingParams,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
     InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, OneOf,
     PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, ServerCapabilities,
@@ -538,6 +539,18 @@ fn add_compiler_diagnostic(
     let related_information =
         diagnostic_related_information(files, diagnostic, primary_uri.as_ref(), range);
 
+    let tags = diagnostic.code.as_ref().and_then(|code| {
+        use std::str::FromStr;
+        use wx_compiler::tir::DiagnosticCode;
+        DiagnosticCode::from_str(code).ok().and_then(|c| match c {
+            DiagnosticCode::UnreachableCode
+            | DiagnosticCode::UnusedVariable
+            | DiagnosticCode::UnnecessaryMutability
+            | DiagnosticCode::UnusedItem => Some(vec![DiagnosticTag::UNNECESSARY]),
+            _ => None,
+        })
+    });
+
     grouped.entry(path).or_default().push(Diagnostic {
         range,
         severity: Some(severity_to_lsp(diagnostic.severity)),
@@ -549,7 +562,7 @@ fn add_compiler_diagnostic(
         source: Some("wx".to_string()),
         message,
         related_information,
-        tags: None,
+        tags,
         data: None,
     });
 }
@@ -635,7 +648,8 @@ fn symbol_hover_text(
             let fi = *tir.function_index_lookup.get(def_id)? as usize;
             let func = &tir.functions[fi];
             let name = interner.resolve(func.name.inner).unwrap_or("?");
-            let mut s = format!("fn {name}(");
+            let pub_prefix = if func.pub_span.is_some() { "pub " } else { "" };
+            let mut s = format!("{pub_prefix}fn {name}(");
             for (i, param) in func.params.iter().enumerate() {
                 if i > 0 {
                     s.push_str(", ");
@@ -658,12 +672,22 @@ fn symbol_hover_text(
             let global = &tir.globals[gi];
             let name = interner.resolve(global.name.inner).unwrap_or("?");
             let type_str = fmt.display_type(global.ty.inner);
-            let mut_kw = if global.mut_span.is_some() {
-                "mut "
-            } else {
-                ""
-            };
-            Some(format!("global {mut_kw}{name}: {type_str}"))
+            let pub_prefix = if global.pub_span.is_some() { "pub " } else { "" };
+            let mut_kw = if global.mut_span.is_some() { "mut " } else { "" };
+            Some(format!("{pub_prefix}global {mut_kw}{name}: {type_str}"))
+        }
+        SymbolKind::Struct(struct_idx) => {
+            let struct_ = tir.structs.get(*struct_idx as usize)?;
+            let name = interner.resolve(struct_.name.inner).unwrap_or("?");
+            let pub_prefix = if struct_.pub_span.is_some() { "pub " } else { "" };
+            Some(format!("{pub_prefix}struct {name}"))
+        }
+        SymbolKind::Enum(enum_idx) => {
+            let enum_ = tir.enums.get(*enum_idx as usize)?;
+            let name = interner.resolve(enum_.name.inner).unwrap_or("?");
+            let pub_prefix = if enum_.pub_span.is_some() { "pub " } else { "" };
+            let repr = fmt.display_type(enum_.ty);
+            Some(format!("{pub_prefix}enum {name}: {repr} {{ ... }}"))
         }
         SymbolKind::Local {
             func_id,
@@ -701,12 +725,14 @@ fn symbol_hover_text(
             let variant_name = interner.resolve(variant.name.inner).unwrap_or("?");
             Some(format!("{enum_name}::{variant_name}"))
         }
+        SymbolKind::Label { .. } => None,
         SymbolKind::Const(def_id) => {
             let ci = *tir.const_index_lookup.get(def_id)? as usize;
             let constant = &tir.constants[ci];
             let name = interner.resolve(constant.name.inner).unwrap_or("?");
             let type_str = fmt.display_type(constant.ty.inner);
-            Some(format!("const {name}: {type_str}"))
+            let pub_prefix = if constant.pub_span.is_some() { "pub " } else { "" };
+            Some(format!("{pub_prefix}const {name}: {type_str}"))
         }
     }
 }

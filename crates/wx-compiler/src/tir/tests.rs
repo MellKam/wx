@@ -940,6 +940,14 @@ fn test_struct_fields_kept_in_declaration_order() {
         fn dummy(m: Mixed) -> Mixed { m }
         export { dummy }
     "});
+    eprintln!(
+        "diags: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
     assert!(case.tir.diagnostics.is_empty());
 
     let mixed_sym = case.interner.get("Mixed").unwrap();
@@ -1793,14 +1801,17 @@ fn test_struct_forward_reference_resolves() {
         struct A { b: B }
         struct B { val: i32 }
     "});
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| &d.message)
+        .collect::<Vec<_>>();
     assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics for valid forward reference: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
+        errors.is_empty(),
+        "unexpected errors for valid forward reference: {:?}",
+        errors
     );
 }
 
@@ -1811,15 +1822,14 @@ fn test_struct_forward_reference_reversed_order_resolves() {
         struct B { val: i32 }
         struct A { b: B }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .map(|d| &d.message)
+        .collect::<Vec<_>>();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
 
 #[test]
@@ -2007,8 +2017,7 @@ fn has_error_matching(case: &TestCase, substring: &str) {
     assert!(
         case.tir.diagnostics.iter().any(|d| {
             d.severity == Severity::Error
-                && (d.message.contains(substring)
-                    || d.notes.iter().any(|n| n.contains(substring)))
+                && (d.message.contains(substring) || d.notes.iter().any(|n| n.contains(substring)))
         }),
         "expected an error containing {:?}; got: {:#?}",
         substring,

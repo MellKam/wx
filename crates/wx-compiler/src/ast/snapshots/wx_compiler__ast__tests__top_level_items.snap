@@ -148,6 +148,7 @@ items:
       inner:
         Global:
           id: 2
+          pub_span: ~
           mut_span:
             start: 74
             end: 77
@@ -180,6 +181,7 @@ items:
       inner:
         Const:
           id: 3
+          pub_span: ~
           name:
             inner: 8
             span:
@@ -341,6 +343,7 @@ items:
       inner:
         Enum:
           id: 6
+          pub_span: ~
           repr: ~
           name:
             inner: 16

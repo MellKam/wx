@@ -78,6 +78,7 @@ functions:
     accesses:
       - caller: 1
         kind: DirectCall
+        file_id: 0
         span:
           start: 106
           end: 109
@@ -104,6 +105,7 @@ functions:
     accesses:
       - caller: ~
         kind: Reference
+        file_id: 0
         span:
           start: 129
           end: 133

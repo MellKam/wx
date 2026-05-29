@@ -68,6 +68,17 @@ diagnostics:
           end: 51
         message: ""
     notes: []
+  - severity: Warning
+    code: W1004
+    message: "const `SIZE` is never used"
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 211
+          end: 215
+        message: ""
+    notes: []
 functions:
   - id: 1
     file_id: 0
@@ -104,6 +115,7 @@ functions:
     accesses:
       - caller: 8
         kind: DirectCall
+        file_id: 0
         span:
           start: 292
           end: 296
@@ -215,6 +227,7 @@ functions:
     accesses:
       - caller: 10
         kind: DirectCall
+        file_id: 0
         span:
           start: 364
           end: 368
@@ -304,6 +317,7 @@ functions:
     accesses:
       - caller: ~
         kind: Reference
+        file_id: 0
         span:
           start: 384
           end: 388
@@ -409,6 +423,7 @@ exports:
       id: 10
 structs:
   - file_id: 0
+    pub_span: ~
     name:
       inner: 8
       span:
@@ -438,6 +453,19 @@ structs:
     lookup:
       9: 0
       11: 1
+    accesses:
+      - file_id: 0
+        span:
+          start: 193
+          end: 198
+      - file_id: 0
+        span:
+          start: 247
+          end: 252
+      - file_id: 0
+        span:
+          start: 335
+          end: 340
 impl_members:
   17:
     2:
@@ -512,6 +540,7 @@ type_trait_impls:
 constants:
   - id: 0
     file_id: 0
+    pub_span: ~
     name:
       inner: 2
       span:
@@ -523,8 +552,10 @@ constants:
         start: 30
         end: 33
     value: ~
+    accesses: []
   - id: 6
     file_id: 0
+    pub_span: ~
     name:
       inner: 2
       span:
@@ -543,8 +574,10 @@ constants:
       span:
         start: 223
         end: 224
+    accesses: []
   - id: 11
     file_id: 0
+    pub_span: ~
     name:
       inner: 2
       span:
@@ -556,8 +589,14 @@ constants:
         start: 0
         end: 0
     value: ~
+    accesses:
+      - file_id: 0
+        span:
+          start: 76
+          end: 80
   - id: 12
     file_id: 0
+    pub_span: ~
     name:
       inner: 19
       span:
@@ -569,3 +608,4 @@ constants:
         start: 0
         end: 0
     value: ~
+    accesses: []
