@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::panic;
 use std::path::{Path, PathBuf};
 
 use codespan_reporting::diagnostic::{Diagnostic as CodeDiagnostic, LabelStyle, Severity};
@@ -9,20 +10,22 @@ use lsp_server::{
 };
 use lsp_types::notification::Notification as _;
 use lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Hover, HoverContents,
-    HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind,
-    NumberOrString, Position, PublishDiagnosticsParams, Range, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DocumentFormattingParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
+    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, OneOf,
+    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, ServerCapabilities,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use wx_compiler::ast::{self};
-use wx_compiler::tir::{ExprKind, Expression, Type as TirType, TIR, TypeIndex};
+use wx_compiler::tir::TIR;
 use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
+
+mod symbol_index;
+use symbol_index::{SymbolIndex, SymbolKind, build_symbol_index};
 
 #[cfg(debug_assertions)]
 macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        eprintln!($($arg)*);
-    };
+    ($($arg:tt)*) => { eprintln!($($arg)*); };
 }
 
 #[cfg(not(debug_assertions))]
@@ -41,6 +44,7 @@ struct ServerState {
     file_to_root: HashMap<PathBuf, PathBuf>,
     published_by_root: HashMap<PathBuf, HashSet<PathBuf>>,
     workspace_folders: Vec<PathBuf>,
+    cached: HashMap<PathBuf, CompiledRoot>,
 }
 
 struct AnalysisResult {
@@ -52,6 +56,7 @@ struct CompiledRoot {
     graph: vfs::CompilationGraph,
     tir: TIR,
     interner: ast::StringInterner,
+    symbol_index: SymbolIndex,
 }
 
 struct OverlayFileSource<'a> {
@@ -88,6 +93,10 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let server_capabilities = serde_json::to_value(ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
+        definition_provider: Some(OneOf::Left(true)),
+        references_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
         ..Default::default()
     })?;
 
@@ -95,7 +104,12 @@ fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     let params: InitializeParams = serde_json::from_value(initialization_params)?;
 
     let mut state = ServerState {
-        workspace_folders: collect_workspace_folders(&params),
+        workspace_folders: params
+            .workspace_folders
+            .iter()
+            .flatten()
+            .filter_map(|folder| uri_to_path(&folder.uri))
+            .collect(),
         ..Default::default()
     };
 
@@ -118,6 +132,62 @@ fn main_loop(
                 let req = match cast_request::<lsp_types::request::HoverRequest>(req) {
                     Ok((id, params)) => {
                         let result = handle_hover(state, &params);
+                        connection.sender.send(Message::Response(Response {
+                            id,
+                            result: Some(serde_json::to_value(result)?),
+                            error: None,
+                        }))?;
+                        continue;
+                    }
+                    Err(ExtractError::MethodMismatch(req)) => req,
+                    Err(err) => return Err(err.into()),
+                };
+
+                let req = match cast_request::<lsp_types::request::GotoDefinition>(req) {
+                    Ok((id, params)) => {
+                        let result = handle_definition(state, &params);
+                        connection.sender.send(Message::Response(Response {
+                            id,
+                            result: Some(serde_json::to_value(result)?),
+                            error: None,
+                        }))?;
+                        continue;
+                    }
+                    Err(ExtractError::MethodMismatch(req)) => req,
+                    Err(err) => return Err(err.into()),
+                };
+
+                let req = match cast_request::<lsp_types::request::References>(req) {
+                    Ok((id, params)) => {
+                        let result = handle_references(state, &params);
+                        connection.sender.send(Message::Response(Response {
+                            id,
+                            result: Some(serde_json::to_value(result)?),
+                            error: None,
+                        }))?;
+                        continue;
+                    }
+                    Err(ExtractError::MethodMismatch(req)) => req,
+                    Err(err) => return Err(err.into()),
+                };
+
+                let req = match cast_request::<lsp_types::request::Rename>(req) {
+                    Ok((id, params)) => {
+                        let result = handle_rename(state, &params);
+                        connection.sender.send(Message::Response(Response {
+                            id,
+                            result: Some(serde_json::to_value(result)?),
+                            error: None,
+                        }))?;
+                        continue;
+                    }
+                    Err(ExtractError::MethodMismatch(req)) => req,
+                    Err(err) => return Err(err.into()),
+                };
+
+                let req = match cast_request::<lsp_types::request::Formatting>(req) {
+                    Ok((id, params)) => {
+                        let result = handle_formatting(state, &params);
                         connection.sender.send(Message::Response(Response {
                             id,
                             result: Some(serde_json::to_value(result)?),
@@ -227,8 +297,15 @@ fn refresh_file(
 
 fn analyze_root(state: &mut ServerState, root: &Path) -> AnalysisResult {
     match compile_root(state, root) {
-        Ok(compiled) => analysis_from_compiled_root(&compiled),
-        Err(error) => analysis_from_load_error(root, error),
+        Ok(compiled) => {
+            let result = analysis_from_compiled_root(&compiled);
+            state.cached.insert(root.to_path_buf(), compiled);
+            result
+        }
+        Err(error) => {
+            state.cached.remove(root);
+            analysis_from_load_error(root, error)
+        }
     }
 }
 
@@ -237,10 +314,12 @@ fn compile_root(state: &ServerState, root: &Path) -> Result<CompiledRoot, LoadEr
     let mut interner = ast::StringInterner::new();
     let graph = vfs::load_compilation_with_source(root, &overlay_source, &mut interner)?;
     let tir = TIR::build(&graph, &mut interner);
+    let symbol_index = build_symbol_index(&tir);
     Ok(CompiledRoot {
         graph,
         tir,
         interner,
+        symbol_index,
     })
 }
 
@@ -398,6 +477,7 @@ fn clear_root_diagnostics(
     state: &mut ServerState,
     root: &Path,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
+    state.cached.remove(root);
     if let Some(previous) = state.published_by_root.remove(root) {
         for path in previous {
             publish_file_diagnostics(connection, &path, Vec::new())?;
@@ -498,12 +578,13 @@ fn diagnostic_related_information(
         })
     });
 
-    // Notes (e.g. "help: use Self::Size") have no span of their own — attach
-    // them to the primary error location, matching rust-analyzer's behaviour.
     let note_infos = diagnostic.notes.iter().filter_map(|note| {
         let uri = primary_uri?.clone();
         Some(DiagnosticRelatedInformation {
-            location: Location { uri, range: primary_range },
+            location: Location {
+                uri,
+                range: primary_range,
+            },
             message: note.clone(),
         })
     });
@@ -512,241 +593,318 @@ fn diagnostic_related_information(
     (!infos.is_empty()).then_some(infos)
 }
 
-fn position_to_offset(files: &vfs::Files, file_id: FileId, position: Position) -> Option<u32> {
-    let line_range = files.line_range(file_id, position.line as usize).ok()?;
-    Some((line_range.start + position.character as usize) as u32)
-}
+// ── Handlers ─────────────────────────────────────────────────────────────────
 
 fn handle_hover(state: &ServerState, params: &lsp_types::HoverParams) -> Option<Hover> {
     let path = uri_to_path(&params.text_document_position_params.text_document.uri)?;
     let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-    let compiled = compile_root(state, &root).ok()?;
-    let file_id = compiled
-        .graph
-        .crates
-        .iter()
-        .flat_map(|crate_graph| crate_graph.modules.iter())
-        .find(|module| module.file_path == path)
-        .map(|module| module.file_id)?;
+    let compiled = state.cached.get(&root)?;
+    let file_id = file_id_for_path(compiled, &path)?;
     let offset = position_to_offset(
         &compiled.graph.files,
         file_id,
         params.text_document_position_params.position,
     )?;
 
-    let hover_text = hover_text_at_offset(&compiled.tir, &compiled.interner, file_id, offset)?;
-    let range = span_to_range(&compiled.graph.files, file_id, offset, offset)?;
+    let info = compiled.symbol_index.find_at_position(file_id, offset)?;
+    let text = symbol_hover_text(&compiled.tir, &compiled.interner, &info.kind)?;
+    let range = span_to_range(
+        &compiled.graph.files,
+        file_id,
+        info.span.start,
+        info.span.end,
+    )?;
 
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: format!("```wx\n{hover_text}\n```"),
+            value: format!("```wx\n{text}\n```"),
         }),
         range: Some(range),
     })
 }
 
-fn hover_text_at_offset(
+fn symbol_hover_text(
     tir: &TIR,
     interner: &ast::StringInterner,
-    file_id: FileId,
-    offset: u32,
+    kind: &SymbolKind,
 ) -> Option<String> {
     let fmt = tir.formatter(interner);
-    let mut best: Option<(u32, String)> = None;
-
-    for function in tir
-        .functions
-        .iter()
-        .filter(|function| function.file_id == file_id)
-    {
-        if span_contains(function.name.span, offset) {
-            offer_hover(
-                &mut best,
-                function.name.span,
-                fmt.display_type(function.signature_index),
-            );
-        }
-
-        for param in function.params.iter() {
-            if span_contains(param.name.span, offset) || span_contains(param.ty.span, offset) {
-                let type_str = fmt.display_type(param.ty.inner);
-                let hover = if matches!(
-                    tir.type_pool[param.ty.inner as usize],
-                    TirType::Function { .. }
-                ) {
-                    type_str
-                } else {
-                    let name = interner.resolve(param.name.inner).unwrap_or("_");
-                    format!("{name}: {type_str}")
-                };
-                offer_hover(
-                    &mut best,
-                    merge_spans(param.name.span, param.ty.span),
-                    hover,
-                );
-            }
-        }
-
-        if let Some(result) = &function.result {
-            if span_contains(result.span, offset) {
-                offer_hover(
-                    &mut best,
-                    result.span,
-                    fmt.display_type(result.inner),
-                );
-            }
-        }
-
-        if let Some(body) = &function.body {
-            if let Some((span, ty)) = find_expression_type_at_offset(&body.block, offset) {
-                offer_hover(&mut best, span, fmt.display_type(ty));
-            }
-
-            for scope in &body.stack.scopes {
-                for local in &scope.locals {
-                    if span_contains(local.name.span, offset)
-                        || local
-                            .accesses
-                            .iter()
-                            .any(|access| span_contains(access.span, offset))
-                    {
-                        offer_hover(
-                            &mut best,
-                            local.name.span,
-                            fmt.display_type(local.ty),
-                        );
-                    }
+    match kind {
+        SymbolKind::Function(def_id) => {
+            let fi = *tir.function_index_lookup.get(def_id)? as usize;
+            let func = &tir.functions[fi];
+            let name = interner.resolve(func.name.inner).unwrap_or("?");
+            let mut s = format!("fn {name}(");
+            for (i, param) in func.params.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
                 }
+                let pname = interner.resolve(param.name.inner).unwrap_or("_");
+                s.push_str(pname);
+                s.push_str(": ");
+                s.push_str(&fmt.display_type(param.ty.inner));
             }
+            s.push(')');
+            s.push_str(" -> ");
+            match &func.result {
+                Some(result) => s.push_str(&fmt.display_type(result.inner)),
+                None => s.push_str("unit"),
+            }
+            Some(s)
+        }
+        SymbolKind::Global(def_id) => {
+            let gi = *tir.global_index_lookup.get(def_id)? as usize;
+            let global = &tir.globals[gi];
+            let name = interner.resolve(global.name.inner).unwrap_or("?");
+            let type_str = fmt.display_type(global.ty.inner);
+            let mut_kw = if global.mut_span.is_some() {
+                "mut "
+            } else {
+                ""
+            };
+            Some(format!("global {mut_kw}{name}: {type_str}"))
+        }
+        SymbolKind::Local {
+            func_id,
+            scope_idx,
+            local_idx,
+        } => {
+            let fi = *tir.function_index_lookup.get(func_id)? as usize;
+            let body = tir.functions[fi].body.as_ref()?;
+            let local = body
+                .stack
+                .scopes
+                .get(*scope_idx as usize)?
+                .locals
+                .get(*local_idx as usize)?;
+            let name = interner.resolve(local.name.inner).unwrap_or("_");
+            let type_str = fmt.display_type(local.ty);
+            let mut_kw = if local.mut_span.is_some() { "mut " } else { "" };
+            Some(format!("local {mut_kw}{name}: {type_str}"))
+        }
+        SymbolKind::Param { func_id, param_idx } => {
+            let fi = *tir.function_index_lookup.get(func_id)? as usize;
+            let param = tir.functions[fi].params.get(*param_idx as usize)?;
+            let name = interner.resolve(param.name.inner).unwrap_or("_");
+            let type_str = fmt.display_type(param.ty.inner);
+            let mut_kw = if param.mut_span.is_some() { "mut " } else { "" };
+            Some(format!("{mut_kw}{name}: {type_str}"))
+        }
+        SymbolKind::EnumVariant {
+            enum_idx,
+            variant_idx,
+        } => {
+            let enum_ = tir.enums.get(*enum_idx as usize)?;
+            let variant = enum_.variants.get(*variant_idx as usize)?;
+            let enum_name = interner.resolve(enum_.name.inner).unwrap_or("?");
+            let variant_name = interner.resolve(variant.name.inner).unwrap_or("?");
+            Some(format!("{enum_name}::{variant_name}"))
+        }
+        SymbolKind::Const(def_id) => {
+            let ci = *tir.const_index_lookup.get(def_id)? as usize;
+            let constant = &tir.constants[ci];
+            let name = interner.resolve(constant.name.inner).unwrap_or("?");
+            let type_str = fmt.display_type(constant.ty.inner);
+            Some(format!("const {name}: {type_str}"))
         }
     }
-
-    for global in tir
-        .globals
-        .iter()
-        .filter(|global| global.file_id == file_id)
-    {
-        if span_contains(global.name.span, offset) || span_contains(global.ty.span, offset) {
-            offer_hover(
-                &mut best,
-                merge_spans(global.name.span, global.ty.span),
-                fmt.display_type(global.ty.inner),
-            );
-        }
-
-        if global
-            .accesses
-            .iter()
-            .any(|span| span_contains(*span, offset))
-        {
-            offer_hover(
-                &mut best,
-                global.name.span,
-                fmt.display_type(global.ty.inner),
-            );
-        }
-
-        if let Some(value) = &global.value {
-            if let Some((span, ty)) = find_expression_type_at_offset(&value.inner, offset) {
-                offer_hover(&mut best, span, fmt.display_type(ty));
-            }
-        }
-    }
-
-    best.map(|(_, text)| text)
 }
 
-fn offer_hover(best: &mut Option<(u32, String)>, span: ast::TextSpan, text: String) {
-    let width = span.end.saturating_sub(span.start);
-    if best
-        .as_ref()
-        .is_none_or(|(best_width, _)| width <= *best_width)
-    {
-        *best = Some((width, text));
+fn handle_definition(
+    state: &ServerState,
+    params: &GotoDefinitionParams,
+) -> Option<GotoDefinitionResponse> {
+    let path = uri_to_path(&params.text_document_position_params.text_document.uri)?;
+    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+    let compiled = state.cached.get(&root)?;
+    let file_id = file_id_for_path(compiled, &path)?;
+    let offset = position_to_offset(
+        &compiled.graph.files,
+        file_id,
+        params.text_document_position_params.position,
+    )?;
+
+    let info = compiled.symbol_index.find_at_position(file_id, offset)?;
+    let (def_file_id, def_span) = compiled.symbol_index.find_definition(&info.kind)?;
+    let def_path = path_for_file_id(compiled, def_file_id)?;
+    let uri = path_to_uri(&def_path)?;
+    let range = span_to_range(
+        &compiled.graph.files,
+        def_file_id,
+        def_span.start,
+        def_span.end,
+    )?;
+
+    Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+}
+
+fn handle_references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<Location>> {
+    let path = uri_to_path(&params.text_document_position.text_document.uri)?;
+    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+    let compiled = state.cached.get(&root)?;
+    let file_id = file_id_for_path(compiled, &path)?;
+    let offset = position_to_offset(
+        &compiled.graph.files,
+        file_id,
+        params.text_document_position.position,
+    )?;
+
+    let info = compiled.symbol_index.find_at_position(file_id, offset)?;
+    let mut refs = compiled.symbol_index.find_all_references(&info.kind);
+
+    if !params.context.include_declaration {
+        if let Some((def_file_id, def_span)) = compiled.symbol_index.find_definition(&info.kind) {
+            refs.retain(|(fid, span)| !(*fid == def_file_id && span.start == def_span.start));
+        }
+    }
+
+    let locations = refs
+        .into_iter()
+        .filter_map(|(ref_file_id, ref_span)| {
+            let ref_path = path_for_file_id(compiled, ref_file_id)?;
+            let uri = path_to_uri(&ref_path)?;
+            let range = span_to_range(
+                &compiled.graph.files,
+                ref_file_id,
+                ref_span.start,
+                ref_span.end,
+            )?;
+            Some(Location { uri, range })
+        })
+        .collect::<Vec<_>>();
+
+    if locations.is_empty() {
+        None
+    } else {
+        Some(locations)
     }
 }
 
-fn find_expression_type_at_offset(
-    expr: &Expression,
-    offset: u32,
-) -> Option<(ast::TextSpan, TypeIndex)> {
-    if !span_contains(expr.span, offset) {
+fn handle_rename(state: &ServerState, params: &RenameParams) -> Option<WorkspaceEdit> {
+    let path = uri_to_path(&params.text_document_position.text_document.uri)?;
+    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+    let compiled = state.cached.get(&root)?;
+    let file_id = file_id_for_path(compiled, &path)?;
+    let offset = position_to_offset(
+        &compiled.graph.files,
+        file_id,
+        params.text_document_position.position,
+    )?;
+
+    let info = compiled.symbol_index.find_at_position(file_id, offset)?;
+    let refs = compiled.symbol_index.find_all_references(&info.kind);
+    if refs.is_empty() {
         return None;
     }
 
-    let mut best = Some((expr.span, expr.ty));
-    for child in expression_children(expr) {
-        if let Some(candidate) = find_expression_type_at_offset(child, offset) {
-            if best
-                .as_ref()
-                .is_none_or(|(best_span, _)| span_width(candidate.0) <= span_width(*best_span))
-            {
-                best = Some(candidate);
-            }
-        }
+    let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+    for (ref_file_id, ref_span) in refs {
+        let ref_path = path_for_file_id(compiled, ref_file_id)?;
+        let uri = path_to_uri(&ref_path)?;
+        let range = span_to_range(
+            &compiled.graph.files,
+            ref_file_id,
+            ref_span.start,
+            ref_span.end,
+        )?;
+        changes.entry(uri).or_default().push(TextEdit {
+            range,
+            new_text: params.new_name.clone(),
+        });
     }
-    best
+
+    Some(WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
+    })
 }
 
-fn expression_children(expr: &Expression) -> Vec<&Expression> {
-    match &expr.kind {
-        ExprKind::LocalDeclaration { value, .. } => vec![value.as_ref()],
-        ExprKind::Return { value } | ExprKind::Break { value, .. } => {
-            value.as_deref().into_iter().collect()
-        }
-        ExprKind::Unary { operand, .. }
-        | ExprKind::Loop { block: operand, .. }
-        | ExprKind::TupleFieldAccess {
-            object: operand, ..
-        } => vec![operand.as_ref()],
-        ExprKind::Binary { left, right, .. } => vec![left.as_ref(), right.as_ref()],
-        ExprKind::Call { callee, arguments } => std::iter::once(callee.as_ref())
-            .chain(arguments.iter())
-            .collect(),
-        ExprKind::GenericCall { arguments, .. }
-        | ExprKind::StructInit {
-            fields: arguments, ..
-        }
-        | ExprKind::TupleInit {
-            elements: arguments,
-            ..
-        }
-        | ExprKind::Block {
-            expressions: arguments,
-            ..
-        } => arguments.iter().collect(),
-        ExprKind::GenericMethodCall {
-            object, arguments, ..
-        }
-        | ExprKind::MethodCall {
-            object, arguments, ..
-        } => std::iter::once(object.as_ref())
-            .chain(arguments.iter())
-            .collect(),
-        ExprKind::IfElse {
-            condition,
-            then_block,
-            else_block,
-        } => std::iter::once(condition.as_ref())
-            .chain(std::iter::once(then_block.as_ref()))
-            .chain(else_block.as_deref())
-            .collect(),
-        ExprKind::ObjectAccess { object, .. } => vec![object.as_ref()],
-        _ => Vec::new(),
+fn handle_formatting(
+    state: &ServerState,
+    params: &DocumentFormattingParams,
+) -> Option<Vec<TextEdit>> {
+    let path = uri_to_path(&params.text_document.uri)?;
+    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+    let compiled = state.cached.get(&root)?;
+    let module = module_for_path(compiled, &path)?;
+    let source = compiled
+        .graph
+        .files
+        .get(module.file_id)
+        .ok()?
+        .source
+        .as_str();
+
+    let has_errors = module.ast.diagnostics.iter().any(|d| {
+        matches!(
+            d.severity,
+            codespan_reporting::diagnostic::Severity::Error
+                | codespan_reporting::diagnostic::Severity::Bug
+        )
+    });
+    if has_errors {
+        return None;
     }
+
+    let config = wx_compiler::fmt::RendererConfig {
+        indent_width: params.options.tab_size as u8,
+        ..Default::default()
+    };
+
+    let formatted = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        wx_compiler::fmt::format(&module.ast, &compiled.interner, source, config)
+    }))
+    .ok()?;
+
+    let end = byte_to_position(&compiled.graph.files, module.file_id, source.len())?;
+    Some(vec![TextEdit {
+        range: Range {
+            start: lsp_types::Position::default(),
+            end,
+        },
+        new_text: formatted,
+    }])
 }
 
-fn span_contains(span: ast::TextSpan, offset: u32) -> bool {
-    span.start <= offset && offset <= span.end
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn file_id_for_path(compiled: &CompiledRoot, path: &Path) -> Option<FileId> {
+    compiled
+        .graph
+        .crates
+        .iter()
+        .flat_map(|crate_graph| crate_graph.modules.iter())
+        .find(|module| module.file_path == path)
+        .map(|module| module.file_id)
 }
 
-fn span_width(span: ast::TextSpan) -> u32 {
-    span.end.saturating_sub(span.start)
+fn path_for_file_id(compiled: &CompiledRoot, file_id: FileId) -> Option<PathBuf> {
+    compiled
+        .graph
+        .crates
+        .iter()
+        .flat_map(|crate_graph| crate_graph.modules.iter())
+        .find(|module| module.file_id == file_id)
+        .map(|module| module.file_path.clone())
 }
 
-fn merge_spans(left: ast::TextSpan, right: ast::TextSpan) -> ast::TextSpan {
-    ast::TextSpan::merge(left, right)
+fn module_for_path<'a>(compiled: &'a CompiledRoot, path: &Path) -> Option<&'a vfs::SourceModule> {
+    compiled
+        .graph
+        .crates
+        .iter()
+        .flat_map(|crate_graph| crate_graph.modules.iter())
+        .find(|module| module.file_path == path)
+}
+
+fn position_to_offset(
+    files: &vfs::Files,
+    file_id: FileId,
+    position: lsp_types::Position,
+) -> Option<u32> {
+    let line_range = files.line_range(file_id, position.line as usize).ok()?;
+    Some((line_range.start + position.character as usize) as u32)
 }
 
 fn span_to_range(files: &vfs::Files, file_id: FileId, start: u32, end: u32) -> Option<Range> {
@@ -755,11 +913,15 @@ fn span_to_range(files: &vfs::Files, file_id: FileId, start: u32, end: u32) -> O
     Some(Range { start, end })
 }
 
-fn byte_to_position(files: &vfs::Files, file_id: FileId, byte_index: usize) -> Option<Position> {
+fn byte_to_position(
+    files: &vfs::Files,
+    file_id: FileId,
+    byte_index: usize,
+) -> Option<lsp_types::Position> {
     let line = files.line_index(file_id, byte_index).ok()?;
     let line_range = files.line_range(file_id, line).ok()?;
     let character = byte_index.saturating_sub(line_range.start);
-    Some(Position {
+    Some(lsp_types::Position {
         line: line as u32,
         character: character as u32,
     })
@@ -782,18 +944,16 @@ fn publish_file_diagnostics(
     let Some(uri) = path_to_uri(path) else {
         return Ok(());
     };
-
-    let notification = lsp_server::Notification::new(
-        lsp_types::notification::PublishDiagnostics::METHOD.to_string(),
-        PublishDiagnosticsParams {
-            uri,
-            diagnostics,
-            version: None,
-        },
-    );
     connection
         .sender
-        .send(Message::Notification(notification))?;
+        .send(Message::Notification(lsp_server::Notification::new(
+            lsp_types::notification::PublishDiagnostics::METHOD.to_string(),
+            PublishDiagnosticsParams {
+                uri,
+                diagnostics,
+                version: None,
+            },
+        )))?;
     Ok(())
 }
 
@@ -829,23 +989,6 @@ fn discover_crate_root(
 
 fn path_exists(open_documents: &HashMap<PathBuf, OpenDocument>, path: &Path) -> bool {
     open_documents.contains_key(path) || path.exists()
-}
-
-#[allow(deprecated)]
-fn collect_workspace_folders(params: &InitializeParams) -> Vec<PathBuf> {
-    if let Some(folders) = &params.workspace_folders {
-        return folders
-            .iter()
-            .filter_map(|folder| uri_to_path(&folder.uri))
-            .collect();
-    }
-
-    params
-        .root_uri
-        .as_ref()
-        .and_then(uri_to_path)
-        .into_iter()
-        .collect()
 }
 
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {

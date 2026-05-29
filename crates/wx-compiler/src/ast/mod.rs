@@ -849,7 +849,7 @@ impl TryFrom<Token> for UnaryOp {
 }
 
 impl UnaryOp {
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             UnaryOp::InvertSign => "-",
             UnaryOp::Not => "!",
@@ -3371,25 +3371,14 @@ impl<'input> Parser<'input> {
     fn parse_enum_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let enum_span = parser.lexer.next().span;
 
-        let repr = if let Some(open_arrow) = parser.lexer.next_if(Token::LeftArrow) {
-            let type_expr = parser.parse_type_expression()?;
-            if parser.lexer.next_if(Token::RightArrow).is_none() {
-                parser.ast.diagnostics.push(report_unclosed_delimiter(
-                    UnclosedDelimiterDiagnostic {
-                        file_id: parser.ast.file_id,
-                        open_span: open_arrow.span,
-                        close_token: Token::RightArrow,
-                        expected_close_span: type_expr.span.end_position(),
-                    },
-                ));
-            }
-            Some(Box::new(type_expr))
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name_symbol = parser.intern_identifier(name_span);
+
+        let repr = if parser.lexer.next_if(Token::Colon).is_some() {
+            Some(Box::new(parser.parse_type_expression()?))
         } else {
             None
         };
-
-        let name_span = parser.next_expect(Token::Identifier)?.span;
-        let name_symbol = parser.intern_identifier(name_span);
 
         let variants = SeparatedGroup {
             open_token: Token::OpenBrace,

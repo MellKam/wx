@@ -264,21 +264,13 @@ pub type EnumVariantIndex = u32;
 pub type TraitIndex = u32;
 pub type TraitImplIndex = u32;
 
-#[derive(Clone)]
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub enum ConstValue {
-    Int(i64),
-    Float(f64),
-}
-
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Constant {
-    pub id: DefId,
+    pub id: ast::DefId,
     pub file_id: FileId,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<TypeIndex>,
-    pub value: Option<ConstValue>,
+    pub value: Option<Box<Expression>>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -407,8 +399,11 @@ pub enum ExprKind {
         block: Box<Expression>,
     },
     NamespaceAccess {
-        ty: ast::Spanned<TypeIndex>,
-        member: ast::Spanned<SymbolU32>,
+        namespace: ast::Spanned<TypeIndex>,
+        member: Box<Expression>,
+    },
+    Const {
+        id: ast::DefId,
     },
     String {
         symbol: SymbolU32,
@@ -699,6 +694,7 @@ pub enum ImplEntry {
     AssociatedFn(FunctionIndex),
     /// Value computed from type layout during codegen.
     AssociatedConst {
+        id: ast::DefId,
         ty: TypeIndex,
     },
     /// `ty` is `TypeParam` in trait declarations (a placeholder) and the
@@ -1894,6 +1890,7 @@ struct Builder<'ast, 'interner> {
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
     type_index_lookup: HashMap<Type, TypeIndex>,
     tir: TIR,
+    id_generator: ast::DefIdGenerator,
 
     // ── demand-driven resolution ──────────────────────────────────────────────
     /// Populated in Phase 1.
@@ -3250,7 +3247,11 @@ impl<'ast> Builder<'ast, '_> {
                 impl_target, item, ..
             } => {
                 if let ast::ImplItem::Const {
-                    name, ty, value, ..
+                    id,
+                    name,
+                    ty,
+                    value,
+                    ..
                 } = item
                 {
                     let self_type = self.resolve_type(&resolve_context, impl_target);
@@ -3259,12 +3260,28 @@ impl<'ast> Builder<'ast, '_> {
                         Some(te) => self.resolve_type(&resolve_context, te),
                         None => Type::UNKNOWN_IDX,
                     };
-                    if let Ok(_v) = self.eval_impl_const_int(value, resolved_ty) {
-                        self.tir
-                            .impl_members
-                            .entry(self_type)
-                            .or_default()
-                            .insert(name.inner, ImplEntry::AssociatedConst { ty: resolved_ty });
+                    if let Ok(value_expr) =
+                        self.build_const_expression(&resolve_context, value, resolved_ty)
+                    {
+                        let const_index = self.tir.constants.len() as ConstIndex;
+                        self.tir.constants.push(Constant {
+                            id: *id,
+                            file_id: self.file_id,
+                            name: name.clone(),
+                            ty: ast::Spanned {
+                                inner: resolved_ty,
+                                span: name.span,
+                            },
+                            value: Some(Box::new(value_expr)),
+                        });
+                        self.tir.const_index_lookup.insert(*id, const_index);
+                        self.tir.impl_members.entry(self_type).or_default().insert(
+                            name.inner,
+                            ImplEntry::AssociatedConst {
+                                id: *id,
+                                ty: resolved_ty,
+                            },
+                        );
                     }
                 }
             }
@@ -3493,6 +3510,7 @@ impl<'ast> Builder<'ast, '_> {
                     .with_self_type(Some(self.intern_type(Type::Trait { trait_index })));
                 if let ast::TraitItem::Const { id, name, ty } = item {
                     let ty_idx = self.resolve_type(&resolve_context, ty);
+                    let const_index = self.tir.constants.len() as ConstIndex;
                     self.tir.constants.push(Constant {
                         id: *id,
                         file_id: self.file_id,
@@ -3503,9 +3521,14 @@ impl<'ast> Builder<'ast, '_> {
                         },
                         value: None,
                     });
-                    self.tir.traits[trait_index as usize]
-                        .members
-                        .insert(name.inner, ImplEntry::AssociatedConst { ty: ty_idx });
+                    self.tir.const_index_lookup.insert(*id, const_index);
+                    self.tir.traits[trait_index as usize].members.insert(
+                        name.inner,
+                        ImplEntry::AssociatedConst {
+                            id: *id,
+                            ty: ty_idx,
+                        },
+                    );
                 }
             }
 
@@ -3674,19 +3697,6 @@ impl<'ast> Builder<'ast, '_> {
                                 ty_idx
                             },
                         ) {
-                            let const_value = match &value_expr.kind {
-                                ExprKind::Int { value } => ConstValue::Int(*value),
-                                ExprKind::Float { value } => ConstValue::Float(*value),
-                                _ => {
-                                    self.tir.diagnostics.push(
-                                        report_non_constant_global_initializer(SourceSpan::new(
-                                            self.file_id,
-                                            value.span,
-                                        )),
-                                    );
-                                    return;
-                                }
-                            };
                             let resolved_ty = if ty_idx == Type::UNKNOWN_IDX {
                                 value_expr.ty
                             } else {
@@ -3701,8 +3711,9 @@ impl<'ast> Builder<'ast, '_> {
                                     inner: resolved_ty,
                                     span: ty_span,
                                 },
-                                value: Some(const_value),
+                                value: Some(Box::new(value_expr)),
                             });
+                            self.tir.const_index_lookup.insert(*id, const_index);
                             self.insert_symbol(
                                 &resolve_context,
                                 (SymbolNamespace::Value, name.inner),
@@ -3945,15 +3956,36 @@ impl<'ast> Builder<'ast, '_> {
                 let resolve_context = resolve_context.with_self_type(Some(self_type));
 
                 if let ast::ImplItem::Const {
-                    name, ty, value, ..
+                    id,
+                    name,
+                    ty,
+                    value,
+                    ..
                 } = item
                 {
                     let resolved_ty = match ty {
                         Some(te) => self.resolve_type(&resolve_context, te),
                         None => Type::UNKNOWN_IDX,
                     };
-                    if let Ok(_v) = self.eval_impl_const_int(value, resolved_ty) {
-                        let entry = ImplEntry::AssociatedConst { ty: resolved_ty };
+                    if let Ok(value_expr) =
+                        self.build_const_expression(&resolve_context, value, resolved_ty)
+                    {
+                        let const_index = self.tir.constants.len() as ConstIndex;
+                        self.tir.constants.push(Constant {
+                            id: *id,
+                            file_id: self.file_id,
+                            name: name.clone(),
+                            ty: ast::Spanned {
+                                inner: resolved_ty,
+                                span: name.span,
+                            },
+                            value: Some(Box::new(value_expr)),
+                        });
+                        self.tir.const_index_lookup.insert(*id, const_index);
+                        let entry = ImplEntry::AssociatedConst {
+                            id: *id,
+                            ty: resolved_ty,
+                        };
                         self.tir
                             .impl_members
                             .entry(self_type)
@@ -4828,81 +4860,6 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    /// Evaluates a constant integer expression. Non-integer types panic;
-    /// non-constant expressions emit a diagnostic.
-    fn eval_impl_const_int(
-        &mut self,
-        expr: &ast::Spanned<ast::Expression>,
-        ty: TypeIndex,
-    ) -> Result<i64, ()> {
-        match ty {
-            Type::I32_IDX | Type::I64_IDX | Type::U32_IDX | Type::U64_IDX | Type::UNKNOWN_IDX => {}
-            _ => return Err(()), // non-integer associated constants not yet supported
-        }
-        self.eval_const_int_expr(expr)
-    }
-
-    fn eval_const_int_expr(&mut self, expr: &ast::Spanned<ast::Expression>) -> Result<i64, ()> {
-        match &expr.inner {
-            ast::Expression::Int { value } => Ok(*value),
-            ast::Expression::Grouping { value } => self.eval_const_int_expr(value),
-            ast::Expression::Unary { operator, operand } => {
-                let v = self.eval_const_int_expr(operand)?;
-                match operator.inner {
-                    ast::UnaryOp::InvertSign => Ok(v.wrapping_neg()),
-                    ast::UnaryOp::BitNot => Ok(!v),
-                    ast::UnaryOp::Not => {
-                        self.tir
-                            .diagnostics
-                            .push(report_non_constant_global_initializer(SourceSpan::new(
-                                self.file_id,
-                                expr.span,
-                            )));
-                        Err(())
-                    }
-                }
-            }
-            ast::Expression::Binary {
-                left,
-                right,
-                operator,
-            } => {
-                let l = self.eval_const_int_expr(left)?;
-                let r = self.eval_const_int_expr(right)?;
-                match operator.inner {
-                    ast::BinaryOp::Add => Ok(l.wrapping_add(r)),
-                    ast::BinaryOp::Sub => Ok(l.wrapping_sub(r)),
-                    ast::BinaryOp::Mul => Ok(l.wrapping_mul(r)),
-                    ast::BinaryOp::Div => Ok(l.wrapping_div(r)),
-                    ast::BinaryOp::Rem => Ok(l.wrapping_rem(r)),
-                    ast::BinaryOp::BitAnd => Ok(l & r),
-                    ast::BinaryOp::BitOr => Ok(l | r),
-                    ast::BinaryOp::BitXor => Ok(l ^ r),
-                    ast::BinaryOp::LeftShift => Ok(l.wrapping_shl(r as u32)),
-                    ast::BinaryOp::RightShift => Ok(l.wrapping_shr(r as u32)),
-                    _ => {
-                        self.tir
-                            .diagnostics
-                            .push(report_non_constant_global_initializer(SourceSpan::new(
-                                self.file_id,
-                                expr.span,
-                            )));
-                        Err(())
-                    }
-                }
-            }
-            _ => {
-                self.tir
-                    .diagnostics
-                    .push(report_non_constant_global_initializer(SourceSpan::new(
-                        self.file_id,
-                        expr.span,
-                    )));
-                Err(())
-            }
-        }
-    }
-
     fn build_const_expression(
         &mut self,
         resolve_context: &ResolveContext,
@@ -4937,20 +4894,12 @@ impl<'ast> Builder<'ast, '_> {
                         span: expr.span,
                     }),
                     Some(SymbolKind::Const { const_index }) => {
-                        let ty = self.tir.constants[const_index as usize].ty.inner;
-                        match self.tir.constants[const_index as usize].value {
-                            Some(ConstValue::Int(v)) => Ok(Expression {
-                                kind: ExprKind::Int { value: v },
-                                ty,
-                                span: expr.span,
-                            }),
-                            Some(ConstValue::Float(v)) => Ok(Expression {
-                                kind: ExprKind::Float { value: v },
-                                ty,
-                                span: expr.span,
-                            }),
-                            _ => unreachable!("probably"),
-                        }
+                        let constant = &self.tir.constants[const_index as usize];
+                        Ok(Expression {
+                            kind: ExprKind::Const { id: constant.id },
+                            ty: constant.ty.inner,
+                            span: expr.span,
+                        })
                     }
                     _ => {
                         self.tir
@@ -5753,7 +5702,7 @@ impl<'ast> Builder<'ast, '_> {
                 // TODO: emit "this is an associated function, use Type::name()
                 // syntax" diagnostic
             }
-            Some(ImplEntry::AssociatedConst { ty }) => {
+            Some(ImplEntry::AssociatedConst { ty, .. }) => {
                 return Ok(Expression {
                     kind: ExprKind::ObjectAccess {
                         object: Box::new(object),
@@ -5820,9 +5769,56 @@ impl<'ast> Builder<'ast, '_> {
             );
             if is_sized {
                 let align_sym = self.interner.get_or_intern("ALIGN");
+                let size_id = self.id_generator.generate();
+                let align_id = self.id_generator.generate();
+                // TODO: replace dummy_span with the actual span of the Sized trait SIZE/ALIGN
+                // constants once the Sized lang-item trait is defined in the stdlib.
+                let dummy_span = ast::TextSpan { start: 0, end: 0 };
+                let size_index = self.tir.constants.len() as ConstIndex;
+                self.tir.constants.push(Constant {
+                    id: size_id,
+                    file_id: self.file_id,
+                    name: ast::Spanned {
+                        inner: size_sym,
+                        span: dummy_span,
+                    },
+                    ty: ast::Spanned {
+                        inner: Type::U32_IDX,
+                        span: dummy_span,
+                    },
+                    value: None,
+                });
+                self.tir.const_index_lookup.insert(size_id, size_index);
+                let align_index = self.tir.constants.len() as ConstIndex;
+                self.tir.constants.push(Constant {
+                    id: align_id,
+                    file_id: self.file_id,
+                    name: ast::Spanned {
+                        inner: align_sym,
+                        span: dummy_span,
+                    },
+                    ty: ast::Spanned {
+                        inner: Type::U32_IDX,
+                        span: dummy_span,
+                    },
+                    value: None,
+                });
+                self.tir.const_index_lookup.insert(align_id, align_index);
                 let members = self.tir.impl_members.entry(ty).or_default();
-                members.insert(size_sym, ImplEntry::AssociatedConst { ty: Type::U32_IDX });
-                members.insert(align_sym, ImplEntry::AssociatedConst { ty: Type::U32_IDX });
+                members.insert(
+                    size_sym,
+                    ImplEntry::AssociatedConst {
+                        id: size_id,
+                        ty: Type::U32_IDX,
+                    },
+                );
+                members.insert(
+                    align_sym,
+                    ImplEntry::AssociatedConst {
+                        id: align_id,
+                        ty: Type::U32_IDX,
+                    },
+                );
             }
         }
 
@@ -5839,19 +5835,25 @@ impl<'ast> Builder<'ast, '_> {
         if namespace_ty == Type::ERROR_IDX {
             return Err(());
         }
+        let namespace_spanned = ast::Spanned {
+            inner: namespace_ty,
+            span: namespace_expr.span,
+        };
+
         match self
             .ensure_impl_members(namespace_ty)
             .get(&member.inner)
             .cloned()
         {
-            Some(ImplEntry::AssociatedConst { ty }) => {
+            Some(ImplEntry::AssociatedConst { id, ty }) => {
                 return Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
-                        ty: ast::Spanned {
-                            inner: namespace_ty,
-                            span: namespace_expr.span,
-                        },
-                        member: member.clone(),
+                        namespace: namespace_spanned,
+                        member: Box::new(Expression {
+                            kind: ExprKind::Const { id },
+                            ty,
+                            span: member.span,
+                        }),
                     },
                     ty,
                     span: TextSpan::merge(namespace_expr.span, member.span),
@@ -5865,16 +5867,18 @@ impl<'ast> Builder<'ast, '_> {
                     kind: FunctionAccessKind::Reference,
                     span: member.span,
                 });
-                let ty = func.signature_index;
+                let func_id = func.id;
+                let func_ty = func.signature_index;
                 return Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
-                        ty: ast::Spanned {
-                            inner: namespace_ty,
-                            span: namespace_expr.span,
-                        },
-                        member: member.clone(),
+                        namespace: namespace_spanned,
+                        member: Box::new(Expression {
+                            kind: ExprKind::Function { id: func_id },
+                            ty: func_ty,
+                            span: member.span,
+                        }),
                     },
-                    ty,
+                    ty: func_ty,
                     span: TextSpan::merge(namespace_expr.span, member.span),
                 });
             }
@@ -5896,20 +5900,25 @@ impl<'ast> Builder<'ast, '_> {
                 Err(())
             }
             Type::Enum { enum_index } => {
-                let enum_ = &self.tir.enums[*enum_index as usize];
-                match enum_.lookup.get(&member.inner) {
-                    Some(_variant_index) => Ok(Expression {
+                let enum_idx = *enum_index;
+                let enum_ = &self.tir.enums[enum_idx as usize];
+                match enum_.lookup.get(&member.inner).copied() {
+                    Some(variant_idx) => Ok(Expression {
                         kind: ExprKind::NamespaceAccess {
-                            ty: ast::Spanned {
-                                inner: namespace_ty,
-                                span: namespace_expr.span,
-                            },
-                            member: member.clone(),
+                            namespace: namespace_spanned,
+                            member: Box::new(Expression {
+                                kind: ExprKind::EnumVariant {
+                                    enum_index: enum_idx,
+                                    variant_index: variant_idx,
+                                },
+                                ty: enum_.ty,
+                                span: member.span,
+                            }),
                         },
                         ty: enum_.ty,
                         span: ast::TextSpan::merge(namespace_expr.span, member.span),
                     }),
-                    _ => {
+                    None => {
                         self.tir
                             .diagnostics
                             .push(report_undeclared_identifier(SourceSpan::new(
@@ -5937,11 +5946,12 @@ impl<'ast> Builder<'ast, '_> {
                             self.tir.functions[func_index as usize].signature_index;
                         Ok(Expression {
                             kind: ExprKind::NamespaceAccess {
-                                ty: ast::Spanned {
-                                    inner: namespace_ty,
-                                    span: namespace_expr.span,
-                                },
-                                member: member.clone(),
+                                namespace: namespace_spanned,
+                                member: Box::new(Expression {
+                                    kind: ExprKind::Function { id },
+                                    ty: signature_index,
+                                    span: member.span,
+                                }),
                             },
                             ty: signature_index,
                             span: TextSpan::merge(namespace_expr.span, member.span),
@@ -5954,11 +5964,12 @@ impl<'ast> Builder<'ast, '_> {
                         let ty = global.ty.inner;
                         Ok(Expression {
                             kind: ExprKind::NamespaceAccess {
-                                ty: ast::Spanned {
-                                    inner: namespace_ty,
-                                    span: namespace_expr.span,
-                                },
-                                member: member.clone(),
+                                namespace: namespace_spanned,
+                                member: Box::new(Expression {
+                                    kind: ExprKind::Global { id },
+                                    ty,
+                                    span: member.span,
+                                }),
                             },
                             ty,
                             span: TextSpan::merge(namespace_expr.span, member.span),
@@ -5986,7 +5997,6 @@ impl<'ast> Builder<'ast, '_> {
                 }
             }
             Type::Module { module_index } => {
-                let module_index = module_index;
                 match self.tir.modules[*module_index as usize]
                     .symbol_lookup
                     .get(&(SymbolNamespace::Value, member.inner))
@@ -6000,13 +6010,20 @@ impl<'ast> Builder<'ast, '_> {
                             kind: FunctionAccessKind::Reference,
                             span: member.span,
                         });
-                        let fund_id = func.id;
+                        let func_id = func.id;
                         let ty = self.intern_type(Type::FunctionItem {
-                            id: fund_id,
+                            id: func_id,
                             type_args: Box::new([]),
                         });
                         Ok(Expression {
-                            kind: ExprKind::Function { id: fund_id },
+                            kind: ExprKind::NamespaceAccess {
+                                namespace: namespace_spanned,
+                                member: Box::new(Expression {
+                                    kind: ExprKind::Function { id: func_id },
+                                    ty,
+                                    span: member.span,
+                                }),
+                            },
                             ty,
                             span: TextSpan::merge(namespace_expr.span, member.span),
                         })
@@ -6037,26 +6054,29 @@ impl<'ast> Builder<'ast, '_> {
                                 kind: FunctionAccessKind::Reference,
                                 span: member.span,
                             });
+                        let func_id = self.tir.functions[func_index as usize].id;
                         let ty = self.tir.functions[func_index as usize].signature_index;
                         Ok(Expression {
                             kind: ExprKind::NamespaceAccess {
-                                ty: ast::Spanned {
-                                    inner: namespace_ty,
-                                    span: namespace_expr.span,
-                                },
-                                member: member.clone(),
+                                namespace: namespace_spanned,
+                                member: Box::new(Expression {
+                                    kind: ExprKind::Function { id: func_id },
+                                    ty,
+                                    span: member.span,
+                                }),
                             },
                             ty,
                             span: TextSpan::merge(namespace_expr.span, member.span),
                         })
                     }
-                    Some(ImplEntry::AssociatedConst { ty }) => Ok(Expression {
+                    Some(ImplEntry::AssociatedConst { id, ty }) => Ok(Expression {
                         kind: ExprKind::NamespaceAccess {
-                            ty: ast::Spanned {
-                                inner: namespace_ty,
-                                span: namespace_expr.span,
-                            },
-                            member: member.clone(),
+                            namespace: namespace_spanned,
+                            member: Box::new(Expression {
+                                kind: ExprKind::Const { id },
+                                ty,
+                                span: member.span,
+                            }),
                         },
                         ty,
                         span: TextSpan::merge(namespace_expr.span, member.span),
@@ -6571,20 +6591,12 @@ impl<'ast> Builder<'ast, '_> {
                     })
                 }
                 SymbolKind::Const { const_index } => {
-                    let ty = self.tir.constants[const_index as usize].ty.inner;
-                    match self.tir.constants[const_index as usize].value {
-                        Some(ConstValue::Int(v)) => Ok(Expression {
-                            kind: ExprKind::Int { value: v },
-                            ty,
-                            span: expr.span,
-                        }),
-                        Some(ConstValue::Float(v)) => Ok(Expression {
-                            kind: ExprKind::Float { value: v },
-                            ty,
-                            span: expr.span,
-                        }),
-                        _ => unreachable!("probably"),
-                    }
+                    let constant = &self.tir.constants[const_index as usize];
+                    Ok(Expression {
+                        kind: ExprKind::Const { id: constant.id },
+                        ty: constant.ty.inner,
+                        span: expr.span,
+                    })
                 }
                 SymbolKind::Memory { memory_index, kind } => {
                     let id = self.tir.memories[memory_index as usize].id;
@@ -8213,8 +8225,19 @@ impl<'ast> Builder<'ast, '_> {
                     ));
                 }
 
-                if let ExprKind::Function { id } = &callee.kind {
-                    let func_index = self.tir.function_index_lookup[id];
+                let direct_id = match &callee.kind {
+                    ExprKind::Function { id } => Some(*id),
+                    ExprKind::NamespaceAccess { member, .. } => {
+                        if let ExprKind::Function { id } = &member.kind {
+                            Some(*id)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(id) = direct_id {
+                    let func_index = self.tir.function_index_lookup[&id];
                     if let Some(access) =
                         self.tir.functions[func_index as usize].accesses.last_mut()
                     {
@@ -8236,7 +8259,7 @@ impl<'ast> Builder<'ast, '_> {
 
                         return Ok(Expression {
                             kind: ExprKind::GenericCall {
-                                id: *id,
+                                id,
                                 type_args: type_args.into_boxed_slice(),
                                 arguments,
                             },
@@ -9097,11 +9120,24 @@ impl<'a> TypeFormatter<'a> {
             }
             Type::FunctionItem { id, .. } => {
                 let fi = self.tir.function_index_lookup[id] as usize;
-                let name = self
-                    .interner
-                    .resolve(self.tir.functions[fi].name.inner)
-                    .unwrap();
-                f.write_str(name).unwrap();
+                let func = &self.tir.functions[fi];
+                let name = self.interner.resolve(func.name.inner).unwrap_or("?");
+                write!(f, "fn {name}(").unwrap();
+                for (i, param) in func.params.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ").unwrap();
+                    }
+                    let param_name = self.interner.resolve(param.name.inner).unwrap_or("_");
+                    f.write_str(param_name).unwrap();
+                    f.write_str(": ").unwrap();
+                    self.write_type(f, param.ty.inner);
+                }
+                f.write_char(')').unwrap();
+                f.write_str(" -> ").unwrap();
+                match &func.result {
+                    Some(result) => self.write_type(f, result.inner),
+                    None => f.write_str("unit").unwrap(),
+                }
             }
             Type::TypeParam { owner, param_index } => {
                 let symbol = match owner {
@@ -9163,6 +9199,8 @@ pub struct TIR {
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub type_trait_impls: HashMap<TypeIndex, Vec<TraitImplIndex>>,
     pub constants: Vec<Constant>,
+    #[cfg_attr(test, serde(skip))]
+    pub const_index_lookup: HashMap<ast::DefId, ConstIndex>,
 }
 
 impl TIR {
@@ -9207,6 +9245,7 @@ impl TIR {
             global_index_lookup: HashMap::new(),
             memory_index_lookup: HashMap::new(),
             constants: Vec::new(),
+            const_index_lookup: HashMap::new(),
         };
 
         let mut symbol_lookup = HashMap::new();
@@ -9238,6 +9277,7 @@ impl TIR {
             type_index_lookup: HashMap::new(),
             sig_state: HashMap::new(),
             ast_nodes: HashMap::new(),
+            id_generator: compilation.id_generator,
         };
 
         // Order MUST match the IDX constants defined at the top of this file.

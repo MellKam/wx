@@ -1,19 +1,22 @@
-fn add(a: i32, b: i32) -> i32 { a + b }
-fn sub(a: i32, b: i32) -> i32 { a - b }
+fn add(a: i32, b: i32) -> i32 {
+  a + b
+}
 
-fn apply(
-  binop: fn(i32, i32) -> i32, 
-  a: i32, 
-  b: i32,
-) -> i32 {
+fn sub(a: i32, b: i32) -> i32 {
+  a - b
+}
+
+fn apply(binop: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
   binop(a, b)
 }
 
 fn main() -> i32 {
   local a = apply(add, 5, 10);
   local b = apply(sub, 10, 5);
-
+  
   a + b
 }
 
-export { main }
+export {
+  main
+}

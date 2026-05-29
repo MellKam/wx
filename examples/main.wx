@@ -2,13 +2,21 @@ module test;
 
 fn main() {
   local b = test::add(2, 3);
-
+  
   local x = "gwgew";
   local y = 'a';
-
+  
   _ = i32::add(2, 3);
+  
+  _ = plus(2, 3);
+  
+  local m = loop {};
+  
+  gsdgdsgsd
+}
 
-  b
+fn plus(a: i32, b: i32) -> i32 {
+  a + b
 }
 
 impl i32 {
@@ -18,6 +26,7 @@ impl i32 {
 }
 
 trait Mem {
-    type Size;
-    fn alloc(n: Self::Size) -> *mut u8;  // bare `Size` — triggers the crash
+  type Size;
+
+  fn alloc(n: Self::Size) -> *mut u8;
 }

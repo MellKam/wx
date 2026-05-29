@@ -77,7 +77,7 @@ functions:
         end: 68
     accesses:
       - caller: 1
-        kind: Reference
+        kind: DirectCall
         span:
           start: 106
           end: 109
@@ -127,13 +127,16 @@ functions:
                     callee:
                       kind:
                         NamespaceAccess:
-                          ty:
+                          namespace:
                             inner: 18
                             span:
                               start: 97
                               end: 104
                           member:
-                            inner: 3
+                            kind:
+                              Function:
+                                id: 0
+                            ty: 16
                             span:
                               start: 106
                               end: 109

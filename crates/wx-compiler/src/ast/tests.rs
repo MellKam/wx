@@ -121,6 +121,35 @@ fn test_top_level_items() {
 }
 
 #[test]
+fn test_enum_repr_after_name() {
+    let case = TestCase::new(indoc! {"
+        enum Status: i32 {
+            Foo,
+            Bar,
+        }
+    "});
+
+    assert!(case.ast.diagnostics.is_empty());
+
+    let Item::Enum {
+        repr,
+        name,
+        variants,
+        ..
+    } = item(&case.ast, 0)
+    else {
+        panic!("expected enum item")
+    };
+
+    assert_eq!(case.interner.resolve(name.inner), Some("Status"));
+    assert!(matches!(
+        repr.as_deref().map(|repr| &repr.inner),
+        Some(TypeExpression::Identifier { symbol }) if case.interner.resolve(*symbol) == Some("i32")
+    ));
+    assert_eq!(variants.inner.len(), 2);
+}
+
+#[test]
 fn test_function_mut_param() {
     // mut on a parameter; mut local with compound assignment
     let case = TestCase::new(indoc! {"

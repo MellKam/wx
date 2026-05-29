@@ -1329,9 +1329,14 @@ impl<'tir> Builder<'tir> {
 
             tir::ExprKind::Call { callee, arguments } => {
                 // Detect calls to intrinsic functions (e.g. wasm::memory32_grow).
-                // TIR resolves module::fn directly to ExprKind::Function { id }.
-                if let tir::ExprKind::Function { id } = &callee.kind {
-                    let tir_idx = self.tir.function_index_lookup[id];
+                // The callee is either ExprKind::Function { id } (bare reference) or
+                // ExprKind::NamespaceAccess (module member); both have ty = FunctionItem { id }.
+                let intrinsic_id = match &self.tir.type_pool[callee.ty as usize] {
+                    tir::Type::FunctionItem { id, .. } => Some(*id),
+                    _ => None,
+                };
+                if let Some(id) = intrinsic_id {
+                    let tir_idx = self.tir.function_index_lookup[&id];
                     let tir_func = &self.tir.functions[tir_idx as usize];
                     if tir_func
                         .attributes
@@ -1403,88 +1408,81 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
-            tir::ExprKind::NamespaceAccess { ty, member, .. } => {
-                match &self.tir.type_pool[ty.inner as usize] {
-                    tir::Type::Enum { enum_index } => {
-                        let enum_index = *enum_index;
-                        let enum_ = &self.tir.enums[enum_index as usize];
-                        let variant_index = *enum_
-                            .lookup
-                            .get(&member.inner)
-                            .expect("unknown enum variant");
-                        let variant = &enum_.variants[variant_index as usize];
-                        self.lower_expression(func_ctx, &variant.value, sink)
-                    }
-                    tir::Type::ImportModule { module_index } => {
-                        let module_index = *module_index;
-                        let module = &self.tir.import_modules[module_index as usize];
-                        match module
-                            .lookup
-                            .get(&member.inner)
-                            .expect("unknown import member")
-                        {
-                            tir::ImportValue::Function { id } => Expression {
-                                kind: ExprKind::Function { id: *id },
-                                ty: self.lower_type_index(expr.ty),
+            tir::ExprKind::NamespaceAccess { namespace, member } => {
+                if let tir::ExprKind::Const { id } = &member.kind {
+                    let const_idx = *self.tir.const_index_lookup.get(id).unwrap() as usize;
+                    let result_ty = self.lower_type_index(expr.ty);
+                    if let Some(value_expr) = &self.tir.constants[const_idx].value {
+                        match &value_expr.kind {
+                            tir::ExprKind::Int { value } => Expression {
+                                kind: ExprKind::Int { value: *value },
+                                ty: result_ty,
                             },
-                            tir::ImportValue::Global { id } => Expression {
-                                kind: ExprKind::Global { id: *id },
-                                ty: self.lower_type_index(expr.ty),
+                            tir::ExprKind::Float { value } => Expression {
+                                kind: ExprKind::Float { value: *value },
+                                ty: result_ty,
                             },
-                            tir::ImportValue::Memory { .. } => {
-                                // TIR resolves imported memory namespace accesses to
-                                // ExprKind::Memory,
-                                // not ExprKind::NamespaceAccess, so this arm is never reached.
-                                unreachable!("import module NamespaceAccess for Memory")
+                            _ => todo!("complex const expression in MIR lowering"),
+                        }
+                    } else {
+                        // Compiler-implemented constant — dispatch on namespace type.
+                        let const_name_sym = self.tir.constants[const_idx].name.inner;
+                        let namespace_ty = namespace.inner;
+                        let const_name = self.interner.resolve(const_name_sym).unwrap();
+                        match &self.tir.type_pool[namespace_ty as usize] {
+                            tir::Type::Memory { id, .. } => {
+                                let memory_index = self.memory_id_remap[id];
+                                match const_name {
+                                    "OFFSET" => Expression {
+                                        kind: ExprKind::MemoryOffset { memory_index },
+                                        ty: result_ty,
+                                    },
+                                    "MEMORY_INDEX" => Expression {
+                                        kind: ExprKind::Int { value: memory_index as i64 },
+                                        ty: result_ty,
+                                    },
+                                    _ => todo!("unknown memory compiler constant: {}", const_name),
+                                }
                             }
-                        }
-                    }
-                    tir::Type::Memory { id, .. } => {
-                        let memory_index = self.memory_id_remap[id];
-                        let member_name = self.interner.resolve(member.inner).unwrap();
-                        let result_ty = self.lower_type_index(expr.ty);
-                        match member_name {
-                            "OFFSET" => Expression {
-                                kind: ExprKind::MemoryOffset { memory_index },
-                                ty: result_ty,
-                            },
-                            "MEMORY_INDEX" => Expression {
-                                kind: ExprKind::Int {
-                                    value: memory_index as i64,
-                                },
-                                ty: result_ty,
-                            },
-                            _ => unreachable!("unknown memory namespace member: {}", member_name),
-                        }
-                    }
-                    _ => {
-                        let entry = self
-                            .tir
-                            .impl_members
-                            .get(&ty.inner)
-                            .and_then(|m| m.get(&member.inner))
-                            .expect("unresolved impl member in MIR lowering");
-                        match entry {
-                            tir::ImplEntry::AssociatedConst { .. } => {
-                                let member_name = self.interner.resolve(member.inner).unwrap();
+                            _ => {
                                 let layout = compute_layout(
                                     &self.tir.type_pool,
                                     &self.tir.structs,
-                                    ty.inner,
+                                    namespace_ty,
                                     PointerSize::Memory32,
                                 );
-                                let value = match member_name {
+                                let value = match const_name {
                                     "SIZE" => layout.size as i64,
                                     "ALIGN" => layout.align as i64,
-                                    _ => todo!("unknown associated const: {}", member_name),
+                                    _ => todo!("unknown compiler-implemented constant: {}", const_name),
                                 };
-                                Expression {
-                                    kind: ExprKind::Int { value },
-                                    ty: self.lower_type_index(expr.ty),
-                                }
+                                Expression { kind: ExprKind::Int { value }, ty: result_ty }
                             }
-                            _ => todo!("non-const impl member in namespace access"),
                         }
+                    }
+                } else {
+                    self.lower_expression(func_ctx, member, sink)
+                }
+            }
+            tir::ExprKind::Const { id } => {
+                let const_idx = *self.tir.const_index_lookup.get(id).unwrap() as usize;
+                let result_ty = self.lower_type_index(expr.ty);
+                match &self.tir.constants[const_idx].value {
+                    Some(value_expr) => match &value_expr.kind {
+                        tir::ExprKind::Int { value } => Expression {
+                            kind: ExprKind::Int { value: *value },
+                            ty: result_ty,
+                        },
+                        tir::ExprKind::Float { value } => Expression {
+                            kind: ExprKind::Float { value: *value },
+                            ty: result_ty,
+                        },
+                        _ => todo!("complex const expression in MIR lowering"),
+                    },
+                    None => {
+                        unreachable!(
+                            "compiler-implemented constant referenced outside namespace access"
+                        )
                     }
                 }
             }

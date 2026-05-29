@@ -101,7 +101,7 @@ functions:
     result: ~
     accesses:
       - caller: 2
-        kind: Reference
+        kind: DirectCall
         span:
           start: 152
           end: 155
@@ -147,13 +147,16 @@ functions:
                     callee:
                       kind:
                         NamespaceAccess:
-                          ty:
+                          namespace:
                             inner: 20
                             span:
                               start: 143
                               end: 150
                           member:
-                            inner: 5
+                            kind:
+                              Function:
+                                id: 1
+                            ty: 17
                             span:
                               start: 152
                               end: 155
@@ -233,13 +236,41 @@ impl_members:
   19:
     18:
       AssociatedConst:
+        id: 3
         ty: 8
     19:
       AssociatedConst:
+        id: 4
         ty: 8
   20: {}
 traits: []
 trait_impls: []
 trait_impl_lookup: {}
 type_trait_impls: {}
-constants: []
+constants:
+  - id: 3
+    file_id: 0
+    name:
+      inner: 18
+      span:
+        start: 0
+        end: 0
+    ty:
+      inner: 8
+      span:
+        start: 0
+        end: 0
+    value: ~
+  - id: 4
+    file_id: 0
+    name:
+      inner: 19
+      span:
+        start: 0
+        end: 0
+    ty:
+      inner: 8
+      span:
+        start: 0
+        end: 0
+    value: ~
