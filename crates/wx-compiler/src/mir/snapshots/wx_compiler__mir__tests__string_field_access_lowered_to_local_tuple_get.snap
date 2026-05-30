@@ -30,7 +30,9 @@ functions:
                           - kind:
                               StringIndex:
                                 string_index: 0
-                            ty: Pointer
+                            ty:
+                              Pointer:
+                                memory_index: 0
                           - kind:
                               Int:
                                 value: 4
@@ -89,5 +91,14 @@ aggregates:
   - values:
       - U32
       - U32
+    offsets:
+      - 0
+      - 4
+    layout:
+      size: 8
+      align: 4
+    decl_to_phys:
+      - 0
+      - 1
 strings:
   - 15

@@ -359,7 +359,7 @@ impl TryFrom<mir::Type> for ValueType {
             mir::Type::F64 => Ok(ValueType::F64),
             mir::Type::U32 => Ok(ValueType::I32),
             mir::Type::U64 => Ok(ValueType::I64),
-            mir::Type::Pointer => Ok(ValueType::I32),
+            mir::Type::Pointer { .. } => Ok(ValueType::I32),
             mir::Type::Function { .. } => Ok(ValueType::I32),
             _ => unreachable!(),
         }
@@ -866,17 +866,17 @@ impl Builder {
                 sink.push(Instruction::MemoryGrow as u8);
                 idx.encode(sink);
             }
-            // Pointer load/store — offset=0, align = log2(natural alignment).
+            // Pointer load/store.
             // Memory 0 uses the standard single-memory encoding.
             // Memory N>0 requires the multi-memory extension (memory index prefix).
-            SI::I32Load { memory_index, align } => encode_load(Instruction::I32Load, memory_index, align, sink),
-            SI::I64Load { memory_index, align } => encode_load(Instruction::I64Load, memory_index, align, sink),
-            SI::F32Load { memory_index, align } => encode_load(Instruction::F32Load, memory_index, align, sink),
-            SI::F64Load { memory_index, align } => encode_load(Instruction::F64Load, memory_index, align, sink),
-            SI::I32Store { memory_index, align } => encode_store(Instruction::I32Store, memory_index, align, sink),
-            SI::I64Store { memory_index, align } => encode_store(Instruction::I64Store, memory_index, align, sink),
-            SI::F32Store { memory_index, align } => encode_store(Instruction::F32Store, memory_index, align, sink),
-            SI::F64Store { memory_index, align } => encode_store(Instruction::F64Store, memory_index, align, sink),
+            SI::I32Load(m) => encode_load(Instruction::I32Load, m, sink),
+            SI::I64Load(m) => encode_load(Instruction::I64Load, m, sink),
+            SI::F32Load(m) => encode_load(Instruction::F32Load, m, sink),
+            SI::F64Load(m) => encode_load(Instruction::F64Load, m, sink),
+            SI::I32Store(m) => encode_store(Instruction::I32Store, m, sink),
+            SI::I64Store(m) => encode_store(Instruction::I64Store, m, sink),
+            SI::F32Store(m) => encode_store(Instruction::F32Store, m, sink),
+            SI::F64Store(m) => encode_store(Instruction::F64Store, m, sink),
             SI::Nop => sink.push(Instruction::Nop as u8),
             SI::FunctionPointer(id) => {
                 let wasm_idx = self.func_wasm_index[&id];
@@ -1160,21 +1160,21 @@ trait Encode {
     fn encode(&self, sink: &mut Vec<u8>);
 }
 
-fn encode_load(opcode: Instruction, memory_index: u32, align: u32, sink: &mut Vec<u8>) {
+fn encode_load(opcode: Instruction, mem: crate::opt::scheduler::MemArg, sink: &mut Vec<u8>) {
     sink.push(opcode as u8);
-    align.encode(sink);      // memarg: alignment (log2 of bytes)
-    0u32.encode(sink);       // memarg: offset = 0
-    if memory_index > 0 {
-        memory_index.encode(sink);
+    mem.align.encode(sink);
+    mem.offset.encode(sink);
+    if mem.memory_index > 0 {
+        mem.memory_index.encode(sink);
     }
 }
 
-fn encode_store(opcode: Instruction, memory_index: u32, align: u32, sink: &mut Vec<u8>) {
+fn encode_store(opcode: Instruction, mem: crate::opt::scheduler::MemArg, sink: &mut Vec<u8>) {
     sink.push(opcode as u8);
-    align.encode(sink);      // memarg: alignment (log2 of bytes)
-    0u32.encode(sink);       // memarg: offset = 0
-    if memory_index > 0 {
-        memory_index.encode(sink);
+    mem.align.encode(sink);
+    mem.offset.encode(sink);
+    if mem.memory_index > 0 {
+        mem.memory_index.encode(sink);
     }
 }
 

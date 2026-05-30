@@ -50,4 +50,13 @@ aggregates:
   - values:
       - U32
       - U32
+    offsets:
+      - 0
+      - 4
+    layout:
+      size: 8
+      align: 4
+    decl_to_phys:
+      - 0
+      - 1
 strings: []

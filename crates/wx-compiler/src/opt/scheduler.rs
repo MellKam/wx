@@ -36,6 +36,17 @@ use crate::opt::{
 // ── Output types
 // ──────────────────────────────────────────────────────────────
 
+/// The `memarg` immediate carried by every WebAssembly memory instruction.
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[derive(Clone, Copy)]
+pub struct MemArg {
+    /// Log2 of the alignment hint in bytes (e.g. 2 = 4-byte aligned).
+    pub align: u32,
+    /// Static byte offset added to the runtime address.
+    pub offset: u32,
+    pub memory_index: u32,
+}
+
 /// A WASM local variable declaration.
 #[cfg_attr(test, derive(serde::Serialize))]
 #[cfg_attr(test, serde(transparent))]
@@ -169,15 +180,15 @@ pub enum Instruction {
     // Memory
     MemorySize(u32),
     MemoryGrow(u32),
-    // Pointer load/store — offset=0, align = log2 of natural alignment
-    I32Load { memory_index: u32, align: u32 },
-    I64Load { memory_index: u32, align: u32 },
-    F32Load { memory_index: u32, align: u32 },
-    F64Load { memory_index: u32, align: u32 },
-    I32Store { memory_index: u32, align: u32 },
-    I64Store { memory_index: u32, align: u32 },
-    F32Store { memory_index: u32, align: u32 },
-    F64Store { memory_index: u32, align: u32 },
+    // Pointer load/store
+    I32Load(MemArg),
+    I64Load(MemArg),
+    F32Load(MemArg),
+    F64Load(MemArg),
+    I32Store(MemArg),
+    I64Store(MemArg),
+    F32Store(MemArg),
+    F64Store(MemArg),
     // Nop (used as a placeholder)
     Nop,
     // Symbolic references — resolved to concrete i32.const values by the
@@ -505,16 +516,36 @@ impl<'f> Scheduler<'f> {
                 }
             }
 
-            ControlNode::PointerLoad { address, result, memory_index } => {
+            ControlNode::PointerLoad {
+                address,
+                result,
+                memory_index,
+            } => {
                 self.emit_value(*address);
                 let ty = self.func.data_nodes[*result as usize].kind.scalar_type();
                 let mi = *memory_index;
                 let align = natural_align(ty);
                 let load_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Load { memory_index: mi, align },
-                    ScalarType::I64 => Instruction::I64Load { memory_index: mi, align },
-                    ScalarType::F32 => Instruction::F32Load { memory_index: mi, align },
-                    ScalarType::F64 => Instruction::F64Load { memory_index: mi, align },
+                    ScalarType::I32 => Instruction::I32Load(MemArg {
+                        align,
+                        offset: 0,
+                        memory_index: mi,
+                    }),
+                    ScalarType::I64 => Instruction::I64Load(MemArg {
+                        align,
+                        offset: 0,
+                        memory_index: mi,
+                    }),
+                    ScalarType::F32 => Instruction::F32Load(MemArg {
+                        align,
+                        offset: 0,
+                        memory_index: mi,
+                    }),
+                    ScalarType::F64 => Instruction::F64Load(MemArg {
+                        align,
+                        offset: 0,
+                        memory_index: mi,
+                    }),
                 };
                 self.body.push(load_instr);
                 // PointerLoadResult always spills (no_cse + always_spill).
@@ -523,17 +554,37 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::LocalSet(local));
             }
 
-            ControlNode::PointerStore { address, value, memory_index } => {
+            ControlNode::PointerStore {
+                address,
+                value,
+                memory_index,
+            } => {
                 self.emit_value(*address);
                 self.emit_value(*value);
                 let ty = self.func.data_nodes[*value as usize].kind.scalar_type();
                 let mi = *memory_index;
                 let align = natural_align(ty);
                 let store_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Store { memory_index: mi, align },
-                    ScalarType::I64 => Instruction::I64Store { memory_index: mi, align },
-                    ScalarType::F32 => Instruction::F32Store { memory_index: mi, align },
-                    ScalarType::F64 => Instruction::F64Store { memory_index: mi, align },
+                    ScalarType::I32 => Instruction::I32Store(MemArg {
+                        align,
+                        offset: 0,
+                        memory_index: mi,
+                    }),
+                    ScalarType::I64 => Instruction::I64Store(MemArg {
+                        align,
+                        offset: 0,
+                        memory_index: mi,
+                    }),
+                    ScalarType::F32 => Instruction::F32Store(MemArg {
+                        align,
+                        offset: 0,
+                        memory_index: mi,
+                    }),
+                    ScalarType::F64 => Instruction::F64Store(MemArg {
+                        align,
+                        offset: 0,
+                        memory_index: mi,
+                    }),
                 };
                 self.body.push(store_instr);
             }
@@ -571,7 +622,9 @@ impl<'f> Scheduler<'f> {
     fn emit_value(&mut self, node: DataNodeIndex) {
         if matches!(
             self.func.data_nodes[node as usize].kind,
-            DataNodeKind::Aggregate { .. } | DataNodeKind::AggregateCallResult { .. }
+            DataNodeKind::Aggregate { .. }
+                | DataNodeKind::AggregateCallResult { .. }
+                | DataNodeKind::AggregateLoadResult { .. }
         ) {
             self.ensure_aggregate_locals(node);
             for i in 0..self.node_to_aggregate_locals[&node].len() {
@@ -897,7 +950,9 @@ impl<'f> Scheduler<'f> {
             }
 
             // Aggregates are intercepted in `emit_value` before reaching here.
-            DataNodeKind::Aggregate { .. } | DataNodeKind::AggregateCallResult { .. } => {
+            DataNodeKind::Aggregate { .. }
+            | DataNodeKind::AggregateCallResult { .. }
+            | DataNodeKind::AggregateLoadResult { .. } => {
                 unreachable!("aggregate nodes are handled by emit_value, not emit_value_inline")
             }
         }
@@ -926,6 +981,7 @@ impl<'f> Scheduler<'f> {
             // Calls, memory.grow, and pointer loads always produce a result that must be captured.
             DataNodeKind::CallResult { .. }
             | DataNodeKind::AggregateCallResult { .. }
+            | DataNodeKind::AggregateLoadResult { .. }
             | DataNodeKind::MemoryGrowResult { .. }
             | DataNodeKind::PointerLoadResult { .. } => true,
 

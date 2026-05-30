@@ -700,6 +700,16 @@ pub enum MemoryKind {
     Memory64,
 }
 
+impl MemoryKind {
+    #[inline]
+    pub fn pointer_size(self) -> u32 {
+        match self {
+            MemoryKind::Memory32 => 4,
+            MemoryKind::Memory64 => 8,
+        }
+    }
+}
+
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -2187,10 +2197,15 @@ impl<'ast> Builder<'ast, '_> {
                             }
                             Some(kind) => {
                                 if let Some(ty) = self.symbol_kind_to_type(kind) {
-                                    if let Type::Struct { struct_index } = self.tir.type_pool[ty as usize] {
-                                        self.tir.structs[struct_index as usize]
-                                            .accesses
-                                            .push(SourceSpan::new(resolve_context.file_id, type_expr.span));
+                                    if let Type::Struct { struct_index } =
+                                        self.tir.type_pool[ty as usize]
+                                    {
+                                        self.tir.structs[struct_index as usize].accesses.push(
+                                            SourceSpan::new(
+                                                resolve_context.file_id,
+                                                type_expr.span,
+                                            ),
+                                        );
                                     }
                                     return ty;
                                 }
@@ -2640,29 +2655,8 @@ impl<'ast> Builder<'ast, '_> {
         let module = resolve_context.module;
 
         match item {
-            ast::Item::Function {
-                id,
-                pub_span,
-                attributes,
-                signature,
-                block,
-            } => {
-                self.insert_symbol(
-                    &resolve_context,
-                    (SymbolNamespace::Value, signature.name.inner),
-                    SymbolKind::Pending(*id),
-                );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::Function {
-                        file_id,
-                        module,
-                        item,
-                    },
-                );
-                let _ = (pub_span, attributes, signature, block);
-            }
-            ast::Item::FunctionDeclaration { id, signature, .. } => {
+            ast::Item::Function { id, signature, .. }
+            | ast::Item::FunctionDeclaration { id, signature, .. } => {
                 self.insert_symbol(
                     &resolve_context,
                     (SymbolNamespace::Value, signature.name.inner),
@@ -2774,11 +2768,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.ensure_module(&resolve_context, file_id, name.clone(), *pub_span);
             }
             ast::Item::Trait {
-                id,
-                name,
-                items,
-                pub_span,
-                ..
+                id, name, items, ..
             } => {
                 // Traits are structural containers; allocate the slot and register
                 // each item's DefId so ensure_signature can fill it in on demand.
@@ -3681,7 +3671,13 @@ impl<'ast> Builder<'ast, '_> {
 
             // ── memory ────────────────────────────────────────────────────────
             AstNodeRef::Memory { item, .. } => {
-                if let ast::Item::Memory { name, kind, id, config } = item {
+                if let ast::Item::Memory {
+                    name,
+                    kind,
+                    id,
+                    config,
+                } = item
+                {
                     // Resolve the trait type and ensure all its functions are
                     // registered before seed_memory_trait_impl reads them.
                     let type_idx = self.resolve_type(&resolve_context, kind);
@@ -3721,8 +3717,12 @@ impl<'ast> Builder<'ast, '_> {
                         kind: memory_kind,
                         name: name.clone(),
                         source: ItemSource::Internal,
-                        min_pages: config.as_ref().and_then(|c| c.min.as_ref().map(|s| s.inner)),
-                        max_pages: config.as_ref().and_then(|c| c.max.as_ref().map(|s| s.inner)),
+                        min_pages: config
+                            .as_ref()
+                            .and_then(|c| c.min.as_ref().map(|s| s.inner)),
+                        max_pages: config
+                            .as_ref()
+                            .and_then(|c| c.max.as_ref().map(|s| s.inner)),
                     });
                     self.tir.memory_index_lookup.insert(*id, memory_index);
                     let memory_type = self.intern_type(Type::Memory {
@@ -7597,9 +7597,11 @@ impl<'ast> Builder<'ast, '_> {
                 };
 
                 if !mutable {
-                    self.tir.diagnostics.push(report_cannot_store_through_immutable_pointer(
-                        SourceSpan::new(self.file_id, expr.span),
-                    ));
+                    self.tir
+                        .diagnostics
+                        .push(report_cannot_store_through_immutable_pointer(
+                            SourceSpan::new(self.file_id, expr.span),
+                        ));
                 }
 
                 let mut right_expr = self.build_expression(
@@ -7613,21 +7615,23 @@ impl<'ast> Builder<'ast, '_> {
                 if right_expr.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right_expr, inner_ty)?;
                 } else if !self.coercible_to(right_expr.ty, inner_ty) {
-                    self.tir.diagnostics.push(report_binary_expression_mistmatch(
-                        TypeFormatter::new(&self.tir, &self.interner),
-                        BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.file_id,
-                            left_type: Spanned {
-                                inner: inner_ty,
-                                span: left.span,
+                    self.tir
+                        .diagnostics
+                        .push(report_binary_expression_mistmatch(
+                            TypeFormatter::new(&self.tir, &self.interner),
+                            BinaryExpressionMistmatchDiagnostic {
+                                file_id: self.file_id,
+                                left_type: Spanned {
+                                    inner: inner_ty,
+                                    span: left.span,
+                                },
+                                operator: operator.clone(),
+                                right_type: Spanned {
+                                    inner: right_expr.ty,
+                                    span: right_expr.span,
+                                },
                             },
-                            operator: operator.clone(),
-                            right_type: Spanned {
-                                inner: right_expr.ty,
-                                span: right_expr.span,
-                            },
-                        },
-                    ));
+                        ));
                 }
 
                 let left_span = left.span;
@@ -7866,24 +7870,28 @@ impl<'ast> Builder<'ast, '_> {
                 };
 
                 if !self.tir.type_pool[inner_ty as usize].is_primitive() {
-                    self.tir.diagnostics.push(report_binary_operator_cannot_be_applied(
-                        TypeFormatter::new(&self.tir, &self.interner),
-                        BinaryOperatorCannotBeAppliedDiagnostic {
-                            file_id: self.file_id,
-                            operator,
-                            operand: Spanned {
-                                inner: inner_ty,
-                                span: left.span,
+                    self.tir
+                        .diagnostics
+                        .push(report_binary_operator_cannot_be_applied(
+                            TypeFormatter::new(&self.tir, &self.interner),
+                            BinaryOperatorCannotBeAppliedDiagnostic {
+                                file_id: self.file_id,
+                                operator,
+                                operand: Spanned {
+                                    inner: inner_ty,
+                                    span: left.span,
+                                },
                             },
-                        },
-                    ));
+                        ));
                     return Err(());
                 }
 
                 if !mutable {
-                    self.tir.diagnostics.push(report_cannot_store_through_immutable_pointer(
-                        SourceSpan::new(self.file_id, expr.span),
-                    ));
+                    self.tir
+                        .diagnostics
+                        .push(report_cannot_store_through_immutable_pointer(
+                            SourceSpan::new(self.file_id, expr.span),
+                        ));
                 }
 
                 let mut right_expr = self.build_expression(
@@ -7897,21 +7905,23 @@ impl<'ast> Builder<'ast, '_> {
                 if right_expr.ty == Type::UNKNOWN_IDX {
                     self.coerce_untyped_expr(&mut right_expr, inner_ty)?;
                 } else if !self.coercible_to(right_expr.ty, inner_ty) {
-                    self.tir.diagnostics.push(report_binary_expression_mistmatch(
-                        TypeFormatter::new(&self.tir, &self.interner),
-                        BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.file_id,
-                            left_type: Spanned {
-                                inner: inner_ty,
-                                span: left.span,
+                    self.tir
+                        .diagnostics
+                        .push(report_binary_expression_mistmatch(
+                            TypeFormatter::new(&self.tir, &self.interner),
+                            BinaryExpressionMistmatchDiagnostic {
+                                file_id: self.file_id,
+                                left_type: Spanned {
+                                    inner: inner_ty,
+                                    span: left.span,
+                                },
+                                operator: operator.clone(),
+                                right_type: Spanned {
+                                    inner: right_expr.ty,
+                                    span: right_expr.span,
+                                },
                             },
-                            operator: operator.clone(),
-                            right_type: Spanned {
-                                inner: right_expr.ty,
-                                span: right_expr.span,
-                            },
-                        },
-                    ));
+                        ));
                 }
 
                 let left_span = left.span;
@@ -8617,21 +8627,19 @@ impl<'ast> Builder<'ast, '_> {
         stmt: &Separated<Spanned<ast::Statement>>,
     ) -> Result<Expression, ()> {
         let (mut_span, name, ty, value) = match &stmt.inner.inner {
-            ast::Statement::LocalDefinition { pattern, ty, value } => {
-                match &pattern.inner {
-                    ast::Pattern::Binding { mut_span, name } => {
-                        (mut_span.clone(), name.clone(), ty, value)
-                    }
-                    _ => {
-                        self.tir.diagnostics.push(
-                            codespan_reporting::diagnostic::Diagnostic::error()
-                                .with_message("pattern destructuring in locals is not yet supported")
-                                .with_label(Label::primary(self.file_id, pattern.span)),
-                        );
-                        return Err(());
-                    }
+            ast::Statement::LocalDefinition { pattern, ty, value } => match &pattern.inner {
+                ast::Pattern::Binding { mut_span, name } => {
+                    (mut_span.clone(), name.clone(), ty, value)
                 }
-            }
+                _ => {
+                    self.tir.diagnostics.push(
+                        codespan_reporting::diagnostic::Diagnostic::error()
+                            .with_message("pattern destructuring in locals is not yet supported")
+                            .with_label(Label::primary(self.file_id, pattern.span)),
+                    );
+                    return Err(());
+                }
+            },
             _ => unreachable!(),
         };
 

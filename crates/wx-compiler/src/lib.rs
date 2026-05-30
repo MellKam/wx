@@ -12,8 +12,3 @@ pub mod vfs;
 pub const STDLIB_SOURCE: &str = include_str!("../../../std.wx");
 /// Canonical filename used for the embedded standard library.
 pub const STDLIB_FILENAME: &str = "std.wx";
-
-fn test() {
-    let x = 42 as *mut u8;
-    x.add(8)
-}

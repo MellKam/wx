@@ -522,28 +522,22 @@ fn test_struct_layout_is_alignment_sorted() {
     "});
     assert!(case.tir.diagnostics.is_empty());
 
-    let mixed_sym = case.interner.get("Mixed").unwrap();
-    let mixed_ti = case
-        .tir
-        .type_pool
-        .iter()
-        .position(|t| {
-            if let tir::Type::Struct { struct_index } = t {
-                case.tir.structs[*struct_index as usize].name.inner == mixed_sym
-            } else {
-                false
-            }
-        })
-        .unwrap() as u32;
+    // The `dummy` function's first parameter is `Mixed`; its MIR type carries
+    // the aggregate index into `mir.aggregates`.
+    let sig_index = case.mir.functions[0].signature_index as usize;
+    let param_ty = case.mir.signatures[sig_index].params()[0];
+    let aggregate_index = match param_ty {
+        Type::Aggregate { aggregate_index } => aggregate_index as usize,
+        _ => panic!("expected Mixed to lower to an aggregate"),
+    };
 
-    let layout = compute_layout(
-        &case.tir.type_pool,
-        &case.tir.structs,
-        mixed_ti,
-        PointerSize::Memory32,
-    );
-    assert_eq!(layout.size, 24);
-    assert_eq!(layout.align, 8);
+    let agg = &case.mir.aggregates[aggregate_index];
+    // Total size and alignment after alignment-sorted layout.
+    assert_eq!(agg.layout.size, 24);
+    assert_eq!(agg.layout.align, 8);
+    // Physical order: b(i64)@0, d(f64)@8, c(u32)@16, a(bool)@20
+    assert_eq!(&*agg.offsets, &[0, 8, 16, 20]);
+    assert_eq!(&*agg.values, &[Type::I64, Type::F64, Type::U32, Type::Bool]);
 }
 
 // ── Generics / monomorphization

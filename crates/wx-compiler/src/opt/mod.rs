@@ -48,7 +48,7 @@ impl TryFrom<mir::Type> for ScalarType {
             | mir::Type::I8
             | mir::Type::U16
             | mir::Type::I16
-            | mir::Type::Pointer
+            | mir::Type::Pointer { .. }
             | mir::Type::Function { .. } => ScalarType::I32,
             mir::Type::I64 | mir::Type::U64 => ScalarType::I64,
             mir::Type::F32 => ScalarType::F32,
@@ -314,6 +314,13 @@ pub enum DataNodeKind {
     AggregateCallResult {
         aggregate_index: mir::AggregateIndex,
     },
+    /// Aggregate value loaded from a pointer. Unlike `Aggregate`, there are no
+    /// concrete field sub-nodes — per-field values come from per-field
+    /// `PointerLoad` instructions emitted by the scheduler.
+    /// `AggregateGet` of this node does not fold.
+    AggregateLoadResult {
+        aggregate_index: mir::AggregateIndex,
+    },
     MemoryGrowResult {
         memory_index: u32,
         delta: DataNodeIndex,
@@ -372,7 +379,8 @@ impl DataNodeKind {
             DataNodeKind::Aggregate {
                 aggregate_index, ..
             }
-            | DataNodeKind::AggregateCallResult { aggregate_index } => {
+            | DataNodeKind::AggregateCallResult { aggregate_index }
+            | DataNodeKind::AggregateLoadResult { aggregate_index } => {
                 NodeType::Aggregate(*aggregate_index)
             }
         }
@@ -393,6 +401,7 @@ impl DataNodeKind {
                 | DataNodeKind::MemorySize { .. }
                 | DataNodeKind::CallResult { .. }
                 | DataNodeKind::AggregateCallResult { .. }
+                | DataNodeKind::AggregateLoadResult { .. }
                 | DataNodeKind::MemoryGrowResult { .. }
                 | DataNodeKind::PointerLoadResult { .. }
                 // LoopParam nodes are mutated after creation, so they cannot be CSE'd.
@@ -723,6 +732,7 @@ impl Function {
             | DataNodeKind::MemoryOffset { .. }
             | DataNodeKind::MemorySize { .. }
             | DataNodeKind::AggregateCallResult { .. }
+            | DataNodeKind::AggregateLoadResult { .. }
             // LoopParam uses are registered by patch_loop_param after both
             // `before` and `after` are known.
             | DataNodeKind::LoopParam { .. } => {}

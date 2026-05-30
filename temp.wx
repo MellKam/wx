@@ -4,25 +4,25 @@ trait Sized {
 }
 
 #[intrinsic]
-unsafe fn pointer_add<M: Memory, T: Sized>(
+fn pointer_add<M: Memory, T: Sized>(
   ptr: M::*T, 
   n: M::Size
 ) -> M::*T;
 
 #[intrinsic]
-unsafe fn pointer_sub<M: Memory, T: Sized>(
+fn pointer_sub<M: Memory, T: Sized>(
   ptr: M::*T, 
   n: M::Size
 ) -> M::*T;
 
 impl<M: Memory, T: Sized> M::*T {
   #[inline]
-  unsafe fn add(self, n: M::Size) -> Self {
+  fn add(self, n: M::Size) -> Self {
     pointer_add(self, n)
   }
 
   #[inline]
-  unsafe fn sub(self, n: M::Size) -> Self {
+  fn sub(self, n: M::Size) -> Self {
     pointer_sub(self, n)
   }
 }

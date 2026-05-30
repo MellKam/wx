@@ -215,7 +215,7 @@ pub enum Type {
     Unit,
     Never,
     Bool,
-    Pointer,
+    Pointer { memory_index: u32 },
     Aggregate { aggregate_index: AggregateIndex },
     Function { signature_index: SignatureIndex },
 }
@@ -227,18 +227,15 @@ pub struct Expression {
     pub ty: Type,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Aggregate {
     pub values: Box<[Type]>,
-}
-
-impl std::hash::Hash for Aggregate {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        for field in self.values.iter() {
-            field.hash(state);
-        }
-    }
+    /// Byte offset of each field, in physical (layout) order.
+    pub offsets: Box<[u32]>,
+    pub layout: Layout,
+    /// `decl_to_phys[decl_index]` = physical slot index.
+    decl_to_phys: Box<[u32]>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -354,228 +351,20 @@ pub struct Global {
     pub value: Expression,
 }
 
-struct AggregatePool {
-    lookup: HashMap<Aggregate, AggregateIndex>,
-    aggregates: Vec<Aggregate>,
-}
-
-impl AggregatePool {
-    fn new() -> Self {
-        AggregatePool {
-            lookup: HashMap::new(),
-            aggregates: Vec::new(),
-        }
-    }
-
-    fn add(&mut self, aggregate: Aggregate) -> AggregateIndex {
-        if let Some(&index) = self.lookup.get(&aggregate) {
-            index
-        } else {
-            let index = self.lookup.len() as AggregateIndex;
-            self.lookup.insert(aggregate.clone(), index);
-            self.aggregates.push(aggregate);
-            index
-        }
-    }
-
-    #[allow(dead_code)]
-    fn get(&self, index: AggregateIndex) -> Option<&Aggregate> {
-        self.aggregates.get(index as usize)
-    }
-}
-
 /// Memory layout of a type: size in bytes and required alignment in bytes.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Layout {
     pub size: u32,
     pub align: u32,
 }
 
 impl Layout {
-    fn ptr(ptr_size: PointerSize) -> Layout {
-        let n = ptr_size as u32;
-        Layout { size: n, align: n }
-    }
-
     fn pad_to_align(self) -> Self {
         Layout {
             size: (self.size + self.align - 1) & !(self.align - 1),
             align: self.align,
         }
-    }
-}
-
-#[repr(u32)]
-#[derive(Clone, Copy)]
-pub enum PointerSize {
-    Memory32 = 4,
-    Memory64 = 8,
-}
-
-/// Compute the memory layout of a type.
-///
-/// Fields of structs and tuples are sorted by alignment descending before
-/// computing padding, giving optimal (minimal) struct sizes.
-///
-/// Panics on `Error`, `Unknown`, `ImportModule`, `Enum`, or non-value types.
-pub fn compute_layout(
-    types: &[tir::Type],
-    structs: &[tir::Struct],
-    idx: tir::TypeIndex,
-    ptr_size: PointerSize,
-) -> Layout {
-    match &types[idx as usize] {
-        tir::Type::Unit | tir::Type::Never => Layout { size: 0, align: 1 },
-        tir::Type::I32 | tir::Type::U32 | tir::Type::F32 | tir::Type::Char => {
-            Layout { size: 4, align: 4 }
-        }
-        tir::Type::U8 | tir::Type::I8 => Layout { size: 1, align: 1 },
-        tir::Type::U16 | tir::Type::I16 => Layout { size: 2, align: 2 },
-        tir::Type::Bool => Layout { size: 1, align: 1 },
-        tir::Type::I64 | tir::Type::U64 | tir::Type::F64 => Layout { size: 8, align: 8 },
-        tir::Type::Pointer { .. } => Layout::ptr(ptr_size),
-        tir::Type::Slice { .. } => {
-            let p = ptr_size as u32;
-            Layout {
-                size: p * 2,
-                align: p,
-            }
-        }
-        tir::Type::Array { of, size, .. } => {
-            let elem = compute_layout(types, structs, *of, ptr_size).pad_to_align();
-            Layout {
-                size: elem.size * size,
-                align: elem.align,
-            }
-        }
-        tir::Type::Tuple { elements } => {
-            let mut indexed: Vec<(tir::TypeIndex, u32)> = elements
-                .iter()
-                .map(|&ty| (ty, compute_layout(types, structs, ty, ptr_size).align))
-                .collect();
-            indexed.sort_by(|a, b| b.1.cmp(&a.1));
-            let sorted: Vec<tir::TypeIndex> = indexed.into_iter().map(|(ty, _)| ty).collect();
-            aggregate_layout(types, structs, &sorted, ptr_size)
-        }
-        tir::Type::Struct { struct_index } => {
-            let si = *struct_index as usize;
-            let mut indexed: Vec<(tir::TypeIndex, u32)> = structs[si]
-                .fields
-                .iter()
-                .map(|f| {
-                    let align = compute_layout(types, structs, f.ty.inner, ptr_size).align;
-                    (f.ty.inner, align)
-                })
-                .collect();
-            indexed.sort_by(|a, b| b.1.cmp(&a.1));
-            let sorted: Vec<tir::TypeIndex> = indexed.into_iter().map(|(ty, _)| ty).collect();
-            aggregate_layout(types, structs, &sorted, ptr_size)
-        }
-        tir::Type::Function { .. } | tir::Type::FunctionItem { .. } => Layout::ptr(ptr_size),
-        tir::Type::Error
-        | tir::Type::Unknown
-        | tir::Type::ImportModule { .. }
-        | tir::Type::Module { .. }
-        | tir::Type::Enum { .. }
-        | tir::Type::Memory { .. }
-        | tir::Type::Trait { .. }
-        | tir::Type::TypeParam { .. }
-        | tir::Type::AssociatedType { .. }
-        | tir::Type::AssocTypeProjection { .. } => {
-            panic!("compute_layout called on non-value type")
-        }
-    }
-}
-
-/// C-style layout for an ordered sequence of field types.
-fn aggregate_layout(
-    types: &[tir::Type],
-    structs: &[tir::Struct],
-    fields: &[tir::TypeIndex],
-    ptr_size: PointerSize,
-) -> Layout {
-    let mut size: u32 = 0;
-    let mut align: u32 = 1;
-    for &field_idx in fields {
-        let field = compute_layout(types, structs, field_idx, ptr_size);
-        size = (size + field.align - 1) & !(field.align - 1);
-        size += field.size;
-        align = align.max(field.align);
-    }
-    size = (size + align - 1) & !(align - 1);
-    Layout { size, align }
-}
-
-/// Describes the permutation between an aggregate type's declaration order and
-/// its physical (alignment-sorted, padding-minimised) storage order.
-struct AggregateLayout {
-    /// `decl_to_phys[decl_index]` = physical slot index.
-    decl_to_phys: Box<[u32]>,
-    /// `phys_to_decl[phys_index]` = declaration index.
-    phys_to_decl: Box<[u32]>,
-}
-
-/// Compute the `AggregateLayout` for a struct or tuple type.
-///
-/// Fields/elements are sorted by alignment descending (stable, so equal-
-/// alignment fields keep their declaration order) to minimise padding.
-fn compute_field_order(
-    type_index: tir::TypeIndex,
-    types: &[tir::Type],
-    structs: &[tir::Struct],
-) -> AggregateLayout {
-    let decl_types: Box<[tir::TypeIndex]> = match &types[type_index as usize] {
-        tir::Type::Tuple { elements } => elements.clone(),
-        tir::Type::Struct { struct_index } => structs[*struct_index as usize]
-            .fields
-            .iter()
-            .map(|f| f.ty.inner)
-            .collect(),
-        _ => unreachable!("compute_layout called on non-aggregate type"),
-    };
-
-    let mut indexed: Vec<(u32, u32)> = decl_types
-        .iter()
-        .enumerate()
-        .map(|(decl, &ty)| {
-            let align = compute_layout(types, structs, ty, PointerSize::Memory32).align;
-            (decl as u32, align)
-        })
-        .collect();
-    indexed.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let phys_to_decl: Box<[u32]> = indexed.iter().map(|(decl, _)| *decl).collect();
-    let mut decl_to_phys = vec![0u32; decl_types.len()];
-    for (phys, &decl) in phys_to_decl.iter().enumerate() {
-        decl_to_phys[decl as usize] = phys as u32;
-    }
-
-    AggregateLayout {
-        decl_to_phys: decl_to_phys.into_boxed_slice(),
-        phys_to_decl,
-    }
-}
-
-struct LayoutCache {
-    map: HashMap<tir::TypeIndex, AggregateLayout>,
-}
-
-impl LayoutCache {
-    fn new() -> Self {
-        LayoutCache {
-            map: HashMap::new(),
-        }
-    }
-
-    fn get_or_compute(
-        &mut self,
-        type_index: tir::TypeIndex,
-        types: &[tir::Type],
-        structs: &[tir::Struct],
-    ) -> &AggregateLayout {
-        self.map
-            .entry(type_index)
-            .or_insert_with(|| compute_field_order(type_index, types, structs))
     }
 }
 
@@ -598,8 +387,8 @@ impl MIR {
             tir,
             interner,
             string_pool: StringPool::new(),
-            aggregate_pool: AggregatePool::new(),
-            layout_cache: LayoutCache::new(),
+            aggregate_index_lookup: HashMap::new(),
+            aggregates: Vec::new(),
             memory_id_remap,
             signature_pool: Vec::new(),
             signature_index_lookup: HashMap::new(),
@@ -711,13 +500,17 @@ impl MIR {
             globals,
             strings: builder.string_pool.strings.into_boxed_slice(),
             signatures,
-            aggregates: builder.aggregate_pool.aggregates.into_boxed_slice(),
+            aggregates: builder.aggregates.into_boxed_slice(),
             imports,
             memories: tir
                 .memories
                 .iter()
                 .filter(|m| m.source == tir::ItemSource::Internal)
-                .map(|m| MemoryInfo { kind: m.kind, min_pages: m.min_pages, max_pages: m.max_pages })
+                .map(|m| MemoryInfo {
+                    kind: m.kind,
+                    min_pages: m.min_pages,
+                    max_pages: m.max_pages,
+                })
                 .collect(),
             exports: {
                 let mut exports: Vec<ExportItem> = tir
@@ -837,8 +630,8 @@ struct Builder<'tir> {
     tir: &'tir tir::TIR,
     interner: &'tir ast::StringInterner,
     string_pool: StringPool,
-    aggregate_pool: AggregatePool,
-    layout_cache: LayoutCache,
+    aggregate_index_lookup: HashMap<Box<[tir::TypeIndex]>, AggregateIndex>,
+    aggregates: Vec<Aggregate>,
     /// DefId → index in tir.memories (= WebAssembly memory index).
     memory_id_remap: HashMap<ast::DefId, u32>,
     /// Concrete function signatures, interned on demand. The index into this
@@ -867,6 +660,120 @@ struct FunctionContext {
 }
 
 impl<'tir> Builder<'tir> {
+    /// Compute the memory layout of a type.
+    ///
+    /// Fields of structs and tuples are sorted by alignment descending before
+    /// computing padding, giving optimal (minimal) struct sizes.
+    ///
+    /// Panics on `Error`, `Unknown`, `ImportModule`, `Enum`, or non-value types.
+    pub fn compute_layout(&mut self, idx: tir::TypeIndex) -> Layout {
+        if idx == tir::Type::F32_IDX
+            || idx == tir::Type::I32_IDX
+            || idx == tir::Type::U32_IDX
+            || idx == tir::Type::CHAR_IDX
+        {
+            return Layout { size: 4, align: 4 };
+        }
+        if idx == tir::Type::I64_IDX || idx == tir::Type::U64_IDX || idx == tir::Type::F64_IDX {
+            return Layout { size: 8, align: 8 };
+        }
+        if idx == tir::Type::U8_IDX || idx == tir::Type::I8_IDX || idx == tir::Type::BOOL_IDX {
+            return Layout { size: 1, align: 1 };
+        }
+        if idx == tir::Type::UNIT_IDX || idx == tir::Type::NEVER_IDX {
+            return Layout { size: 0, align: 1 };
+        }
+        if idx == tir::Type::U16_IDX || idx == tir::Type::I16_IDX {
+            return Layout { size: 2, align: 2 };
+        }
+
+        match &self.tir.type_pool[idx as usize] {
+            tir::Type::Function { .. } | tir::Type::FunctionItem { .. } => {
+                Layout { size: 4, align: 4 }
+            }
+            tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
+                let memory_index = match memory {
+                    Some(def_id) => self.memory_id_remap[def_id],
+                    None => 0,
+                };
+                let pointer_size = self.tir.memories[memory_index as usize].kind.pointer_size();
+                Layout {
+                    size: pointer_size,
+                    align: pointer_size,
+                }
+            }
+            tir::Type::Slice { memory, .. } => {
+                let memory_index = match memory {
+                    Some(def_id) => self.memory_id_remap[def_id],
+                    None => 0,
+                };
+                let pointer_size = self.tir.memories[memory_index as usize].kind.pointer_size();
+                Layout {
+                    size: pointer_size * 2,
+                    align: pointer_size,
+                }
+            }
+            tir::Type::Tuple { elements } => {
+                let aggregate_index = self.ensure_aggregate(&elements);
+                self.aggregates[aggregate_index as usize].layout
+            }
+            tir::Type::Struct { struct_index } => {
+                let fields: Box<[tir::TypeIndex]> = self.tir.structs[*struct_index as usize]
+                    .fields
+                    .iter()
+                    .map(|f| f.ty.inner)
+                    .collect();
+                let aggregate_index = self.ensure_aggregate(&fields);
+                self.aggregates[aggregate_index as usize].layout
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn ensure_aggregate(&mut self, fields: &[tir::TypeIndex]) -> AggregateIndex {
+        if let Some(&index) = self.aggregate_index_lookup.get(fields) {
+            return index;
+        }
+
+        let mut sorted: Vec<(u32, Layout)> = fields
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(decl, ty)| (decl as u32, self.compute_layout(ty)))
+            .collect();
+        sorted.sort_by(|(_, a), (_, b)| b.align.cmp(&a.align));
+
+        // Single pass: total layout, per-field byte offsets, and ordering maps.
+        let mut layout = Layout { size: 0, align: 1 };
+        let mut offsets = Vec::with_capacity(sorted.len());
+        let mut decl_to_phys = vec![0u32; sorted.len()];
+        for (phys, (decl, field_layout)) in sorted.iter().copied().enumerate() {
+            layout.size = (layout.size + field_layout.align - 1) & !(field_layout.align - 1);
+            offsets.push(layout.size);
+            layout.size += field_layout.size;
+            layout.align = layout.align.max(field_layout.align);
+            decl_to_phys[decl as usize] = phys as u32;
+        }
+        layout = layout.pad_to_align();
+
+        // Lower field types in physical order so AggregateGet field_index maps directly.
+        let values: Box<[Type]> = sorted
+            .iter()
+            .map(|&(decl, _)| self.lower_type_index(fields[decl as usize]))
+            .collect();
+
+        let aggregate_index = self.aggregates.len() as AggregateIndex;
+        self.aggregate_index_lookup
+            .insert(fields.into(), aggregate_index);
+        self.aggregates.push(Aggregate {
+            decl_to_phys: decl_to_phys.into_boxed_slice(),
+            layout,
+            offsets: offsets.into_boxed_slice(),
+            values,
+        });
+        aggregate_index
+    }
+
     fn lower_type_index(&mut self, type_idx: tir::TypeIndex) -> Type {
         match type_idx {
             idx if idx == tir::Type::ERROR_IDX => unreachable!(),
@@ -924,40 +831,24 @@ impl<'tir> Builder<'tir> {
                     .expect("no impl found for associated type projection during MIR lowering");
                 self.lower_type_index(concrete)
             }
-            tir::Type::Pointer { .. } => Type::Pointer,
+            tir::Type::Pointer { memory, .. } => Type::Pointer {
+                memory_index: match memory {
+                    Some(def_id) => self.memory_id_remap[&def_id],
+                    None => 0,
+                },
+            },
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index } => {
-                let si = struct_index as usize;
-                let decl_types: Vec<tir::TypeIndex> = self.tir.structs[si]
+                let fields: Box<[_]> = self.tir.structs[struct_index as usize]
                     .fields
                     .iter()
                     .map(|f| f.ty.inner)
                     .collect();
-                let phys_to_decl = self
-                    .layout_cache
-                    .get_or_compute(type_idx, &self.tir.type_pool, &self.tir.structs)
-                    .phys_to_decl
-                    .to_vec();
-                let fields: Box<[Type]> = phys_to_decl
-                    .iter()
-                    .map(|&decl| self.lower_type_index(decl_types[decl as usize]))
-                    .collect();
-                let aggregate_index = self.aggregate_pool.add(Aggregate { values: fields });
+                let aggregate_index = self.ensure_aggregate(&fields);
                 Type::Aggregate { aggregate_index }
             }
             tir::Type::Tuple { elements } => {
-                let elements = elements.to_vec();
-                let phys_to_decl = self
-                    .layout_cache
-                    .get_or_compute(type_idx, &self.tir.type_pool, &self.tir.structs)
-                    .phys_to_decl
-                    .to_vec();
-
-                let fields: Box<[Type]> = phys_to_decl
-                    .iter()
-                    .map(|&decl| self.lower_type_index(elements[decl as usize]))
-                    .collect();
-                let aggregate_index = self.aggregate_pool.add(Aggregate { values: fields });
+                let aggregate_index = self.ensure_aggregate(&elements);
                 Type::Aggregate { aggregate_index }
             }
             _ => unreachable!(),
@@ -1150,7 +1041,7 @@ impl<'tir> Builder<'tir> {
                         values: Box::new([
                             Expression {
                                 kind: ExprKind::StringIndex { string_index },
-                                ty: Type::Pointer,
+                                ty: Type::Pointer { memory_index: 0 },
                             },
                             Expression {
                                 kind: ExprKind::Int { value: len },
@@ -1457,25 +1348,28 @@ impl<'tir> Builder<'tir> {
                                         ty: result_ty,
                                     },
                                     "MEMORY_INDEX" => Expression {
-                                        kind: ExprKind::Int { value: memory_index as i64 },
+                                        kind: ExprKind::Int {
+                                            value: memory_index as i64,
+                                        },
                                         ty: result_ty,
                                     },
                                     _ => todo!("unknown memory compiler constant: {}", const_name),
                                 }
                             }
                             _ => {
-                                let layout = compute_layout(
-                                    &self.tir.type_pool,
-                                    &self.tir.structs,
-                                    namespace_ty,
-                                    PointerSize::Memory32,
-                                );
+                                let layout = self.compute_layout(namespace_ty);
                                 let value = match const_name {
                                     "SIZE" => layout.size as i64,
                                     "ALIGN" => layout.align as i64,
-                                    _ => todo!("unknown compiler-implemented constant: {}", const_name),
+                                    _ => todo!(
+                                        "unknown compiler-implemented constant: {}",
+                                        const_name
+                                    ),
                                 };
-                                Expression { kind: ExprKind::Int { value }, ty: result_ty }
+                                Expression {
+                                    kind: ExprKind::Int { value },
+                                    ty: result_ty,
+                                }
                             }
                         }
                     }
@@ -1537,12 +1431,16 @@ impl<'tir> Builder<'tir> {
                     tir::Type::Struct { struct_index } => *struct_index,
                     _ => unreachable!("ObjectAccess on non-struct type"),
                 };
+                let fields: Box<[_]> = self.tir.structs[struct_index as usize]
+                    .fields
+                    .iter()
+                    .map(|f| f.ty.inner)
+                    .collect();
+                let aggregate_index = self.ensure_aggregate(&fields);
+                let aggregate = &self.aggregates[aggregate_index as usize];
                 let decl_index = self.tir.structs[struct_index as usize].lookup[&member.inner];
-                let phys_index = self
-                    .layout_cache
-                    .get_or_compute(object.ty, &self.tir.type_pool, &self.tir.structs)
-                    .decl_to_phys[decl_index];
-                let field_ty = self.lower_type_index(expr.ty);
+                let phys_index = aggregate.decl_to_phys[decl_index];
+                let field_ty = aggregate.values[phys_index as usize];
 
                 match &object.kind {
                     tir::ExprKind::Local {
@@ -1587,44 +1485,54 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::StructInit { fields, .. } => {
-                // TIR stores fields in declaration order; permute to physical order.
-                let decl_to_phys = self
-                    .layout_cache
-                    .get_or_compute(expr.ty, &self.tir.type_pool, &self.tir.structs)
-                    .decl_to_phys
-                    .to_vec();
+                let struct_index = match &self.tir.type_pool[expr.ty as usize] {
+                    tir::Type::Struct { struct_index } => *struct_index as usize,
+                    _ => unreachable!("StructInit type must be Struct"),
+                };
+                let field_types: Vec<tir::TypeIndex> = self.tir.structs[struct_index]
+                    .fields
+                    .iter()
+                    .map(|f| f.ty.inner)
+                    .collect();
+                let lowered: Vec<Expression> = fields
+                    .iter()
+                    .map(|f| self.lower_expression(func_ctx, f, sink))
+                    .collect();
+                let aggregate_index = self.ensure_aggregate(&field_types);
+                let decl_to_phys = &self.aggregates[aggregate_index as usize].decl_to_phys;
                 let mut phys_slots: Vec<Option<Expression>> =
-                    (0..fields.len()).map(|_| None).collect();
-                for (decl, field) in fields.iter().enumerate() {
-                    let phys = decl_to_phys[decl] as usize;
-                    phys_slots[phys] = Some(self.lower_expression(func_ctx, field, sink));
+                    (0..lowered.len()).map(|_| None).collect();
+                for (decl, expr) in lowered.into_iter().enumerate() {
+                    phys_slots[decl_to_phys[decl] as usize] = Some(expr);
                 }
-                let mir_fields: Box<[Expression]> =
+                let values: Box<[Expression]> =
                     phys_slots.into_iter().map(|e| e.unwrap()).collect();
                 Expression {
-                    kind: ExprKind::Aggregate { values: mir_fields },
-                    ty: self.lower_type_index(expr.ty),
+                    kind: ExprKind::Aggregate { values },
+                    ty: Type::Aggregate { aggregate_index },
                 }
             }
             tir::ExprKind::TupleInit { elements } => {
-                // Same reordering as StructInit: declaration order → physical
-                // (alignment-sorted) order.
-                let decl_to_phys = self
-                    .layout_cache
-                    .get_or_compute(expr.ty, &self.tir.type_pool, &self.tir.structs)
-                    .decl_to_phys
-                    .to_vec();
+                let elem_types: Vec<tir::TypeIndex> = match &self.tir.type_pool[expr.ty as usize] {
+                    tir::Type::Tuple { elements } => elements.to_vec(),
+                    _ => unreachable!("TupleInit type must be Tuple"),
+                };
+                let lowered: Vec<Expression> = elements
+                    .iter()
+                    .map(|e| self.lower_expression(func_ctx, e, sink))
+                    .collect();
+                let aggregate_index = self.ensure_aggregate(&elem_types);
+                let decl_to_phys = &self.aggregates[aggregate_index as usize].decl_to_phys;
                 let mut phys_slots: Vec<Option<Expression>> =
-                    (0..elements.len()).map(|_| None).collect();
-                for (decl, elem) in elements.iter().enumerate() {
-                    let phys = decl_to_phys[decl] as usize;
-                    phys_slots[phys] = Some(self.lower_expression(func_ctx, elem, sink));
+                    (0..lowered.len()).map(|_| None).collect();
+                for (decl, expr) in lowered.into_iter().enumerate() {
+                    phys_slots[decl_to_phys[decl] as usize] = Some(expr);
                 }
-                let mir_elems: Box<[Expression]> =
+                let values: Box<[Expression]> =
                     phys_slots.into_iter().map(|e| e.unwrap()).collect();
                 Expression {
-                    kind: ExprKind::Aggregate { values: mir_elems },
-                    ty: self.lower_type_index(expr.ty),
+                    kind: ExprKind::Aggregate { values },
+                    ty: Type::Aggregate { aggregate_index },
                 }
             }
             tir::ExprKind::IfElse {
@@ -2112,11 +2020,18 @@ fn rewrite_body(
             memory_index,
             delta: rw_box(delta),
         },
-        ExprKind::PointerLoad { pointer, memory_index } => ExprKind::PointerLoad {
+        ExprKind::PointerLoad {
+            pointer,
+            memory_index,
+        } => ExprKind::PointerLoad {
             pointer: rw_box(pointer),
             memory_index,
         },
-        ExprKind::PointerStore { pointer, value, memory_index } => ExprKind::PointerStore {
+        ExprKind::PointerStore {
+            pointer,
+            value,
+            memory_index,
+        } => ExprKind::PointerStore {
             pointer: rw_box(pointer),
             value: rw_box(value),
             memory_index,
@@ -2295,11 +2210,21 @@ fn inline_expr(
         ExprKind::MemoryGrow { delta, .. } => {
             inline_expr(delta, caller_scopes, inline_id, inline_body, current_scope)
         }
-        ExprKind::PointerLoad { pointer, .. } => {
-            inline_expr(pointer, caller_scopes, inline_id, inline_body, current_scope)
-        }
+        ExprKind::PointerLoad { pointer, .. } => inline_expr(
+            pointer,
+            caller_scopes,
+            inline_id,
+            inline_body,
+            current_scope,
+        ),
         ExprKind::PointerStore { pointer, value, .. } => {
-            inline_expr(pointer, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(
+                pointer,
+                caller_scopes,
+                inline_id,
+                inline_body,
+                current_scope,
+            );
             inline_expr(value, caller_scopes, inline_id, inline_body, current_scope);
         }
         // Leaf variants — nothing to recurse into.
