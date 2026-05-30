@@ -630,15 +630,19 @@ impl Builder {
                         mir.memories
                             .iter()
                             .enumerate()
-                            .map(|(i, _kind)| {
+                            .map(|(i, info)| {
                                 // The first defined memory (lowest wasm index after imports)
                                 // needs at least `required_pages` to cover static data.
-                                let initial = if i as u32 == 0 && imported_memory_count == 0 {
+                                let string_pages = if i as u32 == 0 && imported_memory_count == 0 {
                                     required_pages
                                 } else {
                                     0
                                 };
-                                MemoryType::Unbounded { initial }
+                                let initial = info.min_pages.unwrap_or(0).max(string_pages);
+                                match info.max_pages {
+                                    Some(max) => MemoryType::Bounded { initial, max },
+                                    None => MemoryType::Unbounded { initial },
+                                }
                             })
                             .collect()
                     }
@@ -862,6 +866,17 @@ impl Builder {
                 sink.push(Instruction::MemoryGrow as u8);
                 idx.encode(sink);
             }
+            // Pointer load/store — offset=0, align = log2(natural alignment).
+            // Memory 0 uses the standard single-memory encoding.
+            // Memory N>0 requires the multi-memory extension (memory index prefix).
+            SI::I32Load { memory_index, align } => encode_load(Instruction::I32Load, memory_index, align, sink),
+            SI::I64Load { memory_index, align } => encode_load(Instruction::I64Load, memory_index, align, sink),
+            SI::F32Load { memory_index, align } => encode_load(Instruction::F32Load, memory_index, align, sink),
+            SI::F64Load { memory_index, align } => encode_load(Instruction::F64Load, memory_index, align, sink),
+            SI::I32Store { memory_index, align } => encode_store(Instruction::I32Store, memory_index, align, sink),
+            SI::I64Store { memory_index, align } => encode_store(Instruction::I64Store, memory_index, align, sink),
+            SI::F32Store { memory_index, align } => encode_store(Instruction::F32Store, memory_index, align, sink),
+            SI::F64Store { memory_index, align } => encode_store(Instruction::F64Store, memory_index, align, sink),
             SI::Nop => sink.push(Instruction::Nop as u8),
             SI::FunctionPointer(id) => {
                 let wasm_idx = self.func_wasm_index[&id];
@@ -1143,6 +1158,24 @@ enum Instruction {
 
 trait Encode {
     fn encode(&self, sink: &mut Vec<u8>);
+}
+
+fn encode_load(opcode: Instruction, memory_index: u32, align: u32, sink: &mut Vec<u8>) {
+    sink.push(opcode as u8);
+    align.encode(sink);      // memarg: alignment (log2 of bytes)
+    0u32.encode(sink);       // memarg: offset = 0
+    if memory_index > 0 {
+        memory_index.encode(sink);
+    }
+}
+
+fn encode_store(opcode: Instruction, memory_index: u32, align: u32, sink: &mut Vec<u8>) {
+    sink.push(opcode as u8);
+    align.encode(sink);      // memarg: alignment (log2 of bytes)
+    0u32.encode(sink);       // memarg: offset = 0
+    if memory_index > 0 {
+        memory_index.encode(sink);
+    }
 }
 
 impl Encode for i32 {

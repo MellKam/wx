@@ -2796,3 +2796,87 @@ fn test_function_item_wrong_signature_is_error() {
         "type mismatch: add (fn(i32,i32)->i32) passed where fn(i32)->i32 expected",
     );
 }
+
+// ── Pointer dereference ──────────────────────────────────────────────────────
+
+#[test]
+fn test_deref_load_through_pointer() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        fn read(ptr: heap::*i32) -> i32 { ptr.* }
+    "});
+    let case = TestCase::new(&src);
+    no_errors(&case);
+}
+
+#[test]
+fn test_deref_store_through_mutable_pointer() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        fn write(ptr: heap::*mut i32) { ptr.* = 42 }
+    "});
+    let case = TestCase::new(&src);
+    no_errors(&case);
+}
+
+#[test]
+fn test_deref_arithmetic_assignment_through_mutable_pointer() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        fn increment(ptr: heap::*mut i32) { ptr.* += 1 }
+    "});
+    let case = TestCase::new(&src);
+    no_errors(&case);
+}
+
+#[test]
+fn test_deref_non_pointer_type_is_error() {
+    let case = TestCase::new(indoc! {"
+        fn bad(x: i32) -> i32 { x.* }
+    "});
+    assert!(
+        has_error_code(&case.tir, "E1037"),
+        "expected E1037 (dereference of non-pointer type)"
+    );
+}
+
+#[test]
+fn test_deref_no_memory_is_error() {
+    let case = TestCase::new(indoc! {"
+        fn bad(ptr: *i32) -> i32 { ptr.* }
+    "});
+    assert!(
+        has_error_code(&case.tir, "E1038"),
+        "expected E1038 (no memory for pointer)"
+    );
+}
+
+#[test]
+fn test_deref_store_through_immutable_pointer_is_error() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        fn bad(ptr: heap::*i32) { ptr.* = 42 }
+    "});
+    let case = TestCase::new(&src);
+    has_error_matching(&case, "immutable pointer");
+}
+
+#[test]
+fn test_deref_arithmetic_assignment_through_immutable_pointer_is_error() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        fn bad(ptr: heap::*i32) { ptr.* += 1 }
+    "});
+    let case = TestCase::new(&src);
+    has_error_matching(&case, "immutable pointer");
+}
+
+#[test]
+fn test_deref_type_mismatch_on_store_is_error() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        fn bad(ptr: heap::*mut i32) { ptr.* = true }
+    "});
+    let case = TestCase::new(&src);
+    has_error_matching(&case, "cannot assign");
+}

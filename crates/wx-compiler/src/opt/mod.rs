@@ -318,6 +318,11 @@ pub enum DataNodeKind {
         memory_index: u32,
         delta: DataNodeIndex,
     },
+    /// Value produced by a `ControlNode::PointerLoad`. Always spilled.
+    PointerLoadResult {
+        address: DataNodeIndex,
+        ty: ScalarType,
+    },
 }
 
 impl DataNodeKind {
@@ -362,6 +367,8 @@ impl DataNodeKind {
             | DataNodeKind::MemorySize { .. }
             | DataNodeKind::MemoryGrowResult { .. } => NodeType::Scalar(ScalarType::I32),
 
+            DataNodeKind::PointerLoadResult { ty, .. } => NodeType::Scalar(*ty),
+
             DataNodeKind::Aggregate {
                 aggregate_index, ..
             }
@@ -387,6 +394,7 @@ impl DataNodeKind {
                 | DataNodeKind::CallResult { .. }
                 | DataNodeKind::AggregateCallResult { .. }
                 | DataNodeKind::MemoryGrowResult { .. }
+                | DataNodeKind::PointerLoadResult { .. }
                 // LoopParam nodes are mutated after creation, so they cannot be CSE'd.
                 | DataNodeKind::LoopParam { .. }
         )
@@ -450,6 +458,19 @@ pub enum ControlNode {
         delta: DataNodeIndex,
         /// The `MemoryGrowResult` data node produced by this operation.
         result: DataNodeIndex,
+    },
+    /// Load a scalar value from a raw pointer address. Sequenced with stores.
+    PointerLoad {
+        address: DataNodeIndex,
+        /// The `PointerLoadResult` data node that carries the loaded value.
+        result: DataNodeIndex,
+        memory_index: u32,
+    },
+    /// Store a scalar value to a raw pointer address.
+    PointerStore {
+        address: DataNodeIndex,
+        value: DataNodeIndex,
+        memory_index: u32,
     },
 }
 
@@ -686,6 +707,10 @@ impl Function {
 
             DataNodeKind::MemoryGrowResult { delta, .. } => {
                 self.data_nodes[*delta as usize].uses.push(user_id);
+            }
+
+            DataNodeKind::PointerLoadResult { address, .. } => {
+                self.data_nodes[*address as usize].uses.push(user_id);
             }
 
             // Leaf nodes: no inputs to register.

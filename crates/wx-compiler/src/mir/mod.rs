@@ -186,6 +186,17 @@ pub enum ExprKind {
         memory_index: u32,
         delta: Box<Expression>,
     },
+    /// Load a value from the address held in `pointer`.
+    PointerLoad {
+        pointer: Box<Expression>,
+        memory_index: u32,
+    },
+    /// Store `value` to the address held in `pointer`.
+    PointerStore {
+        pointer: Box<Expression>,
+        value: Box<Expression>,
+        memory_index: u32,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -231,6 +242,13 @@ impl std::hash::Hash for Aggregate {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+pub struct MemoryInfo {
+    pub kind: tir::MemoryKind,
+    pub min_pages: Option<u32>,
+    pub max_pages: Option<u32>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct MIR {
     pub functions: Vec<Function>,
     #[cfg_attr(test, serde(skip))]
@@ -239,7 +257,7 @@ pub struct MIR {
     pub globals: Vec<Global>,
     pub exports: Vec<ExportItem>,
     pub imports: Vec<ImportModule>,
-    pub memories: Vec<tir::MemoryKind>,
+    pub memories: Vec<MemoryInfo>,
     pub aggregates: Box<[Aggregate]>,
     pub strings: Box<[SymbolU32]>,
     /// Direct call edges collected during lowering: (caller_mir_id,
@@ -699,7 +717,7 @@ impl MIR {
                 .memories
                 .iter()
                 .filter(|m| m.source == tir::ItemSource::Internal)
-                .map(|m| m.kind)
+                .map(|m| MemoryInfo { kind: m.kind, min_pages: m.min_pages, max_pages: m.max_pages })
                 .collect(),
             exports: {
                 let mut exports: Vec<ExportItem> = tir
@@ -906,6 +924,7 @@ impl<'tir> Builder<'tir> {
                     .expect("no impl found for associated type projection during MIR lowering");
                 self.lower_type_index(concrete)
             }
+            tir::Type::Pointer { .. } => Type::Pointer,
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index } => {
                 let si = struct_index as usize;
@@ -1486,6 +1505,13 @@ impl<'tir> Builder<'tir> {
                     }
                 }
             }
+            tir::ExprKind::Deref { pointer, memory_id } => Expression {
+                kind: ExprKind::PointerLoad {
+                    pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
+                    memory_index: self.memory_id_remap[memory_id],
+                },
+                ty: self.lower_type_index(expr.ty),
+            },
             tir::ExprKind::ObjectAccess { object, member } => {
                 // Memory member access — OFFSET constant; grow/size appear only as call
                 // callees.
@@ -1823,6 +1849,11 @@ impl<'tir> Builder<'tir> {
                 id: *id,
                 value: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
+            tir::ExprKind::Deref { pointer, memory_id } => ExprKind::PointerStore {
+                pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
+                value: Box::new(self.lower_expression(func_ctx, right, sink)),
+                memory_index: self.memory_id_remap[memory_id],
+            },
             _ => unreachable!(),
         }
     }
@@ -1890,6 +1921,11 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Global { id } => ExprKind::GlobalSet {
                 id: *id,
                 value: Box::new(binary_expr),
+            },
+            tir::ExprKind::Deref { pointer, memory_id } => ExprKind::PointerStore {
+                pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
+                value: Box::new(binary_expr),
+                memory_index: self.memory_id_remap[memory_id],
             },
             _ => unreachable!(),
         }
@@ -2076,6 +2112,15 @@ fn rewrite_body(
             memory_index,
             delta: rw_box(delta),
         },
+        ExprKind::PointerLoad { pointer, memory_index } => ExprKind::PointerLoad {
+            pointer: rw_box(pointer),
+            memory_index,
+        },
+        ExprKind::PointerStore { pointer, value, memory_index } => ExprKind::PointerStore {
+            pointer: rw_box(pointer),
+            value: rw_box(value),
+            memory_index,
+        },
         // Leaf variants — nothing to rewrite.
         k @ (ExprKind::Noop
         | ExprKind::Bool { .. }
@@ -2249,6 +2294,13 @@ fn inline_expr(
         }
         ExprKind::MemoryGrow { delta, .. } => {
             inline_expr(delta, caller_scopes, inline_id, inline_body, current_scope)
+        }
+        ExprKind::PointerLoad { pointer, .. } => {
+            inline_expr(pointer, caller_scopes, inline_id, inline_body, current_scope)
+        }
+        ExprKind::PointerStore { pointer, value, .. } => {
+            inline_expr(pointer, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(value, caller_scopes, inline_id, inline_body, current_scope);
         }
         // Leaf variants — nothing to recurse into.
         ExprKind::Noop

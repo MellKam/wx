@@ -40,6 +40,8 @@ exports:
       name: 15
 imports: []
 memories:
-  - Memory32
+  - kind: Memory32
+    min_pages: ~
+    max_pages: ~
 aggregates: []
 strings: []

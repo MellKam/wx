@@ -1,0 +1,35 @@
+trait Sized {
+  const SIZE: u32;
+  const ALIGN: u32;
+}
+
+#[intrinsic]
+unsafe fn pointer_add<M: Memory, T: Sized>(
+  ptr: M::*T, 
+  n: M::Size
+) -> M::*T;
+
+#[intrinsic]
+unsafe fn pointer_sub<M: Memory, T: Sized>(
+  ptr: M::*T, 
+  n: M::Size
+) -> M::*T;
+
+impl<M: Memory, T: Sized> M::*T {
+  #[inline]
+  unsafe fn add(self, n: M::Size) -> Self {
+    pointer_add(self, n)
+  }
+
+  #[inline]
+  unsafe fn sub(self, n: M::Size) -> Self {
+    pointer_sub(self, n)
+  }
+}
+
+fn test() {
+  // assume object is ponter to some struct
+  local value = object.*.field;
+
+  object.*.field = Vec3::{ x: 1.0, y: 2.0, z: 3.0 };
+}

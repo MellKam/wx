@@ -3,6 +3,23 @@ use codespan_reporting::term::{self};
 use indoc::indoc;
 
 use super::*;
+
+const STD: &str = indoc! {"
+    trait PointerSize {}
+    impl PointerSize for u32 {}
+    impl PointerSize for u64 {}
+
+    trait Memory {
+        type Size: PointerSize;
+        const MEMORY_INDEX: u32;
+
+        fn grow(self, delta: Self::Size) -> Self::Size;
+        fn size(self) -> Self::Size;
+    }
+
+    trait Memory32: Memory<Size = u32> {}
+    trait Memory64: Memory<Size = u64> {}
+"};
 use crate::{ast, mir, tir, vfs};
 
 #[allow(unused)]
@@ -742,7 +759,6 @@ fn test_tuple_return_wat() {
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
 
-
 #[test]
 fn test_tuple_block_result_wat() {
     // A block whose result is a tuple must use a multi-value block type
@@ -1014,7 +1030,6 @@ fn test_struct_returned_from_call() {
     assert_eq!(run.call(&mut store, ()).unwrap(), 40); // (3+10) + (7+20)
 }
 
-
 #[test]
 fn test_struct_chained_transforms() {
     // Two back-to-back calls each returning a struct; the second call receives
@@ -1135,5 +1150,97 @@ fn test_struct_call_result_wat() {
 
         export { translate }
     "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+// ── Pointer dereference ──────────────────────────────────────────────────────
+
+#[test]
+fn test_pointer_deref_load_and_store() {
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+
+        fn read(ptr: heap::*i32) -> i32 {
+            ptr.*
+        }
+
+        fn write(ptr: heap::*mut i32, val: i32) {
+            ptr.* = val
+        }
+
+        export { heap, read, write }
+    "}
+    );
+    let case = TestCase::new(&src);
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let mem = instance
+        .get_memory(&mut store, "heap")
+        .expect("heap memory not exported");
+    mem.grow(&mut store, 1).expect("grow failed"); // allocate 1 page (64 KiB)
+    let read = instance
+        .get_typed_func::<i32, i32>(&mut store, "read")
+        .expect("read not found");
+    let write = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "write")
+        .expect("write not found");
+
+    // Write 42 at byte address 0, read it back via the exported function.
+    mem.write(&mut store, 0, &42i32.to_le_bytes()).unwrap();
+    let val = read.call(&mut store, 0).expect("read failed");
+    assert_eq!(val, 42);
+
+    // Use the exported write to store 99 at byte address 8, verify via host.
+    write.call(&mut store, (8, 99)).expect("write failed");
+    let mut buf = [0u8; 4];
+    mem.read(&mut store, 8, &mut buf).unwrap();
+    assert_eq!(i32::from_le_bytes(buf), 99);
+}
+
+#[test]
+fn test_pointer_deref_increment() {
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1
+        }
+
+        fn increment(ptr: heap::*mut i32) {
+            ptr.* += 1
+        }
+
+        export { heap, increment }
+    "}
+    );
+    let case = TestCase::new(&src);
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let mem = instance
+        .get_memory(&mut store, "heap")
+        .expect("heap memory not exported");
+    let increment = instance
+        .get_typed_func::<i32, ()>(&mut store, "increment")
+        .expect("increment not found");
+
+    // Store 10 at address 0, call increment three times, expect 13.
+    mem.write(&mut store, 0, &10i32.to_le_bytes()).unwrap();
+    increment.call(&mut store, 0).unwrap();
+    increment.call(&mut store, 0).unwrap();
+    increment.call(&mut store, 0).unwrap();
+    let mut buf = [0u8; 4];
+    mem.read(&mut store, 0, &mut buf).unwrap();
+    assert_eq!(i32::from_le_bytes(buf), 13);
+
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }

@@ -1043,6 +1043,13 @@ impl Builder {
                 items.push(Self::symbol(interner, member.inner));
                 Node::Concat(items.into())
             }
+            Expression::Deref { pointer } => Node::Concat(
+                vec![
+                    Self::build_expression(interner, source, pointer),
+                    Node::StaticText(".*"),
+                ]
+                .into(),
+            ),
             Expression::StructInit { name, fields } => {
                 let mut items = Vec::new();
                 items.push(Self::symbol(interner, name.inner));

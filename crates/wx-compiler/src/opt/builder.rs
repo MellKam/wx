@@ -514,6 +514,29 @@ impl<'mir> Builder<'mir> {
             }
 
             // ── Memory ────────────────────────────────────────────────────
+            ExprKind::PointerLoad { pointer, memory_index } => {
+                let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
+                let ty = ScalarType::try_from(expr.ty).expect("pointer load must be scalar");
+                let result = self
+                    .func
+                    .ensure_node(DataNodeKind::PointerLoadResult { address, ty });
+                self.push_stmt(
+                    block_idx,
+                    ControlNode::PointerLoad { address, result, memory_index: *memory_index },
+                );
+                StackResult::Value(result)
+            }
+
+            ExprKind::PointerStore { pointer, value, memory_index } => {
+                let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
+                let value = self.build_expr(block_idx, bindings, value).unwrap_value();
+                self.push_stmt(
+                    block_idx,
+                    ControlNode::PointerStore { address, value, memory_index: *memory_index },
+                );
+                StackResult::Unit
+            }
+
             ExprKind::MemoryGrow {
                 memory_index,
                 delta,

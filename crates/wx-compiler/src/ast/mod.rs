@@ -997,6 +997,10 @@ pub enum Expression {
         object: Box<Spanned<Expression>>,
         member: Spanned<SymbolU32>,
     },
+    /// `{expr}.*`
+    Deref {
+        pointer: Box<Spanned<Expression>>,
+    },
     /// `return {expr}`
     Return {
         value: Option<Box<Spanned<Expression>>>,
@@ -1300,6 +1304,19 @@ pub enum ImportDeclaration {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+pub struct MemoryConfig {
+    pub min: Option<Spanned<u32>>,
+    pub max: Option<Spanned<u32>>,
+}
+
+/// Intermediate type used only during parsing of a `MemoryConfig` block.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct MemoryConfigField {
+    pub name: Spanned<SymbolU32>,
+    pub value: Spanned<u32>,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct ImportEntry {
     pub external_name: Option<Spanned<SymbolU32>>,
     pub declaration: ImportDeclaration,
@@ -1401,6 +1418,7 @@ pub enum Item {
         id: DefId,
         name: Spanned<SymbolU32>,
         kind: Box<Spanned<TypeExpression>>,
+        config: Option<MemoryConfig>,
     },
     Const {
         id: DefId,
@@ -2620,6 +2638,12 @@ impl<'input> Parser<'input> {
         let token = parser.lexer.next();
         let span = TextSpan::merge(object.span, token.span);
         match token.inner {
+            Token::Star => Ok(Spanned {
+                inner: Expression::Deref {
+                    pointer: Box::new(object),
+                },
+                span,
+            }),
             Token::Identifier => {
                 let member_symbol = parser.intern_identifier(token.span);
                 Ok(Spanned {
@@ -3172,7 +3196,10 @@ impl<'input> Parser<'input> {
 
     fn parse_pattern_field(parser: &mut Parser) -> Result<Spanned<PatternField>, ()> {
         let name_span = parser.next_expect(Token::Identifier)?.span;
-        let name = Spanned { inner: parser.intern_identifier(name_span), span: name_span };
+        let name = Spanned {
+            inner: parser.intern_identifier(name_span),
+            span: name_span,
+        };
         let pattern = if parser.lexer.next_if(Token::Colon).is_some() {
             Some(Parser::parse_pattern(parser)?)
         } else {
@@ -3182,7 +3209,10 @@ impl<'input> Parser<'input> {
             Some(p) => TextSpan::merge(name_span, p.span),
             None => name_span,
         };
-        Ok(Spanned { inner: PatternField { name, pattern }, span })
+        Ok(Spanned {
+            inner: PatternField { name, pattern },
+            span,
+        })
     }
 
     fn parse_pattern(parser: &mut Parser) -> Result<Spanned<Pattern>, ()> {
@@ -3198,26 +3228,41 @@ impl<'input> Parser<'input> {
                 }
                 .parse(parser)?;
                 let span = TextSpan::merge(elements.open, elements.close);
-                Ok(Spanned { inner: Pattern::Tuple { elements }, span })
+                Ok(Spanned {
+                    inner: Pattern::Tuple { elements },
+                    span,
+                })
             }
             Token::Identifier => {
                 let text = token.span.extract_str(parser.source);
                 if text == "_" {
                     let span = parser.lexer.next().span;
-                    return Ok(Spanned { inner: Pattern::Wildcard, span });
+                    return Ok(Spanned {
+                        inner: Pattern::Wildcard,
+                        span,
+                    });
                 }
                 if let Ok(Keyword::Mut) = Keyword::try_from(text) {
                     let mut_token = parser.lexer.next();
                     let name_span = parser.next_expect(Token::Identifier)?.span;
-                    let name = Spanned { inner: parser.intern_identifier(name_span), span: name_span };
+                    let name = Spanned {
+                        inner: parser.intern_identifier(name_span),
+                        span: name_span,
+                    };
                     let span = TextSpan::merge(mut_token.span, name_span);
                     return Ok(Spanned {
-                        inner: Pattern::Binding { mut_span: Some(mut_token.span), name },
+                        inner: Pattern::Binding {
+                            mut_span: Some(mut_token.span),
+                            name,
+                        },
                         span,
                     });
                 }
                 let name_token = parser.lexer.next();
-                let name = Spanned { inner: parser.intern_identifier(name_token.span), span: name_token.span };
+                let name = Spanned {
+                    inner: parser.intern_identifier(name_token.span),
+                    span: name_token.span,
+                };
                 if parser.lexer.peek().inner == Token::OpenBrace {
                     let fields = SeparatedGroup {
                         open_token: Token::OpenBrace,
@@ -3228,10 +3273,16 @@ impl<'input> Parser<'input> {
                     }
                     .parse(parser)?;
                     let span = TextSpan::merge(name_token.span, fields.close);
-                    Ok(Spanned { inner: Pattern::Struct { name, fields }, span })
+                    Ok(Spanned {
+                        inner: Pattern::Struct { name, fields },
+                        span,
+                    })
                 } else {
                     Ok(Spanned {
-                        inner: Pattern::Binding { mut_span: None, name },
+                        inner: Pattern::Binding {
+                            mut_span: None,
+                            name,
+                        },
                         span: name_token.span,
                     })
                 }
@@ -3265,15 +3316,22 @@ impl<'input> Parser<'input> {
             .and_then(|_| parser.parse_expression(BindingPower::Default))
             .map_err(|_| {
                 let token = parser.lexer.peek();
-                parser.ast.diagnostics.push(report_missing_local_initializer(
-                    parser.ast.file_id,
-                    token.span,
-                ));
+                parser
+                    .ast
+                    .diagnostics
+                    .push(report_missing_local_initializer(
+                        parser.ast.file_id,
+                        token.span,
+                    ));
             })?;
 
         let span = TextSpan::merge(local_keyword.span, value.span);
         Ok(Spanned {
-            inner: Statement::LocalDefinition { pattern, ty, value: Box::new(value) },
+            inner: Statement::LocalDefinition {
+                pattern,
+                ty,
+                value: Box::new(value),
+            },
             span,
         })
     }
@@ -3940,21 +3998,33 @@ impl<'input> Parser<'input> {
             }
             Some(Keyword::Global) => {
                 let mut item = Parser::parse_global_definition_item(parser)?;
-                if let Item::Global { pub_span: ref mut ps, .. } = item.inner {
+                if let Item::Global {
+                    pub_span: ref mut ps,
+                    ..
+                } = item.inner
+                {
                     *ps = Some(pub_span);
                 }
                 Ok(item)
             }
             Some(Keyword::Enum) => {
                 let mut item = Parser::parse_enum_item(parser)?;
-                if let Item::Enum { pub_span: ref mut ps, .. } = item.inner {
+                if let Item::Enum {
+                    pub_span: ref mut ps,
+                    ..
+                } = item.inner
+                {
                     *ps = Some(pub_span);
                 }
                 Ok(item)
             }
             Some(Keyword::Const) => {
                 let mut item = Parser::parse_const_item(parser)?;
-                if let Item::Const { pub_span: ref mut ps, .. } = item.inner {
+                if let Item::Const {
+                    pub_span: ref mut ps,
+                    ..
+                } = item.inner
+                {
                     *ps = Some(pub_span);
                 }
                 Ok(item)
@@ -3969,6 +4039,64 @@ impl<'input> Parser<'input> {
         }
     }
 
+    fn parse_memory_config_field(parser: &mut Parser) -> Result<Spanned<MemoryConfigField>, ()> {
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name = Spanned {
+            inner: parser.intern_identifier(name_span),
+            span: name_span,
+        };
+        parser.next_expect(Token::Colon)?;
+        let value_token = parser.lexer.next();
+        let value = match value_token.inner {
+            Token::Int => {
+                let raw = value_token
+                    .span
+                    .extract_str(parser.source)
+                    .parse::<i64>()
+                    .unwrap_or(0);
+                if raw < 0 {
+                    parser.ast.diagnostics.push(
+                        codespan_reporting::diagnostic::Diagnostic::error()
+                            .with_message("memory page count must be a non-negative integer")
+                            .with_label(codespan_reporting::diagnostic::Label::primary(
+                                parser.ast.file_id,
+                                value_token.span,
+                            )),
+                    );
+                    return Err(());
+                }
+                if raw > u32::MAX as i64 {
+                    parser.ast.diagnostics.push(
+                        codespan_reporting::diagnostic::Diagnostic::error()
+                            .with_message("memory page count exceeds maximum (4294967295)")
+                            .with_label(codespan_reporting::diagnostic::Label::primary(
+                                parser.ast.file_id,
+                                value_token.span,
+                            )),
+                    );
+                    return Err(());
+                }
+                Spanned {
+                    inner: raw as u32,
+                    span: value_token.span,
+                }
+            }
+            _ => {
+                parser.ast.diagnostics.push(report_unexpected_token(
+                    parser.ast.file_id,
+                    value_token,
+                    Token::Int,
+                ));
+                return Err(());
+            }
+        };
+        let span = TextSpan::merge(name_span, value.span);
+        Ok(Spanned {
+            inner: MemoryConfigField { name, value },
+            span,
+        })
+    }
+
     fn parse_memory_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let memory_span = parser.lexer.next().span;
 
@@ -3981,11 +4109,87 @@ impl<'input> Parser<'input> {
         parser.next_expect(Token::Colon)?;
         let kind = parser.parse_type_expression()?;
 
+        let config = if parser.lexer.peek().inner == Token::OpenBrace {
+            let fields = SeparatedGroup {
+                open_token: Token::OpenBrace,
+                close_token: Token::CloseBrace,
+                separator_token: Token::Comma,
+                should_warn_missing_separator: None,
+                item_handler: Parser::parse_memory_config_field,
+            }
+            .parse(parser)?;
+
+            let mut min: Option<Spanned<u32>> = None;
+            let mut max: Option<Spanned<u32>> = None;
+
+            for field in fields.inner.iter() {
+                let field_name = parser
+                    .interner
+                    .resolve(field.inner.inner.name.inner)
+                    .unwrap_or("");
+                match field_name {
+                    "min" => {
+                        if min.is_some() {
+                            parser.ast.diagnostics.push(
+                                codespan_reporting::diagnostic::Diagnostic::error()
+                                    .with_message("duplicate memory property `min`")
+                                    .with_label(codespan_reporting::diagnostic::Label::primary(
+                                        parser.ast.file_id,
+                                        field.inner.inner.name.span,
+                                    )),
+                            );
+                        } else {
+                            let v = &field.inner.inner.value;
+                            min = Some(Spanned {
+                                inner: v.inner,
+                                span: TextSpan::new(v.span.start, v.span.end),
+                            });
+                        }
+                    }
+                    "max" => {
+                        if max.is_some() {
+                            parser.ast.diagnostics.push(
+                                codespan_reporting::diagnostic::Diagnostic::error()
+                                    .with_message("duplicate memory property `max`")
+                                    .with_label(codespan_reporting::diagnostic::Label::primary(
+                                        parser.ast.file_id,
+                                        field.inner.inner.name.span,
+                                    )),
+                            );
+                        } else {
+                            let v = &field.inner.inner.value;
+                            max = Some(Spanned {
+                                inner: v.inner,
+                                span: TextSpan::new(v.span.start, v.span.end),
+                            });
+                        }
+                    }
+                    _ => {
+                        parser.ast.diagnostics.push(
+                            codespan_reporting::diagnostic::Diagnostic::error()
+                                .with_message(format!(
+                                    "unknown memory property `{field_name}`, expected `min` or `max`"
+                                ))
+                                .with_label(codespan_reporting::diagnostic::Label::primary(
+                                    parser.ast.file_id,
+                                    field.inner.inner.name.span,
+                                )),
+                        );
+                    }
+                }
+            }
+
+            Some(MemoryConfig { min, max })
+        } else {
+            None
+        };
+
         let span = TextSpan::merge(memory_span, kind.span);
         Ok(Spanned {
             inner: Item::Memory {
                 name,
                 kind: Box::new(kind),
+                config,
                 id: parser.id_generator.generate(),
             },
             span,

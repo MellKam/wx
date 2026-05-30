@@ -169,6 +169,15 @@ pub enum Instruction {
     // Memory
     MemorySize(u32),
     MemoryGrow(u32),
+    // Pointer load/store — offset=0, align = log2 of natural alignment
+    I32Load { memory_index: u32, align: u32 },
+    I64Load { memory_index: u32, align: u32 },
+    F32Load { memory_index: u32, align: u32 },
+    F64Load { memory_index: u32, align: u32 },
+    I32Store { memory_index: u32, align: u32 },
+    I64Store { memory_index: u32, align: u32 },
+    F32Store { memory_index: u32, align: u32 },
+    F64Store { memory_index: u32, align: u32 },
     // Nop (used as a placeholder)
     Nop,
     // Symbolic references — resolved to concrete i32.const values by the
@@ -191,6 +200,15 @@ pub enum Instruction {
 pub enum BlockType {
     Empty,
     Value(ValueType),
+}
+
+/// Returns the natural alignment of a scalar type as a log2 exponent,
+/// matching the WASM memarg encoding (0=1B, 1=2B, 2=4B, 3=8B).
+fn natural_align(ty: ScalarType) -> u32 {
+    match ty {
+        ScalarType::I32 | ScalarType::F32 => 2, // 4 bytes
+        ScalarType::I64 | ScalarType::F64 => 3, // 8 bytes
+    }
 }
 
 // ── Scheduler
@@ -485,6 +503,39 @@ impl<'f> Scheduler<'f> {
                     self.node_to_local.insert(*result, local);
                     self.body.push(Instruction::LocalSet(local));
                 }
+            }
+
+            ControlNode::PointerLoad { address, result, memory_index } => {
+                self.emit_value(*address);
+                let ty = self.func.data_nodes[*result as usize].kind.scalar_type();
+                let mi = *memory_index;
+                let align = natural_align(ty);
+                let load_instr = match ty {
+                    ScalarType::I32 => Instruction::I32Load { memory_index: mi, align },
+                    ScalarType::I64 => Instruction::I64Load { memory_index: mi, align },
+                    ScalarType::F32 => Instruction::F32Load { memory_index: mi, align },
+                    ScalarType::F64 => Instruction::F64Load { memory_index: mi, align },
+                };
+                self.body.push(load_instr);
+                // PointerLoadResult always spills (no_cse + always_spill).
+                let local = self.alloc_local(ty);
+                self.node_to_local.insert(*result, local);
+                self.body.push(Instruction::LocalSet(local));
+            }
+
+            ControlNode::PointerStore { address, value, memory_index } => {
+                self.emit_value(*address);
+                self.emit_value(*value);
+                let ty = self.func.data_nodes[*value as usize].kind.scalar_type();
+                let mi = *memory_index;
+                let align = natural_align(ty);
+                let store_instr = match ty {
+                    ScalarType::I32 => Instruction::I32Store { memory_index: mi, align },
+                    ScalarType::I64 => Instruction::I64Store { memory_index: mi, align },
+                    ScalarType::F32 => Instruction::F32Store { memory_index: mi, align },
+                    ScalarType::F64 => Instruction::F64Store { memory_index: mi, align },
+                };
+                self.body.push(store_instr);
             }
         }
     }
@@ -837,7 +888,9 @@ impl<'f> Scheduler<'f> {
                 self.emit_value(before);
             }
 
-            DataNodeKind::CallResult { .. } | DataNodeKind::MemoryGrowResult { .. } => {
+            DataNodeKind::CallResult { .. }
+            | DataNodeKind::MemoryGrowResult { .. }
+            | DataNodeKind::PointerLoadResult { .. } => {
                 // Always spilled; should have been caught by `should_spill` above.
                 let local = self.node_to_local[&node];
                 self.body.push(Instruction::LocalGet(local));
@@ -870,10 +923,11 @@ impl<'f> Scheduler<'f> {
             // Phi nodes that folded away (left == right) don't need a local.
             DataNodeKind::Phi { left, right, .. } => left != right,
 
-            // Calls and memory.grow always produce a single result that must be captured.
+            // Calls, memory.grow, and pointer loads always produce a result that must be captured.
             DataNodeKind::CallResult { .. }
             | DataNodeKind::AggregateCallResult { .. }
-            | DataNodeKind::MemoryGrowResult { .. } => true,
+            | DataNodeKind::MemoryGrowResult { .. }
+            | DataNodeKind::PointerLoadResult { .. } => true,
 
             // Aggregates live in per-field locals, not on the stack.
             DataNodeKind::Aggregate { .. } => true,

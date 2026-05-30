@@ -417,6 +417,10 @@ pub enum ExprKind {
         object: Box<Expression>,
         member: ast::Spanned<SymbolU32>,
     },
+    Deref {
+        pointer: Box<Expression>,
+        memory_id: ast::DefId,
+    },
     StructInit {
         struct_index: u32,
         fields: Box<[Expression]>,
@@ -641,6 +645,8 @@ pub struct Memory {
     pub name: ast::Spanned<SymbolU32>,
     pub kind: MemoryKind,
     pub source: ItemSource,
+    pub min_pages: Option<u32>,
+    pub max_pages: Option<u32>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1037,6 +1043,9 @@ define_diagnostic_codes! {
         MissingSupertraitImpl => "E1034",
         AssociatedTypeInInherentImpl => "E1035",
         MissingEnumRepr => "E1036",
+        CannotDerefNonPointer => "E1037",
+        NoMemoryForPointer => "E1038",
+        AmbiguousPointerMemory => "E1039",
     }
 }
 
@@ -1412,6 +1421,40 @@ fn report_cannot_mutate_immutable(span: SourceSpan) -> Diagnostic<FileId> {
         .with_code(DiagnosticCode::CannotMutateImmutable.code())
         .with_message("cannot mutate immutable variable")
         .with_label(span.primary_label())
+}
+
+fn report_cannot_deref_non_pointer(span: SourceSpan, ty_display: String) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::CannotDerefNonPointer.code())
+        .with_message("dereference of non-pointer type")
+        .with_label(
+            span.primary_label()
+                .with_message(format!("type `{}` is not a pointer", ty_display)),
+        )
+}
+
+fn report_no_memory_for_pointer(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::NoMemoryForPointer.code())
+        .with_message("pointer dereference requires a linear memory")
+        .with_label(span.primary_label())
+        .with_note("declare a memory in this module: `memory <name>: Memory32;`")
+}
+
+fn report_ambiguous_pointer_memory(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::AmbiguousPointerMemory.code())
+        .with_message("pointer dereference is ambiguous: multiple memories defined")
+        .with_label(span.primary_label())
+        .with_note("specify which memory with `<memory_name>::*T` syntax")
+}
+
+fn report_cannot_store_through_immutable_pointer(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::CannotMutateImmutable.code())
+        .with_message("cannot assign through immutable pointer")
+        .with_label(span.primary_label())
+        .with_note("consider using `*mut T` instead of `*T`")
 }
 
 fn report_invalid_assignment_target(span: SourceSpan) -> Diagnostic<FileId> {
@@ -3638,7 +3681,7 @@ impl<'ast> Builder<'ast, '_> {
 
             // ── memory ────────────────────────────────────────────────────────
             AstNodeRef::Memory { item, .. } => {
-                if let ast::Item::Memory { name, kind, id } = item {
+                if let ast::Item::Memory { name, kind, id, config } = item {
                     // Resolve the trait type and ensure all its functions are
                     // registered before seed_memory_trait_impl reads them.
                     let type_idx = self.resolve_type(&resolve_context, kind);
@@ -3678,6 +3721,8 @@ impl<'ast> Builder<'ast, '_> {
                         kind: memory_kind,
                         name: name.clone(),
                         source: ItemSource::Internal,
+                        min_pages: config.as_ref().and_then(|c| c.min.as_ref().map(|s| s.inner)),
+                        max_pages: config.as_ref().and_then(|c| c.max.as_ref().map(|s| s.inner)),
                     });
                     self.tir.memory_index_lookup.insert(*id, memory_index);
                     let memory_type = self.intern_type(Type::Memory {
@@ -5707,6 +5752,9 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::ObjectAccess { object, member } => {
                 self.build_object_access_expression(func_ctx, object, member.clone(), access_ctx)
             }
+            ast::Expression::Deref { pointer } => {
+                self.build_deref_expression(func_ctx, expr.span, pointer, access_ctx)
+            }
             ast::Expression::Return { .. } => self.build_return_expression(func_ctx, expr),
             ast::Expression::Block { .. } => func_ctx.enter_block(
                 BlockScope {
@@ -7542,6 +7590,62 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 });
             }
+            ExprKind::Deref { pointer, memory_id } => {
+                let (inner_ty, mutable) = match &self.tir.type_pool[pointer.ty as usize] {
+                    Type::Pointer { to, mutable, .. } => (*to, *mutable),
+                    _ => unreachable!("Deref ExprKind must have Pointer type"),
+                };
+
+                if !mutable {
+                    self.tir.diagnostics.push(report_cannot_store_through_immutable_pointer(
+                        SourceSpan::new(self.file_id, expr.span),
+                    ));
+                }
+
+                let mut right_expr = self.build_expression(
+                    ctx,
+                    right,
+                    AccessContext {
+                        expected_type: Some(inner_ty),
+                        access_kind: AccessKind::Read,
+                    },
+                )?;
+                if right_expr.ty == Type::UNKNOWN_IDX {
+                    self.coerce_untyped_expr(&mut right_expr, inner_ty)?;
+                } else if !self.coercible_to(right_expr.ty, inner_ty) {
+                    self.tir.diagnostics.push(report_binary_expression_mistmatch(
+                        TypeFormatter::new(&self.tir, &self.interner),
+                        BinaryExpressionMistmatchDiagnostic {
+                            file_id: self.file_id,
+                            left_type: Spanned {
+                                inner: inner_ty,
+                                span: left.span,
+                            },
+                            operator: operator.clone(),
+                            right_type: Spanned {
+                                inner: right_expr.ty,
+                                span: right_expr.span,
+                            },
+                        },
+                    ));
+                }
+
+                let left_span = left.span;
+                let left_ty = left.ty;
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        left: Box::new(Expression {
+                            kind: ExprKind::Deref { pointer, memory_id },
+                            ty: left_ty,
+                            span: left_span,
+                        }),
+                        operator,
+                        right: Box::new(right_expr),
+                    },
+                    ty: Type::UNIT_IDX,
+                    span: expr.span,
+                })
+            }
             _ => {
                 self.tir
                     .diagnostics
@@ -7750,6 +7854,77 @@ impl<'ast> Builder<'ast, '_> {
                         left: Box::new(left),
                         operator,
                         right: Box::new(right),
+                    },
+                    ty: Type::UNIT_IDX,
+                    span: expr.span,
+                })
+            }
+            ExprKind::Deref { pointer, memory_id } => {
+                let (inner_ty, mutable) = match &self.tir.type_pool[pointer.ty as usize] {
+                    Type::Pointer { to, mutable, .. } => (*to, *mutable),
+                    _ => unreachable!("Deref ExprKind must have Pointer type"),
+                };
+
+                if !self.tir.type_pool[inner_ty as usize].is_primitive() {
+                    self.tir.diagnostics.push(report_binary_operator_cannot_be_applied(
+                        TypeFormatter::new(&self.tir, &self.interner),
+                        BinaryOperatorCannotBeAppliedDiagnostic {
+                            file_id: self.file_id,
+                            operator,
+                            operand: Spanned {
+                                inner: inner_ty,
+                                span: left.span,
+                            },
+                        },
+                    ));
+                    return Err(());
+                }
+
+                if !mutable {
+                    self.tir.diagnostics.push(report_cannot_store_through_immutable_pointer(
+                        SourceSpan::new(self.file_id, expr.span),
+                    ));
+                }
+
+                let mut right_expr = self.build_expression(
+                    ctx,
+                    right,
+                    AccessContext {
+                        expected_type: Some(inner_ty),
+                        access_kind: AccessKind::Read,
+                    },
+                )?;
+                if right_expr.ty == Type::UNKNOWN_IDX {
+                    self.coerce_untyped_expr(&mut right_expr, inner_ty)?;
+                } else if !self.coercible_to(right_expr.ty, inner_ty) {
+                    self.tir.diagnostics.push(report_binary_expression_mistmatch(
+                        TypeFormatter::new(&self.tir, &self.interner),
+                        BinaryExpressionMistmatchDiagnostic {
+                            file_id: self.file_id,
+                            left_type: Spanned {
+                                inner: inner_ty,
+                                span: left.span,
+                            },
+                            operator: operator.clone(),
+                            right_type: Spanned {
+                                inner: right_expr.ty,
+                                span: right_expr.span,
+                            },
+                        },
+                    ));
+                }
+
+                let left_span = left.span;
+                let left_ty = left.ty;
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        left: Box::new(Expression {
+                            kind: ExprKind::Deref { pointer, memory_id },
+                            ty: left_ty,
+                            span: left_span,
+                        }),
+                        operator,
+                        right: Box::new(right_expr),
                     },
                     ty: Type::UNIT_IDX,
                     span: expr.span,
@@ -9065,6 +9240,64 @@ impl<'ast> Builder<'ast, '_> {
                 elements: built.into_boxed_slice(),
             },
             ty,
+            span,
+        })
+    }
+
+    fn build_deref_expression(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        span: ast::TextSpan,
+        pointer: &Spanned<ast::Expression>,
+        _access_ctx: AccessContext,
+    ) -> Result<Expression, ()> {
+        let pointer = self.build_expression(
+            func_ctx,
+            pointer,
+            AccessContext {
+                expected_type: None,
+                access_kind: AccessKind::Read,
+            },
+        )?;
+
+        let (inner_ty, memory_id) = match &self.tir.type_pool[pointer.ty as usize] {
+            Type::Pointer { to, memory, .. } => {
+                let inner_ty = *to;
+                let memory_id = match memory {
+                    Some(id) => *id,
+                    None => match self.tir.memories.len() {
+                        0 => {
+                            self.tir.diagnostics.push(report_no_memory_for_pointer(
+                                SourceSpan::new(self.file_id, span),
+                            ));
+                            return Err(());
+                        }
+                        1 => self.tir.memories[0].id,
+                        _ => {
+                            self.tir.diagnostics.push(report_ambiguous_pointer_memory(
+                                SourceSpan::new(self.file_id, span),
+                            ));
+                            return Err(());
+                        }
+                    },
+                };
+                (inner_ty, memory_id)
+            }
+            _ => {
+                self.tir.diagnostics.push(report_cannot_deref_non_pointer(
+                    SourceSpan::new(self.file_id, pointer.span),
+                    TypeFormatter::new(&self.tir, &self.interner).display_type(pointer.ty),
+                ));
+                return Err(());
+            }
+        };
+
+        Ok(Expression {
+            kind: ExprKind::Deref {
+                pointer: Box::new(pointer),
+                memory_id,
+            },
+            ty: inner_ty,
             span,
         })
     }

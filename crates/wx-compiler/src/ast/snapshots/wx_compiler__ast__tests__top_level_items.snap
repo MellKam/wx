@@ -138,6 +138,7 @@ items:
             span:
               start: 57
               end: 65
+          config: ~
       span:
         start: 45
         end: 65
