@@ -8,9 +8,9 @@
 //!    Constants and params are always inlined. Multi-use nodes and call results
 //!    are always spilled.
 //!
-//! 2. **Dead-node elimination** — nodes with an empty `uses` list are never
-//!    scheduled. This is a direct consequence of tracking use-counts in the
-//!    builder.
+//! 2. **Dead pointer-load elimination** — before emission we compute the set of
+//!    data nodes reachable backwards from control-node data sinks. Pure
+//!    `PointerLoad` control nodes whose result is not live are skipped.
 //!
 //! 3. **Scheduling order** — we walk the block tree recursively and emit
 //!    instructions in a post-order traversal of data dependencies: each node's
@@ -30,6 +30,7 @@ use string_interner::symbol::SymbolU32;
 
 use crate::codegen::ValueType;
 use crate::mir;
+use crate::opt::liveness::DataLiveness;
 use crate::opt::{
     BlockIndex, ControlNode, DataNode, DataNodeIndex, DataNodeKind, Function, ScalarType,
     StackResult,
@@ -183,7 +184,9 @@ pub enum Instruction {
     MemorySize(crate::ast::DefId),
     MemoryGrow(crate::ast::DefId),
     /// Wasm linear-memory index as an `i32.const`, resolved at codegen.
-    MemoryIndex { memory: crate::ast::DefId },
+    MemoryIndex {
+        memory: crate::ast::DefId,
+    },
     // Pointer load/store
     I32Load(MemArg),
     I64Load(MemArg),
@@ -232,6 +235,9 @@ fn natural_align(ty: ScalarType) -> u32 {
 pub struct Scheduler<'f> {
     func: &'f Function,
     mir: &'f mir::MIR,
+    /// Data nodes reachable from control-node sinks under the scheduler's
+    /// current emission semantics.
+    live_data: DataLiveness,
     /// WASM locals: params (already allocated) + spill slots added by
     /// `ensure_local`.
     locals: Vec<Local>,
@@ -265,6 +271,7 @@ impl<'f> Scheduler<'f> {
         let mut sched = Scheduler {
             func,
             mir,
+            live_data: DataLiveness::compute(func),
             locals,
             node_to_local: HashMap::new(),
             node_to_aggregate_locals: HashMap::new(),
@@ -506,7 +513,11 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::Unreachable);
             }
 
-            ControlNode::MemoryGrow { memory, delta, result } => {
+            ControlNode::MemoryGrow {
+                memory,
+                delta,
+                result,
+            } => {
                 self.emit_value(*delta);
                 self.body.push(Instruction::MemoryGrow(*memory));
                 if self.should_spill(&self.func.data_nodes[*result as usize]) {
@@ -516,15 +527,39 @@ impl<'f> Scheduler<'f> {
                 }
             }
 
-            ControlNode::PointerLoad { address, offset, result, memory } => {
+            ControlNode::PointerLoad {
+                address,
+                offset,
+                result,
+                memory,
+            } => {
+                if !self.live_data.is_live(*result) {
+                    return;
+                }
                 self.emit_value(*address);
                 let ty = self.func.data_nodes[*result as usize].kind.scalar_type();
                 let align = natural_align(ty);
                 let load_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Load(MemArg { align, offset: *offset, memory: *memory }),
-                    ScalarType::I64 => Instruction::I64Load(MemArg { align, offset: *offset, memory: *memory }),
-                    ScalarType::F32 => Instruction::F32Load(MemArg { align, offset: *offset, memory: *memory }),
-                    ScalarType::F64 => Instruction::F64Load(MemArg { align, offset: *offset, memory: *memory }),
+                    ScalarType::I32 => Instruction::I32Load(MemArg {
+                        align,
+                        offset: *offset,
+                        memory: *memory,
+                    }),
+                    ScalarType::I64 => Instruction::I64Load(MemArg {
+                        align,
+                        offset: *offset,
+                        memory: *memory,
+                    }),
+                    ScalarType::F32 => Instruction::F32Load(MemArg {
+                        align,
+                        offset: *offset,
+                        memory: *memory,
+                    }),
+                    ScalarType::F64 => Instruction::F64Load(MemArg {
+                        align,
+                        offset: *offset,
+                        memory: *memory,
+                    }),
                 };
                 self.body.push(load_instr);
                 // PointerLoadResult always spills (no_cse + always_spill).
@@ -533,16 +568,37 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::LocalSet(local));
             }
 
-            ControlNode::PointerStore { address, offset, value, memory } => {
+            ControlNode::PointerStore {
+                address,
+                offset,
+                value,
+                memory,
+            } => {
                 self.emit_value(*address);
                 self.emit_value(*value);
                 let ty = self.func.data_nodes[*value as usize].kind.scalar_type();
                 let align = natural_align(ty);
                 let store_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Store(MemArg { align, offset: *offset, memory: *memory }),
-                    ScalarType::I64 => Instruction::I64Store(MemArg { align, offset: *offset, memory: *memory }),
-                    ScalarType::F32 => Instruction::F32Store(MemArg { align, offset: *offset, memory: *memory }),
-                    ScalarType::F64 => Instruction::F64Store(MemArg { align, offset: *offset, memory: *memory }),
+                    ScalarType::I32 => Instruction::I32Store(MemArg {
+                        align,
+                        offset: *offset,
+                        memory: *memory,
+                    }),
+                    ScalarType::I64 => Instruction::I64Store(MemArg {
+                        align,
+                        offset: *offset,
+                        memory: *memory,
+                    }),
+                    ScalarType::F32 => Instruction::F32Store(MemArg {
+                        align,
+                        offset: *offset,
+                        memory: *memory,
+                    }),
+                    ScalarType::F64 => Instruction::F64Store(MemArg {
+                        align,
+                        offset: *offset,
+                        memory: *memory,
+                    }),
                 };
                 self.body.push(store_instr);
             }
@@ -914,8 +970,6 @@ impl<'f> Scheduler<'f> {
             }
         }
     }
-
-    // ── Spill helpers ─────────────────────────────────────────────────────────
 
     /// Returns true if this node must be computed into a WASM local rather than
     /// inlined at each use site.

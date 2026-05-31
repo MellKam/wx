@@ -37,13 +37,13 @@ struct TestCase {
 
 impl TestCase {
     fn schedule(&self) -> Vec<Instruction> {
-        let func_mir = self.find_func("_");
+        let func_mir = self.get_first_func();
         let opt = Builder::build(&self.mir, func_mir);
         Scheduler::schedule(&opt, &self.mir).body
     }
 
     fn schedule_full(&self) -> crate::opt::scheduler::ScheduledFunction {
-        let func_mir = self.find_func("_");
+        let func_mir = self.get_first_func();
         let opt = Builder::build(&self.mir, func_mir);
         Scheduler::schedule(&opt, &self.mir)
     }
@@ -66,7 +66,7 @@ impl TestCase {
     /// Return the first function in the MIR output.
     /// Each test compiles a single function (no stdlib), so this is always the
     /// right one.
-    fn find_func(&self, _name: &str) -> &mir::Function {
+    fn get_first_func(&self) -> &mir::Function {
         self.mir.functions.first().expect("no functions in MIR")
     }
 }
@@ -83,7 +83,7 @@ fn test_simple_add() {
         fn add(a: i32, b: i32) -> i32 { a + b }
         export { add }
     "});
-    let func = case.find_func("add");
+    let func = case.get_first_func();
     let opt = Builder::build(&case.mir, func);
 
     // Exactly 3 data nodes: Param(0), Param(1), Add.
@@ -149,7 +149,7 @@ fn test_constant_folding() {
         fn const_add() -> i32 { 3 + 4 }
         export { const_add }
     "});
-    let func = case.find_func("const_add");
+    let func = case.get_first_func();
     let opt = Builder::build(&case.mir, func);
 
     // No Add node should exist — folded away at construction time.
@@ -188,7 +188,7 @@ fn test_constant_folding_nested() {
         fn nested() -> i32 { (2 + 3) * (1 + 4) }
         export { nested }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("nested"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let any_arith = opt
         .data_nodes
@@ -218,7 +218,7 @@ fn test_cse_deduplication() {
         }
         export { cse }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("cse"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let add_nodes: Vec<_> = opt
         .data_nodes
@@ -254,7 +254,7 @@ fn test_if_else_phi() {
         }
         export { max }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("max"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let phi_nodes: Vec<_> = opt
         .data_nodes
@@ -303,7 +303,7 @@ fn test_if_no_else_phi() {
         }
         export { one_sided }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("one_sided"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     // There must be a Phi merging (x+1) and x.
     let phi = opt
@@ -330,7 +330,7 @@ fn test_loop_param() {
         }
         export { loop_count }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("loop_count"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let loop_params: Vec<_> = opt
         .data_nodes
@@ -382,7 +382,7 @@ fn test_aggregate_field_fold() {
         }
         export { get_x }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("get_x"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     // AggregateGet should have been folded away — returning Param(0) directly.
     let agg_get_exists = opt
@@ -426,7 +426,7 @@ fn test_dead_node_has_zero_uses() {
         }
         export { dead }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("dead"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let mul = opt
         .data_nodes
@@ -674,7 +674,7 @@ fn test_phi_identity_fold() {
         fn same(x: i32) -> i32 { if x > 0 { x } else { x } }
         export { same }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("same"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let phi_nodes: Vec<_> = opt
         .data_nodes
@@ -705,7 +705,7 @@ fn test_nested_if_else_phi_chain() {
         }
         export { f }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("f"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let phi_nodes: Vec<_> = opt
         .data_nodes
@@ -757,7 +757,7 @@ fn test_loop_immutable_binding() {
         }
         export { f }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("f"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     // Any LoopParam with before == after was left unpatched (binding never
     // modified). It may still have uses from reads inside the loop body —
@@ -813,7 +813,7 @@ fn test_loop_two_mutated_bindings() {
         }
         export { f }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("f"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let active: Vec<_> = opt
         .data_nodes
@@ -848,7 +848,7 @@ fn test_no_fold_div_by_zero() {
         fn f() -> i32 { 1 / 0 }
         export { f }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("f"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let div_exists = opt
         .data_nodes
@@ -869,7 +869,7 @@ fn test_constant_fold_bitwise() {
         fn f() -> i32 { 5 ^ 3 }
         export { f }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("f"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let xor_exists = opt
         .data_nodes
@@ -904,7 +904,7 @@ fn test_explicit_mid_return() {
         }
         export { f }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("f"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let total_returns = opt
         .blocks
@@ -934,7 +934,7 @@ fn test_aggregate_phi_decomposition() {
         }
         export { f }
     "});
-    let opt = Builder::build(&case.mir, case.find_func("f"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     // Two phi nodes — one for field x, one for field y.
     let phi_nodes: Vec<_> = opt
@@ -966,14 +966,17 @@ fn test_aggregate_phi_decomposition() {
 /// `PointerLoad` control statement per field.
 #[test]
 fn test_struct_pointer_load_expands_to_per_field_loads() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         struct Point { x: i32, y: i32 }
         fn load_point(ptr: heap::*Point) -> Point { ptr.* }
         export { load_point, heap }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
-    let opt = Builder::build(&case.mir, case.find_func("_"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let plr_count = opt
         .data_nodes
@@ -1006,8 +1009,7 @@ fn test_struct_pointer_load_expands_to_per_field_loads() {
         .filter(|s| matches!(s, ControlNode::PointerLoad { .. }))
         .count();
     assert_eq!(
-        pointer_load_count,
-        2,
+        pointer_load_count, 2,
         "expected one PointerLoad control node per field"
     );
 }
@@ -1018,7 +1020,9 @@ fn test_struct_pointer_load_expands_to_per_field_loads() {
 /// graph.
 #[test]
 fn test_struct_pointer_load_field_access_folds() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         struct Point { x: i32, y: i32 }
         fn get_x(ptr: heap::*Point) -> i32 {
@@ -1026,9 +1030,10 @@ fn test_struct_pointer_load_field_access_folds() {
             p.x
         }
         export { get_x, heap }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
-    let opt = Builder::build(&case.mir, case.find_func("_"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let agg_get_exists = opt
         .data_nodes
@@ -1067,16 +1072,19 @@ fn test_struct_pointer_load_field_access_folds() {
 /// control node per field. No aggregate-store variant is needed.
 #[test]
 fn test_struct_pointer_store_expands_to_per_field_stores() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         struct Point { x: i32, y: i32 }
         fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
             ptr.* = Point::{ x: x, y: y }
         }
         export { store_point, heap }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
-    let opt = Builder::build(&case.mir, case.find_func("_"));
+    let opt = Builder::build(&case.mir, case.get_first_func());
 
     let root = opt.blocks[0].as_ref().unwrap();
     let store_count = root
@@ -1085,8 +1093,7 @@ fn test_struct_pointer_store_expands_to_per_field_stores() {
         .filter(|s| matches!(s, ControlNode::PointerStore { .. }))
         .count();
     assert_eq!(
-        store_count,
-        2,
+        store_count, 2,
         "expected one PointerStore control node per struct field"
     );
 }
@@ -1258,14 +1265,17 @@ fn test_sched_if_else_phi_stores() {
 /// memarg immediate, no address arithmetic needed.
 #[test]
 fn test_sched_struct_pointer_store() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         struct Point { x: i32, y: i32 }
         fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
             ptr.* = Point::{ x: x, y: y }
         }
         export { store_point, heap }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     let body = case.schedule();
 
@@ -1274,8 +1284,7 @@ fn test_sched_struct_pointer_store() {
         .filter(|i| matches!(i, Instruction::I32Store(_)))
         .count();
     assert_eq!(
-        store_count,
-        2,
+        store_count, 2,
         "expected one I32Store per field; got {:#?}",
         body
     );
@@ -1286,19 +1295,20 @@ fn test_sched_struct_pointer_store() {
         .filter(|i| matches!(i, Instruction::I32Add))
         .count();
     assert_eq!(
-        add_count,
-        0,
+        add_count, 0,
         "field offsets should be in memarg immediates, not computed via I32Add; got {:#?}",
         body
     );
 }
 
-/// Loading a struct and accessing one field via `p.x` emits one load per
-/// field (no DCE yet), and the final value on the stack is the result of the
-/// field-x load (spilled to a local, then read back).
+/// Loading a struct and accessing one field via `p.x` emits only the live
+/// field load, and the final value on the stack is the result of the field-x
+/// load (spilled to a local, then read back).
 #[test]
 fn test_sched_struct_pointer_load_field_access() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         struct Point { x: i32, y: i32 }
         fn get_x(ptr: heap::*Point) -> i32 {
@@ -1306,20 +1316,20 @@ fn test_sched_struct_pointer_load_field_access() {
             p.x
         }
         export { get_x, heap }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     let body = case.schedule();
 
-    // Both field loads are emitted (no DCE yet — unused field loads are still
-    // sequenced for memory ordering).
+    // Only the x-field load is emitted. The y-field load is dead after the
+    // AggregateGet fold and is skipped by scheduler liveness.
     let load_count = body
         .iter()
         .filter(|i| matches!(i, Instruction::I32Load(_)))
         .count();
     assert_eq!(
-        load_count,
-        2,
-        "expected one I32Load per field; got {:#?}",
+        load_count, 1,
+        "expected only the live field load; got {:#?}",
         body
     );
 
@@ -1328,6 +1338,32 @@ fn test_sched_struct_pointer_load_field_access() {
         matches!(body.last(), Some(Instruction::LocalGet(_))),
         "last instruction should be LocalGet (field x spilled to local); got {:#?}",
         body.last()
+    );
+}
+
+/// Returning the full loaded aggregate keeps all field loads live.
+#[test]
+fn test_sched_struct_pointer_load_full_aggregate_keeps_all_loads() {
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        struct Point { x: i32, y: i32 }
+        fn load_point(ptr: heap::*Point) -> Point { ptr.* }
+        export { load_point, heap }
+    "}
+    );
+    let case = TestCase::new(&src);
+    let body = case.schedule();
+
+    let load_count = body
+        .iter()
+        .filter(|i| matches!(i, Instruction::I32Load(_)))
+        .count();
+    assert_eq!(
+        load_count, 2,
+        "expected both field loads when returning the full aggregate; got {:#?}",
+        body
     );
 }
 

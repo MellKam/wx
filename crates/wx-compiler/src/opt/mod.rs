@@ -15,7 +15,9 @@
 use std::collections::HashMap;
 
 pub mod builder;
+mod liveness;
 pub mod scheduler;
+
 #[cfg(test)]
 mod tests;
 
