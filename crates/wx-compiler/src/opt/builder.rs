@@ -516,24 +516,84 @@ impl<'mir> Builder<'mir> {
             // ── Memory ────────────────────────────────────────────────────
             ExprKind::PointerLoad { pointer, memory } => {
                 let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
-                let ty = ScalarType::try_from(expr.ty).expect("pointer load must be scalar");
-                let result = self
-                    .func
-                    .ensure_node(DataNodeKind::PointerLoadResult { address, ty });
-                self.push_stmt(
-                    block_idx,
-                    ControlNode::PointerLoad { address, result, memory: *memory },
-                );
-                StackResult::Value(result)
+                match expr.ty {
+                    mir::Type::Aggregate { aggregate_index } => {
+                        let agg = &self.mir.aggregates[aggregate_index as usize];
+                        let field_tys: Vec<(ScalarType, u32)> = agg
+                            .values
+                            .iter()
+                            .zip(agg.offsets.iter())
+                            .map(|(&ft, &off)| {
+                                (ScalarType::try_from(ft).expect("aggregate field must be scalar"), off)
+                            })
+                            .collect();
+                        let fields: Box<[DataNodeIndex]> = field_tys
+                            .iter()
+                            .map(|&(ty, offset)| {
+                                let result = self.func.ensure_node(DataNodeKind::PointerLoadResult {
+                                    address,
+                                    ty,
+                                });
+                                self.push_stmt(
+                                    block_idx,
+                                    ControlNode::PointerLoad {
+                                        address,
+                                        offset,
+                                        result,
+                                        memory: *memory,
+                                    },
+                                );
+                                result
+                            })
+                            .collect();
+                        StackResult::Value(self.func.ensure_node(DataNodeKind::Aggregate {
+                            fields,
+                            aggregate_index,
+                        }))
+                    }
+                    _ => {
+                        let ty = ScalarType::try_from(expr.ty).expect("pointer load must be scalar");
+                        let result = self
+                            .func
+                            .ensure_node(DataNodeKind::PointerLoadResult { address, ty });
+                        self.push_stmt(
+                            block_idx,
+                            ControlNode::PointerLoad { address, offset: 0, result, memory: *memory },
+                        );
+                        StackResult::Value(result)
+                    }
+                }
             }
 
             ExprKind::PointerStore { pointer, value, memory } => {
                 let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
-                let value = self.build_expr(block_idx, bindings, value).unwrap_value();
-                self.push_stmt(
-                    block_idx,
-                    ControlNode::PointerStore { address, value, memory: *memory },
-                );
+                match value.ty {
+                    mir::Type::Aggregate { .. } => {
+                        let value_node = self.build_expr(block_idx, bindings, value).unwrap_value();
+                        let (fields, aggregate_index) = self.extract_aggregate_fields(value_node);
+                        let offsets: Vec<u32> = self.mir.aggregates[aggregate_index as usize]
+                            .offsets
+                            .to_vec();
+                        for (&field_node, &offset) in fields.iter().zip(offsets.iter()) {
+                            self.push_stmt(
+                                block_idx,
+                                ControlNode::PointerStore {
+                                    address,
+                                    offset,
+                                    value: field_node,
+                                    memory: *memory,
+                                },
+                            );
+                        }
+                    }
+                    _ => {
+                        let value_node = self.build_expr(block_idx, bindings, value).unwrap_value();
+                        self.push_stmt(
+                            block_idx,
+                            ControlNode::PointerStore { address, offset: 0, value: value_node, memory: *memory },
+                        );
+                    }
+                }
                 StackResult::Unit
             }
 

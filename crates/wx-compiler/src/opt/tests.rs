@@ -15,6 +15,19 @@ use crate::opt::scheduler::{Instruction, Scheduler};
 use crate::opt::{ControlNode, DataNodeKind, ScalarType, StackResult};
 use crate::{ast, tir, vfs};
 
+/// Minimal stdlib definitions required for memory / pointer tests.
+const STD: &str = indoc! {"
+    trait PointerSize {}
+    impl PointerSize for u32 {}
+    trait Memory {
+        type Size: PointerSize;
+        const MEMORY_INDEX: u32;
+        fn grow(self, delta: Self::Size) -> Self::Size;
+        fn size(self) -> Self::Size;
+    }
+    trait Memory32: Memory<Size = u32> {}
+"};
+
 // ── Test harness
 // ──────────────────────────────────────────────────────────────
 
@@ -948,6 +961,136 @@ fn test_aggregate_phi_decomposition() {
     );
 }
 
+/// Loading a struct through a pointer expands to one `PointerLoadResult` node
+/// per field assembled into a regular `Aggregate` node. There should be one
+/// `PointerLoad` control statement per field.
+#[test]
+fn test_struct_pointer_load_expands_to_per_field_loads() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        struct Point { x: i32, y: i32 }
+        fn load_point(ptr: heap::*Point) -> Point { ptr.* }
+        export { load_point, heap }
+    "});
+    let case = TestCase::new(&src);
+    let opt = Builder::build(&case.mir, case.find_func("_"));
+
+    let plr_count = opt
+        .data_nodes
+        .iter()
+        .filter(|n| matches!(n.kind, DataNodeKind::PointerLoadResult { .. }))
+        .count();
+    assert_eq!(
+        plr_count,
+        2,
+        "expected one PointerLoadResult per field; nodes: {:#?}",
+        opt.data_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+    );
+
+    let agg_count = opt
+        .data_nodes
+        .iter()
+        .filter(|n| matches!(n.kind, DataNodeKind::Aggregate { .. }))
+        .count();
+    assert_eq!(
+        agg_count,
+        1,
+        "expected one Aggregate node wrapping the field results; nodes: {:#?}",
+        opt.data_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+    );
+
+    let root = opt.blocks[0].as_ref().unwrap();
+    let pointer_load_count = root
+        .statements
+        .iter()
+        .filter(|s| matches!(s, ControlNode::PointerLoad { .. }))
+        .count();
+    assert_eq!(
+        pointer_load_count,
+        2,
+        "expected one PointerLoad control node per field"
+    );
+}
+
+/// `local p = *ptr; p.x` — `AggregateGet` folds through the `Aggregate` built
+/// from per-field `PointerLoadResult` nodes, so the return value is a
+/// `PointerLoadResult` directly. No `AggregateGet` node should appear in the
+/// graph.
+#[test]
+fn test_struct_pointer_load_field_access_folds() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        struct Point { x: i32, y: i32 }
+        fn get_x(ptr: heap::*Point) -> i32 {
+            local p: Point = ptr.*;
+            p.x
+        }
+        export { get_x, heap }
+    "});
+    let case = TestCase::new(&src);
+    let opt = Builder::build(&case.mir, case.find_func("_"));
+
+    let agg_get_exists = opt
+        .data_nodes
+        .iter()
+        .any(|n| matches!(n.kind, DataNodeKind::AggregateGet { .. }));
+    assert!(
+        !agg_get_exists,
+        "AggregateGet should fold through Aggregate built from PointerLoadResults; nodes: {:#?}",
+        opt.data_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+    );
+
+    let root = opt.blocks[0].as_ref().unwrap();
+    let return_val = root.statements.iter().find_map(|s| {
+        if let ControlNode::Return {
+            value: StackResult::Value(n),
+        } = s
+        {
+            Some(*n)
+        } else {
+            None
+        }
+    });
+    assert!(
+        matches!(
+            return_val,
+            Some(n) if matches!(
+                opt.data_nodes[n as usize].kind,
+                DataNodeKind::PointerLoadResult { .. }
+            )
+        ),
+        "return value should be a PointerLoadResult after AggregateGet fold"
+    );
+}
+
+/// Storing a struct through a pointer expands to one scalar `PointerStore`
+/// control node per field. No aggregate-store variant is needed.
+#[test]
+fn test_struct_pointer_store_expands_to_per_field_stores() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        struct Point { x: i32, y: i32 }
+        fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
+            ptr.* = Point::{ x: x, y: y }
+        }
+        export { store_point, heap }
+    "});
+    let case = TestCase::new(&src);
+    let opt = Builder::build(&case.mir, case.find_func("_"));
+
+    let root = opt.blocks[0].as_ref().unwrap();
+    let store_count = root
+        .statements
+        .iter()
+        .filter(|s| matches!(s, ControlNode::PointerStore { .. }))
+        .count();
+    assert_eq!(
+        store_count,
+        2,
+        "expected one PointerStore control node per struct field"
+    );
+}
+
 // ── Additional scheduler edge cases
 // ───────────────────────────────────────────
 
@@ -1106,6 +1249,85 @@ fn test_sched_if_else_phi_stores() {
         body.len(),
         end_pos + 2,
         "LocalGet after End must be the last instruction"
+    );
+}
+
+/// Storing a struct through a pointer emits one store instruction per field.
+/// For `Point { x: i32, y: i32 }` the x field uses `i32.store offset=0` and
+/// the y field uses `i32.store offset=4` — field offsets are baked into the
+/// memarg immediate, no address arithmetic needed.
+#[test]
+fn test_sched_struct_pointer_store() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        struct Point { x: i32, y: i32 }
+        fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
+            ptr.* = Point::{ x: x, y: y }
+        }
+        export { store_point, heap }
+    "});
+    let case = TestCase::new(&src);
+    let body = case.schedule();
+
+    let store_count = body
+        .iter()
+        .filter(|i| matches!(i, Instruction::I32Store(_)))
+        .count();
+    assert_eq!(
+        store_count,
+        2,
+        "expected one I32Store per field; got {:#?}",
+        body
+    );
+
+    // Field offsets are in the instruction immediates — no address arithmetic needed.
+    let add_count = body
+        .iter()
+        .filter(|i| matches!(i, Instruction::I32Add))
+        .count();
+    assert_eq!(
+        add_count,
+        0,
+        "field offsets should be in memarg immediates, not computed via I32Add; got {:#?}",
+        body
+    );
+}
+
+/// Loading a struct and accessing one field via `p.x` emits one load per
+/// field (no DCE yet), and the final value on the stack is the result of the
+/// field-x load (spilled to a local, then read back).
+#[test]
+fn test_sched_struct_pointer_load_field_access() {
+    let src = format!("{STD}\n{}", indoc! {"
+        memory heap: Memory32;
+        struct Point { x: i32, y: i32 }
+        fn get_x(ptr: heap::*Point) -> i32 {
+            local p: Point = ptr.*;
+            p.x
+        }
+        export { get_x, heap }
+    "});
+    let case = TestCase::new(&src);
+    let body = case.schedule();
+
+    // Both field loads are emitted (no DCE yet — unused field loads are still
+    // sequenced for memory ordering).
+    let load_count = body
+        .iter()
+        .filter(|i| matches!(i, Instruction::I32Load(_)))
+        .count();
+    assert_eq!(
+        load_count,
+        2,
+        "expected one I32Load per field; got {:#?}",
+        body
+    );
+
+    // The return value is a LocalGet — the spilled PointerLoadResult for x.
+    assert!(
+        matches!(body.last(), Some(Instruction::LocalGet(_))),
+        "last instruction should be LocalGet (field x spilled to local); got {:#?}",
+        body.last()
     );
 }
 

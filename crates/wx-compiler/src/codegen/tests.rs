@@ -1291,3 +1291,93 @@ fn test_pointer_deref_increment() {
 
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
+
+#[test]
+fn test_struct_pointer_load_and_store() {
+    // Exercises struct-typed pointer loads and stores end-to-end.
+    //
+    // store_point: a struct write expands to one store per field; field y sits
+    //   at base + 4 so its address is computed via i32.add.
+    // load_x / load_y: the whole struct is loaded (one load per field), but
+    //   only the requested field local is returned — the other is allocated but
+    //   never read (no DCE yet).
+    //
+    // The wasmtime checks verify field layout from the host side (byte offsets)
+    // and that individual field loads return the correct values.
+    // The WAT snapshot pins the emitted instruction shape.
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1
+        }
+
+        struct Point {
+            x: i32,
+            y: i32,
+        }
+
+        fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
+            ptr.* = Point::{ x: x, y: y }
+        }
+
+        fn load_x(ptr: heap::*Point) -> i32 {
+            local p: Point = ptr.*;
+            p.x
+        }
+
+        fn load_y(ptr: heap::*Point) -> i32 {
+            local p: Point = ptr.*;
+            p.y
+        }
+
+        export { heap, store_point, load_x, load_y }
+    "}
+    );
+    let case = TestCase::new(&src);
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance =
+        wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let mem = instance
+        .get_memory(&mut store, "heap")
+        .expect("heap memory not exported");
+    let store_point = instance
+        .get_typed_func::<(i32, i32, i32), ()>(&mut store, "store_point")
+        .expect("store_point not found");
+    let load_x = instance
+        .get_typed_func::<i32, i32>(&mut store, "load_x")
+        .expect("load_x not found");
+    let load_y = instance
+        .get_typed_func::<i32, i32>(&mut store, "load_y")
+        .expect("load_y not found");
+
+    // Store Point{x:10, y:20} at byte address 0 via the wx function and verify
+    // the physical layout from the host: x at offset 0, y at offset 4.
+    store_point
+        .call(&mut store, (0, 10, 20))
+        .expect("store_point failed");
+
+    let mut buf = [0u8; 4];
+    mem.read(&mut store, 0, &mut buf).unwrap();
+    assert_eq!(i32::from_le_bytes(buf), 10, "x field should be at byte offset 0");
+    mem.read(&mut store, 4, &mut buf).unwrap();
+    assert_eq!(i32::from_le_bytes(buf), 20, "y field should be at byte offset 4");
+
+    // Load individual fields back via wx and confirm correct values.
+    assert_eq!(load_x.call(&mut store, 0).expect("load_x failed"), 10);
+    assert_eq!(load_y.call(&mut store, 0).expect("load_y failed"), 20);
+
+    // Repeat at a non-zero base address (16) to exercise the i32.add offset
+    // arithmetic for the y field.
+    store_point
+        .call(&mut store, (16, 42, 99))
+        .expect("store_point failed");
+    assert_eq!(load_x.call(&mut store, 16).expect("load_x failed"), 42);
+    assert_eq!(load_y.call(&mut store, 16).expect("load_y failed"), 99);
+
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}

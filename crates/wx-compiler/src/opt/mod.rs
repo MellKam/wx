@@ -321,13 +321,6 @@ pub enum DataNodeKind {
     AggregateCallResult {
         aggregate_index: mir::AggregateIndex,
     },
-    /// Aggregate value loaded from a pointer. Unlike `Aggregate`, there are no
-    /// concrete field sub-nodes — per-field values come from per-field
-    /// `PointerLoad` instructions emitted by the scheduler.
-    /// `AggregateGet` of this node does not fold.
-    AggregateLoadResult {
-        aggregate_index: mir::AggregateIndex,
-    },
     MemoryGrowResult {
         memory: ast::DefId,
         delta: DataNodeIndex,
@@ -387,8 +380,7 @@ impl DataNodeKind {
             DataNodeKind::Aggregate {
                 aggregate_index, ..
             }
-            | DataNodeKind::AggregateCallResult { aggregate_index }
-            | DataNodeKind::AggregateLoadResult { aggregate_index } => {
+            | DataNodeKind::AggregateCallResult { aggregate_index } => {
                 NodeType::Aggregate(*aggregate_index)
             }
         }
@@ -409,7 +401,6 @@ impl DataNodeKind {
                 | DataNodeKind::MemorySize { .. }
                 | DataNodeKind::CallResult { .. }
                 | DataNodeKind::AggregateCallResult { .. }
-                | DataNodeKind::AggregateLoadResult { .. }
                 | DataNodeKind::MemoryGrowResult { .. }
                 | DataNodeKind::PointerLoadResult { .. }
                 // LoopParam nodes are mutated after creation, so they cannot be CSE'd.
@@ -479,6 +470,8 @@ pub enum ControlNode {
     /// Load a scalar value from a raw pointer address. Sequenced with stores.
     PointerLoad {
         address: DataNodeIndex,
+        /// Byte offset added to `address` at the WASM instruction level (memarg).
+        offset: u32,
         /// The `PointerLoadResult` data node that carries the loaded value.
         result: DataNodeIndex,
         memory: ast::DefId,
@@ -486,6 +479,8 @@ pub enum ControlNode {
     /// Store a scalar value to a raw pointer address.
     PointerStore {
         address: DataNodeIndex,
+        /// Byte offset added to `address` at the WASM instruction level (memarg).
+        offset: u32,
         value: DataNodeIndex,
         memory: ast::DefId,
     },
@@ -741,7 +736,6 @@ impl Function {
             | DataNodeKind::MemoryIndex { .. }
             | DataNodeKind::MemorySize { .. }
             | DataNodeKind::AggregateCallResult { .. }
-            | DataNodeKind::AggregateLoadResult { .. }
             // LoopParam uses are registered by patch_loop_param after both
             // `before` and `after` are known.
             | DataNodeKind::LoopParam { .. } => {}

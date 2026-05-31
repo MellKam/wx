@@ -516,15 +516,15 @@ impl<'f> Scheduler<'f> {
                 }
             }
 
-            ControlNode::PointerLoad { address, result, memory } => {
+            ControlNode::PointerLoad { address, offset, result, memory } => {
                 self.emit_value(*address);
                 let ty = self.func.data_nodes[*result as usize].kind.scalar_type();
                 let align = natural_align(ty);
                 let load_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Load(MemArg { align, offset: 0, memory: *memory }),
-                    ScalarType::I64 => Instruction::I64Load(MemArg { align, offset: 0, memory: *memory }),
-                    ScalarType::F32 => Instruction::F32Load(MemArg { align, offset: 0, memory: *memory }),
-                    ScalarType::F64 => Instruction::F64Load(MemArg { align, offset: 0, memory: *memory }),
+                    ScalarType::I32 => Instruction::I32Load(MemArg { align, offset: *offset, memory: *memory }),
+                    ScalarType::I64 => Instruction::I64Load(MemArg { align, offset: *offset, memory: *memory }),
+                    ScalarType::F32 => Instruction::F32Load(MemArg { align, offset: *offset, memory: *memory }),
+                    ScalarType::F64 => Instruction::F64Load(MemArg { align, offset: *offset, memory: *memory }),
                 };
                 self.body.push(load_instr);
                 // PointerLoadResult always spills (no_cse + always_spill).
@@ -533,16 +533,16 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::LocalSet(local));
             }
 
-            ControlNode::PointerStore { address, value, memory } => {
+            ControlNode::PointerStore { address, offset, value, memory } => {
                 self.emit_value(*address);
                 self.emit_value(*value);
                 let ty = self.func.data_nodes[*value as usize].kind.scalar_type();
                 let align = natural_align(ty);
                 let store_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Store(MemArg { align, offset: 0, memory: *memory }),
-                    ScalarType::I64 => Instruction::I64Store(MemArg { align, offset: 0, memory: *memory }),
-                    ScalarType::F32 => Instruction::F32Store(MemArg { align, offset: 0, memory: *memory }),
-                    ScalarType::F64 => Instruction::F64Store(MemArg { align, offset: 0, memory: *memory }),
+                    ScalarType::I32 => Instruction::I32Store(MemArg { align, offset: *offset, memory: *memory }),
+                    ScalarType::I64 => Instruction::I64Store(MemArg { align, offset: *offset, memory: *memory }),
+                    ScalarType::F32 => Instruction::F32Store(MemArg { align, offset: *offset, memory: *memory }),
+                    ScalarType::F64 => Instruction::F64Store(MemArg { align, offset: *offset, memory: *memory }),
                 };
                 self.body.push(store_instr);
             }
@@ -580,9 +580,7 @@ impl<'f> Scheduler<'f> {
     fn emit_value(&mut self, node: DataNodeIndex) {
         if matches!(
             self.func.data_nodes[node as usize].kind,
-            DataNodeKind::Aggregate { .. }
-                | DataNodeKind::AggregateCallResult { .. }
-                | DataNodeKind::AggregateLoadResult { .. }
+            DataNodeKind::Aggregate { .. } | DataNodeKind::AggregateCallResult { .. }
         ) {
             self.ensure_aggregate_locals(node);
             for i in 0..self.node_to_aggregate_locals[&node].len() {
@@ -911,9 +909,7 @@ impl<'f> Scheduler<'f> {
             }
 
             // Aggregates are intercepted in `emit_value` before reaching here.
-            DataNodeKind::Aggregate { .. }
-            | DataNodeKind::AggregateCallResult { .. }
-            | DataNodeKind::AggregateLoadResult { .. } => {
+            DataNodeKind::Aggregate { .. } | DataNodeKind::AggregateCallResult { .. } => {
                 unreachable!("aggregate nodes are handled by emit_value, not emit_value_inline")
             }
         }
@@ -942,7 +938,6 @@ impl<'f> Scheduler<'f> {
             // Calls, memory.grow, and pointer loads always produce a result that must be captured.
             DataNodeKind::CallResult { .. }
             | DataNodeKind::AggregateCallResult { .. }
-            | DataNodeKind::AggregateLoadResult { .. }
             | DataNodeKind::MemoryGrowResult { .. }
             | DataNodeKind::PointerLoadResult { .. } => true,
 

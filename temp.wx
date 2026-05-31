@@ -33,3 +33,8 @@ fn test() {
 
   object.*.field = Vec3::{ x: 1.0, y: 2.0, z: 3.0 };
 }
+
+fn test(cond: bool) {
+  local unused_value = if cond { 1 } else { 2 };
+  return 42; 
+}
