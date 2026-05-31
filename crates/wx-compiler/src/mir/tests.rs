@@ -161,8 +161,10 @@ fn test_size_associated_const() {
 fn test_string_literal_lowered_to_tuple() {
     // A string literal lowers to a Packed { StringIndex(ptr), Int(len) } in MIR.
     let case = TestCase::new(&format!(
-        "{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
         indoc! {"
+        memory heap: Memory32;
+
         import \"console\" {
             fn log(ptr: u32, len: u32);
         }
@@ -182,8 +184,10 @@ fn test_string_literal_lowered_to_tuple() {
 fn test_string_field_access_lowered_to_local_tuple_get() {
     // Field access on a string local (ptr/len) should map to LocalTupleGet.
     let case = TestCase::new(&format!(
-        "{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
         indoc! {"
+        memory heap: Memory32;
+
         import \"console\" {
             fn log(ptr: u32, len: u32);
         }

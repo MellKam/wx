@@ -19,6 +19,11 @@ const STD: &str = indoc! {"
 
     trait Memory32: Memory<Size = u32> {}
     trait Memory64: Memory<Size = u64> {}
+
+    pub struct string {
+        ptr: u32,
+        len: u32,
+    }
 "};
 use crate::{ast, mir, tir, vfs};
 
@@ -572,11 +577,10 @@ fn test_fibonacci() {
 
 #[test]
 fn test_imports() {
-    let case = TestCase::new(indoc! {"
-        pub struct string {
-            ptr: u32,
-            len: u32,
-        }
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32;
 
         import \"console\" {
             fn log(value: string) -> unit;
@@ -589,8 +593,9 @@ fn test_imports() {
             console::log(y);
         }
 
-        export { main }
-    "});
+        export { main, heap as \"memory\" }
+    "}
+    ));
 
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 
@@ -624,6 +629,48 @@ fn test_imports() {
         .get_typed_func::<(), ()>(&mut store, "main")
         .unwrap();
     main.call(&mut store, ()).unwrap();
+}
+
+#[test]
+fn test_dead_function_strings_excluded_from_data_section() {
+    // String data from functions eliminated by DCE must not appear in the
+    // wasm data section. The lazy string pool only adds strings when their
+    // StringPointer instruction is actually emitted, so dead code can never
+    // contribute bytes to the binary.
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+
+        import \"env\" {
+            fn log(message: string);
+        }
+
+        fn live_fn() {
+            env::log(\"this-string-must-appear\");
+        }
+
+        fn dead_fn() {
+            env::log(\"this-string-must-not-appear\");
+        }
+
+        export { live_fn, heap }
+    "}
+    ));
+
+    let bytecode = &case.bytecode;
+    assert!(
+        bytecode
+            .windows(b"this-string-must-appear".len())
+            .any(|w| w == b"this-string-must-appear"),
+        "live string missing from bytecode"
+    );
+    assert!(
+        !bytecode
+            .windows(b"this-string-must-not-appear".len())
+            .any(|w| w == b"this-string-must-not-appear"),
+        "dead string should not appear in bytecode"
+    );
 }
 
 // ── WAT snapshots

@@ -26,6 +26,8 @@
 
 use std::collections::HashMap;
 
+use string_interner::symbol::SymbolU32;
+
 use crate::codegen::ValueType;
 use crate::mir;
 use crate::opt::{
@@ -44,7 +46,7 @@ pub struct MemArg {
     pub align: u32,
     /// Static byte offset added to the runtime address.
     pub offset: u32,
-    pub memory_index: u32,
+    pub memory: crate::ast::DefId,
 }
 
 /// A WASM local variable declaration.
@@ -178,8 +180,10 @@ pub enum Instruction {
         mir_sig_index: u32,
     },
     // Memory
-    MemorySize(u32),
-    MemoryGrow(u32),
+    MemorySize(crate::ast::DefId),
+    MemoryGrow(crate::ast::DefId),
+    /// Wasm linear-memory index as an `i32.const`, resolved at codegen.
+    MemoryIndex { memory: crate::ast::DefId },
     // Pointer load/store
     I32Load(MemArg),
     I64Load(MemArg),
@@ -198,11 +202,11 @@ pub enum Instruction {
     FunctionPointer(crate::ast::DefId),
     /// A string literal; the encoder resolves the pool index to a byte offset
     /// and emits `i32.const <byte_offset>`.
-    StringPointer(crate::mir::StringIndex),
+    StringPointer(SymbolU32),
     /// End of the static data section for a given memory (base of writable
     /// heap); the encoder emits `i32.const <data_section_end>`.
     DataSectionEnd {
-        memory_index: u32,
+        memory: crate::ast::DefId,
     },
 }
 
@@ -502,13 +506,9 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::Unreachable);
             }
 
-            ControlNode::MemoryGrow {
-                memory_index,
-                delta,
-                result,
-            } => {
+            ControlNode::MemoryGrow { memory, delta, result } => {
                 self.emit_value(*delta);
-                self.body.push(Instruction::MemoryGrow(*memory_index));
+                self.body.push(Instruction::MemoryGrow(*memory));
                 if self.should_spill(&self.func.data_nodes[*result as usize]) {
                     let local = self.alloc_local(ScalarType::I32);
                     self.node_to_local.insert(*result, local);
@@ -516,36 +516,15 @@ impl<'f> Scheduler<'f> {
                 }
             }
 
-            ControlNode::PointerLoad {
-                address,
-                result,
-                memory_index,
-            } => {
+            ControlNode::PointerLoad { address, result, memory } => {
                 self.emit_value(*address);
                 let ty = self.func.data_nodes[*result as usize].kind.scalar_type();
-                let mi = *memory_index;
                 let align = natural_align(ty);
                 let load_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Load(MemArg {
-                        align,
-                        offset: 0,
-                        memory_index: mi,
-                    }),
-                    ScalarType::I64 => Instruction::I64Load(MemArg {
-                        align,
-                        offset: 0,
-                        memory_index: mi,
-                    }),
-                    ScalarType::F32 => Instruction::F32Load(MemArg {
-                        align,
-                        offset: 0,
-                        memory_index: mi,
-                    }),
-                    ScalarType::F64 => Instruction::F64Load(MemArg {
-                        align,
-                        offset: 0,
-                        memory_index: mi,
-                    }),
+                    ScalarType::I32 => Instruction::I32Load(MemArg { align, offset: 0, memory: *memory }),
+                    ScalarType::I64 => Instruction::I64Load(MemArg { align, offset: 0, memory: *memory }),
+                    ScalarType::F32 => Instruction::F32Load(MemArg { align, offset: 0, memory: *memory }),
+                    ScalarType::F64 => Instruction::F64Load(MemArg { align, offset: 0, memory: *memory }),
                 };
                 self.body.push(load_instr);
                 // PointerLoadResult always spills (no_cse + always_spill).
@@ -554,37 +533,16 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::LocalSet(local));
             }
 
-            ControlNode::PointerStore {
-                address,
-                value,
-                memory_index,
-            } => {
+            ControlNode::PointerStore { address, value, memory } => {
                 self.emit_value(*address);
                 self.emit_value(*value);
                 let ty = self.func.data_nodes[*value as usize].kind.scalar_type();
-                let mi = *memory_index;
                 let align = natural_align(ty);
                 let store_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Store(MemArg {
-                        align,
-                        offset: 0,
-                        memory_index: mi,
-                    }),
-                    ScalarType::I64 => Instruction::I64Store(MemArg {
-                        align,
-                        offset: 0,
-                        memory_index: mi,
-                    }),
-                    ScalarType::F32 => Instruction::F32Store(MemArg {
-                        align,
-                        offset: 0,
-                        memory_index: mi,
-                    }),
-                    ScalarType::F64 => Instruction::F64Store(MemArg {
-                        align,
-                        offset: 0,
-                        memory_index: mi,
-                    }),
+                    ScalarType::I32 => Instruction::I32Store(MemArg { align, offset: 0, memory: *memory }),
+                    ScalarType::I64 => Instruction::I64Store(MemArg { align, offset: 0, memory: *memory }),
+                    ScalarType::F32 => Instruction::F32Store(MemArg { align, offset: 0, memory: *memory }),
+                    ScalarType::F64 => Instruction::F64Store(MemArg { align, offset: 0, memory: *memory }),
                 };
                 self.body.push(store_instr);
             }
@@ -665,14 +623,17 @@ impl<'f> Scheduler<'f> {
             DataNodeKind::FunctionRef { id } => {
                 self.body.push(Instruction::FunctionPointer(id));
             }
-            DataNodeKind::StringRef { string_index } => {
-                self.body.push(Instruction::StringPointer(string_index));
+            DataNodeKind::StringRef { symbol } => {
+                self.body.push(Instruction::StringPointer(symbol));
             }
-            DataNodeKind::MemoryOffset { memory_index } => {
-                self.body.push(Instruction::DataSectionEnd { memory_index });
+            DataNodeKind::MemoryOffset { memory } => {
+                self.body.push(Instruction::DataSectionEnd { memory });
             }
-            DataNodeKind::MemorySize { memory_index } => {
-                self.body.push(Instruction::MemorySize(memory_index));
+            DataNodeKind::MemoryIndex { memory } => {
+                self.body.push(Instruction::MemoryIndex { memory });
+            }
+            DataNodeKind::MemorySize { memory } => {
+                self.body.push(Instruction::MemorySize(memory));
             }
 
             // Arithmetic / bitwise — push left, push right, emit opcode.

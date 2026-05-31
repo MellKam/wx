@@ -14,7 +14,6 @@ pub type GlobalIndex = u32;
 pub type SignatureIndex = u32;
 pub type FunctionIndex = u32;
 pub type AggregateIndex = u32;
-pub type StringIndex = u32;
 
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Clone)]
@@ -42,7 +41,7 @@ pub enum ExprKind {
         value: Box<Expression>,
     },
     StringIndex {
-        string_index: StringIndex,
+        symbol: SymbolU32,
     },
     Aggregate {
         values: Box<[Expression]>,
@@ -174,28 +173,32 @@ pub enum ExprKind {
     /// `i32.const <data_section_end>` — byte offset of the first writable
     /// memory region.
     MemoryOffset {
-        memory_index: u32,
+        memory: ast::DefId,
     },
-    /// `memory.size <memory_index>` — current size of a linear memory in pages.
+    /// `i32.const <wasm_memory_index>` — the wasm linear-memory index of this
+    /// memory, resolved at codegen time.
+    MemoryIndex {
+        memory: ast::DefId,
+    },
+    /// `memory.size` — current size of a linear memory in pages.
     MemorySize {
-        memory_index: u32,
+        memory: ast::DefId,
     },
-    /// `memory.grow <memory_index>` — grow linear memory by N pages; pushes old
-    /// size or -1.
+    /// `memory.grow` — grow linear memory by N pages; pushes old size or -1.
     MemoryGrow {
-        memory_index: u32,
+        memory: ast::DefId,
         delta: Box<Expression>,
     },
     /// Load a value from the address held in `pointer`.
     PointerLoad {
         pointer: Box<Expression>,
-        memory_index: u32,
+        memory: ast::DefId,
     },
     /// Store `value` to the address held in `pointer`.
     PointerStore {
         pointer: Box<Expression>,
         value: Box<Expression>,
-        memory_index: u32,
+        memory: ast::DefId,
     },
 }
 
@@ -215,7 +218,7 @@ pub enum Type {
     Unit,
     Never,
     Bool,
-    Pointer { memory_index: u32 },
+    Pointer { memory: ast::DefId },
     Aggregate { aggregate_index: AggregateIndex },
     Function { signature_index: SignatureIndex },
 }
@@ -240,6 +243,8 @@ pub struct Aggregate {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct MemoryInfo {
+    pub id: ast::DefId,
+    pub source: tir::ItemSource,
     pub kind: tir::MemoryKind,
     pub min_pages: Option<u32>,
     pub max_pages: Option<u32>,
@@ -256,7 +261,6 @@ pub struct MIR {
     pub imports: Vec<ImportModule>,
     pub memories: Vec<MemoryInfo>,
     pub aggregates: Box<[Aggregate]>,
-    pub strings: Box<[SymbolU32]>,
     /// Direct call edges collected during lowering: (caller_mir_id,
     /// callee_mir_id). Consumed by `run_inlining_pass` to build the call
     /// graph.
@@ -283,7 +287,7 @@ pub enum ImportModuleItem {
     },
     Memory {
         name: SymbolU32,
-        memory_index: u32,
+        id: ast::DefId,
     },
 }
 
@@ -291,7 +295,7 @@ pub enum ImportModuleItem {
 pub enum ExportItem {
     Function { id: ast::DefId, name: SymbolU32 },
     Global { id: ast::DefId, name: SymbolU32 },
-    Memory { memory_index: u32, name: SymbolU32 },
+    Memory { id: ast::DefId, name: SymbolU32 },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -374,22 +378,11 @@ impl MIR {
         interner: &ast::StringInterner,
         id_generator: ast::DefIdGenerator,
     ) -> MIR {
-        // Memory index remap: each memory's DefId → its position in tir.memories
-        // which equals the WebAssembly linear-memory index.
-        let memory_id_remap: HashMap<ast::DefId, u32> = tir
-            .memories
-            .iter()
-            .enumerate()
-            .map(|(i, m)| (m.id, i as u32))
-            .collect();
-
         let mut builder = Builder {
             tir,
             interner,
-            string_pool: StringPool::new(),
             aggregate_index_lookup: HashMap::new(),
             aggregates: Vec::new(),
-            memory_id_remap,
             signature_pool: Vec::new(),
             signature_index_lookup: HashMap::new(),
             current_substitutions: Box::new([]),
@@ -485,7 +478,7 @@ impl MIR {
                         },
                         tir::ImportValue::Memory { id } => ImportModuleItem::Memory {
                             name: *symbol,
-                            memory_index: builder.memory_id_remap[id],
+                            id: *id,
                         },
                     })
                     .collect(),
@@ -498,15 +491,15 @@ impl MIR {
             functions,
             inline_functions,
             globals,
-            strings: builder.string_pool.strings.into_boxed_slice(),
             signatures,
             aggregates: builder.aggregates.into_boxed_slice(),
             imports,
             memories: tir
                 .memories
                 .iter()
-                .filter(|m| m.source == tir::ItemSource::Internal)
                 .map(|m| MemoryInfo {
+                    id: m.id,
+                    source: m.source,
                     kind: m.kind,
                     min_pages: m.min_pages,
                     max_pages: m.max_pages,
@@ -544,7 +537,7 @@ impl MIR {
                             external_name,
                             internal_name,
                         } => ExportItem::Memory {
-                            memory_index: builder.memory_id_remap[id],
+                            id: *id,
                             name: external_name
                                 .clone()
                                 .map(|n| n.inner)
@@ -567,30 +560,6 @@ impl MIR {
     }
 }
 
-struct StringPool {
-    lookup: HashMap<SymbolU32, StringIndex>,
-    strings: Vec<SymbolU32>,
-}
-
-impl StringPool {
-    fn new() -> Self {
-        StringPool {
-            lookup: HashMap::new(),
-            strings: Vec::new(),
-        }
-    }
-
-    fn add(&mut self, symbol: SymbolU32) -> StringIndex {
-        if let Some(&index) = self.lookup.get(&symbol) {
-            index
-        } else {
-            let index = self.strings.len() as StringIndex;
-            self.lookup.insert(symbol, index);
-            self.strings.push(symbol);
-            index
-        }
-    }
-}
 
 /// Tracks which generic function instantiations are needed, assigning each
 /// unique `(original_def_id, type_args)` pair a fresh synthetic `DefId`.
@@ -629,11 +598,8 @@ impl MonoRegistry {
 struct Builder<'tir> {
     tir: &'tir tir::TIR,
     interner: &'tir ast::StringInterner,
-    string_pool: StringPool,
     aggregate_index_lookup: HashMap<Box<[tir::TypeIndex]>, AggregateIndex>,
     aggregates: Vec<Aggregate>,
-    /// DefId → index in tir.memories (= WebAssembly memory index).
-    memory_id_remap: HashMap<ast::DefId, u32>,
     /// Concrete function signatures, interned on demand. The index into this
     /// Vec is the MIR `SignatureIndex` used throughout the rest of the IR.
     signature_pool: Vec<FunctionSignature>,
@@ -692,22 +658,22 @@ impl<'tir> Builder<'tir> {
                 Layout { size: 4, align: 4 }
             }
             tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
-                let memory_index = match memory {
-                    Some(def_id) => self.memory_id_remap[def_id],
+                let tir_idx = match memory {
+                    Some(def_id) => self.tir.memory_index_lookup[def_id] as usize,
                     None => 0,
                 };
-                let pointer_size = self.tir.memories[memory_index as usize].kind.pointer_size();
+                let pointer_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: pointer_size,
                     align: pointer_size,
                 }
             }
             tir::Type::Slice { memory, .. } => {
-                let memory_index = match memory {
-                    Some(def_id) => self.memory_id_remap[def_id],
+                let tir_idx = match memory {
+                    Some(def_id) => self.tir.memory_index_lookup[def_id] as usize,
                     None => 0,
                 };
-                let pointer_size = self.tir.memories[memory_index as usize].kind.pointer_size();
+                let pointer_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: pointer_size * 2,
                     align: pointer_size,
@@ -832,9 +798,9 @@ impl<'tir> Builder<'tir> {
                 self.lower_type_index(concrete)
             }
             tir::Type::Pointer { memory, .. } => Type::Pointer {
-                memory_index: match memory {
-                    Some(def_id) => self.memory_id_remap[&def_id],
-                    None => 0,
+                memory: match memory {
+                    Some(def_id) => def_id,
+                    None => self.tir.memories[0].id,
                 },
             },
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
@@ -855,7 +821,7 @@ impl<'tir> Builder<'tir> {
         }
     }
 
-    fn memory_index_from_arg(&self, type_idx: tir::TypeIndex) -> u32 {
+    fn memory_index_from_arg(&self, type_idx: tir::TypeIndex) -> ast::DefId {
         let resolved = match &self.tir.type_pool[type_idx as usize] {
             tir::Type::TypeParam { param_index, .. } => {
                 self.current_substitutions[*param_index as usize]
@@ -863,7 +829,7 @@ impl<'tir> Builder<'tir> {
             _ => type_idx,
         };
         match &self.tir.type_pool[resolved as usize] {
-            tir::Type::Memory { id, .. } => self.memory_id_remap[id],
+            tir::Type::Memory { id, .. } => *id,
             _ => unreachable!(),
         }
     }
@@ -1033,15 +999,16 @@ impl<'tir> Builder<'tir> {
                 ty: Type::U32,
             },
             tir::ExprKind::String { symbol } => {
-                let string_index = self.string_pool.add(*symbol);
                 let len = self.interner.resolve(*symbol).unwrap().len() as i64;
                 let ty = self.lower_type_index(expr.ty);
                 Expression {
                     kind: ExprKind::Aggregate {
                         values: Box::new([
                             Expression {
-                                kind: ExprKind::StringIndex { string_index },
-                                ty: Type::Pointer { memory_index: 0 },
+                                kind: ExprKind::StringIndex { symbol: *symbol },
+                                ty: Type::Pointer {
+                                    memory: self.tir.memories[0].id,
+                                },
                             },
                             Expression {
                                 kind: ExprKind::Int { value: len },
@@ -1141,8 +1108,8 @@ impl<'tir> Builder<'tir> {
                     self.tir.type_pool[resolved_obj_ty as usize],
                     tir::Type::Memory { .. }
                 ) {
-                    let memory_index = match &object.kind {
-                        tir::ExprKind::Memory { id: mem_id } => self.memory_id_remap[mem_id],
+                    let memory = match &object.kind {
+                        tir::ExprKind::Memory { id: mem_id } => *mem_id,
                         _ => unreachable!("memory method call on non-memory expression"),
                     };
                     let tir_fn_idx = self.tir.function_index_lookup[id];
@@ -1153,17 +1120,14 @@ impl<'tir> Builder<'tir> {
                     let result_ty = self.lower_type_index(expr.ty);
                     return match method_name {
                         "size" => Expression {
-                            kind: ExprKind::MemorySize { memory_index },
+                            kind: ExprKind::MemorySize { memory },
                             ty: result_ty,
                         },
                         "grow" => {
                             let delta =
                                 Box::new(self.lower_expression(func_ctx, &arguments[0], sink));
                             Expression {
-                                kind: ExprKind::MemoryGrow {
-                                    memory_index,
-                                    delta,
-                                },
+                                kind: ExprKind::MemoryGrow { memory, delta },
                                 ty: result_ty,
                             }
                         }
@@ -1257,21 +1221,18 @@ impl<'tir> Builder<'tir> {
                         let result_ty = self.lower_type_index(expr.ty);
                         return match intrinsic_name {
                             "memory32_size" => {
-                                let memory_index = self.memory_index_from_arg(arguments[0].ty);
+                                let memory = self.memory_index_from_arg(arguments[0].ty);
                                 Expression {
-                                    kind: ExprKind::MemorySize { memory_index },
+                                    kind: ExprKind::MemorySize { memory },
                                     ty: result_ty,
                                 }
                             }
                             "memory32_grow" => {
-                                let memory_index = self.memory_index_from_arg(arguments[0].ty);
+                                let memory = self.memory_index_from_arg(arguments[0].ty);
                                 let delta =
                                     Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
                                 Expression {
-                                    kind: ExprKind::MemoryGrow {
-                                        memory_index,
-                                        delta,
-                                    },
+                                    kind: ExprKind::MemoryGrow { memory, delta },
                                     ty: result_ty,
                                 }
                             }
@@ -1340,22 +1301,17 @@ impl<'tir> Builder<'tir> {
                         let namespace_ty = namespace.inner;
                         let const_name = self.interner.resolve(const_name_sym).unwrap();
                         match &self.tir.type_pool[namespace_ty as usize] {
-                            tir::Type::Memory { id, .. } => {
-                                let memory_index = self.memory_id_remap[id];
-                                match const_name {
-                                    "OFFSET" => Expression {
-                                        kind: ExprKind::MemoryOffset { memory_index },
-                                        ty: result_ty,
-                                    },
-                                    "MEMORY_INDEX" => Expression {
-                                        kind: ExprKind::Int {
-                                            value: memory_index as i64,
-                                        },
-                                        ty: result_ty,
-                                    },
-                                    _ => todo!("unknown memory compiler constant: {}", const_name),
-                                }
-                            }
+                            tir::Type::Memory { id, .. } => match const_name {
+                                "OFFSET" => Expression {
+                                    kind: ExprKind::MemoryOffset { memory: *id },
+                                    ty: result_ty,
+                                },
+                                "MEMORY_INDEX" => Expression {
+                                    kind: ExprKind::MemoryIndex { memory: *id },
+                                    ty: result_ty,
+                                },
+                                _ => todo!("unknown memory compiler constant: {}", const_name),
+                            },
                             _ => {
                                 let layout = self.compute_layout(namespace_ty);
                                 let value = match const_name {
@@ -1402,7 +1358,7 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Deref { pointer, memory_id } => Expression {
                 kind: ExprKind::PointerLoad {
                     pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
-                    memory_index: self.memory_id_remap[memory_id],
+                    memory: *memory_id,
                 },
                 ty: self.lower_type_index(expr.ty),
             },
@@ -1411,13 +1367,13 @@ impl<'tir> Builder<'tir> {
                 // callees.
                 if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty as usize] {
                     let member_name = self.interner.resolve(member.inner).unwrap_or("");
-                    let memory_index = match &object.kind {
-                        tir::ExprKind::Memory { id } => self.memory_id_remap[id],
+                    let memory = match &object.kind {
+                        tir::ExprKind::Memory { id } => *id,
                         _ => unreachable!("memory member access on non-memory expression"),
                     };
                     return match member_name {
                         "OFFSET" => Expression {
-                            kind: ExprKind::MemoryOffset { memory_index },
+                            kind: ExprKind::MemoryOffset { memory },
                             ty: self.lower_type_index(expr.ty),
                         },
                         _ => unreachable!(
@@ -1760,7 +1716,7 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Deref { pointer, memory_id } => ExprKind::PointerStore {
                 pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
                 value: Box::new(self.lower_expression(func_ctx, right, sink)),
-                memory_index: self.memory_id_remap[memory_id],
+                memory: *memory_id,
             },
             _ => unreachable!(),
         }
@@ -1833,7 +1789,7 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Deref { pointer, memory_id } => ExprKind::PointerStore {
                 pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
                 value: Box::new(binary_expr),
-                memory_index: self.memory_id_remap[memory_id],
+                memory: *memory_id,
             },
             _ => unreachable!(),
         }
@@ -2013,28 +1969,22 @@ fn rewrite_body(
             left: rw_box(left),
             right: rw_box(right),
         },
-        ExprKind::MemoryGrow {
-            memory_index,
-            delta,
-        } => ExprKind::MemoryGrow {
-            memory_index,
+        ExprKind::MemoryGrow { memory, delta } => ExprKind::MemoryGrow {
+            memory,
             delta: rw_box(delta),
         },
-        ExprKind::PointerLoad {
-            pointer,
-            memory_index,
-        } => ExprKind::PointerLoad {
+        ExprKind::PointerLoad { pointer, memory } => ExprKind::PointerLoad {
             pointer: rw_box(pointer),
-            memory_index,
+            memory,
         },
         ExprKind::PointerStore {
             pointer,
             value,
-            memory_index,
+            memory,
         } => ExprKind::PointerStore {
             pointer: rw_box(pointer),
             value: rw_box(value),
-            memory_index,
+            memory,
         },
         // Leaf variants — nothing to rewrite.
         k @ (ExprKind::Noop
@@ -2046,6 +1996,7 @@ fn rewrite_body(
         | ExprKind::Global { .. }
         | ExprKind::Unreachable
         | ExprKind::MemoryOffset { .. }
+        | ExprKind::MemoryIndex { .. }
         | ExprKind::MemorySize { .. }) => k,
     };
     Expression { kind, ty }
@@ -2240,6 +2191,7 @@ fn inline_expr(
         | ExprKind::AggregateGet { .. }
         | ExprKind::Continue { .. }
         | ExprKind::MemoryOffset { .. }
+        | ExprKind::MemoryIndex { .. }
         | ExprKind::MemorySize { .. } => {}
     }
 

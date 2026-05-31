@@ -17,7 +17,7 @@ functions:
           expressions:
             - kind:
                 MemorySize:
-                  memory_index: 0
+                  memory: 7
               ty: U32
       ty: U32
 signatures:
@@ -31,8 +31,9 @@ exports:
       name: 15
 imports: []
 memories:
-  - kind: Memory32
+  - id: 7
+    source: Internal
+    kind: Memory32
     min_pages: ~
     max_pages: ~
 aggregates: []
-strings: []

@@ -19,6 +19,8 @@ pub mod scheduler;
 #[cfg(test)]
 mod tests;
 
+use string_interner::symbol::SymbolU32;
+
 use crate::{ast, mir};
 
 pub type DataNodeIndex = u32;
@@ -130,16 +132,21 @@ pub enum DataNodeKind {
     },
     /// Pointer into the data section for a string constant. CSE-eligible.
     StringRef {
-        string_index: u32,
+        symbol: SymbolU32,
     },
     /// Byte offset of the end of the data section (a link-time constant).
     /// CSE-eligible.
     MemoryOffset {
-        memory_index: u32,
+        memory: ast::DefId,
+    },
+    /// Wasm linear-memory index as an integer constant, resolved at codegen.
+    /// CSE-eligible.
+    MemoryIndex {
+        memory: ast::DefId,
     },
     /// Current linear memory size in pages. Excluded from CSE (runtime state).
     MemorySize {
-        memory_index: u32,
+        memory: ast::DefId,
     },
 
     // ── Arithmetic ─────────────────────────────────────────────────────────
@@ -322,7 +329,7 @@ pub enum DataNodeKind {
         aggregate_index: mir::AggregateIndex,
     },
     MemoryGrowResult {
-        memory_index: u32,
+        memory: ast::DefId,
         delta: DataNodeIndex,
     },
     /// Value produced by a `ControlNode::PointerLoad`. Always spilled.
@@ -371,6 +378,7 @@ impl DataNodeKind {
             | DataNodeKind::FunctionRef { .. }
             | DataNodeKind::StringRef { .. }
             | DataNodeKind::MemoryOffset { .. }
+            | DataNodeKind::MemoryIndex { .. }
             | DataNodeKind::MemorySize { .. }
             | DataNodeKind::MemoryGrowResult { .. } => NodeType::Scalar(ScalarType::I32),
 
@@ -463,7 +471,7 @@ pub enum ControlNode {
     },
     Unreachable,
     MemoryGrow {
-        memory_index: u32,
+        memory: ast::DefId,
         delta: DataNodeIndex,
         /// The `MemoryGrowResult` data node produced by this operation.
         result: DataNodeIndex,
@@ -473,13 +481,13 @@ pub enum ControlNode {
         address: DataNodeIndex,
         /// The `PointerLoadResult` data node that carries the loaded value.
         result: DataNodeIndex,
-        memory_index: u32,
+        memory: ast::DefId,
     },
     /// Store a scalar value to a raw pointer address.
     PointerStore {
         address: DataNodeIndex,
         value: DataNodeIndex,
-        memory_index: u32,
+        memory: ast::DefId,
     },
 }
 
@@ -730,6 +738,7 @@ impl Function {
             | DataNodeKind::FunctionRef { .. }
             | DataNodeKind::StringRef { .. }
             | DataNodeKind::MemoryOffset { .. }
+            | DataNodeKind::MemoryIndex { .. }
             | DataNodeKind::MemorySize { .. }
             | DataNodeKind::AggregateCallResult { .. }
             | DataNodeKind::AggregateLoadResult { .. }

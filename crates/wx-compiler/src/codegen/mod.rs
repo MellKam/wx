@@ -331,7 +331,8 @@ pub struct WasmModule {
     data: DataSection,
 }
 
-pub struct Builder {
+pub struct Builder<'interner> {
+    interner: &'interner ast::StringInterner,
     table: Vec<FuncIndex>,
     string_pool: StringPool,
     /// Maps every function DefId (imported or defined) to its wasm function
@@ -342,6 +343,9 @@ pub struct Builder {
     /// Imported globals occupy indices 0..import_global_count; defined globals
     /// follow.
     global_wasm_index: HashMap<ast::DefId, u32>,
+    /// Maps every memory DefId (imported or defined) to its wasm memory index.
+    /// Imported memories occupy indices 0..import_memory_count; defined follow.
+    memory_wasm_index: HashMap<ast::DefId, u32>,
     /// Deduplicated function-type entries for the wasm type section.
     /// Shared between function signatures and multi-value block types.
     signatures: HashMap<FunctionSignature, SignatureIndex>,
@@ -389,7 +393,7 @@ impl StringPool {
     }
 }
 
-impl Builder {
+impl Builder<'_> {
     /// Recursively expand a MIR type into its flat wasm `ValueType`s.
     /// Unit/Never produce zero slots; Aggregate recurses into its fields.
     fn flatten_type(ty: mir::Type, aggregates: &[mir::Aggregate]) -> Vec<ValueType> {
@@ -431,24 +435,24 @@ impl Builder {
         interner: &'interner ast::StringInterner,
     ) -> Result<WasmModule, ()> {
         let mut builder = Builder {
+            interner,
             table: Vec::new(),
             string_pool: StringPool::new(),
             func_wasm_index: HashMap::new(),
             global_wasm_index: HashMap::new(),
+            memory_wasm_index: HashMap::new(),
             signatures: HashMap::new(),
         };
 
-        for symbol in mir.strings.iter().copied() {
-            let s = interner.resolve(symbol).unwrap();
-            builder.string_pool.add(s);
+        // Assign wasm memory indices: imported memories first, then defined.
+        // tir::ItemSource::External < Internal so a stable sort puts imports first.
+        {
+            let mut memories: Vec<&mir::MemoryInfo> = mir.memories.iter().collect();
+            memories.sort_by_key(|m| m.source);
+            for (idx, m) in memories.iter().enumerate() {
+                builder.memory_wasm_index.insert(m.id, idx as u32);
+            }
         }
-        let required_pages = if builder.string_pool.bytes.is_empty() {
-            0
-        } else {
-            (builder.string_pool.bytes.len() as u32)
-                .div_ceil(65536)
-                .max(1)
-        };
 
         // Process imports: build the wasm Import list and assign wasm indices.
         // Imports come first in the wasm binary, so their indices are assigned here.
@@ -526,26 +530,11 @@ impl Builder {
                     name: interner.resolve(*name).unwrap().to_string(),
                     func_index: FuncIndex(builder.func_wasm_index[id]),
                 },
-                mir::ExportItem::Memory { memory_index, name } => ExportItem::Memory {
-                    memory_index: *memory_index,
+                mir::ExportItem::Memory { id, name } => ExportItem::Memory {
+                    memory_index: builder.memory_wasm_index[id],
                     name: interner.resolve(*name).unwrap().to_string(),
                 },
             })
-            .chain(
-                if required_pages > 0
-                    && !mir
-                        .exports
-                        .iter()
-                        .any(|e| matches!(e, mir::ExportItem::Memory { .. }))
-                {
-                    Some(ExportItem::Memory {
-                        memory_index: 0,
-                        name: "memory".to_string(),
-                    })
-                } else {
-                    None
-                },
-            )
             .collect();
 
         let mut functions = Vec::<FunctionBody>::with_capacity(mir.functions.len());
@@ -578,6 +567,36 @@ impl Builder {
                 .collect::<Box<_>>(),
         };
 
+        let required_pages = match builder.string_pool.bytes.len() {
+            0 => 0,
+            len => (len as u32).div_ceil(65536),
+        };
+        let imported_memory_count = mir
+            .imports
+            .iter()
+            .flat_map(|m| m.items.iter())
+            .filter(|item| matches!(item, mir::ImportModuleItem::Memory { .. }))
+            .count() as u32;
+        let memories = mir
+            .memories
+            .iter()
+            .enumerate()
+            .map(|(i, info)| {
+                let initial =
+                    info.min_pages
+                        .unwrap_or(0)
+                        .max(if i == 0 && imported_memory_count == 0 {
+                            required_pages
+                        } else {
+                            0
+                        });
+                match info.max_pages {
+                    Some(max) => MemoryType::Bounded { initial, max },
+                    None => MemoryType::Unbounded { initial },
+                }
+            })
+            .collect();
+
         Ok(WasmModule {
             types: TypeSection {
                 signatures: {
@@ -603,51 +622,7 @@ impl Builder {
                     }])
                 },
             },
-            memory: MemorySection {
-                // Emit one entry per defined memory from the source.  The first defined
-                // memory (wasm index = number of imported memories) must be large enough
-                // to hold the static data section (string pool), so its initial page count
-                // is at least `required_pages`.  All memories are emitted as unbounded so
-                // that `memory.grow` can succeed at runtime.
-                memories: {
-                    let imported_memory_count = mir
-                        .imports
-                        .iter()
-                        .flat_map(|m| m.items.iter())
-                        .filter(|item| matches!(item, mir::ImportModuleItem::Memory { .. }))
-                        .count() as u32;
-                    if mir.memories.is_empty() {
-                        // No declared memories: emit a synthetic one only if string data
-                        // needs a home.
-                        if required_pages == 0 {
-                            Box::new([])
-                        } else {
-                            Box::new([MemoryType::Unbounded {
-                                initial: required_pages,
-                            }])
-                        }
-                    } else {
-                        mir.memories
-                            .iter()
-                            .enumerate()
-                            .map(|(i, info)| {
-                                // The first defined memory (lowest wasm index after imports)
-                                // needs at least `required_pages` to cover static data.
-                                let string_pages = if i as u32 == 0 && imported_memory_count == 0 {
-                                    required_pages
-                                } else {
-                                    0
-                                };
-                                let initial = info.min_pages.unwrap_or(0).max(string_pages);
-                                match info.max_pages {
-                                    Some(max) => MemoryType::Bounded { initial, max },
-                                    None => MemoryType::Unbounded { initial },
-                                }
-                            })
-                            .collect()
-                    }
-                },
-            },
+            memory: MemorySection { memories },
             globals,
             tables: TableSection {
                 tables: match builder.table.len() {
@@ -858,25 +833,80 @@ impl Builder {
                 type_index.0.encode(sink);
                 0u32.encode(sink); // table index 0 (single function table)
             }
-            SI::MemorySize(idx) => {
+            SI::MemorySize(id) => {
+                let mi = self.memory_wasm_index[&id];
                 sink.push(Instruction::MemorySize as u8);
-                idx.encode(sink);
+                mi.encode(sink);
             }
-            SI::MemoryGrow(idx) => {
+            SI::MemoryGrow(id) => {
+                let mi = self.memory_wasm_index[&id];
                 sink.push(Instruction::MemoryGrow as u8);
-                idx.encode(sink);
+                mi.encode(sink);
+            }
+            SI::MemoryIndex { memory } => {
+                let mi = self.memory_wasm_index[&memory] as i32;
+                sink.push(Instruction::I32Const as u8);
+                mi.encode(sink);
             }
             // Pointer load/store.
             // Memory 0 uses the standard single-memory encoding.
             // Memory N>0 requires the multi-memory extension (memory index prefix).
-            SI::I32Load(m) => encode_load(Instruction::I32Load, m, sink),
-            SI::I64Load(m) => encode_load(Instruction::I64Load, m, sink),
-            SI::F32Load(m) => encode_load(Instruction::F32Load, m, sink),
-            SI::F64Load(m) => encode_load(Instruction::F64Load, m, sink),
-            SI::I32Store(m) => encode_store(Instruction::I32Store, m, sink),
-            SI::I64Store(m) => encode_store(Instruction::I64Store, m, sink),
-            SI::F32Store(m) => encode_store(Instruction::F32Store, m, sink),
-            SI::F64Store(m) => encode_store(Instruction::F64Store, m, sink),
+            SI::I32Load(m) => encode_load(
+                Instruction::I32Load,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::I64Load(m) => encode_load(
+                Instruction::I64Load,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::F32Load(m) => encode_load(
+                Instruction::F32Load,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::F64Load(m) => encode_load(
+                Instruction::F64Load,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::I32Store(m) => encode_store(
+                Instruction::I32Store,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::I64Store(m) => encode_store(
+                Instruction::I64Store,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::F32Store(m) => encode_store(
+                Instruction::F32Store,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::F64Store(m) => encode_store(
+                Instruction::F64Store,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
             SI::Nop => sink.push(Instruction::Nop as u8),
             SI::FunctionPointer(id) => {
                 let wasm_idx = self.func_wasm_index[&id];
@@ -885,14 +915,18 @@ impl Builder {
                 sink.push(Instruction::I32Const as u8);
                 table_idx.encode(sink);
             }
-            SI::StringPointer(pool_idx) => {
-                let (byte_offset, _) = self.string_pool.strings[pool_idx as usize];
+            SI::StringPointer(symbol) => {
+                let s = self.interner.resolve(symbol).unwrap();
+                let (byte_offset, _) = self.string_pool.add(s);
                 sink.push(Instruction::I32Const as u8);
                 (byte_offset as i32).encode(sink);
             }
-            SI::DataSectionEnd { .. } => {
-                // All static string data lives in memory 0 at offset 0; the end
-                // of the data section is the total pool byte length.
+            SI::DataSectionEnd { memory } => {
+                // The data section end is used as the base of the writable heap.
+                // Currently all string data lives in a single pool so the offset
+                // is the same for every memory; future multi-memory support would
+                // track per-memory data section sizes.
+                let _ = self.memory_wasm_index[&memory]; // assert memory is known
                 let offset = self.string_pool.bytes.len() as i32;
                 sink.push(Instruction::I32Const as u8);
                 offset.encode(sink);
@@ -1160,21 +1194,33 @@ trait Encode {
     fn encode(&self, sink: &mut Vec<u8>);
 }
 
-fn encode_load(opcode: Instruction, mem: crate::opt::scheduler::MemArg, sink: &mut Vec<u8>) {
+fn encode_load(
+    opcode: Instruction,
+    align: u32,
+    offset: u32,
+    memory_index: u32,
+    sink: &mut Vec<u8>,
+) {
     sink.push(opcode as u8);
-    mem.align.encode(sink);
-    mem.offset.encode(sink);
-    if mem.memory_index > 0 {
-        mem.memory_index.encode(sink);
+    align.encode(sink);
+    offset.encode(sink);
+    if memory_index > 0 {
+        memory_index.encode(sink);
     }
 }
 
-fn encode_store(opcode: Instruction, mem: crate::opt::scheduler::MemArg, sink: &mut Vec<u8>) {
+fn encode_store(
+    opcode: Instruction,
+    align: u32,
+    offset: u32,
+    memory_index: u32,
+    sink: &mut Vec<u8>,
+) {
     sink.push(opcode as u8);
-    mem.align.encode(sink);
-    mem.offset.encode(sink);
-    if mem.memory_index > 0 {
-        mem.memory_index.encode(sink);
+    align.encode(sink);
+    offset.encode(sink);
+    if memory_index > 0 {
+        memory_index.encode(sink);
     }
 }
 

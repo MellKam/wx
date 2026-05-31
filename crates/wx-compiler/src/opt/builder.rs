@@ -202,22 +202,22 @@ impl<'mir> Builder<'mir> {
                 let node = self.func.ensure_node(DataNodeKind::FunctionRef { id: *id });
                 StackResult::Value(node)
             }
-            ExprKind::StringIndex { string_index } => {
+            ExprKind::StringIndex { symbol } => {
                 let node = self.func.ensure_node(DataNodeKind::StringRef {
-                    string_index: *string_index,
+                    symbol: *symbol,
                 });
                 StackResult::Value(node)
             }
-            ExprKind::MemoryOffset { memory_index } => {
-                let node = self.func.ensure_node(DataNodeKind::MemoryOffset {
-                    memory_index: *memory_index,
-                });
+            ExprKind::MemoryOffset { memory } => {
+                let node = self.func.ensure_node(DataNodeKind::MemoryOffset { memory: *memory });
                 StackResult::Value(node)
             }
-            ExprKind::MemorySize { memory_index } => {
-                let node = self.func.ensure_node(DataNodeKind::MemorySize {
-                    memory_index: *memory_index,
-                });
+            ExprKind::MemoryIndex { memory } => {
+                let node = self.func.ensure_node(DataNodeKind::MemoryIndex { memory: *memory });
+                StackResult::Value(node)
+            }
+            ExprKind::MemorySize { memory } => {
+                let node = self.func.ensure_node(DataNodeKind::MemorySize { memory: *memory });
                 StackResult::Value(node)
             }
 
@@ -514,7 +514,7 @@ impl<'mir> Builder<'mir> {
             }
 
             // ── Memory ────────────────────────────────────────────────────
-            ExprKind::PointerLoad { pointer, memory_index } => {
+            ExprKind::PointerLoad { pointer, memory } => {
                 let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
                 let ty = ScalarType::try_from(expr.ty).expect("pointer load must be scalar");
                 let result = self
@@ -522,34 +522,31 @@ impl<'mir> Builder<'mir> {
                     .ensure_node(DataNodeKind::PointerLoadResult { address, ty });
                 self.push_stmt(
                     block_idx,
-                    ControlNode::PointerLoad { address, result, memory_index: *memory_index },
+                    ControlNode::PointerLoad { address, result, memory: *memory },
                 );
                 StackResult::Value(result)
             }
 
-            ExprKind::PointerStore { pointer, value, memory_index } => {
+            ExprKind::PointerStore { pointer, value, memory } => {
                 let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
                 let value = self.build_expr(block_idx, bindings, value).unwrap_value();
                 self.push_stmt(
                     block_idx,
-                    ControlNode::PointerStore { address, value, memory_index: *memory_index },
+                    ControlNode::PointerStore { address, value, memory: *memory },
                 );
                 StackResult::Unit
             }
 
-            ExprKind::MemoryGrow {
-                memory_index,
-                delta,
-            } => {
+            ExprKind::MemoryGrow { memory, delta } => {
                 let delta_node = self.build_expr(block_idx, bindings, delta).unwrap_value();
                 let result_node = self.func.ensure_node(DataNodeKind::MemoryGrowResult {
-                    memory_index: *memory_index,
+                    memory: *memory,
                     delta: delta_node,
                 });
                 self.push_stmt(
                     block_idx,
                     ControlNode::MemoryGrow {
-                        memory_index: *memory_index,
+                        memory: *memory,
                         delta: delta_node,
                         result: result_node,
                     },
