@@ -3011,3 +3011,81 @@ fn test_deref_type_mismatch_on_store_is_error() {
     let case = TestCase::new(&src);
     has_error_matching(&case, "cannot assign");
 }
+
+// ── Multi-segment path resolution ─────────────────────────────────────────────
+
+#[test]
+fn test_path_type_associated_fn_ufcs() {
+    // `i32::abs(x)` — 2-segment path where the first segment is a type and the
+    // second is an associated function; all params (including self) are explicit.
+    let case = TestCase::new(indoc! {"
+        impl i32 {
+            pub fn abs(self) -> i32 {
+                if self < 0 { -self } else { self }
+            }
+        }
+        fn f(x: i32) -> i32 {
+            i32::abs(x)
+        }
+        export { f }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_path_inline_module_type_associated_fn() {
+    // `math::Point::zero()` — 3-segment path through an inline module to an
+    // associated function: module → type → fn.
+    let case = TestCase::new(indoc! {"
+        module math {
+            pub struct Point {}
+            impl Point {
+                pub fn zero() -> i32 { 0 }
+            }
+        }
+        fn f() -> i32 {
+            math::Point::zero()
+        }
+        export { f }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_path_cross_module_struct_init() {
+    // `shapes::Point::{ x: 1, y: 2 }` — struct literal via a cross-module path.
+    let case = TestCase::new_multi_file(
+        "src/main.wx",
+        indoc! {"
+            module shapes;
+
+            fn make() -> shapes::Point {
+                shapes::Point::{ x: 1, y: 2 }
+            }
+
+            export { make }
+        "},
+        &[("src/shapes.wx", "pub struct Point { x: i32, y: i32 }")],
+    );
+    no_errors(&case);
+}
+
+#[test]
+fn test_path_cross_module_generic_struct_init() {
+    // `containers::Wrapper::<i32>::{ value: 42 }` — generic struct literal via a
+    // cross-module path with explicit type args on the last segment.
+    let case = TestCase::new_multi_file(
+        "src/main.wx",
+        indoc! {"
+            module containers;
+
+            fn make() -> containers::Wrapper::<i32> {
+                containers::Wrapper::<i32>::{ value: 42 }
+            }
+
+            export { make }
+        "},
+        &[("src/containers.wx", "pub struct Wrapper<T> { value: T }")],
+    );
+    no_errors(&case);
+}

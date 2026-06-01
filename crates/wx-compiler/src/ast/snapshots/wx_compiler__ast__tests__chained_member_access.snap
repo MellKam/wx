@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
-assertion_line: 534
 expression: case.ast
 ---
 file_id: 0
@@ -30,8 +29,17 @@ items:
                         end: 6
                     ty:
                       inner:
-                        Identifier:
-                          symbol: 3
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 3
+                                span:
+                                  start: 8
+                                  end: 13
+                              type_args: []
+                          span:
+                            start: 8
+                            end: 13
                       span:
                         start: 8
                         end: 13
@@ -68,8 +76,17 @@ items:
                                     ObjectAccess:
                                       object:
                                         inner:
-                                          Identifier:
-                                            symbol: 2
+                                          Path:
+                                            segments:
+                                              - ident:
+                                                  inner: 2
+                                                  span:
+                                                    start: 31
+                                                    end: 32
+                                                type_args: []
+                                            span:
+                                              start: 31
+                                              end: 32
                                         span:
                                           start: 31
                                           end: 32
@@ -122,8 +139,17 @@ items:
                                           ObjectAccess:
                                             object:
                                               inner:
-                                                Identifier:
-                                                  symbol: 2
+                                                Path:
+                                                  segments:
+                                                    - ident:
+                                                        inner: 2
+                                                        span:
+                                                          start: 52
+                                                          end: 53
+                                                      type_args: []
+                                                  span:
+                                                    start: 52
+                                                    end: 53
                                               span:
                                                 start: 52
                                                 end: 53

@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
-assertion_line: 335
 expression: case.ast
 ---
 file_id: 0
@@ -30,8 +29,17 @@ items:
                         end: 9
                     ty:
                       inner:
-                        Identifier:
-                          symbol: 3
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 3
+                                span:
+                                  start: 11
+                                  end: 14
+                              type_args: []
+                          span:
+                            start: 11
+                            end: 14
                       span:
                         start: 11
                         end: 14
@@ -41,8 +49,17 @@ items:
                 separator: ~
             result:
               inner:
-                Identifier:
-                  symbol: 3
+                Path:
+                  segments:
+                    - ident:
+                        inner: 3
+                        span:
+                          start: 19
+                          end: 22
+                      type_args: []
+                  span:
+                    start: 19
+                    end: 22
               span:
                 start: 19
                 end: 22
@@ -60,8 +77,17 @@ items:
                                   Binary:
                                     left:
                                       inner:
-                                        Identifier:
-                                          symbol: 2
+                                        Path:
+                                          segments:
+                                            - ident:
+                                                inner: 2
+                                                span:
+                                                  start: 32
+                                                  end: 33
+                                              type_args: []
+                                          span:
+                                            start: 32
+                                            end: 33
                                       span:
                                         start: 32
                                         end: 33

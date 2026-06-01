@@ -1388,3 +1388,293 @@ fn test_struct_pointer_load_and_store() {
 
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
+
+// ── Generic structs ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_generic_struct_f32_fields() {
+    // Point<f32> must use F32 wasm types throughout. If codegen inherits I32
+    // wasm value types from a sibling Point<i32> instantiation — or fails to
+    // substitute the TypeParam before choosing the wasm value type — the f32
+    // values would be bit-reinterpreted as integers and arithmetic would produce
+    // garbage. Both instantiations coexist in the same module.
+    let case = TestCase::new(indoc! {"
+        struct Point<T> {
+            x: T,
+            y: T,
+        }
+
+        fn sum_f32(p: Point<f32>) -> f32 {
+            p.x + p.y
+        }
+
+        fn sum_i32(p: Point<i32>) -> i32 {
+            p.x + p.y
+        }
+
+        export { sum_f32, sum_i32 }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let sum_f32 = instance
+        .get_typed_func::<(f32, f32), f32>(&mut store, "sum_f32")
+        .unwrap();
+    let result = sum_f32.call(&mut store, (1.5, 2.5)).unwrap();
+    assert!(
+        (result - 4.0).abs() < 0.001,
+        "sum_f32(1.5, 2.5) expected 4.0, got {result}"
+    );
+
+    let sum_i32 = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "sum_i32")
+        .unwrap();
+    assert_eq!(sum_i32.call(&mut store, (3, 7)).unwrap(), 10);
+}
+
+#[test]
+fn test_generic_struct_two_type_params() {
+    // Pair<A, B> has two independent type parameters; codegen must assign the
+    // correct wasm value type to each field slot independently. With A=i32 and
+    // B=f32, if both slots collapse to the same wasm type the f32 result is
+    // garbled.
+    let case = TestCase::new(indoc! {"
+        struct Pair<A, B> {
+            first: A,
+            second: B,
+        }
+
+        fn get_first(p: Pair<i32, f32>) -> i32 {
+            p.first
+        }
+
+        fn get_second(p: Pair<i32, f32>) -> f32 {
+            p.second
+        }
+
+        export { get_first, get_second }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let get_first = instance
+        .get_typed_func::<(i32, f32), i32>(&mut store, "get_first")
+        .unwrap();
+    let get_second = instance
+        .get_typed_func::<(i32, f32), f32>(&mut store, "get_second")
+        .unwrap();
+
+    assert_eq!(get_first.call(&mut store, (42, 1.5)).unwrap(), 42);
+    let s = get_second.call(&mut store, (42, 1.5)).unwrap();
+    assert!((s - 1.5).abs() < 0.001, "expected 1.5, got {s}");
+}
+
+#[test]
+fn test_generic_struct_from_generic_function() {
+    // A generic function constructs and returns a generic struct. The codegen
+    // must use the monomorphized return type for the wasm multi-value signature.
+    // Two instantiations (i32 and f32) coexist to catch aggregate index aliasing.
+    let case = TestCase::new(indoc! {"
+        struct Wrap<T> {
+            value: T,
+        }
+
+        fn make_wrap<T>(v: T) -> Wrap<T> {
+            Wrap::{ value: v }
+        }
+
+        fn run_i32() -> i32 {
+            local w: Wrap<i32> = make_wrap(99);
+            w.value
+        }
+
+        fn run_f32() -> f32 {
+            local w: Wrap<f32> = make_wrap(3.5);
+            w.value
+        }
+
+        export { run_i32, run_f32 }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let run_i32 = instance
+        .get_typed_func::<(), i32>(&mut store, "run_i32")
+        .unwrap();
+    assert_eq!(run_i32.call(&mut store, ()).unwrap(), 99);
+
+    let run_f32 = instance
+        .get_typed_func::<(), f32>(&mut store, "run_f32")
+        .unwrap();
+    let r = run_f32.call(&mut store, ()).unwrap();
+    assert!((r - 3.5).abs() < 0.001, "expected 3.5, got {r}");
+}
+
+#[test]
+fn test_generic_struct_in_conditional() {
+    // Both if/else branches produce a generic struct of the same instantiation.
+    // Phi nodes for each field slot must use the correct wasm types. Tests both
+    // an i32 instantiation and an f32 instantiation to catch type-confusion.
+    let case = TestCase::new(indoc! {"
+        struct Vec2<T> {
+            x: T,
+            y: T,
+        }
+
+        fn select_i32(flag: i32) -> i32 {
+            local v: Vec2<i32> = if flag > 0 {
+                Vec2::{ x: 10, y: 20 }
+            } else {
+                Vec2::{ x: 1, y: 2 }
+            };
+            v.x + v.y
+        }
+
+        fn select_f32(flag: i32) -> f32 {
+            local v: Vec2<f32> = if flag > 0 {
+                Vec2::{ x: 1.5, y: 2.5 }
+            } else {
+                Vec2::{ x: 0.5, y: 0.5 }
+            };
+            v.x + v.y
+        }
+
+        export { select_i32, select_f32 }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let select_i32 = instance
+        .get_typed_func::<i32, i32>(&mut store, "select_i32")
+        .unwrap();
+    assert_eq!(select_i32.call(&mut store, 1).unwrap(), 30);
+    assert_eq!(select_i32.call(&mut store, -1).unwrap(), 3);
+
+    let select_f32 = instance
+        .get_typed_func::<i32, f32>(&mut store, "select_f32")
+        .unwrap();
+    let r_true = select_f32.call(&mut store, 1).unwrap();
+    let r_false = select_f32.call(&mut store, -1).unwrap();
+    assert!((r_true - 4.0).abs() < 0.001, "expected 4.0, got {r_true}");
+    assert!((r_false - 1.0).abs() < 0.001, "expected 1.0, got {r_false}");
+}
+
+#[test]
+fn test_generic_struct_chained_calls() {
+    // Two back-to-back calls each returning a generic struct; the second call
+    // receives the first's result. Exercises that multiple independent
+    // AggregateCallResult nodes for a generic aggregate don't clobber each
+    // other's captured locals.
+    let case = TestCase::new(indoc! {"
+        struct Vec2<T> {
+            x: T,
+            y: T,
+        }
+
+        fn scale(v: Vec2<i32>, factor: i32) -> Vec2<i32> {
+            Vec2::{ x: v.x * factor, y: v.y * factor }
+        }
+
+        fn run() -> i32 {
+            local v: Vec2<i32> = Vec2::{ x: 3, y: 4 };
+            local v2 = scale(v, 2);
+            local v3 = scale(v2, 3);
+            v3.x + v3.y
+        }
+
+        export { run }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 42); // (3*6) + (4*6)
+}
+
+#[test]
+fn test_generic_struct_pointer_load_store() {
+    // Memory load/store via a pointer to a generic struct `heap::*mut Point<i32>`.
+    // Codegen must emit the correct field offsets for the monomorphized aggregate
+    // (x@0, y@4), going through the same path as the non-generic pointer tests.
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1
+        }
+
+        struct Point<T> {
+            x: T,
+            y: T,
+        }
+
+        fn store_pt(ptr: heap::*mut Point<i32>, x: i32, y: i32) {
+            ptr.* = Point::{ x: x, y: y }
+        }
+
+        fn load_x(ptr: heap::*Point<i32>) -> i32 {
+            local p = ptr.*;
+            p.x
+        }
+
+        fn load_y(ptr: heap::*Point<i32>) -> i32 {
+            local p = ptr.*;
+            p.y
+        }
+
+        export { heap, store_pt, load_x, load_y }
+    "}
+    );
+    let case = TestCase::new(&src);
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance =
+        wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let mem = instance
+        .get_memory(&mut store, "heap")
+        .expect("heap not exported");
+    let store_pt = instance
+        .get_typed_func::<(i32, i32, i32), ()>(&mut store, "store_pt")
+        .expect("store_pt not found");
+    let load_x = instance
+        .get_typed_func::<i32, i32>(&mut store, "load_x")
+        .expect("load_x not found");
+    let load_y = instance
+        .get_typed_func::<i32, i32>(&mut store, "load_y")
+        .expect("load_y not found");
+
+    store_pt.call(&mut store, (0, 7, 13)).unwrap();
+    assert_eq!(load_x.call(&mut store, 0).unwrap(), 7);
+    assert_eq!(load_y.call(&mut store, 0).unwrap(), 13);
+
+    // Verify byte layout: x at offset 0, y at offset 4.
+    let mut buf = [0u8; 4];
+    mem.read(&mut store, 0, &mut buf).unwrap();
+    assert_eq!(i32::from_le_bytes(buf), 7, "x should be at byte offset 0");
+    mem.read(&mut store, 4, &mut buf).unwrap();
+    assert_eq!(i32::from_le_bytes(buf), 13, "y should be at byte offset 4");
+
+    // Non-zero base address exercises the i32.add offset arithmetic.
+    store_pt.call(&mut store, (16, 42, 99)).unwrap();
+    assert_eq!(load_x.call(&mut store, 16).unwrap(), 42);
+    assert_eq!(load_y.call(&mut store, 16).unwrap(), 99);
+}

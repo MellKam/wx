@@ -845,7 +845,7 @@ impl Builder {
         expression: &Spanned<Expression>,
     ) -> Node {
         match &expression.inner {
-            Expression::Identifier { symbol } => Self::symbol(interner, *symbol),
+            Expression::Path(path) => Self::build_path(interner, path),
             Expression::Binary {
                 left,
                 operator,
@@ -914,7 +914,6 @@ impl Builder {
                 Node::Group(Box::new(Node::Concat(items.into())))
             }
             Expression::Unreachable => Node::StaticText("unreachable"),
-            Expression::SelfType => Node::StaticText("Self"),
             Expression::IfElse {
                 condition,
                 then_block,
@@ -1018,13 +1017,6 @@ impl Builder {
                 items.push(Self::build_expression(interner, source, block));
                 Node::Concat(items.into())
             }
-            Expression::NamespaceAccess { namespace, member } => {
-                let mut items = Vec::new();
-                items.push(Self::build_type_expression(interner, &namespace.inner));
-                items.push(Node::StaticText("::"));
-                items.push(Self::symbol(interner, member.inner));
-                Node::Concat(items.into())
-            }
             Expression::Error => unreachable!(),
             Expression::Unary { operator, operand } => {
                 let mut items = Vec::new();
@@ -1050,9 +1042,9 @@ impl Builder {
                 ]
                 .into(),
             ),
-            Expression::StructInit { name, fields } => {
+            Expression::StructInit { path, fields } => {
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, source, name));
+                items.push(Self::build_path(interner, path));
                 items.push(Node::StaticText("::{"));
 
                 let has_block_value = fields.iter().any(|f| {
@@ -1241,9 +1233,30 @@ impl Builder {
         }
     }
 
+    fn build_path(interner: &StringInterner, path: &Path) -> Node {
+        let mut items: Vec<Node> = Vec::new();
+        for (i, seg) in path.segments.iter().enumerate() {
+            if i > 0 {
+                items.push(Node::StaticText("::"));
+            }
+            items.push(Self::symbol(interner, seg.ident.inner));
+            if !seg.type_args.is_empty() {
+                items.push(Node::StaticText("::<"));
+                for (j, arg) in seg.type_args.iter().enumerate() {
+                    if j > 0 {
+                        items.push(Node::StaticText(", "));
+                    }
+                    items.push(Self::build_type_expression(interner, &arg.inner));
+                }
+                items.push(Node::StaticText(">"));
+            }
+        }
+        Node::Concat(items.into())
+    }
+
     fn build_type_expression(interner: &StringInterner, type_expression: &TypeExpression) -> Node {
         match type_expression {
-            TypeExpression::Identifier { symbol } => Self::symbol(interner, *symbol),
+            TypeExpression::Path(path) => Self::build_path(interner, path),
             TypeExpression::Function { params, result } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("fn("));
@@ -1362,12 +1375,11 @@ impl Builder {
                 ]
                 .into(),
             ),
-            TypeExpression::SelfType => Node::StaticText("Self"),
-            TypeExpression::NamespaceAccess { namespace, member } => Node::Concat(
+            TypeExpression::MemoryTagged { memory, inner } => Node::Concat(
                 vec![
-                    Self::build_type_expression(interner, &namespace.inner),
+                    Self::build_path(interner, memory),
                     Node::StaticText("::"),
-                    Self::build_type_expression(interner, &member.inner),
+                    Self::build_type_expression(interner, &inner.inner),
                 ]
                 .into(),
             ),

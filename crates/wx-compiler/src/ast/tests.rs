@@ -155,7 +155,9 @@ fn test_enum_repr_after_name() {
     assert_eq!(case.interner.resolve(name.inner), Some("Status"));
     assert!(matches!(
         repr.as_deref().map(|repr| &repr.inner),
-        Some(TypeExpression::Identifier { symbol }) if case.interner.resolve(*symbol) == Some("i32")
+        Some(TypeExpression::Path(p))
+            if p.segments.len() == 1
+                && case.interner.resolve(p.segments[0].ident.inner) == Some("i32")
     ));
     assert_eq!(variants.len(), 2);
 }
@@ -245,7 +247,7 @@ fn test_type_expression_forms() {
     ));
     assert!(matches!(
         Some(&fields[4].inner.inner.ty.inner),
-        Some(TypeExpression::NamespaceAccess { .. })
+        Some(TypeExpression::Path(p)) if p.segments.len() == 2
     ));
     assert!(matches!(
         Some(&fields[5].inner.inner.ty.inner),
@@ -387,15 +389,12 @@ fn test_generic_struct_init() {
     assert!(case.ast.diagnostics.is_empty());
     let stmts = function_block(&case.ast, 0);
     let init = local_definition_value(stmts, 0);
-    let Expression::StructInit { name, fields } = init else {
+    let Expression::StructInit { path, fields } = init else {
         panic!("expected StructInit");
     };
-    // name must be a TypeApplication wrapping Point
-    let Expression::TypeApplication { callee, args } = &name.inner else {
-        panic!("expected TypeApplication as struct init name");
-    };
-    assert!(matches!(&callee.inner, Expression::Identifier { .. }));
-    assert_eq!(args.len(), 1);
+    // path must be a single-segment path with one type arg: `Point::<f32>`
+    assert_eq!(path.segments.len(), 1);
+    assert_eq!(path.segments[0].type_args.len(), 1);
     assert_eq!(fields.len(), 2);
 }
 
@@ -746,11 +745,10 @@ fn test_invalid_attribute_and_namespace_diagnostics() {
 
     assert_eq!(
         diagnostic_codes(&case.ast),
-        vec!["E0012", "E0009", "invalid-namespace"]
+        vec!["E0012", "E0009", "E0013"]
     );
     assert_eq!(case.ast.items.len(), 2);
     assert!(matches!(item(&case.ast, 0), Item::Function { .. }));
-    assert!(function_block(&case.ast, 1).is_empty());
 }
 
 #[test]

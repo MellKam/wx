@@ -1427,77 +1427,66 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    pub fn resolve_type(
+    /// Resolve a bare identifier symbol to a `TypeIndex`.
+    /// Extracted from the `TypeExpression::Identifier` arm so it can be called
+    /// directly from path-walking code without constructing AST nodes.
+    fn resolve_type_identifier(
         &mut self,
         resolve_context: &ResolveContext,
-        type_expr: &Spanned<ast::TypeExpression>,
+        symbol: SymbolU32,
+        span: TextSpan,
     ) -> TypeIndex {
-        match &type_expr.inner {
-            ast::TypeExpression::Identifier { symbol } => {
-                let symbol = *symbol;
-                if let Ok(ty) = Type::try_from(self.interner.resolve(symbol).unwrap()) {
-                    return self.intern_type(ty);
+        // `Self` — the concrete type of the enclosing impl or trait block.
+        if self.interner.resolve(symbol) == Some("Self") {
+            return match resolve_context.self_type {
+                Some(ty) => ty,
+                None => {
+                    self.tir.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::UndeclaredType.code())
+                            .with_message("`Self` is only valid inside an impl or trait block")
+                            .with_label(Label::primary(resolve_context.file_id, span)),
+                    );
+                    Type::ERROR_IDX
                 }
-                if let Some(scope) = &resolve_context.type_param_scope {
-                    for (param_index, type_param) in scope.params.iter().enumerate() {
-                        if type_param.name == symbol {
-                            return self.intern_type(Type::TypeParam {
-                                owner: scope.owner.clone(),
-                                param_index: param_index as u32,
-                            });
-                        }
-                    }
+            };
+        }
+        if let Ok(ty) = Type::try_from(self.interner.resolve(symbol).unwrap()) {
+            return self.intern_type(ty);
+        }
+        if let Some(scope) = &resolve_context.type_param_scope {
+            for (param_index, type_param) in scope.params.iter().enumerate() {
+                if type_param.name == symbol {
+                    return self.intern_type(Type::TypeParam {
+                        owner: scope.owner.clone(),
+                        param_index: param_index as u32,
+                    });
                 }
+            }
+        }
+        match self
+            .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
+            .copied()
+        {
+            Some(SymbolKind::Pending(def_id)) => {
+                if self.sig_state.get(&def_id) == Some(&ComputeState::InProgress) {
+                    self.tir.diagnostics.push(report_cyclic_type_dependency(
+                        SourceSpan::new(resolve_context.file_id, span),
+                    ));
+                    return Type::ERROR_IDX;
+                }
+                self.ensure_signature(def_id);
                 match self
                     .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
-                    .copied()
+                    .cloned()
                 {
-                    Some(SymbolKind::Pending(def_id)) => {
-                        if self.sig_state.get(&def_id) == Some(&ComputeState::InProgress) {
-                            self.tir.diagnostics.push(report_cyclic_type_dependency(
-                                SourceSpan::new(resolve_context.file_id, type_expr.span),
-                            ));
-                            return Type::ERROR_IDX;
-                        }
-                        self.ensure_signature(def_id);
-                        match self
-                            .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
-                            .cloned()
-                        {
-                            Some(SymbolKind::TraitAssocType { assoc_name, .. }) => {
-                                let name = self.interner.resolve(assoc_name).unwrap_or("?");
-                                self.tir.diagnostics.push(report_bare_assoc_type(
-                                    SourceSpan::new(resolve_context.file_id, type_expr.span),
-                                    name,
-                                ));
-                                return Type::ERROR_IDX;
-                            }
-                            Some(kind) => {
-                                if let Some(ty) = self.symbol_kind_to_type(kind) {
-                                    if let Type::Struct { struct_index, .. } =
-                                        self.tir.type_pool[ty as usize]
-                                    {
-                                        self.tir.structs[struct_index as usize].accesses.push(
-                                            SourceSpan::new(
-                                                resolve_context.file_id,
-                                                type_expr.span,
-                                            ),
-                                        );
-                                    }
-                                    return ty;
-                                }
-                            }
-                            None => {}
-                        }
-                        return Type::ERROR_IDX;
-                    }
                     Some(SymbolKind::TraitAssocType { assoc_name, .. }) => {
                         let name = self.interner.resolve(assoc_name).unwrap_or("?");
                         self.tir.diagnostics.push(report_bare_assoc_type(
-                            SourceSpan::new(resolve_context.file_id, type_expr.span),
+                            SourceSpan::new(resolve_context.file_id, span),
                             name,
                         ));
-                        return Type::ERROR_IDX;
+                        Type::ERROR_IDX
                     }
                     Some(kind) => {
                         if let Some(ty) = self.symbol_kind_to_type(kind) {
@@ -1506,21 +1495,200 @@ impl<'ast> Builder<'ast, '_> {
                             {
                                 self.tir.structs[struct_index as usize]
                                     .accesses
-                                    .push(SourceSpan::new(resolve_context.file_id, type_expr.span));
+                                    .push(SourceSpan::new(resolve_context.file_id, span));
                             }
                             return ty;
                         }
+                        Type::ERROR_IDX
                     }
-                    None => {}
+                    None => Type::ERROR_IDX,
                 }
-
+            }
+            Some(SymbolKind::TraitAssocType { assoc_name, .. }) => {
+                let name = self.interner.resolve(assoc_name).unwrap_or("?");
+                self.tir.diagnostics.push(report_bare_assoc_type(
+                    SourceSpan::new(resolve_context.file_id, span),
+                    name,
+                ));
+                Type::ERROR_IDX
+            }
+            Some(kind) => {
+                if let Some(ty) = self.symbol_kind_to_type(kind) {
+                    if let Type::Struct { struct_index, .. } = self.tir.type_pool[ty as usize] {
+                        self.tir.structs[struct_index as usize]
+                            .accesses
+                            .push(SourceSpan::new(resolve_context.file_id, span));
+                    }
+                    return ty;
+                }
                 self.tir
                     .diagnostics
-                    .push(report_undeclared_type(SourceSpan::new(
-                        resolve_context.file_id,
-                        type_expr.span,
-                    )));
+                    .push(report_undeclared_type(SourceSpan::new(resolve_context.file_id, span)));
                 Type::ERROR_IDX
+            }
+            None => {
+                self.tir
+                    .diagnostics
+                    .push(report_undeclared_type(SourceSpan::new(resolve_context.file_id, span)));
+                Type::ERROR_IDX
+            }
+        }
+    }
+
+    pub fn resolve_type(
+        &mut self,
+        resolve_context: &ResolveContext,
+        type_expr: &Spanned<ast::TypeExpression>,
+    ) -> TypeIndex {
+        match &type_expr.inner {
+            ast::TypeExpression::Path(path) => {
+                let last = path.segments.last().expect("path is non-empty");
+
+                // ── single segment, no type args: plain identifier ─────────────
+                if path.segments.len() == 1 && last.type_args.is_empty() {
+                    return self.resolve_type_identifier(
+                        resolve_context,
+                        last.ident.inner,
+                        last.ident.span,
+                    );
+                }
+
+                // ── single segment with turbofish args: `Wrapper::<T>` ─────────
+                if path.segments.len() == 1 {
+                    let base_ty = self.resolve_type_identifier(
+                        resolve_context,
+                        last.ident.inner,
+                        last.ident.span,
+                    );
+                    if base_ty == Type::ERROR_IDX {
+                        return Type::ERROR_IDX;
+                    }
+                    let struct_index = match &self.tir.type_pool[base_ty as usize] {
+                        Type::Struct { struct_index, .. } => *struct_index,
+                        _ => {
+                            self.tir.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_message("type arguments are not supported here")
+                                    .with_label(Label::primary(
+                                        resolve_context.file_id,
+                                        type_expr.span,
+                                    )),
+                            );
+                            return Type::ERROR_IDX;
+                        }
+                    };
+                    let type_params_len =
+                        self.tir.structs[struct_index as usize].type_params.len();
+                    let resolved_args: Box<[TypeIndex]> = last
+                        .type_args
+                        .iter()
+                        .map(|arg| self.resolve_type(resolve_context, arg))
+                        .collect();
+                    if resolved_args.len() != type_params_len {
+                        let struct_name =
+                            self.interner.resolve(last.ident.inner).unwrap_or("?").to_string();
+                        self.tir.diagnostics.push(
+                            Diagnostic::error()
+                                .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                                .with_message(format!(
+                                    "`{}` expects {} type argument{}, found {}",
+                                    struct_name,
+                                    type_params_len,
+                                    if type_params_len == 1 { "" } else { "s" },
+                                    resolved_args.len(),
+                                ))
+                                .with_label(Label::primary(
+                                    resolve_context.file_id,
+                                    type_expr.span,
+                                )),
+                        );
+                        return Type::ERROR_IDX;
+                    }
+                    return self.intern_type(Type::Struct {
+                        struct_index,
+                        args: resolved_args,
+                    });
+                }
+
+                // ── multi-segment: walk namespace chain ────────────────────────
+                let first = &path.segments[0];
+                let mut namespace_ty = self.resolve_type_identifier(
+                    resolve_context,
+                    first.ident.inner,
+                    first.ident.span,
+                );
+                if namespace_ty == Type::ERROR_IDX {
+                    return Type::ERROR_IDX;
+                }
+
+                for seg in &path.segments[1..path.segments.len() - 1] {
+                    namespace_ty = self.resolve_namespace_type_member(
+                        resolve_context,
+                        namespace_ty,
+                        seg.ident.inner,
+                        seg.ident.span,
+                    );
+                    if namespace_ty == Type::ERROR_IDX {
+                        return Type::ERROR_IDX;
+                    }
+                }
+
+                // Resolve the last segment within the current namespace.
+                let last_ty = self.resolve_namespace_type_member(
+                    resolve_context,
+                    namespace_ty,
+                    last.ident.inner,
+                    last.ident.span,
+                );
+                if last_ty == Type::ERROR_IDX {
+                    return Type::ERROR_IDX;
+                }
+
+                // Apply turbofish type args on the last segment if present.
+                if last.type_args.is_empty() {
+                    return last_ty;
+                }
+                let struct_index = match &self.tir.type_pool[last_ty as usize] {
+                    Type::Struct { struct_index, .. } => *struct_index,
+                    _ => {
+                        self.tir.diagnostics.push(
+                            Diagnostic::error()
+                                .with_message("type arguments are not supported here")
+                                .with_label(Label::primary(
+                                    resolve_context.file_id,
+                                    type_expr.span,
+                                )),
+                        );
+                        return Type::ERROR_IDX;
+                    }
+                };
+                let type_params_len = self.tir.structs[struct_index as usize].type_params.len();
+                let resolved_args: Box<[TypeIndex]> = last
+                    .type_args
+                    .iter()
+                    .map(|arg| self.resolve_type(resolve_context, arg))
+                    .collect();
+                if resolved_args.len() != type_params_len {
+                    let struct_name =
+                        self.interner.resolve(last.ident.inner).unwrap_or("?").to_string();
+                    self.tir.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                            .with_message(format!(
+                                "`{}` expects {} type argument{}, found {}",
+                                struct_name,
+                                type_params_len,
+                                if type_params_len == 1 { "" } else { "s" },
+                                resolved_args.len(),
+                            ))
+                            .with_label(Label::primary(
+                                resolve_context.file_id,
+                                type_expr.span,
+                            )),
+                    );
+                    return Type::ERROR_IDX;
+                }
+                self.intern_type(Type::Struct { struct_index, args: resolved_args })
             }
             ast::TypeExpression::Function { params, result } => {
                 let result_idx = match result {
@@ -1578,176 +1746,60 @@ impl<'ast> Builder<'ast, '_> {
                     .collect();
                 self.intern_type(Type::Tuple { elements: elems })
             }
-            ast::TypeExpression::SelfType => match resolve_context.self_type {
-                Some(ty) => ty,
-                None => {
-                    self.tir.diagnostics.push(
-                        Diagnostic::error()
-                            .with_code(DiagnosticCode::UndeclaredType.code())
-                            .with_message("`Self` is only valid inside an impl or trait block")
-                            .with_label(Label::primary(resolve_context.file_id, type_expr.span)),
-                    );
-                    Type::ERROR_IDX
-                }
-            },
-            ast::TypeExpression::NamespaceAccess { namespace, member } => {
-                let namespace_ty = self.resolve_type(resolve_context, namespace);
-                if namespace_ty == Type::ERROR_IDX {
+            ast::TypeExpression::MemoryTagged { memory, inner } => {
+                // The memory path must name a memory declaration.
+                let memory_ty = self.resolve_type_identifier(
+                    resolve_context,
+                    memory.segments[0].ident.inner,
+                    memory.span,
+                );
+                if memory_ty == Type::ERROR_IDX {
                     return Type::ERROR_IDX;
                 }
-
-                match &self.tir.type_pool[namespace_ty as usize].clone() {
-                    Type::TypeParam { param_index, .. } => {
-                        let member_name = match &member.inner {
-                            ast::TypeExpression::Identifier { symbol } => *symbol,
-                            _ => {
-                                self.tir.diagnostics.push(
-                                    Diagnostic::error()
-                                        .with_message(
-                                            "memory-scoped pointer types are not yet supported",
-                                        )
-                                        .with_label(Label::primary(
-                                            resolve_context.file_id,
-                                            member.span,
-                                        )),
-                                );
-                                return Type::ERROR_IDX;
-                            }
-                        };
-
-                        let bounds = self
-                            .type_param_bounds_in_context(resolve_context, namespace_ty)
-                            .to_owned();
-
-                        for &trait_index in &bounds {
-                            // Ensure all trait member signatures (including assoc types) are
-                            // resolved.
-                            let def_ids =
-                                self.tir.traits[trait_index as usize].member_def_ids.clone();
-                            for def_id in def_ids {
-                                self.ensure_signature(def_id);
-                            }
-                            if let Some(ImplEntry::AssociatedType { .. }) = self.tir.traits
-                                [trait_index as usize]
-                                .members
-                                .get(&member_name)
-                            {
-                                return self.intern_type(Type::AssocTypeProjection {
-                                    trait_index,
-                                    assoc_name: member_name,
-                                    param_index: *param_index,
-                                });
-                            }
-                        }
-
-                        self.tir
-                            .diagnostics
-                            .push(report_undeclared_type(SourceSpan::new(
-                                resolve_context.file_id,
-                                member.span,
-                            )));
-                        Type::ERROR_IDX
-                    }
-                    Type::Module { module_index } => {
-                        // `module::Type`
-                        let member_name = match &member.inner {
-                            ast::TypeExpression::Identifier { symbol } => *symbol,
-                            _ => {
-                                self.tir.diagnostics.push(
-                                    Diagnostic::error()
-                                        .with_message("expected a type name after `::`")
-                                        .with_label(Label::primary(
-                                            resolve_context.file_id,
-                                            member.span,
-                                        )),
-                                );
-                                return Type::ERROR_IDX;
-                            }
-                        };
-
-                        let kind = self.tir.modules.get(*module_index as usize).and_then(|m| {
-                            m.symbol_lookup
-                                .get(&(SymbolNamespace::Type, member_name))
-                                .cloned()
-                        });
-
-                        match kind {
-                            Some(SymbolKind::Pending(def_id)) => {
-                                self.ensure_signature(def_id);
-                                let kind = self.tir.modules[*module_index as usize]
-                                    .symbol_lookup
-                                    .get(&(SymbolNamespace::Type, member_name))
-                                    .cloned();
-                                match kind {
-                                    Some(k) => {
-                                        self.symbol_kind_to_type(k).unwrap_or(Type::ERROR_IDX)
-                                    }
-                                    None => Type::ERROR_IDX,
-                                }
-                            }
-                            Some(k) => self.symbol_kind_to_type(k).unwrap_or(Type::ERROR_IDX),
-                            None => {
-                                self.tir
-                                    .diagnostics
-                                    .push(report_undeclared_type(SourceSpan::new(
-                                        resolve_context.file_id,
-                                        member.span,
-                                    )));
-                                Type::ERROR_IDX
-                            }
-                        }
-                    }
-                    Type::Memory { id, .. } => {
-                        // `memory::*T`, `memory::[]T`, `memory::[N]T`
-                        let member_ty = self.resolve_type(resolve_context, member);
-                        if member_ty == Type::ERROR_IDX {
-                            return Type::ERROR_IDX;
-                        }
-                        match self.tir.type_pool[member_ty as usize].clone() {
-                            Type::Pointer { to, mutable, .. } => self.intern_type(Type::Pointer {
-                                to,
-                                mutable,
-                                memory: Some(*id),
-                            }),
-                            Type::Slice { of, mutable, .. } => self.intern_type(Type::Slice {
-                                of,
-                                mutable,
-                                memory: Some(*id),
-                            }),
-                            Type::Array {
-                                of, size, mutable, ..
-                            } => self.intern_type(Type::Array {
-                                of,
-                                size,
-                                mutable,
-                                memory: Some(*id),
-                            }),
-                            _ => {
-                                self.tir.diagnostics.push(
-                                    Diagnostic::error()
-                                        .with_message(
-                                            "memory namespace can only prefix pointer, slice, or array types",
-                                        )
-                                        .with_label(Label::primary(resolve_context.file_id, member.span)),
-                                );
-                                Type::ERROR_IDX
-                            }
-                        }
-                    }
+                let id = match &self.tir.type_pool[memory_ty as usize] {
+                    Type::Memory { id, .. } => *id,
                     _ => {
                         self.tir.diagnostics.push(
                             Diagnostic::error()
                                 .with_message(format!(
-                                    "`{}` is not a valid namespace for type access",
+                                    "`{}` is not a memory declaration",
                                     TypeFormatter {
                                         interner: &self.interner,
                                         tir: &self.tir,
                                     }
-                                    .display_type(namespace_ty)
+                                    .display_type(memory_ty)
                                 ))
                                 .with_label(Label::primary(
                                     resolve_context.file_id,
-                                    namespace.span,
+                                    memory.span,
+                                )),
+                        );
+                        return Type::ERROR_IDX;
+                    }
+                };
+                let member_ty = self.resolve_type(resolve_context, inner);
+                if member_ty == Type::ERROR_IDX {
+                    return Type::ERROR_IDX;
+                }
+                match self.tir.type_pool[member_ty as usize].clone() {
+                    Type::Pointer { to, mutable, .. } => {
+                        self.intern_type(Type::Pointer { to, mutable, memory: Some(id) })
+                    }
+                    Type::Slice { of, mutable, .. } => {
+                        self.intern_type(Type::Slice { of, mutable, memory: Some(id) })
+                    }
+                    Type::Array { of, size, mutable, .. } => {
+                        self.intern_type(Type::Array { of, size, mutable, memory: Some(id) })
+                    }
+                    _ => {
+                        self.tir.diagnostics.push(
+                            Diagnostic::error()
+                                .with_message(
+                                    "memory namespace can only prefix pointer, slice, or array types",
+                                )
+                                .with_label(Label::primary(
+                                    resolve_context.file_id,
+                                    inner.span,
                                 )),
                         );
                         Type::ERROR_IDX
@@ -1873,7 +1925,13 @@ impl<'ast> Builder<'ast, '_> {
                             }
                         }
                         let base = Spanned {
-                            inner: ast::TypeExpression::Identifier { symbol: name.inner },
+                            inner: ast::TypeExpression::Path(ast::Path {
+                                segments: Box::new([ast::PathSegment {
+                                    ident: name.clone(),
+                                    type_args: Box::new([]),
+                                }]),
+                                span: name.span,
+                            }),
                             span: name.span,
                         };
                         self.resolve_type(resolve_context, &base)
@@ -4142,6 +4200,20 @@ impl<'ast> Builder<'ast, '_> {
             ) if pattern_mutable == actual_mutable && pattern_memory == actual_memory => {
                 self.infer_type_args_from_types(pattern_of, actual_of, type_args);
             }
+            (
+                Type::Struct {
+                    struct_index: pattern_struct,
+                    args: pattern_args,
+                },
+                Type::Struct {
+                    struct_index: actual_struct,
+                    args: actual_args,
+                },
+            ) if pattern_struct == actual_struct && pattern_args.len() == actual_args.len() => {
+                for (&pattern, &actual) in pattern_args.iter().zip(actual_args.iter()) {
+                    self.infer_type_args_from_types(pattern, actual, type_args);
+                }
+            }
             _ => {}
         }
     }
@@ -4373,10 +4445,13 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 })
             }
-            ast::Expression::Identifier { symbol } => {
-                // Allow references to global constants like true/false
+            ast::Expression::Path(path) => {
+                // In const context only single-segment, no-type-args paths are valid
+                // (references to named constants).  Complex paths are not supported.
+                let seg = path.segments.last().expect("path non-empty");
+                let symbol = seg.ident.inner;
                 match self
-                    .lookup_symbol(&resolve_context, SymbolNamespace::Value, *symbol)
+                    .lookup_symbol(&resolve_context, SymbolNamespace::Value, symbol)
                     .cloned()
                 {
                     Some(SymbolKind::True) => Ok(Expression {
@@ -4391,24 +4466,15 @@ impl<'ast> Builder<'ast, '_> {
                     }),
                     Some(SymbolKind::Const { const_index }) => {
                         let constant = &mut self.tir.constants[const_index as usize];
-                        constant
-                            .accesses
-                            .push(SourceSpan::new(self.file_id, expr.span));
+                        constant.accesses.push(SourceSpan::new(self.file_id, expr.span));
                         let id = constant.id;
                         let ty = constant.ty.inner;
-                        Ok(Expression {
-                            kind: ExprKind::Const { id },
-                            ty,
-                            span: expr.span,
-                        })
+                        Ok(Expression { kind: ExprKind::Const { id }, ty, span: expr.span })
                     }
                     _ => {
-                        self.tir
-                            .diagnostics
-                            .push(report_non_constant_global_initializer(SourceSpan::new(
-                                self.file_id,
-                                expr.span,
-                            )));
+                        self.tir.diagnostics.push(report_non_constant_global_initializer(
+                            SourceSpan::new(self.file_id, expr.span),
+                        ));
                         Err(())
                     }
                 }
@@ -5058,16 +5124,6 @@ impl<'ast> Builder<'ast, '_> {
                 ty: Type::NEVER_IDX,
                 span: expr.span,
             }),
-            ast::Expression::SelfType => {
-                // `Self` used as a standalone value (not `Self::X`) — always an error.
-                self.tir.diagnostics.push(
-                    Diagnostic::error()
-                        .with_code(DiagnosticCode::NamespaceUsedAsValue.code())
-                        .with_message("`Self` is a type, not a value; use `Self::member` to access associated items")
-                        .with_label(Label::primary(self.file_id, expr.span)),
-                );
-                Err(())
-            }
             ast::Expression::Error => Ok(Expression {
                 kind: ExprKind::Error,
                 ty: Type::ERROR_IDX,
@@ -5123,8 +5179,8 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 }
             }
-            ast::Expression::Identifier { .. } => {
-                self.build_identifier_expression(func_ctx, access_ctx, expr)
+            ast::Expression::Path(path) => {
+                self.build_path_expression(func_ctx, access_ctx, path, expr.span)
             }
             ast::Expression::Binary { .. } => {
                 self.build_binary_expression(func_ctx, access_ctx, expr)
@@ -5136,8 +5192,6 @@ impl<'ast> Builder<'ast, '_> {
                 self.build_unary_expression(func_ctx, access_ctx, expr)
             }
             ast::Expression::Call { .. } => self.build_call_expression(func_ctx, access_ctx, expr),
-            ast::Expression::NamespaceAccess { namespace, member } => self
-                .build_namespace_access_expression(func_ctx, namespace, member.clone(), expr.span),
             ast::Expression::ObjectAccess { object, member } => self
                 .build_object_access_expression(
                     func_ctx,
@@ -5173,62 +5227,8 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::Label { .. } => {
                 self.build_label_expression(func_ctx, access_ctx, expr)
             }
-            ast::Expression::StructInit { name, fields } => {
-                // Extract the struct symbol and optional explicit type args from
-                // the name expression: Identifier (non-generic) or TypeApplication
-                // (generic: `Point::<T>::{ ... }`).
-                let (struct_name, explicit_type_args): (
-                    ast::Spanned<SymbolU32>,
-                    &[ast::Spanned<ast::TypeExpression>],
-                ) = match &name.inner {
-                    ast::Expression::Identifier { symbol } => (
-                        ast::Spanned {
-                            inner: *symbol,
-                            span: name.span,
-                        },
-                        &[],
-                    ),
-                    ast::Expression::TypeApplication { callee, args } => match &callee.inner {
-                        ast::Expression::Identifier { symbol } => (
-                            ast::Spanned {
-                                inner: *symbol,
-                                span: callee.span,
-                            },
-                            args.as_ref(),
-                        ),
-                        _ => {
-                            self.tir.diagnostics.push(report_not_a_struct_type(
-                                self.file_id,
-                                "expression".to_string(),
-                                name.span,
-                            ));
-                            return Ok(Expression {
-                                kind: ExprKind::Error,
-                                ty: Type::ERROR_IDX,
-                                span: expr.span,
-                            });
-                        }
-                    },
-                    _ => {
-                        self.tir.diagnostics.push(report_not_a_struct_type(
-                            self.file_id,
-                            "expression".to_string(),
-                            name.span,
-                        ));
-                        return Ok(Expression {
-                            kind: ExprKind::Error,
-                            ty: Type::ERROR_IDX,
-                            span: expr.span,
-                        });
-                    }
-                };
-                self.build_struct_init_expression(
-                    func_ctx,
-                    expr.span,
-                    struct_name,
-                    explicit_type_args,
-                    &fields,
-                )
+            ast::Expression::StructInit { path, fields } => {
+                self.build_struct_init_expression(func_ctx, access_ctx, expr.span, &path, &fields)
             }
             ast::Expression::Tuple { elements } => {
                 self.build_tuple_expression(func_ctx, expr.span, elements, access_ctx)
@@ -5425,20 +5425,318 @@ impl<'ast> Builder<'ast, '_> {
         self.tir.impl_members.entry(ty).or_default()
     }
 
-    fn build_namespace_access_expression(
+    /// Build a TIR expression from a parsed `Path`.
+    ///
+    /// - Single segment, no type args  → identifier / local / global lookup
+    /// - Single segment, with type args → generic function reference
+    /// - Multiple segments              → resolve each leading segment as a
+    ///   namespace `TypeIndex`, then dispatch via `build_namespace_member_expression`
+    fn build_path_expression(
         &mut self,
-        func_ctx: &FunctionContext,
-        namespace: &Spanned<ast::TypeExpression>,
-        member: Spanned<SymbolU32>,
+        func_ctx: &mut FunctionContext,
+        access_ctx: AccessContext,
+        path: &ast::Path,
         expr_span: TextSpan,
     ) -> Result<Expression, ()> {
-        let namespace_ty = self.resolve_type(&func_ctx.resolve_context, &namespace);
+        let last = path.segments.last().expect("path is non-empty");
+
+        // ── single-segment, no type args: plain identifier / local / global ───
+        if path.segments.len() == 1 && last.type_args.is_empty() {
+            let symbol = last.ident.inner;
+
+            if let Some((scope_index, local_index)) = func_ctx.resolve_local(symbol) {
+                let local = func_ctx.stack.get_mut_local(scope_index, local_index).unwrap();
+                local.accesses.push(LocalAccess { kind: access_ctx.access_kind, span: expr_span });
+                return Ok(Expression {
+                    kind: ExprKind::Local { local_index, scope_index },
+                    ty: local.ty,
+                    span: expr_span,
+                });
+            }
+
+            return match self
+                .lookup_symbol(&func_ctx.resolve_context, SymbolNamespace::Value, symbol)
+                .filter(|k| !matches!(k, SymbolKind::Pending(_)))
+                .cloned()
+            {
+                Some(SymbolKind::True) => Ok(Expression {
+                    kind: ExprKind::Bool { value: true },
+                    ty: Type::BOOL_IDX,
+                    span: expr_span,
+                }),
+                Some(SymbolKind::False) => Ok(Expression {
+                    kind: ExprKind::Bool { value: false },
+                    ty: Type::BOOL_IDX,
+                    span: expr_span,
+                }),
+                Some(SymbolKind::Placeholder) => Ok(Expression {
+                    kind: ExprKind::Placeholder,
+                    ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
+                    span: expr_span,
+                }),
+                Some(SymbolKind::Function { func_index }) => {
+                    let caller_id = self.tir.functions[func_ctx.func_index as usize].id;
+                    let func = &mut self.tir.functions[func_index as usize];
+                    func.accesses.push(FunctionAccess {
+                        caller: Some(caller_id),
+                        kind: FunctionAccessKind::Reference,
+                        file_id: self.file_id,
+                        span: expr_span,
+                    });
+                    let func_id = func.id;
+                    let ty = self.intern_type(Type::FunctionItem { id: func_id, type_args: Box::new([]) });
+                    Ok(Expression { kind: ExprKind::Function { id: func_id }, ty, span: expr_span })
+                }
+                Some(SymbolKind::Global { global_index }) => {
+                    let global = &mut self.tir.globals[global_index as usize];
+                    global.accesses.push(SourceSpan::new(self.file_id, expr_span));
+                    Ok(Expression {
+                        kind: ExprKind::Global { id: global.id },
+                        ty: global.ty.inner,
+                        span: expr_span,
+                    })
+                }
+                Some(SymbolKind::Const { const_index }) => {
+                    let constant = &mut self.tir.constants[const_index as usize];
+                    constant.accesses.push(SourceSpan::new(self.file_id, expr_span));
+                    let id = constant.id;
+                    let ty = constant.ty.inner;
+                    Ok(Expression { kind: ExprKind::Const { id }, ty, span: expr_span })
+                }
+                Some(SymbolKind::Memory { memory_index, kind }) => {
+                    let id = self.tir.memories[memory_index as usize].id;
+                    let ty = self.intern_type(Type::Memory { kind, id });
+                    Ok(Expression { kind: ExprKind::Memory { id }, ty, span: expr_span })
+                }
+                Some(
+                    SymbolKind::ImportModule { .. }
+                    | SymbolKind::Enum { .. }
+                    | SymbolKind::Module { .. }
+                    | SymbolKind::Struct { .. }
+                    | SymbolKind::Trait { .. },
+                ) => {
+                    self.tir.diagnostics.push(report_namespace_used_as_value(
+                        SourceSpan::new(self.file_id, expr_span),
+                    ));
+                    Ok(Expression { kind: ExprKind::Error, ty: Type::ERROR_IDX, span: expr_span })
+                }
+                Some(SymbolKind::Unreachable | SymbolKind::TraitAssocType { .. } | SymbolKind::Pending(_)) => {
+                    unreachable!()
+                }
+                None => {
+                    self.tir.diagnostics.push(report_undeclared_identifier(
+                        SourceSpan::new(self.file_id, expr_span),
+                    ));
+                    Ok(Expression {
+                        kind: ExprKind::Error,
+                        ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
+                        span: expr_span,
+                    })
+                }
+            };
+        }
+
+        // ── single-segment with type args: generic function reference ──────────
+        if path.segments.len() == 1 {
+            let seg = &path.segments[0];
+            let func_index = match self
+                .lookup_symbol(&func_ctx.resolve_context, SymbolNamespace::Value, seg.ident.inner)
+                .filter(|k| !matches!(k, SymbolKind::Pending(_)))
+                .cloned()
+            {
+                Some(SymbolKind::Function { func_index }) => func_index,
+                _ => {
+                    self.tir.diagnostics.push(report_undeclared_identifier(
+                        SourceSpan::new(self.file_id, expr_span),
+                    ));
+                    return Ok(Expression { kind: ExprKind::Error, ty: Type::ERROR_IDX, span: expr_span });
+                }
+            };
+
+            let type_params_len = self.tir.functions[func_index as usize].type_params.len();
+            if type_params_len == 0 {
+                self.tir.diagnostics.push(
+                    Diagnostic::error()
+                        .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                        .with_message("function is not generic")
+                        .with_label(SourceSpan::new(self.file_id, expr_span)
+                            .primary_label()
+                            .with_message("type arguments provided but this function has no type parameters")),
+                );
+                return Ok(Expression { kind: ExprKind::Error, ty: Type::ERROR_IDX, span: expr_span });
+            }
+            if seg.type_args.len() != type_params_len {
+                self.tir.diagnostics.push(
+                    Diagnostic::error()
+                        .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                        .with_message(format!(
+                            "expected {} type argument{}, found {}",
+                            type_params_len,
+                            if type_params_len == 1 { "" } else { "s" },
+                            seg.type_args.len()
+                        ))
+                        .with_label(SourceSpan::new(self.file_id, expr_span)
+                            .primary_label()
+                            .with_message("wrong number of type arguments")),
+                );
+                return Ok(Expression { kind: ExprKind::Error, ty: Type::ERROR_IDX, span: expr_span });
+            }
+
+            let resolve_context = func_ctx.resolve_context.clone();
+            let resolved_args: Box<[TypeIndex]> = seg.type_args
+                .iter()
+                .map(|arg| self.resolve_type(&resolve_context, arg))
+                .collect();
+
+            let caller_id = self.tir.functions[func_ctx.func_index as usize].id;
+            let func = &mut self.tir.functions[func_index as usize];
+            func.accesses.push(FunctionAccess {
+                caller: Some(caller_id),
+                kind: FunctionAccessKind::Reference,
+                file_id: self.file_id,
+                span: seg.ident.span,
+            });
+            let func_id = func.id;
+            let ty = self.intern_type(Type::FunctionItem { id: func_id, type_args: resolved_args });
+            return Ok(Expression { kind: ExprKind::Function { id: func_id }, ty, span: expr_span });
+        }
+
+        // ── multi-segment: resolve namespace chain then dispatch on last member ─
+        // Walk segments[0..n-1] left-to-right: each resolves to a namespace TypeIndex.
+        let resolve_context = func_ctx.resolve_context.clone();
+        let first = &path.segments[0];
+        let mut namespace_ty = self.resolve_type_identifier(
+            &resolve_context,
+            first.ident.inner,
+            first.ident.span,
+        );
         if namespace_ty == Type::ERROR_IDX {
             return Err(());
         }
+        let mut namespace_span = first.ident.span;
+
+        for seg in &path.segments[1..path.segments.len() - 1] {
+            namespace_span = TextSpan::new(namespace_span.start, seg.ident.span.end);
+            // Resolve `seg` as a member of the current namespace.
+            // We reuse the namespace-member logic but we need a TypeIndex result,
+            // not an expression.  For intermediate segments this is always a
+            // type-namespace lookup inside the current namespace type.
+            namespace_ty = self.resolve_namespace_type_member(
+                &resolve_context,
+                namespace_ty,
+                seg.ident.inner,
+                seg.ident.span,
+            );
+            if namespace_ty == Type::ERROR_IDX {
+                return Err(());
+            }
+        }
+
+        self.build_namespace_member_expression(func_ctx, namespace_ty, namespace_span, last.ident.clone(), expr_span)
+    }
+
+    /// Resolve a type-namespace member (used when walking intermediate path
+    /// segments): given a resolved namespace `TypeIndex`, look up `member_sym`
+    /// as a nested namespace and return its `TypeIndex`.
+    fn resolve_namespace_type_member(
+        &mut self,
+        resolve_context: &ResolveContext,
+        namespace_ty: TypeIndex,
+        member_sym: SymbolU32,
+        member_span: TextSpan,
+    ) -> TypeIndex {
+        match &self.tir.type_pool[namespace_ty as usize].clone() {
+            Type::Module { module_index } => {
+                let module_index = *module_index;
+                let kind = self.tir.modules[module_index as usize]
+                    .symbol_lookup
+                    .get(&(SymbolNamespace::Type, member_sym))
+                    .cloned();
+                match kind {
+                    Some(SymbolKind::Pending(def_id)) => {
+                        if self.sig_state.get(&def_id) == Some(&ComputeState::InProgress) {
+                            self.tir.diagnostics.push(report_cyclic_type_dependency(
+                                SourceSpan::new(resolve_context.file_id, member_span),
+                            ));
+                            return Type::ERROR_IDX;
+                        }
+                        self.ensure_signature(def_id);
+                        match self.tir.modules[module_index as usize]
+                            .symbol_lookup
+                            .get(&(SymbolNamespace::Type, member_sym))
+                            .cloned()
+                        {
+                            Some(k) => self.symbol_kind_to_type(k).unwrap_or(Type::ERROR_IDX),
+                            None => Type::ERROR_IDX,
+                        }
+                    }
+                    Some(kind) => self.symbol_kind_to_type(kind).unwrap_or_else(|| {
+                        self.tir.diagnostics.push(report_undeclared_type(
+                            SourceSpan::new(resolve_context.file_id, member_span),
+                        ));
+                        Type::ERROR_IDX
+                    }),
+                    None => {
+                        self.tir.diagnostics.push(report_undeclared_type(
+                            SourceSpan::new(resolve_context.file_id, member_span),
+                        ));
+                        Type::ERROR_IDX
+                    }
+                }
+            }
+            Type::TypeParam { param_index, .. } => {
+                let param_index = *param_index;
+                let bounds = self
+                    .type_param_bounds_in_context(resolve_context, namespace_ty)
+                    .to_owned();
+                for &trait_index in &bounds {
+                    let def_ids = self.tir.traits[trait_index as usize].member_def_ids.clone();
+                    for def_id in def_ids {
+                        self.ensure_signature(def_id);
+                    }
+                    if let Some(ImplEntry::AssociatedType { .. }) =
+                        self.tir.traits[trait_index as usize].members.get(&member_sym)
+                    {
+                        return self.intern_type(Type::AssocTypeProjection {
+                            trait_index,
+                            assoc_name: member_sym,
+                            param_index,
+                        });
+                    }
+                }
+                self.tir.diagnostics.push(report_undeclared_type(SourceSpan::new(
+                    resolve_context.file_id,
+                    member_span,
+                )));
+                Type::ERROR_IDX
+            }
+            _ => {
+                match self.ensure_impl_members(namespace_ty).get(&member_sym).cloned() {
+                    Some(ImplEntry::AssociatedType { ty }) => ty,
+                    _ => {
+                        self.tir.diagnostics.push(report_undeclared_type(
+                            SourceSpan::new(resolve_context.file_id, member_span),
+                        ));
+                        Type::ERROR_IDX
+                    }
+                }
+            }
+        }
+    }
+
+    /// Core namespace-member dispatch: look up `member` inside a type whose
+    /// `TypeIndex` has already been resolved.
+    fn build_namespace_member_expression(
+        &mut self,
+        func_ctx: &FunctionContext,
+        namespace_ty: TypeIndex,
+        namespace_span: TextSpan,
+        member: Spanned<SymbolU32>,
+        expr_span: TextSpan,
+    ) -> Result<Expression, ()> {
         let namespace_spanned = ast::Spanned {
             inner: namespace_ty,
-            span: namespace.span,
+            span: namespace_span,
         };
 
         match self
@@ -5718,7 +6016,7 @@ impl<'ast> Builder<'ast, '_> {
                         "type `{}` is not a namespace",
                         TypeFormatter::new(&self.tir, &self.interner,).display_type(namespace_ty),
                     ))
-                    .with_label(SourceSpan::new(self.file_id, namespace.span).primary_label());
+                    .with_label(SourceSpan::new(self.file_id, namespace_span).primary_label());
                 self.tir.diagnostics.push(diag);
                 Err(())
             }
@@ -6153,276 +6451,25 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn build_identifier_expression(
-        &mut self,
-        func_ctx: &mut FunctionContext,
-        access_ctx: AccessContext,
-        expr: &Spanned<ast::Expression>,
-    ) -> Result<Expression, ()> {
-        let symbol = match expr.inner {
-            ast::Expression::Identifier { symbol } => symbol.clone(),
-            _ => unreachable!(),
-        };
-        match func_ctx.resolve_local(symbol) {
-            Some((scope_index, local_index)) => {
-                let local = func_ctx
-                    .stack
-                    .get_mut_local(scope_index, local_index)
-                    .unwrap();
-
-                local.accesses.push(LocalAccess {
-                    kind: access_ctx.access_kind,
-                    span: expr.span,
-                });
-
-                return Ok(Expression {
-                    kind: ExprKind::Local {
-                        local_index,
-                        scope_index,
-                    },
-                    ty: local.ty,
-                    span: expr.span,
-                });
-            }
-            None => {}
-        }
-
-        match self
-            .lookup_symbol(&func_ctx.resolve_context, SymbolNamespace::Value, symbol)
-            .filter(|k| !matches!(k, SymbolKind::Pending(_)))
-            .cloned()
-        {
-            Some(global) => match global {
-                SymbolKind::True => Ok(Expression {
-                    kind: ExprKind::Bool { value: true },
-                    ty: Type::BOOL_IDX,
-                    span: expr.span,
-                }),
-                SymbolKind::False => Ok(Expression {
-                    kind: ExprKind::Bool { value: false },
-                    ty: Type::BOOL_IDX,
-                    span: expr.span,
-                }),
-                SymbolKind::Placeholder => Ok(Expression {
-                    kind: ExprKind::Placeholder,
-                    ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
-                    span: expr.span,
-                }),
-                SymbolKind::Function { func_index } => {
-                    let caller_id = self.tir.functions[func_ctx.func_index as usize].id;
-                    let func = &mut self.tir.functions[func_index as usize];
-                    func.accesses.push(FunctionAccess {
-                        caller: Some(caller_id),
-                        kind: FunctionAccessKind::Reference,
-                        file_id: self.file_id,
-                        span: expr.span,
-                    });
-                    let func_id = func.id;
-                    let ty = self.intern_type(Type::FunctionItem {
-                        id: func_id,
-                        type_args: Box::new([]),
-                    });
-                    Ok(Expression {
-                        kind: ExprKind::Function { id: func_id },
-                        ty,
-                        span: expr.span,
-                    })
-                }
-                SymbolKind::Global { global_index } => {
-                    let global = &mut self.tir.globals[global_index as usize];
-                    global
-                        .accesses
-                        .push(SourceSpan::new(self.file_id, expr.span));
-
-                    Ok(Expression {
-                        kind: ExprKind::Global { id: global.id },
-                        ty: global.ty.inner,
-                        span: expr.span,
-                    })
-                }
-                SymbolKind::Const { const_index } => {
-                    let constant = &mut self.tir.constants[const_index as usize];
-                    constant
-                        .accesses
-                        .push(SourceSpan::new(self.file_id, expr.span));
-                    let id = constant.id;
-                    let ty = constant.ty.inner;
-                    Ok(Expression {
-                        kind: ExprKind::Const { id },
-                        ty,
-                        span: expr.span,
-                    })
-                }
-                SymbolKind::Memory { memory_index, kind } => {
-                    let id = self.tir.memories[memory_index as usize].id;
-                    let ty = self.intern_type(Type::Memory { kind, id });
-                    return Ok(Expression {
-                        kind: ExprKind::Memory { id },
-                        ty,
-                        span: expr.span,
-                    });
-                }
-                // these are namespace-only; a bare identifier resolving to one is an error
-                SymbolKind::ImportModule { .. }
-                | SymbolKind::Enum { .. }
-                | SymbolKind::Module { .. }
-                | SymbolKind::Trait { .. } => {
-                    self.tir
-                        .diagnostics
-                        .push(report_namespace_used_as_value(SourceSpan::new(
-                            self.file_id,
-                            expr.span,
-                        )));
-                    return Ok(Expression {
-                        kind: ExprKind::Error,
-                        ty: Type::ERROR_IDX,
-                        span: expr.span,
-                    });
-                }
-                SymbolKind::Unreachable
-                | SymbolKind::TraitAssocType { .. }
-                | SymbolKind::Pending(_) => unreachable!(),
-                // Struct names are type-namespace values, not usable as expressions
-                SymbolKind::Struct { .. } => {
-                    self.tir
-                        .diagnostics
-                        .push(report_undeclared_identifier(SourceSpan::new(
-                            self.file_id,
-                            expr.span,
-                        )));
-                    Ok(Expression {
-                        kind: ExprKind::Error,
-                        ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
-                        span: expr.span,
-                    })
-                }
-            },
-            None => {
-                self.tir
-                    .diagnostics
-                    .push(report_undeclared_identifier(SourceSpan::new(
-                        self.file_id,
-                        expr.span,
-                    )));
-
-                Ok(Expression {
-                    kind: ExprKind::Error,
-                    ty: access_ctx.expected_type.unwrap_or(Type::ERROR_IDX),
-                    span: expr.span,
-                })
-            }
-        }
-    }
-
     fn build_type_application_expression(
         &mut self,
         func_ctx: &mut FunctionContext,
         callee: &Spanned<ast::Expression>,
-        args: &[Spanned<ast::TypeExpression>],
+        _args: &[Spanned<ast::TypeExpression>],
         expr_span: ast::TextSpan,
     ) -> Result<Expression, ()> {
-        // Only a bare identifier callee is supported: `fn_name::<T1, T2>`.
-        let ast::Expression::Identifier { symbol } = callee.inner else {
-            // Anything more complex (namespace access, etc.) falls back to the
-            // callee-only path; the args are ignored.
-            return self.build_expression(
-                func_ctx,
-                AccessContext {
-                    expected_type: None,
-                    access_kind: AccessKind::Read,
-                },
-                callee,
-            );
-        };
-
-        let func_index = match self
-            .lookup_symbol(&func_ctx.resolve_context, SymbolNamespace::Value, symbol)
-            .filter(|k| !matches!(k, SymbolKind::Pending(_)))
-            .cloned()
-        {
-            Some(SymbolKind::Function { func_index }) => func_index,
-            _ => {
-                // Not a generic function — let the identifier path handle the error.
-                return self.build_expression(
-                    func_ctx,
-                    AccessContext {
-                        expected_type: None,
-                        access_kind: AccessKind::Read,
-                    },
-                    callee,
-                );
-            }
-        };
-
-        let type_params_len = self.tir.functions[func_index as usize].type_params.len();
-        if type_params_len == 0 {
-            self.tir.diagnostics.push(
-                Diagnostic::error()
-                    .with_code(DiagnosticCode::TypeArgCountMismatch.code())
-                    .with_message("function is not generic")
-                    .with_label(
-                        SourceSpan::new(self.file_id, expr_span)
-                            .primary_label()
-                            .with_message(
-                                "type arguments provided but this function has no type parameters",
-                            ),
-                    ),
-            );
-            return Ok(Expression {
-                kind: ExprKind::Error,
-                ty: Type::ERROR_IDX,
-                span: expr_span,
-            });
-        }
-
-        if args.len() != type_params_len {
-            self.tir.diagnostics.push(
-                Diagnostic::error()
-                    .with_code(DiagnosticCode::TypeArgCountMismatch.code())
-                    .with_message(format!(
-                        "expected {} type argument{}, found {}",
-                        type_params_len,
-                        if type_params_len == 1 { "" } else { "s" },
-                        args.len()
-                    ))
-                    .with_label(
-                        SourceSpan::new(self.file_id, expr_span)
-                            .primary_label()
-                            .with_message("wrong number of type arguments"),
-                    ),
-            );
-            return Ok(Expression {
-                kind: ExprKind::Error,
-                ty: Type::ERROR_IDX,
-                span: expr_span,
-            });
-        }
-
-        let resolve_context = func_ctx.resolve_context.clone();
-        let resolved_args: Box<[TypeIndex]> = args
-            .iter()
-            .map(|arg| self.resolve_type(&resolve_context, arg))
-            .collect();
-
-        let caller_id = self.tir.functions[func_ctx.func_index as usize].id;
-        let func = &mut self.tir.functions[func_index as usize];
-        func.accesses.push(FunctionAccess {
-            caller: Some(caller_id),
-            kind: FunctionAccessKind::Reference,
-            file_id: self.file_id,
-            span: callee.span,
-        });
-        let func_id = func.id;
-
-        let ty = self.intern_type(Type::FunctionItem {
-            id: func_id,
-            type_args: resolved_args,
-        });
-        Ok(Expression {
-            kind: ExprKind::Function { id: func_id },
-            ty,
-            span: expr_span,
-        })
+        // TypeApplication on a non-identifier callee (e.g. `obj.method::<T>()`).
+        // Identifier-started turbofish (`fn_name::<T>()`) is fully handled by
+        // build_path_expression via the Path variant and never reaches here.
+        // Type args on method calls are not yet semantically resolved; build
+        // the callee and carry its type through.
+        let mut result = self.build_expression(
+            func_ctx,
+            AccessContext { expected_type: None, access_kind: AccessKind::Read },
+            callee,
+        )?;
+        result.span = expr_span;
+        Ok(result)
     }
 
     fn build_binary_expression(
@@ -8549,47 +8596,112 @@ impl<'ast> Builder<'ast, '_> {
     fn build_struct_init_expression(
         &mut self,
         func_ctx: &mut FunctionContext,
+        access_ctx: AccessContext,
         init_span: ast::TextSpan,
-        name: ast::Spanned<SymbolU32>,
-        explicit_type_args: &[ast::Spanned<ast::TypeExpression>],
+        path: &ast::Path,
         fields: &[ast::Separated<ast::Spanned<ast::StructInitField>>],
     ) -> Result<Expression, ()> {
-        let struct_index = match self
-            .symbol_lookup
-            .get(&(SymbolNamespace::Type, name.inner))
-            .cloned()
-        {
-            Some(SymbolKind::Struct { struct_index }) => struct_index,
-            Some(_) => {
-                self.tir.diagnostics.push(report_not_a_struct_type(
-                    self.file_id,
-                    self.interner.resolve(name.inner).unwrap().to_string(),
-                    name.span,
-                ));
+        // The last segment carries the struct name (and optional type args);
+        // all preceding segments are namespace qualifiers.
+        let struct_seg = path.segments.last().expect("path has at least one segment");
+        let struct_name_sym = struct_seg.ident.inner;
+        let struct_name_span = struct_seg.ident.span;
+        let explicit_type_args = &struct_seg.type_args;
+
+        let struct_index = if path.segments.len() == 1 {
+            // Single-segment: look up bare name in current scope.
+            match self
+                .symbol_lookup
+                .get(&(SymbolNamespace::Type, struct_name_sym))
+                .cloned()
+            {
+                Some(SymbolKind::Struct { struct_index }) => struct_index,
+                Some(_) => {
+                    self.tir.diagnostics.push(report_not_a_struct_type(
+                        self.file_id,
+                        self.interner.resolve(struct_name_sym).unwrap().to_string(),
+                        struct_name_span,
+                    ));
+                    return Err(());
+                }
+                None => {
+                    self.tir
+                        .diagnostics
+                        .push(report_undeclared_identifier(SourceSpan::new(
+                            self.file_id,
+                            struct_name_span,
+                        )));
+                    return Err(());
+                }
+            }
+        } else {
+            // Multi-segment: walk namespace prefix, then resolve struct name in that namespace.
+            let resolve_context = func_ctx.resolve_context.clone();
+            let first = &path.segments[0];
+            let mut namespace_ty =
+                self.resolve_type_identifier(&resolve_context, first.ident.inner, first.ident.span);
+            if namespace_ty == Type::ERROR_IDX {
                 return Err(());
             }
-            None => {
-                self.tir
-                    .diagnostics
-                    .push(report_undeclared_identifier(SourceSpan::new(
-                        self.file_id,
-                        name.span,
-                    )));
+            let mut namespace_span = first.ident.span;
+            for seg in &path.segments[1..path.segments.len() - 1] {
+                namespace_span = TextSpan::new(namespace_span.start, seg.ident.span.end);
+                namespace_ty = self.resolve_namespace_type_member(
+                    &resolve_context,
+                    namespace_ty,
+                    seg.ident.inner,
+                    seg.ident.span,
+                );
+                if namespace_ty == Type::ERROR_IDX {
+                    return Err(());
+                }
+            }
+            let struct_ty = self.resolve_namespace_type_member(
+                &resolve_context,
+                namespace_ty,
+                struct_name_sym,
+                struct_name_span,
+            );
+            if struct_ty == Type::ERROR_IDX {
                 return Err(());
+            }
+            match &self.tir.type_pool[struct_ty as usize] {
+                Type::Struct { struct_index, .. } => *struct_index,
+                _ => {
+                    self.tir.diagnostics.push(report_not_a_struct_type(
+                        self.file_id,
+                        self.interner.resolve(struct_name_sym).unwrap().to_string(),
+                        struct_name_span,
+                    ));
+                    return Err(());
+                }
             }
         };
 
-        // Resolve explicit type args and validate count.
         let type_params_len = self.tir.structs[struct_index as usize].type_params.len();
-        let resolved_args: Box<[TypeIndex]> = if explicit_type_args.is_empty() {
-            Box::new([])
-        } else {
-            let resolve_context = func_ctx.resolve_context.clone();
+        let resolved_args: Box<[TypeIndex]> = if !explicit_type_args.is_empty() {
+            // Explicit turbofish args take priority.
             explicit_type_args
                 .iter()
-                .map(|arg| self.resolve_type(&resolve_context, arg))
+                .map(|arg| self.resolve_type(&func_ctx.resolve_context, arg))
                 .collect()
+        } else if type_params_len == 0 {
+            Box::new([])
+        } else {
+            // Try to extract type args from the expected type in context.
+            match access_ctx.expected_type {
+                Some(expected) => match &self.tir.type_pool[expected as usize] {
+                    Type::Struct { struct_index: expected_si, args }
+                        if *expected_si == struct_index && args.len() == type_params_len =>
+                    {
+                        args.clone()
+                    }
+                    _ => Box::new([]),
+                },
+                None => Box::new([]),
+            }
         };
+        let type_params_len = self.tir.structs[struct_index as usize].type_params.len();
         if !resolved_args.is_empty() && resolved_args.len() != type_params_len {
             let struct_name = self
                 .interner
@@ -8664,11 +8776,15 @@ impl<'ast> Builder<'ast, '_> {
             let field_value = match &field.value {
                 Some(expr) => expr.as_ref(),
                 None => {
-                    // Shorthand: treat `{ a }` as `{ a: a }` by synthesising an identifier expr
+                    // Shorthand: treat `{ a }` as `{ a: a }` by synthesising a single-segment path
                     &ast::Spanned {
-                        inner: ast::Expression::Identifier {
-                            symbol: field.name.inner,
-                        },
+                        inner: ast::Expression::Path(ast::Path {
+                            segments: Box::new([ast::PathSegment {
+                                ident: field.name.clone(),
+                                type_args: Box::new([]),
+                            }]),
+                            span: field.name.span,
+                        }),
                         span: field.name.span,
                     }
                 }
@@ -8740,7 +8856,7 @@ impl<'ast> Builder<'ast, '_> {
         });
         self.tir.structs[struct_index as usize]
             .accesses
-            .push(SourceSpan::new(self.file_id, name.span));
+            .push(SourceSpan::new(self.file_id, struct_name_span));
 
         // If any field was mentioned but failed to build (type error, coercion error,
         // …), its slot is still None even though first_mention is Some. Return

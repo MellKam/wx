@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
-assertion_line: 377
 expression: case.ast
 ---
 file_id: 0
@@ -30,8 +29,17 @@ items:
                         end: 9
                     ty:
                       inner:
-                        Identifier:
-                          symbol: 3
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 3
+                                span:
+                                  start: 11
+                                  end: 14
+                              type_args: []
+                          span:
+                            start: 11
+                            end: 14
                       span:
                         start: 11
                         end: 14
@@ -51,8 +59,17 @@ items:
                         end: 17
                     ty:
                       inner:
-                        Identifier:
-                          symbol: 3
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 3
+                                span:
+                                  start: 19
+                                  end: 22
+                              type_args: []
+                          span:
+                            start: 19
+                            end: 22
                       span:
                         start: 19
                         end: 22
@@ -84,13 +101,17 @@ items:
                           value:
                             inner:
                               StructInit:
-                                name:
-                                  inner:
-                                    Identifier:
-                                      symbol: 6
+                                path:
+                                  segments:
+                                    - ident:
+                                        inner: 6
+                                        span:
+                                          start: 44
+                                          end: 49
+                                      type_args: []
                                   span:
                                     start: 44
-                                    end: 49
+                                    end: 51
                                 fields:
                                   - inner:
                                       inner:
@@ -101,8 +122,17 @@ items:
                                             end: 54
                                         value:
                                           inner:
-                                            Identifier:
-                                              symbol: 2
+                                            Path:
+                                              segments:
+                                                - ident:
+                                                    inner: 2
+                                                    span:
+                                                      start: 56
+                                                      end: 57
+                                                  type_args: []
+                                              span:
+                                                start: 56
+                                                end: 57
                                           span:
                                             start: 56
                                             end: 57
@@ -121,8 +151,17 @@ items:
                                             end: 60
                                         value:
                                           inner:
-                                            Identifier:
-                                              symbol: 4
+                                            Path:
+                                              segments:
+                                                - ident:
+                                                    inner: 4
+                                                    span:
+                                                      start: 62
+                                                      end: 63
+                                                  type_args: []
+                                              span:
+                                                start: 62
+                                                end: 63
                                           span:
                                             start: 62
                                             end: 63
@@ -158,13 +197,17 @@ items:
                           value:
                             inner:
                               StructInit:
-                                name:
-                                  inner:
-                                    Identifier:
-                                      symbol: 6
+                                path:
+                                  segments:
+                                    - ident:
+                                        inner: 6
+                                        span:
+                                          start: 85
+                                          end: 90
+                                      type_args: []
                                   span:
                                     start: 85
-                                    end: 90
+                                    end: 92
                                 fields:
                                   - inner:
                                       inner:
@@ -220,13 +263,17 @@ items:
                           value:
                             inner:
                               StructInit:
-                                name:
-                                  inner:
-                                    Identifier:
-                                      symbol: 9
+                                path:
+                                  segments:
+                                    - ident:
+                                        inner: 9
+                                        span:
+                                          start: 120
+                                          end: 124
+                                      type_args: []
                                   span:
                                     start: 120
-                                    end: 124
+                                    end: 126
                                 fields: []
                             span:
                               start: 120

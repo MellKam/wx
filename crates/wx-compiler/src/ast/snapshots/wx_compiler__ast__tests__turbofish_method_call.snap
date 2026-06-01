@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
-assertion_line: 1019
 expression: case.ast
 ---
 file_id: 0
@@ -30,8 +29,17 @@ items:
                         end: 11
                     ty:
                       inner:
-                        Identifier:
-                          symbol: 3
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 3
+                                span:
+                                  start: 13
+                                  end: 16
+                              type_args: []
+                          span:
+                            start: 13
+                            end: 16
                       span:
                         start: 13
                         end: 16
@@ -57,8 +65,17 @@ items:
                                         ObjectAccess:
                                           object:
                                             inner:
-                                              Identifier:
-                                                symbol: 2
+                                              Path:
+                                                segments:
+                                                  - ident:
+                                                      inner: 2
+                                                      span:
+                                                        start: 24
+                                                        end: 27
+                                                    type_args: []
+                                                span:
+                                                  start: 24
+                                                  end: 27
                                             span:
                                               start: 24
                                               end: 27
@@ -72,8 +89,17 @@ items:
                                         end: 37
                                     args:
                                       - inner:
-                                          Identifier:
-                                            symbol: 5
+                                          Path:
+                                            segments:
+                                              - ident:
+                                                  inner: 5
+                                                  span:
+                                                    start: 40
+                                                    end: 43
+                                                type_args: []
+                                            span:
+                                              start: 40
+                                              end: 43
                                         span:
                                           start: 40
                                           end: 43

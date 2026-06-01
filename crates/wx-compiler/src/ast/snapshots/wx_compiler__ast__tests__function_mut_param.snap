@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
-assertion_line: 173
 expression: case.ast
 ---
 file_id: 0
@@ -32,8 +31,17 @@ items:
                         end: 17
                     ty:
                       inner:
-                        Identifier:
-                          symbol: 3
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 3
+                                span:
+                                  start: 19
+                                  end: 22
+                              type_args: []
+                          span:
+                            start: 19
+                            end: 22
                       span:
                         start: 19
                         end: 22
@@ -43,8 +51,17 @@ items:
                 separator: ~
             result:
               inner:
-                Identifier:
-                  symbol: 3
+                Path:
+                  segments:
+                    - ident:
+                        inner: 3
+                        span:
+                          start: 27
+                          end: 30
+                      type_args: []
+                  span:
+                    start: 27
+                    end: 30
               span:
                 start: 27
                 end: 30
@@ -71,8 +88,17 @@ items:
                               end: 50
                           ty:
                             inner:
-                              Identifier:
-                                symbol: 3
+                              Path:
+                                segments:
+                                  - ident:
+                                      inner: 3
+                                      span:
+                                        start: 52
+                                        end: 55
+                                    type_args: []
+                                span:
+                                  start: 52
+                                  end: 55
                             span:
                               start: 52
                               end: 55
@@ -96,8 +122,17 @@ items:
                             Binary:
                               left:
                                 inner:
-                                  Identifier:
-                                    symbol: 4
+                                  Path:
+                                    segments:
+                                      - ident:
+                                          inner: 4
+                                          span:
+                                            start: 65
+                                            end: 68
+                                        type_args: []
+                                    span:
+                                      start: 65
+                                      end: 68
                                 span:
                                   start: 65
                                   end: 68
@@ -108,8 +143,17 @@ items:
                                   end: 71
                               right:
                                 inner:
-                                  Identifier:
-                                    symbol: 2
+                                  Path:
+                                    segments:
+                                      - ident:
+                                          inner: 2
+                                          span:
+                                            start: 72
+                                            end: 73
+                                        type_args: []
+                                    span:
+                                      start: 72
+                                      end: 73
                                 span:
                                   start: 72
                                   end: 73
@@ -126,8 +170,17 @@ items:
                       inner:
                         Expression:
                           inner:
-                            Identifier:
-                              symbol: 4
+                            Path:
+                              segments:
+                                - ident:
+                                    inner: 4
+                                    span:
+                                      start: 79
+                                      end: 82
+                                  type_args: []
+                              span:
+                                start: 79
+                                end: 82
                           span:
                             start: 79
                             end: 82

@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
-assertion_line: 1008
 expression: case.ast
 ---
 file_id: 0
@@ -32,24 +31,35 @@ items:
                             Call:
                               callee:
                                 inner:
-                                  TypeApplication:
-                                    callee:
-                                      inner:
-                                        Identifier:
-                                          symbol: 2
-                                      span:
-                                        start: 16
-                                        end: 24
-                                    args:
-                                      - inner:
-                                          Identifier:
-                                            symbol: 3
-                                        span:
-                                          start: 27
-                                          end: 30
+                                  Path:
+                                    segments:
+                                      - ident:
+                                          inner: 2
+                                          span:
+                                            start: 16
+                                            end: 24
+                                        type_args:
+                                          - inner:
+                                              Path:
+                                                segments:
+                                                  - ident:
+                                                      inner: 3
+                                                      span:
+                                                        start: 27
+                                                        end: 30
+                                                    type_args: []
+                                                span:
+                                                  start: 27
+                                                  end: 30
+                                            span:
+                                              start: 27
+                                              end: 30
+                                    span:
+                                      start: 16
+                                      end: 24
                                 span:
                                   start: 16
-                                  end: 31
+                                  end: 24
                               arguments:
                                 - inner:
                                     inner:
