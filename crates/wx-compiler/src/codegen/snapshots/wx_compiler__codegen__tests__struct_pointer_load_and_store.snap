@@ -19,23 +19,17 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     i32.store offset=4
   )
   (func (;1;) (type 1) (param i32) (result i32)
-    (local i32 i32)
+    (local i32)
     local.get 0
     i32.load
     local.set 1
-    local.get 0
-    i32.load offset=4
-    local.set 2
     local.get 1
   )
   (func (;2;) (type 1) (param i32) (result i32)
-    (local i32 i32)
-    local.get 0
-    i32.load
-    local.set 1
+    (local i32)
     local.get 0
     i32.load offset=4
-    local.set 2
-    local.get 2
+    local.set 1
+    local.get 1
   )
 )

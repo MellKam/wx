@@ -5,6 +5,7 @@ use codespan_reporting::diagnostic::Severity;
 use indoc::indoc;
 
 use super::*;
+use crate::tir::builder::{CharLiteralError, parse_char_literal, unescape_string};
 use crate::vfs;
 
 #[allow(unused)]
@@ -1639,47 +1640,6 @@ fn test_supertrait_satisfied_impl_no_errors() {
     );
 }
 
-// this is a temporary playground I'm using only for testing purposes, I will
-// remove it later
-#[test]
-fn test_playground() {
-    let case = TestCase::new(indoc! {"
-        trait Sized {
-            const SIZE: u32;
-            fn size(self) -> u32 {
-                Self::SIZE
-            }
-        }
-
-        trait Drawable: Sized {
-            fn draw(self);
-        }
-
-        struct Point {
-            x: i32,
-            y: i32,
-        }
-
-        impl Sized for Point {
-            const SIZE: u32 = 8;
-        }
-
-        impl Drawable for Point {
-            fn draw(self) {
-                _ = self.size();
-            }
-        }
-
-        fn main() {
-            local p = Point::{ x: 1, y: 2 };
-            p.draw();
-        }
-
-        export { main }
-    "});
-    insta::assert_yaml_snapshot!(case.tir);
-}
-
 // ── wasm module intrinsics
 // ────────────────────────────────────────────────────
 
@@ -2801,30 +2761,39 @@ fn test_function_item_wrong_signature_is_error() {
 
 #[test]
 fn test_deref_load_through_pointer() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         fn read(ptr: heap::*i32) -> i32 { ptr.* }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     no_errors(&case);
 }
 
 #[test]
 fn test_deref_store_through_mutable_pointer() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         fn write(ptr: heap::*mut i32) { ptr.* = 42 }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     no_errors(&case);
 }
 
 #[test]
 fn test_deref_arithmetic_assignment_through_mutable_pointer() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         fn increment(ptr: heap::*mut i32) { ptr.* += 1 }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     no_errors(&case);
 }
@@ -2853,30 +2822,39 @@ fn test_deref_no_memory_is_error() {
 
 #[test]
 fn test_deref_store_through_immutable_pointer_is_error() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         fn bad(ptr: heap::*i32) { ptr.* = 42 }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     has_error_matching(&case, "immutable pointer");
 }
 
 #[test]
 fn test_deref_arithmetic_assignment_through_immutable_pointer_is_error() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         fn bad(ptr: heap::*i32) { ptr.* += 1 }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     has_error_matching(&case, "immutable pointer");
 }
 
 #[test]
 fn test_deref_type_mismatch_on_store_is_error() {
-    let src = format!("{STD}\n{}", indoc! {"
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
         memory heap: Memory32;
         fn bad(ptr: heap::*mut i32) { ptr.* = true }
-    "});
+    "}
+    );
     let case = TestCase::new(&src);
     has_error_matching(&case, "cannot assign");
 }

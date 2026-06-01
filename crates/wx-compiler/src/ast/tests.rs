@@ -47,7 +47,7 @@ fn function_item(ast: &AST, index: usize) -> &Item {
     item(ast, index)
 }
 
-fn function_block(ast: &AST, index: usize) -> &Grouped<Box<[Separated<Spanned<Statement>>]>> {
+fn function_block(ast: &AST, index: usize) -> &[Separated<Spanned<Statement>>] {
     let Item::Function { block, .. } = function_item(ast, index) else {
         panic!("expected function item")
     };
@@ -60,10 +60,10 @@ fn function_block(ast: &AST, index: usize) -> &Grouped<Box<[Separated<Spanned<St
 }
 
 fn statement_expression<'a>(
-    statements: &'a Grouped<Box<[Separated<Spanned<Statement>>]>>,
+    statements: &'a [Separated<Spanned<Statement>>],
     index: usize,
 ) -> &'a Expression {
-    let Statement::Expression(expr) = &statements.inner[index].inner.inner else {
+    let Statement::Expression(expr) = &statements[index].inner.inner else {
         panic!("expected expression statement")
     };
 
@@ -71,10 +71,10 @@ fn statement_expression<'a>(
 }
 
 fn local_definition_value<'a>(
-    statements: &'a Grouped<Box<[Separated<Spanned<Statement>>]>>,
+    statements: &'a [Separated<Spanned<Statement>>],
     index: usize,
 ) -> &'a Expression {
-    let Statement::LocalDefinition { value, .. } = &statements.inner[index].inner.inner else {
+    let Statement::LocalDefinition { value, .. } = &statements[index].inner.inner else {
         panic!("expected local definition")
     };
 
@@ -82,17 +82,17 @@ fn local_definition_value<'a>(
 }
 
 fn local_definition_pattern<'a>(
-    statements: &'a Grouped<Box<[Separated<Spanned<Statement>>]>>,
+    statements: &'a [Separated<Spanned<Statement>>],
     index: usize,
 ) -> &'a Pattern {
-    let Statement::LocalDefinition { pattern, .. } = &statements.inner[index].inner.inner else {
+    let Statement::LocalDefinition { pattern, .. } = &statements[index].inner.inner else {
         panic!("expected local definition")
     };
 
     &pattern.inner
 }
 
-fn struct_fields(ast: &AST, index: usize) -> &Grouped<Box<[Separated<Spanned<StructField>>]>> {
+fn struct_fields(ast: &AST, index: usize) -> &[Separated<Spanned<StructField>>] {
     let Item::Struct { fields, .. } = item(ast, index) else {
         panic!("expected struct item")
     };
@@ -157,7 +157,7 @@ fn test_enum_repr_after_name() {
         repr.as_deref().map(|repr| &repr.inner),
         Some(TypeExpression::Identifier { symbol }) if case.interner.resolve(*symbol) == Some("i32")
     ));
-    assert_eq!(variants.inner.len(), 2);
+    assert_eq!(variants.len(), 2);
 }
 
 #[test]
@@ -217,7 +217,6 @@ fn test_type_expression_forms() {
         panic!("expected struct item")
     };
 
-    let fields = &fields.inner;
     assert!(matches!(
         Some(&fields[0].inner.inner.ty.inner),
         Some(TypeExpression::Pointer {
@@ -250,7 +249,7 @@ fn test_type_expression_forms() {
     ));
     assert!(matches!(
         Some(&fields[5].inner.inner.ty.inner),
-        Some(TypeExpression::TraitApplication { assoc_bindings, .. }) if assoc_bindings.inner.len() == 1
+        Some(TypeExpression::GenericApplication { args, .. }) if args.len() == 1
     ));
 }
 
@@ -362,7 +361,7 @@ fn test_label_requires_block_like_expression() {
     "});
 
     assert_eq!(diagnostic_codes(&case.ast), vec!["E0006"]);
-    assert!(function_block(&case.ast, 0).inner.is_empty());
+    assert!(function_block(&case.ast, 0).is_empty());
 }
 
 #[test]
@@ -376,6 +375,28 @@ fn test_struct_init() {
         }
     "});
     insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_generic_struct_init() {
+    let case = TestCase::new(indoc! {"
+        fn make(x: f32, y: f32) {
+            local p = Point::<f32>::{ x: x, y: y };
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let stmts = function_block(&case.ast, 0);
+    let init = local_definition_value(stmts, 0);
+    let Expression::StructInit { name, fields } = init else {
+        panic!("expected StructInit");
+    };
+    // name must be a TypeApplication wrapping Point
+    let Expression::TypeApplication { callee, args } = &name.inner else {
+        panic!("expected TypeApplication as struct init name");
+    };
+    assert!(matches!(&callee.inner, Expression::Identifier { .. }));
+    assert_eq!(args.len(), 1);
+    assert_eq!(fields.len(), 2);
 }
 
 #[test]
@@ -524,7 +545,7 @@ fn test_numeric_literal_forms() {
     "});
 
     let statements = function_block(&case.ast, 0);
-    assert_eq!(statements.inner.len(), 3);
+    assert_eq!(statements.len(), 3);
     assert!(matches!(
         local_definition_value(statements, 0),
         Expression::Int { value: 255 }
@@ -579,20 +600,20 @@ fn test_pattern_tuple_destructuring() {
     let Pattern::Tuple { elements } = local_definition_pattern(stmts, 0) else {
         panic!("expected tuple pattern")
     };
-    assert_eq!(elements.inner.len(), 2);
-    assert!(matches!(&elements.inner[0].inner.inner, Pattern::Binding { mut_span: None, .. }));
-    assert!(matches!(&elements.inner[1].inner.inner, Pattern::Binding { mut_span: None, .. }));
+    assert_eq!(elements.len(), 2);
+    assert!(matches!(&elements[0].inner.inner, Pattern::Binding { mut_span: None, .. }));
+    assert!(matches!(&elements[1].inner.inner, Pattern::Binding { mut_span: None, .. }));
 
     let Pattern::Tuple { elements } = local_definition_pattern(stmts, 1) else {
         panic!("expected tuple pattern")
     };
-    assert!(matches!(&elements.inner[0].inner.inner, Pattern::Binding { mut_span: Some(_), .. }));
-    assert!(matches!(&elements.inner[1].inner.inner, Pattern::Wildcard));
+    assert!(matches!(&elements[0].inner.inner, Pattern::Binding { mut_span: Some(_), .. }));
+    assert!(matches!(&elements[1].inner.inner, Pattern::Wildcard));
 
     let Pattern::Tuple { elements } = local_definition_pattern(stmts, 2) else {
         panic!("expected tuple pattern")
     };
-    assert!(matches!(&elements.inner[1].inner.inner, Pattern::Tuple { .. }));
+    assert!(matches!(&elements[1].inner.inner, Pattern::Tuple { .. }));
 }
 
 #[test]
@@ -610,15 +631,15 @@ fn test_pattern_struct_destructuring() {
         panic!("expected struct pattern")
     };
     assert_eq!(case.interner.resolve(name.inner), Some("Point"));
-    assert_eq!(fields.inner.len(), 2);
-    assert!(fields.inner[0].inner.inner.pattern.is_none(), "shorthand field should have no sub-pattern");
-    assert!(fields.inner[1].inner.inner.pattern.is_none(), "shorthand field should have no sub-pattern");
+    assert_eq!(fields.len(), 2);
+    assert!(fields[0].inner.inner.pattern.is_none(), "shorthand field should have no sub-pattern");
+    assert!(fields[1].inner.inner.pattern.is_none(), "shorthand field should have no sub-pattern");
 
     let Pattern::Struct { fields, .. } = local_definition_pattern(stmts, 1) else {
         panic!("expected struct pattern")
     };
-    assert!(fields.inner[0].inner.inner.pattern.is_some(), "renamed field should have sub-pattern");
-    assert!(fields.inner[1].inner.inner.pattern.is_some(), "renamed field should have sub-pattern");
+    assert!(fields[0].inner.inner.pattern.is_some(), "renamed field should have sub-pattern");
+    assert!(fields[1].inner.inner.pattern.is_some(), "renamed field should have sub-pattern");
 }
 
 #[test]
@@ -631,7 +652,7 @@ fn test_pattern_with_type_annotation() {
     assert!(case.ast.diagnostics.is_empty());
     let stmts = function_block(&case.ast, 0);
 
-    let Statement::LocalDefinition { pattern, ty, .. } = &stmts.inner[0].inner.inner else {
+    let Statement::LocalDefinition { pattern, ty, .. } = &stmts[0].inner.inner else {
         panic!("expected local definition")
     };
     assert!(matches!(pattern.inner, Pattern::Tuple { .. }));
@@ -650,7 +671,7 @@ fn test_missing_semicolon_warns_but_parses() {
     "});
 
     assert_eq!(diagnostic_codes(&case.ast), vec!["E0003"]);
-    assert_eq!(function_block(&case.ast, 0).inner.len(), 2);
+    assert_eq!(function_block(&case.ast, 0).len(), 2);
 }
 
 #[test]
@@ -661,7 +682,7 @@ fn test_unclosed_delimiter() {
     "});
 
     assert_eq!(diagnostic_codes(&case.ast), vec!["E0004"]);
-    assert_eq!(function_block(&case.ast, 0).inner.len(), 1);
+    assert_eq!(function_block(&case.ast, 0).len(), 1);
 }
 
 #[test]
@@ -696,8 +717,8 @@ fn test_incomplete_expression() {
     "});
 
     assert_eq!(diagnostic_codes(&case.ast), vec!["E0006", "E0006"]);
-    assert!(function_block(&case.ast, 0).inner.is_empty());
-    assert!(function_block(&case.ast, 1).inner.is_empty());
+    assert!(function_block(&case.ast, 0).is_empty());
+    assert!(function_block(&case.ast, 1).is_empty());
 }
 
 #[test]
@@ -709,7 +730,7 @@ fn test_reserved_identifier() {
     "});
 
     assert_eq!(diagnostic_codes(&case.ast), vec!["E0008"]);
-    assert_eq!(function_block(&case.ast, 0).inner.len(), 1);
+    assert_eq!(function_block(&case.ast, 0).len(), 1);
 }
 
 #[test]
@@ -729,7 +750,7 @@ fn test_invalid_attribute_and_namespace_diagnostics() {
     );
     assert_eq!(case.ast.items.len(), 2);
     assert!(matches!(item(&case.ast, 0), Item::Function { .. }));
-    assert!(function_block(&case.ast, 1).inner.is_empty());
+    assert!(function_block(&case.ast, 1).is_empty());
 }
 
 #[test]
@@ -751,7 +772,7 @@ fn test_missing_initializer() {
         "expected one E0010 for local and one for global"
     );
     assert_eq!(case.ast.items.len(), 1);
-    assert!(function_block(&case.ast, 0).inner.is_empty());
+    assert!(function_block(&case.ast, 0).is_empty());
 }
 
 #[test]
@@ -764,7 +785,7 @@ fn test_missing_comma_between_struct_fields_warns_but_parses() {
     "});
 
     assert_eq!(diagnostic_codes(&case.ast), vec!["E0003"]);
-    assert_eq!(struct_fields(&case.ast, 0).inner.len(), 2);
+    assert_eq!(struct_fields(&case.ast, 0).len(), 2);
 }
 
 #[test]
@@ -804,7 +825,7 @@ fn test_module_pub_items_and_associated_types() {
     };
     assert!(pub_span.is_some());
     assert!(matches!(
-        items.inner[0].inner.inner,
+        items[0].inner.inner,
         Item::Function {
             pub_span: Some(_),
             ..
@@ -826,7 +847,7 @@ fn test_module_pub_items_and_associated_types() {
     };
     assert!(pub_span.is_some());
     assert!(matches!(
-        trait_items.inner[0].inner.inner,
+        trait_items[0].inner.inner,
         TraitItem::AssociatedType { ref bounds, .. } if bounds.len() == 2
     ));
 
@@ -837,7 +858,7 @@ fn test_module_pub_items_and_associated_types() {
         panic!("expected trait impl")
     };
     assert!(matches!(
-        impl_items.inner[0].inner.inner,
+        impl_items[0].inner.inner,
         ImplItem::AssociatedType { .. }
     ));
 }
@@ -897,6 +918,54 @@ fn test_generic_signatures() {
 }
 
 #[test]
+fn test_generic_struct() {
+    let case = TestCase::new(indoc! {"
+        struct Pair<T, U> {
+            first: T,
+            second: U,
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let Item::Struct {
+        name,
+        type_params,
+        fields,
+        ..
+    } = item(&case.ast, 0)
+    else {
+        panic!("expected struct item")
+    };
+    assert_eq!(case.interner.resolve(name.inner), Some("Pair"));
+    assert_eq!(type_params.len(), 2);
+    assert_eq!(
+        case.interner.resolve(type_params[0].name.inner),
+        Some("T")
+    );
+    assert!(type_params[0].bounds.is_empty());
+    assert_eq!(
+        case.interner.resolve(type_params[1].name.inner),
+        Some("U")
+    );
+    assert!(type_params[1].bounds.is_empty());
+    assert_eq!(fields.len(), 2);
+}
+
+#[test]
+fn test_generic_struct_with_bounds() {
+    let case = TestCase::new(indoc! {"
+        struct Wrapper<T: Add + Clone> {
+            value: T,
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let Item::Struct { type_params, .. } = item(&case.ast, 0) else {
+        panic!("expected struct item")
+    };
+    assert_eq!(type_params.len(), 1);
+    assert_eq!(type_params[0].bounds.len(), 2);
+}
+
+#[test]
 fn test_import_alias_and_entry_kinds() {
     let case = TestCase::new(indoc! {"
         import \"env\" as host {
@@ -912,18 +981,18 @@ fn test_import_alias_and_entry_kinds() {
     };
     assert!(alias.is_some());
     assert!(matches!(
-        entries.inner[0].inner.inner.declaration,
+        entries[0].inner.inner.declaration,
         ImportDeclaration::Function { .. }
     ));
     assert!(matches!(
-        entries.inner[1].inner.inner.declaration,
+        entries[1].inner.inner.declaration,
         ImportDeclaration::Global {
             mut_span: Some(_),
             ..
         }
     ));
     assert!(matches!(
-        entries.inner[2].inner.inner.declaration,
+        entries[2].inner.inner.declaration,
         ImportDeclaration::Memory { .. }
     ));
 }
@@ -948,4 +1017,49 @@ fn test_turbofish_method_call() {
     "});
     assert!(case.ast.diagnostics.is_empty());
     insta::assert_yaml_snapshot!(case.ast);
+}
+
+#[test]
+fn test_generic_application_type_args() {
+    let case = TestCase::new(indoc! {"
+        struct Pair<T, U> {
+            first: T,
+            second: U,
+        }
+        fn make(x: Pair<i32, f64>) {}
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let Item::Function { signature, .. } = item(&case.ast, 1) else {
+        panic!("expected function")
+    };
+    let param_ty = &signature.params[0].inner.inner.ty.as_ref().unwrap().inner;
+    assert!(matches!(
+        param_ty,
+        TypeExpression::GenericApplication { args, .. } if args.len() == 2
+    ));
+    if let TypeExpression::GenericApplication { args, .. } = param_ty {
+        assert!(matches!(&args[0].inner.inner, GenericArg::Type(_)));
+        assert!(matches!(&args[1].inner.inner, GenericArg::Type(_)));
+    }
+}
+
+#[test]
+fn test_generic_application_binding_arg() {
+    let case = TestCase::new(indoc! {"
+        struct Wrapper {
+            value: Memory<Size = u32>,
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let Item::Struct { fields, .. } = item(&case.ast, 0) else {
+        panic!("expected struct")
+    };
+    let ty = &fields[0].inner.inner.ty.inner;
+    assert!(matches!(
+        ty,
+        TypeExpression::GenericApplication { args, .. } if args.len() == 1
+    ));
+    if let TypeExpression::GenericApplication { args, .. } = ty {
+        assert!(matches!(&args[0].inner.inner, GenericArg::Binding { .. }));
+    }
 }

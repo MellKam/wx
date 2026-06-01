@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 1008
 expression: case.ast
 ---
 file_id: 0
@@ -18,67 +19,53 @@ items:
                 start: 3
                 end: 7
             type_params: []
-            params:
-              open:
-                start: 7
-                end: 8
-              inner: []
-              close:
-                start: 8
-                end: 9
+            params: []
             result: ~
           block:
             inner:
               Block:
                 statements:
-                  open:
-                    start: 10
-                    end: 11
-                  inner:
-                    - inner:
-                        inner:
-                          Expression:
-                            inner:
-                              Call:
-                                callee:
-                                  inner:
-                                    TypeApplication:
-                                      callee:
-                                        inner:
-                                          Identifier:
-                                            symbol: 2
-                                        span:
-                                          start: 16
-                                          end: 24
-                                      args:
-                                        - inner:
-                                            Identifier:
-                                              symbol: 3
-                                          span:
-                                            start: 27
-                                            end: 30
-                                  span:
-                                    start: 16
-                                    end: 31
-                                arguments:
-                                  - inner:
+                  - inner:
+                      inner:
+                        Expression:
+                          inner:
+                            Call:
+                              callee:
+                                inner:
+                                  TypeApplication:
+                                    callee:
                                       inner:
-                                        Int:
-                                          value: 42
+                                        Identifier:
+                                          symbol: 2
                                       span:
-                                        start: 32
-                                        end: 34
-                                    separator: ~
-                            span:
-                              start: 16
-                              end: 35
-                        span:
-                          start: 16
-                          end: 35
-                      separator: ~
-                  close:
-                    start: 36
-                    end: 37
+                                        start: 16
+                                        end: 24
+                                    args:
+                                      - inner:
+                                          Identifier:
+                                            symbol: 3
+                                        span:
+                                          start: 27
+                                          end: 30
+                                span:
+                                  start: 16
+                                  end: 31
+                              arguments:
+                                - inner:
+                                    inner:
+                                      Int:
+                                        value: 42
+                                    span:
+                                      start: 32
+                                      end: 34
+                                  separator: ~
+                          span:
+                            start: 16
+                            end: 35
+                      span:
+                        start: 16
+                        end: 35
+                    separator: ~
             span:
               start: 10
               end: 37

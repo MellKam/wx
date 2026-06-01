@@ -2272,19 +2272,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wx-lsp"
-version = "0.0.1"
-dependencies = [
- "codespan-reporting 0.13.1",
- "lsp-server",
- "lsp-types",
- "serde",
- "serde_json",
- "string-interner",
- "wx-compiler",
-]
-
-[[package]]
 name = "wx-lsp-next"
 version = "0.0.1"
 dependencies = [

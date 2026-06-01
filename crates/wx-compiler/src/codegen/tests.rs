@@ -1339,8 +1339,7 @@ fn test_struct_pointer_load_and_store() {
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
     let mut store = wasmtime::Store::new(&engine, ());
-    let instance =
-        wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
 
     let mem = instance
         .get_memory(&mut store, "heap")
@@ -1363,9 +1362,17 @@ fn test_struct_pointer_load_and_store() {
 
     let mut buf = [0u8; 4];
     mem.read(&mut store, 0, &mut buf).unwrap();
-    assert_eq!(i32::from_le_bytes(buf), 10, "x field should be at byte offset 0");
+    assert_eq!(
+        i32::from_le_bytes(buf),
+        10,
+        "x field should be at byte offset 0"
+    );
     mem.read(&mut store, 4, &mut buf).unwrap();
-    assert_eq!(i32::from_le_bytes(buf), 20, "y field should be at byte offset 4");
+    assert_eq!(
+        i32::from_le_bytes(buf),
+        20,
+        "y field should be at byte offset 4"
+    );
 
     // Load individual fields back via wx and confirm correct values.
     assert_eq!(load_x.call(&mut store, 0).expect("load_x failed"), 10);

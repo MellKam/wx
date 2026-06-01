@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 195
 expression: case.ast
 ---
 file_id: 0
@@ -19,57 +20,50 @@ items:
                 end: 7
             type_params: []
             params:
-              open:
-                start: 7
-                end: 8
-              inner:
-                - inner:
-                    inner:
-                      mut_span: ~
-                      name:
-                        inner: 2
-                        span:
-                          start: 8
-                          end: 11
-                      ty:
-                        inner:
-                          ImplTrait:
-                            name:
-                              inner: 3
-                              span:
-                                start: 18
-                                end: 26
-                        span:
-                          start: 13
-                          end: 26
-                    span:
-                      start: 8
-                      end: 26
-                  separator:
-                    start: 26
-                    end: 27
-                - inner:
-                    inner:
-                      mut_span: ~
-                      name:
-                        inner: 4
-                        span:
-                          start: 28
-                          end: 33
-                      ty:
-                        inner:
-                          Identifier:
-                            symbol: 5
-                        span:
-                          start: 35
-                          end: 38
-                    span:
-                      start: 28
-                      end: 38
-                  separator: ~
-              close:
-                start: 38
-                end: 39
+              - inner:
+                  inner:
+                    mut_span: ~
+                    name:
+                      inner: 2
+                      span:
+                        start: 8
+                        end: 11
+                    ty:
+                      inner:
+                        ImplTrait:
+                          name:
+                            inner: 3
+                            span:
+                              start: 18
+                              end: 26
+                      span:
+                        start: 13
+                        end: 26
+                  span:
+                    start: 8
+                    end: 26
+                separator:
+                  start: 26
+                  end: 27
+              - inner:
+                  inner:
+                    mut_span: ~
+                    name:
+                      inner: 4
+                      span:
+                        start: 28
+                        end: 33
+                    ty:
+                      inner:
+                        Identifier:
+                          symbol: 5
+                      span:
+                        start: 35
+                        end: 38
+                  span:
+                    start: 28
+                    end: 38
+                separator: ~
             result:
               inner:
                 Identifier:
@@ -81,26 +75,19 @@ items:
             inner:
               Block:
                 statements:
-                  open:
-                    start: 47
-                    end: 48
-                  inner:
-                    - inner:
-                        inner:
-                          Expression:
-                            inner:
-                              Identifier:
-                                symbol: 4
-                            span:
-                              start: 53
-                              end: 58
-                        span:
-                          start: 53
-                          end: 58
-                      separator: ~
-                  close:
-                    start: 59
-                    end: 60
+                  - inner:
+                      inner:
+                        Expression:
+                          inner:
+                            Identifier:
+                              symbol: 4
+                          span:
+                            start: 53
+                            end: 58
+                      span:
+                        start: 53
+                        end: 58
+                    separator: ~
             span:
               start: 47
               end: 60

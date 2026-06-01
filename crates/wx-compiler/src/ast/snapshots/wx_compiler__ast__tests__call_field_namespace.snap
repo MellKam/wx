@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 440
 expression: case.ast
 ---
 file_id: 0
@@ -19,53 +20,46 @@ items:
                 end: 6
             type_params: []
             params:
-              open:
-                start: 6
-                end: 7
-              inner:
-                - inner:
-                    inner:
-                      mut_span: ~
-                      name:
-                        inner: 2
-                        span:
-                          start: 7
-                          end: 8
-                      ty:
-                        inner:
-                          Identifier:
-                            symbol: 3
-                        span:
-                          start: 10
-                          end: 13
-                    span:
-                      start: 7
-                      end: 13
-                  separator:
-                    start: 13
-                    end: 14
-                - inner:
-                    inner:
-                      mut_span: ~
-                      name:
-                        inner: 4
-                        span:
-                          start: 15
-                          end: 16
-                      ty:
-                        inner:
-                          Identifier:
-                            symbol: 5
-                        span:
-                          start: 18
-                          end: 23
-                    span:
-                      start: 15
-                      end: 23
-                  separator: ~
-              close:
-                start: 23
-                end: 24
+              - inner:
+                  inner:
+                    mut_span: ~
+                    name:
+                      inner: 2
+                      span:
+                        start: 7
+                        end: 8
+                    ty:
+                      inner:
+                        Identifier:
+                          symbol: 3
+                      span:
+                        start: 10
+                        end: 13
+                  span:
+                    start: 7
+                    end: 13
+                separator:
+                  start: 13
+                  end: 14
+              - inner:
+                  inner:
+                    mut_span: ~
+                    name:
+                      inner: 4
+                      span:
+                        start: 15
+                        end: 16
+                    ty:
+                      inner:
+                        Identifier:
+                          symbol: 5
+                      span:
+                        start: 18
+                        end: 23
+                  span:
+                    start: 15
+                    end: 23
+                separator: ~
             result:
               inner:
                 Identifier:
@@ -77,211 +71,204 @@ items:
             inner:
               Block:
                 statements:
-                  open:
-                    start: 32
-                    end: 33
-                  inner:
-                    - inner:
-                        inner:
-                          LocalDefinition:
-                            pattern:
-                              inner:
-                                Binding:
-                                  mut_span: ~
-                                  name:
-                                    inner: 6
-                                    span:
-                                      start: 44
-                                      end: 47
-                              span:
-                                start: 44
-                                end: 47
-                            ty: ~
-                            value:
-                              inner:
-                                Unary:
-                                  operator:
-                                    inner: InvertSign
-                                    span:
-                                      start: 52
-                                      end: 53
-                                  operand:
-                                    inner:
-                                      Identifier:
-                                        symbol: 2
-                                    span:
-                                      start: 53
-                                      end: 54
-                              span:
-                                start: 52
-                                end: 54
-                        span:
-                          start: 38
-                          end: 54
-                      separator:
-                        start: 54
-                        end: 55
-                    - inner:
-                        inner:
-                          LocalDefinition:
-                            pattern:
-                              inner:
-                                Binding:
-                                  mut_span: ~
-                                  name:
-                                    inner: 7
-                                    span:
-                                      start: 66
-                                      end: 69
-                              span:
-                                start: 66
-                                end: 69
-                            ty: ~
-                            value:
-                              inner:
-                                Unary:
-                                  operator:
-                                    inner: BitNot
-                                    span:
-                                      start: 74
-                                      end: 75
-                                  operand:
-                                    inner:
-                                      Identifier:
-                                        symbol: 2
-                                    span:
-                                      start: 75
-                                      end: 76
-                              span:
-                                start: 74
-                                end: 76
-                        span:
-                          start: 60
-                          end: 76
-                      separator:
-                        start: 76
-                        end: 77
-                    - inner:
-                        inner:
-                          LocalDefinition:
-                            pattern:
-                              inner:
-                                Binding:
-                                  mut_span: ~
-                                  name:
-                                    inner: 8
-                                    span:
-                                      start: 88
-                                      end: 93
-                              span:
-                                start: 88
-                                end: 93
-                            ty: ~
-                            value:
-                              inner:
-                                ObjectAccess:
-                                  object:
-                                    inner:
-                                      Identifier:
-                                        symbol: 4
-                                    span:
-                                      start: 96
-                                      end: 97
-                                  member:
-                                    inner: 2
-                                    span:
-                                      start: 98
-                                      end: 99
-                              span:
-                                start: 96
-                                end: 99
-                        span:
-                          start: 82
-                          end: 99
-                      separator:
-                        start: 99
-                        end: 100
-                    - inner:
-                        inner:
-                          LocalDefinition:
-                            pattern:
-                              inner:
-                                Binding:
-                                  mut_span: ~
-                                  name:
-                                    inner: 9
-                                    span:
-                                      start: 111
-                                      end: 113
-                              span:
-                                start: 111
-                                end: 113
-                            ty: ~
-                            value:
-                              inner:
-                                NamespaceAccess:
-                                  namespace:
-                                    inner:
-                                      Identifier:
-                                        symbol: 10
-                                    span:
-                                      start: 119
-                                      end: 126
-                                  member:
-                                    inner: 11
-                                    span:
-                                      start: 128
-                                      end: 131
-                              span:
-                                start: 119
-                                end: 131
-                        span:
-                          start: 105
-                          end: 131
-                      separator:
-                        start: 131
-                        end: 132
-                    - inner:
-                        inner:
-                          Expression:
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
                             inner:
-                              Call:
-                                callee:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 6
+                                  span:
+                                    start: 44
+                                    end: 47
+                            span:
+                              start: 44
+                              end: 47
+                          ty: ~
+                          value:
+                            inner:
+                              Unary:
+                                operator:
+                                  inner: InvertSign
+                                  span:
+                                    start: 52
+                                    end: 53
+                                operand:
                                   inner:
                                     Identifier:
-                                      symbol: 12
+                                      symbol: 2
                                   span:
-                                    start: 137
-                                    end: 140
-                                arguments:
-                                  - inner:
-                                      inner:
-                                        Identifier:
-                                          symbol: 8
-                                      span:
-                                        start: 141
-                                        end: 146
-                                    separator:
-                                      start: 146
-                                      end: 147
-                                  - inner:
-                                      inner:
-                                        Identifier:
-                                          symbol: 6
-                                      span:
-                                        start: 148
-                                        end: 151
-                                    separator: ~
+                                    start: 53
+                                    end: 54
                             span:
-                              start: 137
-                              end: 152
-                        span:
-                          start: 137
-                          end: 152
-                      separator: ~
-                  close:
-                    start: 153
-                    end: 154
+                              start: 52
+                              end: 54
+                      span:
+                        start: 38
+                        end: 54
+                    separator:
+                      start: 54
+                      end: 55
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 7
+                                  span:
+                                    start: 66
+                                    end: 69
+                            span:
+                              start: 66
+                              end: 69
+                          ty: ~
+                          value:
+                            inner:
+                              Unary:
+                                operator:
+                                  inner: BitNot
+                                  span:
+                                    start: 74
+                                    end: 75
+                                operand:
+                                  inner:
+                                    Identifier:
+                                      symbol: 2
+                                  span:
+                                    start: 75
+                                    end: 76
+                            span:
+                              start: 74
+                              end: 76
+                      span:
+                        start: 60
+                        end: 76
+                    separator:
+                      start: 76
+                      end: 77
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 8
+                                  span:
+                                    start: 88
+                                    end: 93
+                            span:
+                              start: 88
+                              end: 93
+                          ty: ~
+                          value:
+                            inner:
+                              ObjectAccess:
+                                object:
+                                  inner:
+                                    Identifier:
+                                      symbol: 4
+                                  span:
+                                    start: 96
+                                    end: 97
+                                member:
+                                  inner: 2
+                                  span:
+                                    start: 98
+                                    end: 99
+                            span:
+                              start: 96
+                              end: 99
+                      span:
+                        start: 82
+                        end: 99
+                    separator:
+                      start: 99
+                      end: 100
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 9
+                                  span:
+                                    start: 111
+                                    end: 113
+                            span:
+                              start: 111
+                              end: 113
+                          ty: ~
+                          value:
+                            inner:
+                              NamespaceAccess:
+                                namespace:
+                                  inner:
+                                    Identifier:
+                                      symbol: 10
+                                  span:
+                                    start: 119
+                                    end: 126
+                                member:
+                                  inner: 11
+                                  span:
+                                    start: 128
+                                    end: 131
+                            span:
+                              start: 119
+                              end: 131
+                      span:
+                        start: 105
+                        end: 131
+                    separator:
+                      start: 131
+                      end: 132
+                  - inner:
+                      inner:
+                        Expression:
+                          inner:
+                            Call:
+                              callee:
+                                inner:
+                                  Identifier:
+                                    symbol: 12
+                                span:
+                                  start: 137
+                                  end: 140
+                              arguments:
+                                - inner:
+                                    inner:
+                                      Identifier:
+                                        symbol: 8
+                                    span:
+                                      start: 141
+                                      end: 146
+                                  separator:
+                                    start: 146
+                                    end: 147
+                                - inner:
+                                    inner:
+                                      Identifier:
+                                        symbol: 6
+                                    span:
+                                      start: 148
+                                      end: 151
+                                  separator: ~
+                          span:
+                            start: 137
+                            end: 152
+                      span:
+                        start: 137
+                        end: 152
+                    separator: ~
             span:
               start: 32
               end: 154
