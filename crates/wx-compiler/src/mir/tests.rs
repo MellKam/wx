@@ -644,6 +644,107 @@ fn test_inline_attribute_on_generic_not_propagated_to_mono_instance() {
     );
 }
 
+// ── Generic struct monomorphization
+// ──────────────────────────────────────────────
+
+/// `Point<i32>` and `Point<f32>` must produce two distinct aggregates — one
+/// with `[I32, I32]` fields and one with `[F32, F32]` fields. Before the fix,
+/// both keyed on `[TypeParam{0}, TypeParam{0}]` in the aggregate cache, so the
+/// second instantiation returned the first's aggregate index, silently giving
+/// `Point<f32>` the wrong field types.
+#[test]
+fn test_generic_struct_distinct_aggregates_per_type_arg() {
+    let case = TestCase::new(indoc! {"
+        struct Point<T> {
+            x: T,
+            y: T,
+        }
+
+        fn get_x_i32(p: Point<i32>) -> i32 { p.x }
+        fn get_x_f32(p: Point<f32>) -> f32 { p.x }
+
+        export { get_x_i32, get_x_f32 }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+
+    let sig_i32 = case.mir.functions.iter().find(|f| {
+        let sig = &case.mir.signatures[f.signature_index as usize];
+        sig.result() == Type::I32
+    }).expect("get_x_i32 not found");
+    let sig_f32 = case.mir.functions.iter().find(|f| {
+        let sig = &case.mir.signatures[f.signature_index as usize];
+        sig.result() == Type::F32
+    }).expect("get_x_f32 not found");
+
+    let agg_i32 = match case.mir.signatures[sig_i32.signature_index as usize].params()[0] {
+        Type::Aggregate { aggregate_index } => aggregate_index as usize,
+        _ => panic!("expected Point<i32> to be an aggregate"),
+    };
+    let agg_f32 = match case.mir.signatures[sig_f32.signature_index as usize].params()[0] {
+        Type::Aggregate { aggregate_index } => aggregate_index as usize,
+        _ => panic!("expected Point<f32> to be an aggregate"),
+    };
+
+    assert_ne!(agg_i32, agg_f32, "Point<i32> and Point<f32> must map to distinct aggregates");
+    assert_eq!(&*case.mir.aggregates[agg_i32].values, &[Type::I32, Type::I32]);
+    assert_eq!(&*case.mir.aggregates[agg_f32].values, &[Type::F32, Type::F32]);
+}
+
+/// Constructing and accessing a field on a concrete `Point<i32>` inside a
+/// non-generic function (no outer `current_substitutions`). Verifies that the
+/// struct's own type args are used as substitutions when lowering its fields.
+#[test]
+fn test_generic_struct_init_and_field_access_concrete() {
+    let case = TestCase::new(indoc! {"
+        struct Point<T> {
+            x: T,
+            y: T,
+        }
+
+        fn run() -> i32 {
+            local p: Point<i32> = Point::<i32>::{ x: 3, y: 7 };
+            p.x
+        }
+
+        export { run }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+    assert_eq!(case.mir.functions.len(), 1);
+
+    let agg_idx = case.mir.aggregates.iter().position(|a| {
+        a.values.len() == 2 && a.values.iter().all(|&t| t == Type::I32)
+    }).expect("Point<i32> aggregate not found");
+    assert_eq!(case.mir.aggregates[agg_idx].layout.size, 8);
+}
+
+/// A generic function operating on a generic struct gets the correct aggregate
+/// when monomorphized. `get_x<i64>` takes `Box<i64>` — the aggregate should
+/// have a single `I64` field with size 8, not the TypeParam placeholder.
+#[test]
+fn test_generic_struct_in_generic_function_monomorphizes_correctly() {
+    let case = TestCase::new(indoc! {"
+        struct Box<T> {
+            value: T,
+        }
+
+        fn get_value<T>(b: Box<T>) -> T { b.value }
+
+        fn run() -> i64 {
+            local b: Box<i64> = Box::<i64>::{ value: 42 };
+            get_value(b)
+        }
+
+        export { run }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+
+    let agg = case.mir.aggregates.iter().find(|a| {
+        a.values.len() == 1 && a.values[0] == Type::I64
+    }).expect("Box<i64> aggregate with I64 field not found");
+    assert_eq!(agg.layout.size, 8);
+    assert_eq!(agg.layout.align, 8);
+}
+
 /// Mutually recursive `#[inline]` functions used to stall Kahn's algorithm:
 /// both started with `inline_callee_count == 1` so neither entered the queue.
 ///

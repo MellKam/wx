@@ -1,0 +1,214 @@
+---
+source: crates/wx-compiler/src/tir/tests.rs
+expression: case.tir
+---
+type_pool:
+  - Error
+  - Unit
+  - Never
+  - Unknown
+  - U8
+  - I8
+  - U16
+  - I16
+  - U32
+  - I32
+  - U64
+  - I64
+  - F32
+  - F64
+  - Bool
+  - Char
+  - TypeParam:
+      owner:
+        Struct: 0
+      param_index: 0
+  - Struct:
+      struct_index: 0
+      args:
+        - 9
+  - Function:
+      signature:
+        items:
+          - 17
+          - 9
+        params_count: 1
+diagnostics: []
+functions:
+  - id: 1
+    file_id: 0
+    pub_span: ~
+    source: Internal
+    origin: Free
+    type_params: []
+    signature_index: 18
+    name:
+      inner: 4
+      span:
+        start: 34
+        end: 37
+    params:
+      - mut_span: ~
+        name:
+          inner: 5
+          span:
+            start: 38
+            end: 39
+        ty:
+          inner: 17
+          span:
+            start: 41
+            end: 53
+    result:
+      inner: 9
+      span:
+        start: 58
+        end: 61
+    accesses:
+      - caller: ~
+        kind: Reference
+        file_id: 0
+        span:
+          start: 83
+          end: 86
+    attributes: []
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 5
+                  span:
+                    start: 38
+                    end: 39
+                ty: 17
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 64
+                      end: 65
+                    kind: Read
+            inferred_type: 9
+            expected_type: 9
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                ObjectAccess:
+                  object:
+                    kind:
+                      Local:
+                        scope_index: 0
+                        local_index: 0
+                    ty: 17
+                    span:
+                      start: 64
+                      end: 65
+                  member:
+                    inner: 3
+                    span:
+                      start: 66
+                      end: 71
+              ty: 9
+              span:
+                start: 64
+                end: 71
+        ty: 9
+        span:
+          start: 62
+          end: 73
+globals: []
+memories: []
+import_modules: []
+enums: []
+modules: []
+exports:
+  4:
+    Function:
+      internal_name:
+        inner: 4
+        span:
+          start: 83
+          end: 86
+      external_name: ~
+      id: 1
+structs:
+  - file_id: 0
+    pub_span: ~
+    name:
+      inner: 1
+      span:
+        start: 7
+        end: 14
+    type_params:
+      - name: 2
+        bounds: []
+    fields:
+      - name:
+          inner: 3
+          span:
+            start: 20
+            end: 25
+        ty:
+          inner: 16
+          span:
+            start: 27
+            end: 28
+    lookup:
+      3: 0
+    accesses:
+      - file_id: 0
+        span:
+          start: 41
+          end: 53
+impl_members:
+  17:
+    11:
+      AssociatedConst:
+        id: 2
+        ty: 8
+    12:
+      AssociatedConst:
+        id: 3
+        ty: 8
+traits: []
+trait_impls: []
+trait_impl_lookup: {}
+type_trait_impls: {}
+constants:
+  - id: 2
+    file_id: 0
+    pub_span: ~
+    name:
+      inner: 11
+      span:
+        start: 0
+        end: 0
+    ty:
+      inner: 8
+      span:
+        start: 0
+        end: 0
+    value: ~
+    accesses: []
+  - id: 3
+    file_id: 0
+    pub_span: ~
+    name:
+      inner: 12
+      span:
+        start: 0
+        end: 0
+    ty:
+      inner: 8
+      span:
+        start: 0
+        end: 0
+    value: ~
+    accesses: []

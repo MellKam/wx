@@ -560,7 +560,6 @@ impl MIR {
     }
 }
 
-
 /// Tracks which generic function instantiations are needed, assigning each
 /// unique `(original_def_id, type_args)` pair a fresh synthetic `DefId`.
 struct MonoRegistry {
@@ -598,7 +597,7 @@ impl MonoRegistry {
 struct Builder<'tir> {
     tir: &'tir tir::TIR,
     interner: &'tir ast::StringInterner,
-    aggregate_index_lookup: HashMap<Box<[tir::TypeIndex]>, AggregateIndex>,
+    aggregate_index_lookup: HashMap<Box<[Type]>, AggregateIndex>,
     aggregates: Vec<Aggregate>,
     /// Concrete function signatures, interned on demand. The index into this
     /// Vec is the MIR `SignatureIndex` used throughout the rest of the IR.
@@ -631,7 +630,8 @@ impl<'tir> Builder<'tir> {
     /// Fields of structs and tuples are sorted by alignment descending before
     /// computing padding, giving optimal (minimal) struct sizes.
     ///
-    /// Panics on `Error`, `Unknown`, `ImportModule`, `Enum`, or non-value types.
+    /// Panics on `Error`, `Unknown`, `ImportModule`, `Enum`, or non-value
+    /// types.
     pub fn compute_layout(&mut self, idx: tir::TypeIndex) -> Layout {
         if idx == tir::Type::F32_IDX
             || idx == tir::Type::I32_IDX
@@ -680,32 +680,30 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::Type::Tuple { elements } => {
-                let aggregate_index = self.ensure_aggregate(&elements);
+                let mir_elems: Box<[Type]> =
+                    elements.iter().map(|&e| self.lower_type_index(e)).collect();
+                let aggregate_index = self.ensure_aggregate(mir_elems);
                 self.aggregates[aggregate_index as usize].layout
             }
-            tir::Type::Struct { struct_index } => {
-                let fields: Box<[tir::TypeIndex]> = self.tir.structs[*struct_index as usize]
-                    .fields
-                    .iter()
-                    .map(|f| f.ty.inner)
-                    .collect();
-                let aggregate_index = self.ensure_aggregate(&fields);
+            tir::Type::Struct { struct_index, args } => {
+                let si = *struct_index;
+                let aggregate_index = self.ensure_aggregate_for_struct(si, args);
                 self.aggregates[aggregate_index as usize].layout
             }
             _ => unreachable!(),
         }
     }
 
-    fn ensure_aggregate(&mut self, fields: &[tir::TypeIndex]) -> AggregateIndex {
-        if let Some(&index) = self.aggregate_index_lookup.get(fields) {
+    fn ensure_aggregate(&mut self, mir_fields: Box<[Type]>) -> AggregateIndex {
+        if let Some(&index) = self.aggregate_index_lookup.get(&mir_fields) {
             return index;
         }
 
-        let mut sorted: Vec<(u32, Layout)> = fields
+        let mut sorted: Vec<(u32, Layout)> = mir_fields
             .iter()
             .copied()
             .enumerate()
-            .map(|(decl, ty)| (decl as u32, self.compute_layout(ty)))
+            .map(|(decl, ty)| (decl as u32, self.mir_type_layout(ty)))
             .collect();
         sorted.sort_by(|(_, a), (_, b)| b.align.cmp(&a.align));
 
@@ -722,21 +720,79 @@ impl<'tir> Builder<'tir> {
         }
         layout = layout.pad_to_align();
 
-        // Lower field types in physical order so AggregateGet field_index maps directly.
         let values: Box<[Type]> = sorted
             .iter()
-            .map(|&(decl, _)| self.lower_type_index(fields[decl as usize]))
+            .map(|&(decl, _)| mir_fields[decl as usize])
             .collect();
 
         let aggregate_index = self.aggregates.len() as AggregateIndex;
         self.aggregate_index_lookup
-            .insert(fields.into(), aggregate_index);
+            .insert(mir_fields, aggregate_index);
         self.aggregates.push(Aggregate {
             decl_to_phys: decl_to_phys.into_boxed_slice(),
             layout,
             offsets: offsets.into_boxed_slice(),
             values,
         });
+        aggregate_index
+    }
+
+    fn mir_type_layout(&self, ty: Type) -> Layout {
+        match ty {
+            Type::I32 | Type::U32 | Type::F32 => Layout { size: 4, align: 4 },
+            Type::I64 | Type::U64 | Type::F64 => Layout { size: 8, align: 8 },
+            Type::U8 | Type::I8 | Type::Bool => Layout { size: 1, align: 1 },
+            Type::U16 | Type::I16 => Layout { size: 2, align: 2 },
+            Type::Unit | Type::Never => Layout { size: 0, align: 1 },
+            Type::Pointer { memory } => {
+                let tir_idx = self.tir.memory_index_lookup[&memory] as usize;
+                let ptr_size = self.tir.memories[tir_idx].kind.pointer_size();
+                Layout {
+                    size: ptr_size,
+                    align: ptr_size,
+                }
+            }
+            Type::Function { .. } => Layout { size: 4, align: 4 },
+            Type::Aggregate { aggregate_index } => self.aggregates[aggregate_index as usize].layout,
+        }
+    }
+
+    /// Ensures an aggregate exists for a struct, handling generic structs by
+    /// temporarily substituting the struct's own type params from `args`.
+    fn ensure_aggregate_for_struct(
+        &mut self,
+        struct_index: u32,
+        args: &[tir::TypeIndex],
+    ) -> AggregateIndex {
+        // For generic structs, resolve TypeParam entries in args and temporarily
+        // install them as current_substitutions so lower_type_index resolves fields.
+        let saved = if !args.is_empty() {
+            let concrete_args: Box<[tir::TypeIndex]> = args
+                .iter()
+                .map(|&a| match &self.tir.type_pool[a as usize] {
+                    tir::Type::TypeParam { param_index, .. } => {
+                        self.current_substitutions[*param_index as usize]
+                    }
+                    _ => a,
+                })
+                .collect();
+            Some(std::mem::replace(
+                &mut self.current_substitutions,
+                concrete_args,
+            ))
+        } else {
+            None
+        };
+        // fields: &'tir [StructField] — lifetime tied to TIR, not to Builder
+        let fields = &self.tir.structs[struct_index as usize].fields;
+        let mir_fields: Box<[Type]> = fields
+            .iter()
+            .map(|f| self.lower_type_index(f.ty.inner))
+            .collect();
+        let aggregate_index = self.ensure_aggregate(mir_fields);
+        if let Some(saved) = saved {
+            self.current_substitutions = saved;
+        }
         aggregate_index
     }
 
@@ -769,11 +825,30 @@ impl<'tir> Builder<'tir> {
             tir::Type::Function { .. } => Type::Function {
                 signature_index: self.intern_tir_function_type(type_idx),
             },
-            tir::Type::FunctionItem { id, .. } => {
+            tir::Type::FunctionItem { id, type_args } => {
                 let fi = self.tir.function_index_lookup[&id] as usize;
                 let sig_idx = self.tir.functions[fi].signature_index;
-                Type::Function {
-                    signature_index: self.intern_tir_function_type(sig_idx),
+                if type_args.is_empty() {
+                    Type::Function {
+                        signature_index: self.intern_tir_function_type(sig_idx),
+                    }
+                } else {
+                    // Resolve any TypeParam entries in type_args through current_substitutions.
+                    let concrete_args: Box<[tir::TypeIndex]> = type_args
+                        .iter()
+                        .map(|&ty| match &self.tir.type_pool[ty as usize] {
+                            tir::Type::TypeParam { param_index, .. } => self
+                                .current_substitutions
+                                .get(*param_index as usize)
+                                .copied()
+                                .unwrap_or(ty),
+                            _ => ty,
+                        })
+                        .collect();
+                    let saved = std::mem::replace(&mut self.current_substitutions, concrete_args);
+                    let signature_index = self.intern_tir_function_type(sig_idx);
+                    self.current_substitutions = saved;
+                    Type::Function { signature_index }
                 }
             }
             tir::Type::AssocTypeProjection {
@@ -804,17 +879,14 @@ impl<'tir> Builder<'tir> {
                 },
             },
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
-            tir::Type::Struct { struct_index } => {
-                let fields: Box<[_]> = self.tir.structs[struct_index as usize]
-                    .fields
-                    .iter()
-                    .map(|f| f.ty.inner)
-                    .collect();
-                let aggregate_index = self.ensure_aggregate(&fields);
+            tir::Type::Struct { struct_index, args } => {
+                let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
                 Type::Aggregate { aggregate_index }
             }
             tir::Type::Tuple { elements } => {
-                let aggregate_index = self.ensure_aggregate(&elements);
+                let mir_elems: Box<[Type]> =
+                    elements.iter().map(|&e| self.lower_type_index(e)).collect();
+                let aggregate_index = self.ensure_aggregate(mir_elems);
                 Type::Aggregate { aggregate_index }
             }
             _ => unreachable!(),
@@ -986,10 +1058,46 @@ impl<'tir> Builder<'tir> {
                 ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::Function { id } => {
-                self.record_call_edge(*id);
-                Expression {
-                    kind: ExprKind::Function { id: *id },
-                    ty: self.lower_type_index(expr.ty),
+                // If the FunctionItem carries non-empty type_args the reference is a
+                // monomorphized generic function; register the mono instance.
+                match self.tir.type_pool[expr.ty as usize].clone() {
+                    tir::Type::FunctionItem {
+                        id: fn_id,
+                        type_args,
+                    } if !type_args.is_empty() => {
+                        let concrete_args: Box<[tir::TypeIndex]> = type_args
+                            .iter()
+                            .map(|&ty| match &self.tir.type_pool[ty as usize] {
+                                tir::Type::TypeParam { param_index, .. } => self
+                                    .current_substitutions
+                                    .get(*param_index as usize)
+                                    .copied()
+                                    .unwrap_or(ty),
+                                _ => ty,
+                            })
+                            .collect();
+                        let mono_id = self
+                            .mono_registry
+                            .get_or_insert(fn_id, concrete_args.clone());
+                        self.record_call_edge(mono_id);
+                        let fi = self.tir.function_index_lookup[&fn_id] as usize;
+                        let sig_idx = self.tir.functions[fi].signature_index;
+                        let saved =
+                            std::mem::replace(&mut self.current_substitutions, concrete_args);
+                        let signature_index = self.intern_tir_function_type(sig_idx);
+                        self.current_substitutions = saved;
+                        Expression {
+                            kind: ExprKind::Function { id: mono_id },
+                            ty: Type::Function { signature_index },
+                        }
+                    }
+                    _ => {
+                        self.record_call_edge(*id);
+                        Expression {
+                            kind: ExprKind::Function { id: *id },
+                            ty: self.lower_type_index(expr.ty),
+                        }
+                    }
                 }
             }
             tir::ExprKind::Char { value } => Expression {
@@ -1204,7 +1312,8 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Call { callee, arguments } => {
                 // Detect calls to intrinsic functions (e.g. wasm::memory32_grow).
                 // The callee is either ExprKind::Function { id } (bare reference) or
-                // ExprKind::NamespaceAccess (module member); both have ty = FunctionItem { id }.
+                // ExprKind::NamespaceAccess (module member); both have ty = FunctionItem { id
+                // }.
                 let intrinsic_id = match &self.tir.type_pool[callee.ty as usize] {
                     tir::Type::FunctionItem { id, .. } => Some(*id),
                     _ => None,
@@ -1383,16 +1492,11 @@ impl<'tir> Builder<'tir> {
                     };
                 }
 
-                let struct_index = match &self.tir.type_pool[object.ty as usize] {
-                    tir::Type::Struct { struct_index } => *struct_index,
+                let (struct_index, args) = match &self.tir.type_pool[object.ty as usize] {
+                    tir::Type::Struct { struct_index, args } => (*struct_index, args),
                     _ => unreachable!("ObjectAccess on non-struct type"),
                 };
-                let fields: Box<[_]> = self.tir.structs[struct_index as usize]
-                    .fields
-                    .iter()
-                    .map(|f| f.ty.inner)
-                    .collect();
-                let aggregate_index = self.ensure_aggregate(&fields);
+                let aggregate_index = self.ensure_aggregate_for_struct(struct_index, args);
                 let aggregate = &self.aggregates[aggregate_index as usize];
                 let decl_index = self.tir.structs[struct_index as usize].lookup[&member.inner];
                 let phys_index = aggregate.decl_to_phys[decl_index];
@@ -1441,20 +1545,15 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::StructInit { fields, .. } => {
-                let struct_index = match &self.tir.type_pool[expr.ty as usize] {
-                    tir::Type::Struct { struct_index } => *struct_index as usize,
+                let (struct_index, args) = match &self.tir.type_pool[expr.ty as usize] {
+                    tir::Type::Struct { struct_index, args } => (*struct_index, args),
                     _ => unreachable!("StructInit type must be Struct"),
                 };
-                let field_types: Vec<tir::TypeIndex> = self.tir.structs[struct_index]
-                    .fields
-                    .iter()
-                    .map(|f| f.ty.inner)
-                    .collect();
                 let lowered: Vec<Expression> = fields
                     .iter()
                     .map(|f| self.lower_expression(func_ctx, f, sink))
                     .collect();
-                let aggregate_index = self.ensure_aggregate(&field_types);
+                let aggregate_index = self.ensure_aggregate_for_struct(struct_index, args);
                 let decl_to_phys = &self.aggregates[aggregate_index as usize].decl_to_phys;
                 let mut phys_slots: Vec<Option<Expression>> =
                     (0..lowered.len()).map(|_| None).collect();
@@ -1469,15 +1568,19 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::TupleInit { elements } => {
-                let elem_types: Vec<tir::TypeIndex> = match &self.tir.type_pool[expr.ty as usize] {
-                    tir::Type::Tuple { elements } => elements.to_vec(),
+                let types: Box<[Type]> = match &self.tir.type_pool[expr.ty as usize] {
+                    tir::Type::Tuple { elements } => {
+                        let elements: Box<[Type]> =
+                            elements.iter().map(|&t| self.lower_type_index(t)).collect();
+                        elements
+                    }
                     _ => unreachable!("TupleInit type must be Tuple"),
                 };
                 let lowered: Vec<Expression> = elements
                     .iter()
-                    .map(|e| self.lower_expression(func_ctx, e, sink))
+                    .map(|expr| self.lower_expression(func_ctx, expr, sink))
                     .collect();
-                let aggregate_index = self.ensure_aggregate(&elem_types);
+                let aggregate_index = self.ensure_aggregate(types);
                 let decl_to_phys = &self.aggregates[aggregate_index as usize].decl_to_phys;
                 let mut phys_slots: Vec<Option<Expression>> =
                     (0..lowered.len()).map(|_| None).collect();

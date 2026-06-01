@@ -37,6 +37,7 @@ type_pool:
         params_count: 0
   - Struct:
       struct_index: 0
+      args: []
   - ImportModule:
       module_index: 0
 diagnostics:
@@ -224,6 +225,7 @@ structs:
       span:
         start: 11
         end: 17
+    type_params: []
     fields:
       - name:
           inner: 2

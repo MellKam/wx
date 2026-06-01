@@ -470,10 +470,7 @@ fn main_loop(
     Ok(())
 }
 
-fn compile_document(
-    files: &Files,
-    file_id: FileId,
-) -> DocumentData {
+fn compile_document(files: &Files, file_id: FileId) -> DocumentData {
     let mut interner = StringInterner::new();
     let source = &files.get(file_id).unwrap().source;
     let ast = wx_compiler::ast::Parser::parse(file_id, source, &mut interner);
@@ -593,11 +590,7 @@ fn convert_diagnostic(
     }
 }
 
-fn convert_diagnostics(
-    doc: &DocumentData,
-    uri: &Uri,
-    files: &Files,
-) -> Vec<Diagnostic> {
+fn convert_diagnostics(doc: &DocumentData, uri: &Uri, files: &Files) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     for diagnostic in &doc.ast.diagnostics {
@@ -621,11 +614,7 @@ fn convert_diagnostics(
     diagnostics
 }
 
-fn span_to_range(
-    files: &Files,
-    file_id: FileId,
-    span: Option<core::ops::Range<usize>>,
-) -> Range {
+fn span_to_range(files: &Files, file_id: FileId, span: Option<core::ops::Range<usize>>) -> Range {
     let zero = Position {
         line: 0,
         character: 0,
@@ -642,11 +631,7 @@ fn span_to_range(
     }
 }
 
-fn offset_to_position(
-    files: &Files,
-    file_id: FileId,
-    offset: u32,
-) -> Position {
+fn offset_to_position(files: &Files, file_id: FileId, offset: u32) -> Position {
     use codespan_reporting::files::Files as _;
     let offset = offset as usize;
     let line = files.line_index(file_id, offset).unwrap_or(0);
@@ -660,11 +645,7 @@ fn offset_to_position(
     }
 }
 
-fn position_to_offset(
-    files: &Files,
-    file_id: FileId,
-    position: Position,
-) -> Option<u32> {
+fn position_to_offset(files: &Files, file_id: FileId, position: Position) -> Option<u32> {
     use codespan_reporting::files::Files as _;
     let line_range = files.line_range(file_id, position.line as usize).ok()?;
     Some((line_range.start + position.character as usize) as u32)
@@ -1183,8 +1164,9 @@ fn namespace_member_completions(
     items
 }
 
-/// Returns the namespace name if the cursor is immediately after `name::` (or `name::partial`).
-/// Only looks within the current line to avoid false positives.
+/// Returns the namespace name if the cursor is immediately after `name::` (or
+/// `name::partial`). Only looks within the current line to avoid false
+/// positives.
 fn namespace_prefix_at(source: &str, offset: u32) -> Option<&str> {
     let before = &source[..offset as usize];
     let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
@@ -1327,7 +1309,8 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
         });
     }
 
-    // Collect local/param names if cursor is inside a function (they shadow globals)
+    // Collect local/param names if cursor is inside a function (they shadow
+    // globals)
     let mut shadowed_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut local_items = Vec::new();
 
@@ -1379,7 +1362,8 @@ fn handle_completion(state: &ServerState, params: &CompletionParams) -> Option<C
         }
     }
 
-    // Add global variables, skipping any shadowed by a local/param in the current scope
+    // Add global variables, skipping any shadowed by a local/param in the current
+    // scope
     for global in tir.defined_globals.values() {
         let name = doc.interner.resolve(global.name.inner).unwrap();
         if shadowed_names.contains(name) {
@@ -1441,7 +1425,8 @@ fn handle_signature_help(
     // Extract function name and find it in the TIR
     let func_name_str = &source[func_name_start..func_name_end];
 
-    // Check for a namespace prefix immediately before the function name (e.g. `console::log`)
+    // Check for a namespace prefix immediately before the function name (e.g.
+    // `console::log`)
     let namespace_str = source[..func_name_start]
         .strip_suffix("::")
         .and_then(|before| {
@@ -1463,7 +1448,8 @@ fn handle_signature_help(
         }
     };
 
-    // Look up the function — either a namespace import or a locally defined function
+    // Look up the function — either a namespace import or a locally defined
+    // function
     let (params, return_type, display_name): (Vec<_>, String, String) =
         if let Some(ns_name) = namespace_str {
             // Find the matching import module namespace

@@ -7,6 +7,10 @@ use string_interner::symbol::SymbolU32;
 use crate::ast::{self, DefId, Separated, Spanned, TextSpan};
 use crate::vfs::{CompilationGraph, FileId};
 
+mod builder;
+#[cfg(test)]
+mod tests;
+
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Clone, Copy, PartialEq)]
@@ -80,6 +84,9 @@ pub enum Type {
     },
     Struct {
         struct_index: u32,
+        /// Empty for non-generic structs; populated when instantiated with concrete
+        /// type args, e.g. `Point<i32>` → `args = [i32_idx]`.
+        args: Box<[TypeIndex]>,
     },
     Function {
         signature: FunctionSignature,
@@ -872,6 +879,7 @@ define_diagnostic_codes! {
         CannotDerefNonPointer => "E1037",
         NoMemoryForPointer => "E1038",
         AmbiguousPointerMemory => "E1039",
+        TypeArgCountMismatch => "E1040",
     }
 }
 
@@ -901,6 +909,8 @@ pub struct Struct {
     pub file_id: FileId,
     pub pub_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
+    /// Empty for non-generic structs.
+    pub type_params: Box<[TypeParamInfo]>,
     pub fields: Box<[StructField]>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, usize>,
@@ -1004,22 +1014,31 @@ impl<'a> TypeFormatter<'a> {
                 self.write_type(f, of);
             }
             Type::Tuple { elements } => {
-                let elements: Vec<TypeIndex> = elements.iter().copied().collect();
                 f.write_char('(').unwrap();
-                for (i, e) in elements.iter().enumerate() {
+                for (i, &e) in elements.iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ").unwrap();
                     }
-                    self.write_type(f, *e);
+                    self.write_type(f, e);
                 }
                 f.write_char(')').unwrap();
             }
-            Type::Struct { struct_index } => {
+            Type::Struct { struct_index, args } => {
                 let name = self
                     .interner
                     .resolve(self.tir.structs[*struct_index as usize].name.inner)
                     .unwrap();
                 f.write_str(name).unwrap();
+                if !args.is_empty() {
+                    f.write_char('<').unwrap();
+                    for (i, &a) in args.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(", ").unwrap();
+                        }
+                        self.write_type(f, a);
+                    }
+                    f.write_char('>').unwrap();
+                }
             }
             Type::ImportModule { module_index } => {
                 let module = &self.tir.import_modules[*module_index as usize];
@@ -1056,10 +1075,9 @@ impl<'a> TypeFormatter<'a> {
                 f.write_str(name).unwrap();
             }
             Type::Function { signature } => {
-                let params: Vec<TypeIndex> = signature.params().iter().copied().collect();
                 let result = signature.result();
                 f.write_str("fn(").unwrap();
-                for (i, &p) in params.iter().enumerate() {
+                for (i, &p) in signature.params().iter().enumerate() {
                     if i > 0 {
                         f.write_str(", ").unwrap();
                     }
@@ -1095,7 +1113,10 @@ impl<'a> TypeFormatter<'a> {
                         let fi = self.tir.function_index_lookup[def_id] as usize;
                         self.tir.functions[fi].type_params[*param_index as usize].name
                     }
-                    TypeParamOwner::Struct(_) => todo!("struct type parameters not supported yet"),
+                    TypeParamOwner::Struct(def_id) => {
+                        let si = self.tir.struct_index_lookup[def_id] as usize;
+                        self.tir.structs[si].type_params[*param_index as usize].name
+                    }
                 };
                 f.write_str(self.interner.resolve(symbol).unwrap()).unwrap();
             }
@@ -1137,6 +1158,8 @@ pub struct TIR {
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub exports: HashMap<SymbolU32, ExportItem>,
     pub structs: Vec<Struct>,
+    #[cfg_attr(test, serde(skip))]
+    pub struct_index_lookup: HashMap<ast::DefId, u32>,
     #[cfg_attr(
         test,
         serde(serialize_with = "crate::testing::serialize_sorted_nested_map")
@@ -1162,7 +1185,3 @@ impl TIR {
         builder::build(compilation, interner)
     }
 }
-
-pub mod builder;
-#[cfg(test)]
-mod tests;

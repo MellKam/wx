@@ -957,7 +957,7 @@ fn test_struct_fields_kept_in_declaration_order() {
         .type_pool
         .iter()
         .find_map(|t| {
-            if let Type::Struct { struct_index } = t {
+            if let Type::Struct { struct_index, .. } = t {
                 if case.tir.structs[*struct_index as usize].name.inner == mixed_sym {
                     Some(*struct_index)
                 } else {
@@ -1837,6 +1837,109 @@ fn test_struct_cycle_does_not_prevent_other_structs_from_resolving() {
             .iter()
             .any(|d| d.code.as_deref() == Some("E1021")),
         "Good struct should still resolve despite Bad being cyclic"
+    );
+}
+
+// ── Generic structs ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_generic_struct_definition_stores_type_params() {
+    let case = TestCase::new(indoc! {"
+        struct Point<T> { x: T, y: T }
+    "});
+    let errors: Vec<_> = case.tir.diagnostics.iter().filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error).collect();
+    assert!(errors.is_empty(), "{:?}", errors);
+    let s = case.tir.structs.iter()
+        .find(|s| case.interner.resolve(s.name.inner) == Some("Point"))
+        .expect("Point struct not found");
+    assert_eq!(s.type_params.len(), 1);
+}
+
+#[test]
+fn test_generic_struct_field_type_is_type_param() {
+    let case = TestCase::new(indoc! {"
+        struct Wrapper<T> { value: T }
+    "});
+    let errors: Vec<_> = case.tir.diagnostics.iter().filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error).collect();
+    assert!(errors.is_empty(), "{:?}", errors);
+    let s = case.tir.structs.iter()
+        .find(|s| case.interner.resolve(s.name.inner) == Some("Wrapper"))
+        .expect("Wrapper struct not found");
+    // Field `value` should have type TypeParam { param_index: 0 }.
+    assert!(
+        matches!(
+            case.tir.type_pool[s.fields[0].ty.inner as usize],
+            Type::TypeParam { param_index: 0, .. }
+        ),
+        "expected TypeParam, got {:?}",
+        case.tir.type_pool[s.fields[0].ty.inner as usize]
+    );
+}
+
+#[test]
+fn test_generic_struct_in_type_position_resolves() {
+    let case = TestCase::new(indoc! {"
+        struct Wrapper<T> { value: T }
+        fn get(w: Wrapper<i32>) -> i32 { w.value }
+        export { get }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+    insta::assert_yaml_snapshot!(case.tir);
+}
+
+#[test]
+fn test_generic_struct_init_with_type_args() {
+    let case = TestCase::new(indoc! {"
+        struct Pair<T> { first: T, second: T }
+        fn make() -> Pair<i32> {
+            Pair::<i32>::{ first: 1, second: 2 }
+        }
+        export { make }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+    insta::assert_yaml_snapshot!(case.tir);
+}
+
+#[test]
+fn test_generic_struct_field_access_substitutes_type() {
+    let case = TestCase::new(indoc! {"
+        struct Wrapper<T> { value: T }
+        fn get_i32(w: Wrapper<i32>) -> i32 { w.value }
+        fn get_f64(w: Wrapper<f64>) -> f64 { w.value }
+        export { get_i32, get_f64 }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+}
+
+#[test]
+fn test_generic_struct_wrong_type_arg_count_is_error() {
+    let case = TestCase::new(indoc! {"
+        struct Point<T> { x: T, y: T }
+        fn bad(p: Point<i32, f64>) -> i32 { p.x }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1040")),
+        "expected E1040 for wrong type arg count"
+    );
+}
+
+#[test]
+fn test_generic_struct_init_wrong_type_arg_count_is_error() {
+    let case = TestCase::new(indoc! {"
+        struct Wrapper<T> { value: T }
+        fn bad() -> Wrapper<i32> {
+            Wrapper::<i32, f64>::{ value: 1 }
+        }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1040")),
+        "expected E1040 for wrong type arg count in init"
     );
 }
 
@@ -2755,6 +2858,56 @@ fn test_function_item_wrong_signature_is_error() {
         &case,
         "type mismatch: add (fn(i32,i32)->i32) passed where fn(i32)->i32 expected",
     );
+}
+
+// ── Type application expressions ─────────────────────────────────────────────
+
+#[test]
+fn test_type_application_coerces_to_fn_pointer() {
+    // `identity::<i32>` must coerce to `fn(i32) -> i32`.
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T { t }
+        fn main() {
+            local f: fn(i32) -> i32 = identity::<i32>
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_type_application_wrong_arg_count_is_error() {
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T { t }
+        fn main() {
+            local f = identity::<i32, i64>
+        }
+    "});
+    has_error_matching(&case, "expected 1 type argument");
+}
+
+#[test]
+fn test_type_application_on_non_generic_is_error() {
+    let case = TestCase::new(indoc! {"
+        fn add(a: i32, b: i32) -> i32 { a + b }
+        fn main() {
+            local f = add::<i32>
+        }
+    "});
+    has_error_matching(&case, "function is not generic");
+}
+
+#[test]
+fn test_type_application_in_if_else_unifies() {
+    // Two distinct generic instantiations with the same signature unify.
+    let case = TestCase::new(indoc! {"
+        fn identity<T>(t: T) -> T { t }
+        fn wrap<T>(t: T) -> T { t }
+        fn main() -> fn(i32) -> i32 {
+            local f: fn(i32) -> i32 = if true { identity::<i32> } else { wrap::<i32> }
+            f
+        }
+    "});
+    no_errors(&case);
 }
 
 // ── Pointer dereference ──────────────────────────────────────────────────────

@@ -3,6 +3,9 @@ use string_interner::symbol::SymbolU32;
 
 use crate::vfs::FileId;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Copy, Clone, PartialEq)]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -2416,7 +2419,10 @@ impl<'input> Parser<'input> {
             _ => (None, Box::new(ty)),
         };
 
-        let span = TextSpan::new(name.clone().map(|n| n.span).unwrap_or(ty.span).start, ty.span.end);
+        let span = TextSpan::new(
+            name.clone().map(|n| n.span).unwrap_or(ty.span).start,
+            ty.span.end,
+        );
         Ok(Spanned {
             inner: FunctionTypeParam { name, ty },
             span,
@@ -4444,6 +4450,3 @@ impl<'input> Parser<'input> {
         })
     }
 }
-
-#[cfg(test)]
-mod tests;

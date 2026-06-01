@@ -2,6 +2,9 @@ use string_interner::symbol::SymbolU32;
 
 use crate::ast::*;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 enum Node {
     /// A static text fragment that never requires allocation
@@ -1210,7 +1213,11 @@ impl Builder {
             Statement::Expression(expression) => {
                 Self::build_expression(interner, source, expression)
             }
-            Statement::LocalDefinition { pattern, ty: type_annotation, value } => {
+            Statement::LocalDefinition {
+                pattern,
+                ty: type_annotation,
+                value,
+            } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("local "));
                 Self::build_pattern(&mut items, interner, &pattern.inner);
@@ -1568,6 +1575,3 @@ pub fn format(
     let renderer = Renderer::new(config, interner, source);
     renderer.render(&root)
 }
-
-#[cfg(test)]
-mod tests;

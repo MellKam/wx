@@ -21,6 +21,7 @@ type_pool:
   - Char
   - Struct:
       struct_index: 0
+      args: []
   - Function:
       signature:
         items:
@@ -132,6 +133,7 @@ structs:
       span:
         start: 7
         end: 10
+    type_params: []
     fields:
       - name:
           inner: 2

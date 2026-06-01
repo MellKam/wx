@@ -19,13 +19,18 @@ type_pool:
   - F64
   - Bool
   - Char
+  - TypeParam:
+      owner:
+        Struct: 0
+      param_index: 0
   - Struct:
       struct_index: 0
-      args: []
+      args:
+        - 9
   - Function:
       signature:
         items:
-          - 16
+          - 17
         params_count: 0
 diagnostics: []
 functions:
@@ -35,25 +40,25 @@ functions:
     source: Internal
     origin: Free
     type_params: []
-    signature_index: 17
+    signature_index: 18
     name:
       inner: 5
       span:
-        start: 53
-        end: 57
+        start: 42
+        end: 46
     params: []
     result:
-      inner: 16
+      inner: 17
       span:
-        start: 63
-        end: 68
+        start: 52
+        end: 61
     accesses:
       - caller: ~
         kind: Reference
         file_id: 0
         span:
-          start: 109
-          end: 113
+          start: 116
+          end: 120
     attributes: []
     body:
       stack:
@@ -62,8 +67,8 @@ functions:
             label: ~
             parent: ~
             locals: []
-            inferred_type: 16
-            expected_type: 16
+            inferred_type: 17
+            expected_type: 17
       block:
         kind:
           Block:
@@ -79,23 +84,23 @@ functions:
                           value: 1
                       ty: 9
                       span:
-                        start: 87
-                        end: 88
+                        start: 90
+                        end: 91
                     - kind:
                         Int:
                           value: 2
                       ty: 9
                       span:
-                        start: 93
-                        end: 94
-              ty: 16
+                        start: 101
+                        end: 102
+              ty: 17
               span:
-                start: 75
-                end: 96
-        ty: 16
+                start: 68
+                end: 104
+        ty: 17
         span:
-          start: 69
-          end: 98
+          start: 62
+          end: 106
 globals: []
 memories: []
 import_modules: []
@@ -107,8 +112,8 @@ exports:
       internal_name:
         inner: 5
         span:
-          start: 109
-          end: 113
+          start: 116
+          end: 120
       external_name: ~
       id: 1
 structs:
@@ -118,41 +123,43 @@ structs:
       inner: 1
       span:
         start: 7
-        end: 12
-    type_params: []
+        end: 11
+    type_params:
+      - name: 2
+        bounds: []
     fields:
       - name:
-          inner: 2
+          inner: 3
           span:
-            start: 23
-            end: 24
+            start: 17
+            end: 22
         ty:
-          inner: 9
+          inner: 16
           span:
-            start: 26
-            end: 29
+            start: 24
+            end: 25
       - name:
           inner: 4
           span:
-            start: 39
-            end: 40
+            start: 27
+            end: 33
         ty:
-          inner: 9
+          inner: 16
           span:
-            start: 42
-            end: 45
+            start: 35
+            end: 36
     lookup:
-      2: 0
+      3: 0
       4: 1
     accesses:
       - file_id: 0
         span:
-          start: 63
-          end: 68
+          start: 52
+          end: 61
       - file_id: 0
         span:
-          start: 75
-          end: 80
+          start: 68
+          end: 72
 impl_members: {}
 traits: []
 trait_impls: []

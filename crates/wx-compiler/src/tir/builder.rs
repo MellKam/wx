@@ -226,21 +226,30 @@ impl ResolveContext {
     }
 
     fn with_type_param_scope(&self, scope: TypeParamScope) -> Self {
-        let mut next = self.clone();
-        next.type_param_scope = Some(scope);
-        next
+        Self {
+            file_id: self.file_id,
+            module: self.module,
+            self_type: self.self_type,
+            type_param_scope: Some(scope),
+        }
     }
 
     fn in_module(&self, module: ModuleIndex) -> Self {
-        let mut next = self.clone();
-        next.module = Some(module);
-        next
+        Self {
+            file_id: self.file_id,
+            module: Some(module),
+            self_type: self.self_type,
+            type_param_scope: self.type_param_scope.clone(),
+        }
     }
 
     fn with_self_type(&self, self_type: Option<TypeIndex>) -> Self {
-        let mut next = self.clone();
-        next.self_type = self_type;
-        next
+        Self {
+            file_id: self.file_id,
+            module: self.module,
+            self_type,
+            type_param_scope: self.type_param_scope.clone(),
+        }
     }
 }
 
@@ -1101,6 +1110,7 @@ pub fn build(compilation: &CompilationGraph, interner: &mut ast::StringInterner)
         function_index_lookup: HashMap::new(),
         global_index_lookup: HashMap::new(),
         memory_index_lookup: HashMap::new(),
+        struct_index_lookup: HashMap::new(),
         constants: Vec::new(),
         const_index_lookup: HashMap::new(),
     };
@@ -1211,11 +1221,24 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    pub fn coercible_to(&self, a: TypeIndex, b: TypeIndex) -> bool {
-        a == b || a == Type::NEVER_IDX || a == Type::ERROR_IDX || b == Type::ERROR_IDX
+    pub fn coercible_to(&mut self, a: TypeIndex, b: TypeIndex) -> bool {
+        if a == b || a == Type::NEVER_IDX || a == Type::ERROR_IDX || b == Type::ERROR_IDX {
+            return true;
+        }
+        // FunctionItem coerces implicitly to its matching Function type.
+        let (id, type_args) = match &self.tir.type_pool[a as usize] {
+            Type::FunctionItem { id, type_args } => (*id, type_args.clone()),
+            _ => return false,
+        };
+        if !matches!(self.tir.type_pool[b as usize], Type::Function { .. }) {
+            return false;
+        }
+        let fi = self.tir.function_index_lookup[&id] as usize;
+        let generic_sig = self.tir.functions[fi].signature_index;
+        self.substitute_type(generic_sig, &type_args) == b
     }
 
-    fn unify(&self, a: TypeIndex, b: TypeIndex) -> Result<TypeIndex, ()> {
+    fn unify(&mut self, a: TypeIndex, b: TypeIndex) -> Result<TypeIndex, ()> {
         if a == b {
             return Ok(a);
         }
@@ -1227,6 +1250,34 @@ impl<'ast> Builder<'ast, '_> {
         }
         if a == Type::ERROR_IDX || b == Type::ERROR_IDX {
             return Ok(Type::ERROR_IDX);
+        }
+        // Two FunctionItems (generic or not) unify to their common concrete Function
+        // type. Handles: `if cond { fn_a } else { fn_b }` and `if cond {
+        // f::<i32> } else { g::<i32> }`.
+        if let (
+            &Type::FunctionItem {
+                id: a_id,
+                type_args: ref a_args,
+            },
+            &Type::FunctionItem {
+                id: b_id,
+                type_args: ref b_args,
+            },
+        ) = (
+            &self.tir.type_pool[a as usize],
+            &self.tir.type_pool[b as usize],
+        ) {
+            let a_args = a_args.clone();
+            let b_args = b_args.clone();
+            let a_sig =
+                self.tir.functions[self.tir.function_index_lookup[&a_id] as usize].signature_index;
+            let b_sig =
+                self.tir.functions[self.tir.function_index_lookup[&b_id] as usize].signature_index;
+            let concrete_a = self.substitute_type(a_sig, &a_args);
+            let concrete_b = self.substitute_type(b_sig, &b_args);
+            if concrete_a == concrete_b {
+                return Ok(concrete_a);
+            }
         }
         Err(())
     }
@@ -1352,9 +1403,10 @@ impl<'ast> Builder<'ast, '_> {
                 Some(self.intern_type(Type::Module { module_index }))
             }
             SymbolKind::Enum { enum_index } => Some(self.intern_type(Type::Enum { enum_index })),
-            SymbolKind::Struct { struct_index } => {
-                Some(self.intern_type(Type::Struct { struct_index }))
-            }
+            SymbolKind::Struct { struct_index } => Some(self.intern_type(Type::Struct {
+                struct_index,
+                args: Box::new([]),
+            })),
             SymbolKind::Const { const_index } => {
                 let constant = &self.tir.constants[const_index as usize];
                 Some(constant.ty.inner)
@@ -1422,7 +1474,7 @@ impl<'ast> Builder<'ast, '_> {
                             }
                             Some(kind) => {
                                 if let Some(ty) = self.symbol_kind_to_type(kind) {
-                                    if let Type::Struct { struct_index } =
+                                    if let Type::Struct { struct_index, .. } =
                                         self.tir.type_pool[ty as usize]
                                     {
                                         self.tir.structs[struct_index as usize].accesses.push(
@@ -1449,7 +1501,9 @@ impl<'ast> Builder<'ast, '_> {
                     }
                     Some(kind) => {
                         if let Some(ty) = self.symbol_kind_to_type(kind) {
-                            if let Type::Struct { struct_index } = self.tir.type_pool[ty as usize] {
+                            if let Type::Struct { struct_index, .. } =
+                                self.tir.type_pool[ty as usize]
+                            {
                                 self.tir.structs[struct_index as usize]
                                     .accesses
                                     .push(SourceSpan::new(resolve_context.file_id, type_expr.span));
@@ -1738,25 +1792,93 @@ impl<'ast> Builder<'ast, '_> {
                 }
             }
             ast::TypeExpression::GenericApplication { name, args } => {
-                // TODO: resolve as the correct generic type (struct or trait) and
-                // validate that binding args are only used with traits.
-                let base = Spanned {
-                    inner: ast::TypeExpression::Identifier { symbol: name.inner },
-                    span: name.span,
-                };
-                let base_ty = self.resolve_type(resolve_context, &base);
-                // Eagerly resolve all arg types to surface undeclared-type errors.
-                for sep in args.iter() {
-                    match &sep.inner.inner {
-                        ast::GenericArg::Type(ty) => {
-                            self.resolve_type(resolve_context, ty);
+                match self
+                    .lookup_symbol(resolve_context, SymbolNamespace::Type, name.inner)
+                    .copied()
+                {
+                    Some(SymbolKind::Pending(def_id)) => {
+                        self.ensure_signature(def_id);
+                    }
+                    _ => {}
+                }
+                match self
+                    .lookup_symbol(resolve_context, SymbolNamespace::Type, name.inner)
+                    .copied()
+                {
+                    Some(SymbolKind::Struct { struct_index }) => {
+                        let type_params_len =
+                            self.tir.structs[struct_index as usize].type_params.len();
+                        let positional_args: Box<[TypeIndex]> = args
+                            .iter()
+                            .filter_map(|sep| match &sep.inner.inner {
+                                ast::GenericArg::Type(ty) => {
+                                    Some(self.resolve_type(resolve_context, ty))
+                                }
+                                ast::GenericArg::Binding { ty, .. } => {
+                                    // Binding args are trait-specific; report error for structs.
+                                    self.tir.diagnostics.push(
+                                        Diagnostic::error()
+                                            .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                                            .with_message(
+                                                "associated-type bindings are not valid in struct type arguments",
+                                            )
+                                            .with_label(Label::primary(
+                                                resolve_context.file_id,
+                                                ty.span,
+                                            )),
+                                    );
+                                    None
+                                }
+                            })
+                            .collect();
+                        if positional_args.len() != type_params_len {
+                            let struct_name =
+                                self.interner.resolve(name.inner).unwrap_or("?").to_string();
+                            self.tir.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                                    .with_message(format!(
+                                        "`{}` expects {} type argument{}, found {}",
+                                        struct_name,
+                                        type_params_len,
+                                        if type_params_len == 1 { "" } else { "s" },
+                                        positional_args.len(),
+                                    ))
+                                    .with_label(Label::primary(
+                                        resolve_context.file_id,
+                                        type_expr.span,
+                                    )),
+                            );
+                            return Type::ERROR_IDX;
                         }
-                        ast::GenericArg::Binding { ty, .. } => {
-                            self.resolve_type(resolve_context, ty);
+                        self.tir.structs[struct_index as usize]
+                            .accesses
+                            .push(SourceSpan::new(resolve_context.file_id, type_expr.span));
+                        self.intern_type(Type::Struct {
+                            struct_index,
+                            args: positional_args,
+                        })
+                    }
+                    _ => {
+                        // Not a struct — resolve as bare identifier and surface any errors.
+                        // Eagerly resolve arg types to surface undeclared-type errors.
+                        for sep in args.iter() {
+                            match &sep.inner.inner {
+                                ast::GenericArg::Type(ty) => {
+                                    self.resolve_type(resolve_context, ty);
+                                }
+                                ast::GenericArg::Binding { ty, .. } => {
+                                    self.resolve_type(resolve_context, ty);
+                                }
+                            }
                         }
+                        let base = Spanned {
+                            inner: ast::TypeExpression::Identifier { symbol: name.inner },
+                            span: name.span,
+                        };
+                        self.resolve_type(resolve_context, &base)
                     }
                 }
-                base_ty
             }
         }
     }
@@ -1789,7 +1911,17 @@ impl<'ast> Builder<'ast, '_> {
                 })
                 .map(|tp| tp.bounds.as_ref())
                 .unwrap_or(&[]),
-            TypeParamOwner::Struct(_) => unreachable!(),
+            TypeParamOwner::Struct(def_id) => self
+                .tir
+                .struct_index_lookup
+                .get(&def_id)
+                .and_then(|&struct_index| {
+                    self.tir.structs[struct_index as usize]
+                        .type_params
+                        .get(param_index as usize)
+                })
+                .map(|tp| tp.bounds.as_ref())
+                .unwrap_or(&[]),
         }
     }
 
@@ -2278,14 +2410,14 @@ impl<'ast> Builder<'ast, '_> {
         match node.clone() {
             // ── struct ────────────────────────────────────────────────────────
             AstNodeRef::Struct { item, .. } => {
-                let (id, pub_span, name, fields) = match item {
+                let (id, pub_span, name, ast_type_params, fields) = match item {
                     ast::Item::Struct {
                         id,
                         pub_span,
                         name,
+                        type_params,
                         fields,
-                        ..
-                    } => (id, pub_span, name, fields),
+                    } => (id, pub_span, name, type_params, fields),
                     _ => unreachable!(),
                 };
                 // Duplicate check.
@@ -2315,11 +2447,26 @@ impl<'ast> Builder<'ast, '_> {
                     return;
                 }
 
+                // Resolve type params, then build a resolve context that lets field
+                // types reference those params by name.
+                let type_params = self.resolve_ast_type_params(&resolve_context, &ast_type_params);
+                let field_resolve_context = if type_params.is_empty() {
+                    resolve_context.clone()
+                } else {
+                    resolve_context.with_type_param_scope(TypeParamScope {
+                        owner: TypeParamOwner::Struct(*id),
+                        params: type_params.clone(),
+                    })
+                };
+
                 // Resolve all field types (may recursively call ensure_signature for
                 // referenced structs; cycles are detected via InProgress state).
-                let mut seen_fields: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
-                let mut tir_fields: Vec<StructField> = Vec::new();
-                let mut field_lookup: HashMap<SymbolU32, usize> = HashMap::new();
+                let field_count = fields.len();
+                let mut seen_fields: HashMap<SymbolU32, ast::TextSpan> =
+                    HashMap::with_capacity(field_count);
+                let mut tir_fields: Vec<StructField> = Vec::with_capacity(field_count);
+                let mut field_lookup: HashMap<SymbolU32, usize> =
+                    HashMap::with_capacity(field_count);
 
                 for f in fields.iter() {
                     let field = &f.inner.inner;
@@ -2333,7 +2480,7 @@ impl<'ast> Builder<'ast, '_> {
                         ));
                         continue;
                     }
-                    let field_ty = self.resolve_type(&resolve_context, &field.ty);
+                    let field_ty = self.resolve_type(&field_resolve_context, &field.ty);
                     seen_fields.insert(sym, field.name.span);
                     let idx = tir_fields.len();
                     field_lookup.insert(sym, idx);
@@ -2347,10 +2494,12 @@ impl<'ast> Builder<'ast, '_> {
                 }
 
                 let struct_index = self.tir.structs.len() as u32;
+                self.tir.struct_index_lookup.insert(*id, struct_index);
                 self.tir.structs.push(Struct {
                     file_id: self.file_id,
                     pub_span: *pub_span,
                     name: name.clone(),
+                    type_params,
                     fields: tir_fields.into_boxed_slice(),
                     lookup: field_lookup,
                     accesses: Vec::new(),
@@ -3771,6 +3920,28 @@ impl<'ast> Builder<'ast, '_> {
                     ty
                 }
             }
+            Type::Struct {
+                struct_index,
+                args: struct_args,
+            } if !struct_args.is_empty() => {
+                let mut changed = false;
+                let substituted: Box<[TypeIndex]> = struct_args
+                    .iter()
+                    .map(|&a| {
+                        let next = self.substitute_type(a, type_args);
+                        changed |= next != a;
+                        next
+                    })
+                    .collect();
+                if changed {
+                    self.intern_type(Type::Struct {
+                        struct_index,
+                        args: substituted,
+                    })
+                } else {
+                    ty
+                }
+            }
             Type::FunctionItem {
                 id,
                 type_args: item_args,
@@ -4916,6 +5087,7 @@ impl<'ast> Builder<'ast, '_> {
                         Some(SymbolKind::Struct { struct_index }) => {
                             self.intern_type(Type::Struct {
                                 struct_index: *struct_index,
+                                args: Box::new([]),
                             })
                         }
                         _ => panic!("built-in string struct should be defined"),
@@ -5050,16 +5222,19 @@ impl<'ast> Builder<'ast, '_> {
                         });
                     }
                 };
-                let _ = explicit_type_args; // TODO: use for generic struct init
-                self.build_struct_init_expression(func_ctx, expr.span, struct_name, &fields)
+                self.build_struct_init_expression(
+                    func_ctx,
+                    expr.span,
+                    struct_name,
+                    explicit_type_args,
+                    &fields,
+                )
             }
             ast::Expression::Tuple { elements } => {
                 self.build_tuple_expression(func_ctx, expr.span, elements, access_ctx)
             }
-            // Type args are stored for future monomorphization; TIR resolves the
-            // inner callee and treats the call as non-generic until mono pass.
-            ast::Expression::TypeApplication { callee, .. } => {
-                self.build_expression(func_ctx, access_ctx, callee)
+            ast::Expression::TypeApplication { callee, args } => {
+                self.build_type_application_expression(func_ctx, callee, args, expr.span)
             }
         }
     }
@@ -5132,14 +5307,20 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         // Check struct fields
-        if let Type::Struct { struct_index } = &self.tir.type_pool[object.ty as usize] {
-            if let Some(&field_index) = self.tir.structs[*struct_index as usize]
+        if let Type::Struct { struct_index, args } = self.tir.type_pool[object.ty as usize].clone()
+        {
+            if let Some(&field_index) = self.tir.structs[struct_index as usize]
                 .lookup
                 .get(&member.inner)
             {
-                let field_ty = self.tir.structs[*struct_index as usize].fields[field_index]
+                let raw_field_ty = self.tir.structs[struct_index as usize].fields[field_index]
                     .ty
                     .inner;
+                let field_ty = if args.is_empty() {
+                    raw_field_ty
+                } else {
+                    self.substitute_type(raw_field_ty, &args)
+                };
                 return Ok(Expression {
                     kind: ExprKind::ObjectAccess {
                         object: Box::new(object),
@@ -6131,6 +6312,117 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
         }
+    }
+
+    fn build_type_application_expression(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        callee: &Spanned<ast::Expression>,
+        args: &[Spanned<ast::TypeExpression>],
+        expr_span: ast::TextSpan,
+    ) -> Result<Expression, ()> {
+        // Only a bare identifier callee is supported: `fn_name::<T1, T2>`.
+        let ast::Expression::Identifier { symbol } = callee.inner else {
+            // Anything more complex (namespace access, etc.) falls back to the
+            // callee-only path; the args are ignored.
+            return self.build_expression(
+                func_ctx,
+                AccessContext {
+                    expected_type: None,
+                    access_kind: AccessKind::Read,
+                },
+                callee,
+            );
+        };
+
+        let func_index = match self
+            .lookup_symbol(&func_ctx.resolve_context, SymbolNamespace::Value, symbol)
+            .filter(|k| !matches!(k, SymbolKind::Pending(_)))
+            .cloned()
+        {
+            Some(SymbolKind::Function { func_index }) => func_index,
+            _ => {
+                // Not a generic function — let the identifier path handle the error.
+                return self.build_expression(
+                    func_ctx,
+                    AccessContext {
+                        expected_type: None,
+                        access_kind: AccessKind::Read,
+                    },
+                    callee,
+                );
+            }
+        };
+
+        let type_params_len = self.tir.functions[func_index as usize].type_params.len();
+        if type_params_len == 0 {
+            self.tir.diagnostics.push(
+                Diagnostic::error()
+                    .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                    .with_message("function is not generic")
+                    .with_label(
+                        SourceSpan::new(self.file_id, expr_span)
+                            .primary_label()
+                            .with_message(
+                                "type arguments provided but this function has no type parameters",
+                            ),
+                    ),
+            );
+            return Ok(Expression {
+                kind: ExprKind::Error,
+                ty: Type::ERROR_IDX,
+                span: expr_span,
+            });
+        }
+
+        if args.len() != type_params_len {
+            self.tir.diagnostics.push(
+                Diagnostic::error()
+                    .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                    .with_message(format!(
+                        "expected {} type argument{}, found {}",
+                        type_params_len,
+                        if type_params_len == 1 { "" } else { "s" },
+                        args.len()
+                    ))
+                    .with_label(
+                        SourceSpan::new(self.file_id, expr_span)
+                            .primary_label()
+                            .with_message("wrong number of type arguments"),
+                    ),
+            );
+            return Ok(Expression {
+                kind: ExprKind::Error,
+                ty: Type::ERROR_IDX,
+                span: expr_span,
+            });
+        }
+
+        let resolve_context = func_ctx.resolve_context.clone();
+        let resolved_args: Box<[TypeIndex]> = args
+            .iter()
+            .map(|arg| self.resolve_type(&resolve_context, arg))
+            .collect();
+
+        let caller_id = self.tir.functions[func_ctx.func_index as usize].id;
+        let func = &mut self.tir.functions[func_index as usize];
+        func.accesses.push(FunctionAccess {
+            caller: Some(caller_id),
+            kind: FunctionAccessKind::Reference,
+            file_id: self.file_id,
+            span: callee.span,
+        });
+        let func_id = func.id;
+
+        let ty = self.intern_type(Type::FunctionItem {
+            id: func_id,
+            type_args: resolved_args,
+        });
+        Ok(Expression {
+            kind: ExprKind::Function { id: func_id },
+            ty,
+            span: expr_span,
+        })
     }
 
     fn build_binary_expression(
@@ -7505,26 +7797,6 @@ impl<'ast> Builder<'ast, '_> {
         self.type_param_bounds_by_owner(owner.clone(), param_index)
     }
 
-    /// True when a non-generic `FunctionItem` can coerce to the given
-    /// `Function` type. Generic functions (empty `type_args`) are rejected
-    /// — they need explicit instantiation first.
-    fn coercible_fn_item_to_fn(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
-        let &Type::FunctionItem { id, ref type_args } = &self.tir.type_pool[arg_ty as usize] else {
-            return false;
-        };
-        if !type_args.is_empty() {
-            return false;
-        }
-        if !matches!(
-            self.tir.type_pool[expected_ty as usize],
-            Type::Function { .. }
-        ) {
-            return false;
-        }
-        let fi = self.tir.function_index_lookup[&id] as usize;
-        self.tir.functions[fi].signature_index == expected_ty
-    }
-
     /// True when `arg_ty` is a `TypeParam` whose bounds include the trait that
     /// `expected_ty` represents.
     fn type_param_satisfies_bound(&self, arg_ty: TypeIndex, expected_ty: TypeIndex) -> bool {
@@ -7599,7 +7871,6 @@ impl<'ast> Builder<'ast, '_> {
                     self.coerce_untyped_expr(arg, expected)?;
                 } else if !self.coercible_to(arg.ty, expected)
                     && !self.type_param_satisfies_bound(arg.ty, expected)
-                    && !self.coercible_fn_item_to_fn(arg.ty, expected)
                 {
                     self.tir.diagnostics.push(report_type_mistmatch(
                         TypeFormatter::new(&self.tir, &self.interner),
@@ -7654,7 +7925,6 @@ impl<'ast> Builder<'ast, '_> {
                         self.coerce_untyped_expr(&mut argument, expected_type)?;
                     } else if !self.coercible_to(argument.ty, expected_type)
                         && !self.type_param_satisfies_bound(argument.ty, expected_type)
-                        && !self.coercible_fn_item_to_fn(argument.ty, expected_type)
                     {
                         self.tir.diagnostics.push(report_type_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
@@ -8281,6 +8551,7 @@ impl<'ast> Builder<'ast, '_> {
         func_ctx: &mut FunctionContext,
         init_span: ast::TextSpan,
         name: ast::Spanned<SymbolU32>,
+        explicit_type_args: &[ast::Spanned<ast::TypeExpression>],
         fields: &[ast::Separated<ast::Spanned<ast::StructInitField>>],
     ) -> Result<Expression, ()> {
         let struct_index = match self
@@ -8307,6 +8578,38 @@ impl<'ast> Builder<'ast, '_> {
                 return Err(());
             }
         };
+
+        // Resolve explicit type args and validate count.
+        let type_params_len = self.tir.structs[struct_index as usize].type_params.len();
+        let resolved_args: Box<[TypeIndex]> = if explicit_type_args.is_empty() {
+            Box::new([])
+        } else {
+            let resolve_context = func_ctx.resolve_context.clone();
+            explicit_type_args
+                .iter()
+                .map(|arg| self.resolve_type(&resolve_context, arg))
+                .collect()
+        };
+        if !resolved_args.is_empty() && resolved_args.len() != type_params_len {
+            let struct_name = self
+                .interner
+                .resolve(self.tir.structs[struct_index as usize].name.inner)
+                .unwrap()
+                .to_string();
+            self.tir.diagnostics.push(
+                Diagnostic::error()
+                    .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                    .with_message(format!(
+                        "`{}` expects {} type argument{}, found {}",
+                        struct_name,
+                        type_params_len,
+                        if type_params_len == 1 { "" } else { "s" },
+                        resolved_args.len(),
+                    ))
+                    .with_label(Label::primary(self.file_id, init_span)),
+            );
+            return Err(());
+        }
 
         let struct_name = self
             .interner
@@ -8370,9 +8673,14 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 }
             };
-            let expected_ty = self.tir.structs[struct_index as usize].fields[field_index]
+            let raw_expected_ty = self.tir.structs[struct_index as usize].fields[field_index]
                 .ty
                 .inner;
+            let expected_ty = if resolved_args.is_empty() {
+                raw_expected_ty
+            } else {
+                self.substitute_type(raw_expected_ty, &resolved_args)
+            };
             let mut field_expr = match self.build_expression(
                 func_ctx,
                 AccessContext {
@@ -8426,7 +8734,10 @@ impl<'ast> Builder<'ast, '_> {
             ));
         }
 
-        let ty = self.intern_type(Type::Struct { struct_index });
+        let ty = self.intern_type(Type::Struct {
+            struct_index,
+            args: resolved_args,
+        });
         self.tir.structs[struct_index as usize]
             .accesses
             .push(SourceSpan::new(self.file_id, name.span));
