@@ -728,7 +728,6 @@ impl Ord for ItemSource {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum FunctionAttribute {
     Inline,
-    Intrinsic,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]

@@ -356,6 +356,11 @@ enum AstNodeRef<'ast> {
         import_module_index: u32,
         decl: &'ast ast::ImportDeclaration,
     },
+    IntrinsicFunction {
+        file_id: FileId,
+        module: Option<ModuleIndex>,
+        item: &'ast ast::Item,
+    },
 }
 
 impl AstNodeRef<'_> {
@@ -377,7 +382,8 @@ impl AstNodeRef<'_> {
             | AstNodeRef::ImplTraitConst { file_id, .. }
             | AstNodeRef::ImplTraitAssociatedType { file_id, .. }
             | AstNodeRef::Trait { file_id, .. }
-            | AstNodeRef::ImportedFunction { file_id, .. } => *file_id,
+            | AstNodeRef::ImportedFunction { file_id, .. }
+            | AstNodeRef::IntrinsicFunction { file_id, .. } => *file_id,
         }
     }
 
@@ -399,7 +405,8 @@ impl AstNodeRef<'_> {
             | AstNodeRef::ImplTraitConst { module, .. }
             | AstNodeRef::ImplTraitAssociatedType { module, .. }
             | AstNodeRef::Trait { module, .. }
-            | AstNodeRef::ImportedFunction { module, .. } => *module,
+            | AstNodeRef::ImportedFunction { module, .. }
+            | AstNodeRef::IntrinsicFunction { module, .. } => *module,
         }
     }
 }
@@ -1946,7 +1953,6 @@ impl<'ast> Builder<'ast, '_> {
             .iter()
             .filter_map(|a| match self.interner.resolve(a.name.inner) {
                 Some("inline") => Some(FunctionAttribute::Inline),
-                Some("intrinsic") => Some(FunctionAttribute::Intrinsic),
                 _ => None,
             })
             .collect()
@@ -2072,6 +2078,21 @@ impl<'ast> Builder<'ast, '_> {
         let module = resolve_context.module;
 
         match item {
+            ast::Item::IntrinsicFunction { id, signature } => {
+                self.insert_symbol(
+                    &resolve_context,
+                    (SymbolNamespace::Value, signature.name.inner),
+                    SymbolKind::Pending(*id),
+                );
+                self.ast_nodes.insert(
+                    *id,
+                    AstNodeRef::IntrinsicFunction {
+                        file_id,
+                        module,
+                        item,
+                    },
+                );
+            }
             ast::Item::Function { id, signature, .. }
             | ast::Item::FunctionDeclaration { id, signature, .. } => {
                 self.insert_symbol(
@@ -2689,60 +2710,10 @@ impl<'ast> Builder<'ast, '_> {
                             }
                         }
                     }
-                    ast::Item::FunctionDeclaration {
-                        id,
-                        attributes,
-                        signature,
-                        pub_span,
-                        ..
-                    } => {
-                        let attributes = self.resolve_function_attributes(attributes);
-                        if !attributes
-                            .iter()
-                            .any(|&a| a == FunctionAttribute::Intrinsic)
-                        {
-                            self.tir.diagnostics.push(report_missing_function_body(
-                                SourceSpan::new(self.file_id, signature.name.span),
-                            ));
-                        } else {
-                            let type_params = self
-                                .resolve_ast_type_params(&resolve_context, &signature.type_params);
-                            let signature_context =
-                                resolve_context.with_type_param_scope(TypeParamScope {
-                                    owner: TypeParamOwner::Function(*id),
-                                    params: type_params.clone(),
-                                });
-                            let (params, result) =
-                                self.build_function_signature(&signature_context, signature);
-                            let signature_index = self.intern_function(&params, result.clone());
-                            let func_index = self.tir.functions.len() as u32;
-                            let origin = if resolve_context.is_root() {
-                                FunctionOrigin::Free
-                            } else {
-                                FunctionOrigin::Module
-                            };
-                            self.tir.functions.push(Function {
-                                id: *id,
-                                file_id: self.file_id,
-                                body: None,
-                                origin,
-                                type_params,
-                                pub_span: *pub_span,
-                                source: ItemSource::Internal,
-                                signature_index,
-                                name: signature.name.clone(),
-                                accesses: Vec::new(),
-                                params,
-                                result,
-                                attributes,
-                            });
-                            self.tir.function_index_lookup.insert(*id, func_index);
-                            self.insert_symbol(
-                                &resolve_context,
-                                (SymbolNamespace::Value, signature.name.inner),
-                                SymbolKind::Function { func_index },
-                            );
-                        }
+                    ast::Item::FunctionDeclaration { signature, .. } => {
+                        self.tir.diagnostics.push(report_missing_function_body(
+                            SourceSpan::new(self.file_id, signature.name.span),
+                        ));
                     }
                     _ => {}
                 }
@@ -3247,6 +3218,48 @@ impl<'ast> Builder<'ast, '_> {
             }
 
             // ── imported function ─────────────────────────────────────────────
+            AstNodeRef::IntrinsicFunction { item, .. } => {
+                if let ast::Item::IntrinsicFunction { id, signature } = item {
+                    let type_params = self
+                        .resolve_ast_type_params(&resolve_context, &signature.type_params);
+                    let signature_context =
+                        resolve_context.with_type_param_scope(TypeParamScope {
+                            owner: TypeParamOwner::Function(*id),
+                            params: type_params.clone(),
+                        });
+                    let (params, result) =
+                        self.build_function_signature(&signature_context, signature);
+                    let signature_index = self.intern_function(&params, result.clone());
+                    let func_index = self.tir.functions.len() as u32;
+                    let origin = if resolve_context.is_root() {
+                        FunctionOrigin::Free
+                    } else {
+                        FunctionOrigin::Module
+                    };
+                    self.tir.functions.push(Function {
+                        id: *id,
+                        file_id: self.file_id,
+                        body: None,
+                        origin,
+                        type_params,
+                        pub_span: None,
+                        source: ItemSource::Internal,
+                        signature_index,
+                        name: signature.name.clone(),
+                        accesses: Vec::new(),
+                        params,
+                        result,
+                        attributes: Box::new([]),
+                    });
+                    self.tir.function_index_lookup.insert(*id, func_index);
+                    self.insert_symbol(
+                        &resolve_context,
+                        (SymbolNamespace::Value, signature.name.inner),
+                        SymbolKind::Function { func_index },
+                    );
+                }
+            }
+
             AstNodeRef::ImportedFunction {
                 import_module_index,
                 decl,
@@ -5236,6 +5249,7 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::TypeApplication { callee, args } => {
                 self.build_type_application_expression(func_ctx, callee, args, expr.span)
             }
+            ast::Expression::IntrinsicCall { .. } => todo!("intrinsic call"),
         }
     }
 

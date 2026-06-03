@@ -11,10 +11,9 @@ use lsp_server::{
 use lsp_types::notification::Notification as _;
 use lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
-    DocumentFormattingParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability,
-    InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString, OneOf,
-    PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, ServerCapabilities,
+    DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString,
+    OneOf, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, ServerCapabilities,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use wx_compiler::ast::{self};
@@ -672,14 +671,26 @@ fn symbol_hover_text(
             let global = &tir.globals[gi];
             let name = interner.resolve(global.name.inner).unwrap_or("?");
             let type_str = fmt.display_type(global.ty.inner);
-            let pub_prefix = if global.pub_span.is_some() { "pub " } else { "" };
-            let mut_kw = if global.mut_span.is_some() { "mut " } else { "" };
+            let pub_prefix = if global.pub_span.is_some() {
+                "pub "
+            } else {
+                ""
+            };
+            let mut_kw = if global.mut_span.is_some() {
+                "mut "
+            } else {
+                ""
+            };
             Some(format!("{pub_prefix}global {mut_kw}{name}: {type_str}"))
         }
         SymbolKind::Struct(struct_idx) => {
             let struct_ = tir.structs.get(*struct_idx as usize)?;
             let name = interner.resolve(struct_.name.inner).unwrap_or("?");
-            let pub_prefix = if struct_.pub_span.is_some() { "pub " } else { "" };
+            let pub_prefix = if struct_.pub_span.is_some() {
+                "pub "
+            } else {
+                ""
+            };
             Some(format!("{pub_prefix}struct {name}"))
         }
         SymbolKind::Enum(enum_idx) => {
@@ -731,7 +742,11 @@ fn symbol_hover_text(
             let constant = &tir.constants[ci];
             let name = interner.resolve(constant.name.inner).unwrap_or("?");
             let type_str = fmt.display_type(constant.ty.inner);
-            let pub_prefix = if constant.pub_span.is_some() { "pub " } else { "" };
+            let pub_prefix = if constant.pub_span.is_some() {
+                "pub "
+            } else {
+                ""
+            };
             Some(format!("{pub_prefix}const {name}: {type_str}"))
         }
     }

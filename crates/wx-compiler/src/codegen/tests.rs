@@ -1646,8 +1646,7 @@ fn test_generic_struct_pointer_load_store() {
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
     let mut store = wasmtime::Store::new(&engine, ());
-    let instance =
-        wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
 
     let mem = instance
         .get_memory(&mut store, "heap")

@@ -893,19 +893,6 @@ impl<'tir> Builder<'tir> {
         }
     }
 
-    fn memory_index_from_arg(&self, type_idx: tir::TypeIndex) -> ast::DefId {
-        let resolved = match &self.tir.type_pool[type_idx as usize] {
-            tir::Type::TypeParam { param_index, .. } => {
-                self.current_substitutions[*param_index as usize]
-            }
-            _ => type_idx,
-        };
-        match &self.tir.type_pool[resolved as usize] {
-            tir::Type::Memory { id, .. } => *id,
-            _ => unreachable!(),
-        }
-    }
-
     fn intern_signature(&mut self, sig: FunctionSignature) -> SignatureIndex {
         let next = self.signature_pool.len() as SignatureIndex;
         *self
@@ -1310,46 +1297,6 @@ impl<'tir> Builder<'tir> {
             }
 
             tir::ExprKind::Call { callee, arguments } => {
-                // Detect calls to intrinsic functions (e.g. wasm::memory32_grow).
-                // The callee is either ExprKind::Function { id } (bare reference) or
-                // ExprKind::NamespaceAccess (module member); both have ty = FunctionItem { id
-                // }.
-                let intrinsic_id = match &self.tir.type_pool[callee.ty as usize] {
-                    tir::Type::FunctionItem { id, .. } => Some(*id),
-                    _ => None,
-                };
-                if let Some(id) = intrinsic_id {
-                    let tir_idx = self.tir.function_index_lookup[&id];
-                    let tir_func = &self.tir.functions[tir_idx as usize];
-                    if tir_func
-                        .attributes
-                        .iter()
-                        .any(|a| *a == tir::FunctionAttribute::Intrinsic)
-                    {
-                        let intrinsic_name = self.interner.resolve(tir_func.name.inner).unwrap();
-                        let result_ty = self.lower_type_index(expr.ty);
-                        return match intrinsic_name {
-                            "memory32_size" => {
-                                let memory = self.memory_index_from_arg(arguments[0].ty);
-                                Expression {
-                                    kind: ExprKind::MemorySize { memory },
-                                    ty: result_ty,
-                                }
-                            }
-                            "memory32_grow" => {
-                                let memory = self.memory_index_from_arg(arguments[0].ty);
-                                let delta =
-                                    Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
-                                Expression {
-                                    kind: ExprKind::MemoryGrow { memory, delta },
-                                    ty: result_ty,
-                                }
-                            }
-                            name => unreachable!("unknown intrinsic: {name}"),
-                        };
-                    }
-                }
-
                 let callee = Box::new(self.lower_expression(func_ctx, callee, sink));
                 let arguments = arguments
                     .iter()

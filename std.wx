@@ -5,12 +5,15 @@ pub struct string {
 const ASCII_CASE_MASK: u8 = 0b0010_0000;
 const PAGE_SIZE: u32 = 65536;
 
-module wasm {
-  #[intrinsic]
-  pub fn memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
-  #[intrinsic]
-  pub fn memory_size<M: Memory>(mem: M) -> M::Size;
-}
+intrinsic fn bitcast<Src, Dest>(source: Src) -> Dest;
+intrinsic fn size_of<P: PointerSize, T>(value: T) -> PointerSize;
+intrinsic fn align_of<P: PointerSize, T>(value: T) -> PointerSize;
+intrinsic fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
+intrinsic fn @memory_size<M: Memory>(mem: M) -> M::Size;
+intrinsic fn i64_extend_i32(value: i32) -> i64;
+intrinsic fn u64_extend_u32(value: u32) -> u64;
+
+pub fn @bitcast<Src, Dest>(source: Src) -> Dest;
 
 trait PointerSize {}
 impl PointerSize for u32 {}
@@ -66,7 +69,7 @@ impl char {
   pub fn is_ascii_lowercase(self) -> bool {
     self >= 'a' && self <= 'z'
   }
-  
+
   #[inline]
   pub fn is_ascii_alphabetic(self) -> bool {
     (self >= 'A' && self <= 'Z') | (self >= 'a' && self <= 'z')

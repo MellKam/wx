@@ -3089,3 +3089,49 @@ fn test_path_cross_module_generic_struct_init() {
     );
     no_errors(&case);
 }
+
+#[test]
+fn test_generic_struct_concrete_impl() {
+    // impl Point<i32> — concrete monomorphic impl, no type params needed
+    let case = TestCase::new(indoc! {"
+        struct Point<T> {
+            x: T,
+            y: T,
+        }
+
+        impl Point<i32> {
+            pub fn sum(self) -> i32 { self.x + self.y }
+        }
+
+        fn run() -> i32 {
+            local p: Point<i32> = Point::{ x: 3, y: 4 };
+            p.sum()
+        }
+
+        export { run }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_generic_struct_method() {
+    // impl Point<T> — generic impl; T in scope, field access returns T
+    let case = TestCase::new(indoc! {"
+        struct Point<T> {
+            x: T,
+            y: T,
+        }
+
+        impl Point<T> {
+            pub fn x_val(self) -> T { self.x }
+        }
+
+        fn run() -> i32 {
+            local p: Point<i32> = Point::{ x: 3, y: 4 };
+            p.x_val()
+        }
+
+        export { run }
+    "});
+    no_errors(&case);
+}
