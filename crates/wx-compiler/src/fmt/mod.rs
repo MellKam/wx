@@ -1148,6 +1148,30 @@ impl Builder {
                 items.push(Node::StaticText(")"));
                 Node::Concat(items.into())
             }
+            Expression::ArrayList { elements } => {
+                let mut items = vec![Node::StaticText("[")];
+                for (i, element) in elements.iter().enumerate() {
+                    if i > 0 {
+                        items.push(Node::StaticText(", "));
+                    }
+                    items.push(Self::build_expression(interner, source, element));
+                }
+                items.push(Node::StaticText("]"));
+                Node::Concat(items.into())
+            }
+            Expression::ArrayRepeat { value, count } => Node::Concat(Box::new([
+                Node::StaticText("["),
+                Self::build_expression(interner, source, value),
+                Node::StaticText("; "),
+                Self::build_expression(interner, source, count),
+                Node::StaticText("]"),
+            ])),
+            Expression::Index { object, index } => Node::Concat(Box::new([
+                Self::build_expression(interner, source, object),
+                Node::StaticText("["),
+                Self::build_expression(interner, source, index),
+                Node::StaticText("]"),
+            ])),
             Expression::Tuple { elements } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("("));

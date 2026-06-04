@@ -1,0 +1,21 @@
+---
+source: crates/wx-compiler/src/codegen/tests.rs
+expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
+---
+(module
+  (type (;0;) (func (param i32) (result i32)))
+  (memory (;0;) 1)
+  (export "get" (func 0))
+  (func (;0;) (type 0) (param i32) (result i32)
+    (local i32)
+    i32.const 0
+    local.get 0
+    i32.const 4
+    i32.mul
+    i32.add
+    i32.load
+    local.set 1
+    local.get 1
+  )
+  (data (;0;) (i32.const 0) "\0a\00\00\00\14\00\00\00\1e\00\00\00(\00\00\00")
+)

@@ -3,7 +3,7 @@ source: crates/wx-compiler/src/mir/tests.rs
 expression: case.mir
 ---
 functions:
-  - id: 10
+  - id: 8
     signature_index: 1
     scopes:
       - kind: Block
@@ -28,11 +28,11 @@ functions:
                       Aggregate:
                         values:
                           - kind:
-                              StringIndex:
-                                symbol: 30
+                              StaticPointer:
+                                data_index: 0
                             ty:
                               Pointer:
-                                memory: 8
+                                memory: 6
                           - kind:
                               Int:
                                 value: 4
@@ -46,7 +46,7 @@ functions:
                   callee:
                     kind:
                       Function:
-                        id: 9
+                        id: 7
                     ty:
                       Function:
                         signature_index: 0
@@ -65,6 +65,8 @@ functions:
                       ty: U32
               ty: Unit
       ty: Unit
+    static_data:
+      - 0
 signatures:
   - items:
       - U32
@@ -77,17 +79,17 @@ signatures:
 globals: []
 exports:
   - Function:
-      id: 10
-      name: 20
+      id: 8
+      name: 15
 imports:
   - name: console
     items:
       - Function:
-          name: 19
-          id: 9
+          name: 14
+          id: 7
           signature_index: 0
 memories:
-  - id: 8
+  - id: 6
     source: Internal
     kind: Memory32
     min_pages: ~
@@ -105,3 +107,10 @@ aggregates:
     decl_to_phys:
       - 0
       - 1
+static_entries:
+  - bytes:
+      - 116
+      - 101
+      - 115
+      - 116
+    align: 1

@@ -77,6 +77,7 @@ fn mark_block_roots(
             ControlNode::MemoryGrow { delta, .. } => {
                 mark_node_live(*delta, live, worklist);
             }
+            ControlNode::MemorySize { .. } => {}
             ControlNode::PointerLoad { .. } => {}
             ControlNode::PointerStore { address, value, .. } => {
                 mark_node_live(*address, live, worklist);
@@ -171,10 +172,10 @@ fn mark_node_inputs_live(
         | DataNodeKind::Param { .. }
         | DataNodeKind::GlobalGet { .. }
         | DataNodeKind::FunctionRef { .. }
-        | DataNodeKind::StringRef { .. }
+        | DataNodeKind::StaticDataRef { .. }
         | DataNodeKind::MemoryOffset { .. }
         | DataNodeKind::MemoryIndex { .. }
-        | DataNodeKind::MemorySize { .. }
+        | DataNodeKind::MemorySizeResult { .. }
         | DataNodeKind::AggregateCallResult { .. } => {}
     }
 }

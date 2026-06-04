@@ -334,7 +334,11 @@ pub struct WasmModule {
 pub struct Builder<'interner> {
     interner: &'interner ast::StringInterner,
     table: Vec<FuncIndex>,
-    string_pool: StringPool,
+    /// Byte offset of each live static entry in the assembled data segment.
+    /// Keyed by `MIR.static_entries` index.
+    entry_offsets: HashMap<u32, u32>,
+    /// Total size (bytes) of the assembled static data segment.
+    static_segment_size: u32,
     /// Maps every function DefId (imported or defined) to its wasm function
     /// index. Imported functions occupy indices 0..import_func_count;
     /// defined functions follow.
@@ -370,28 +374,6 @@ impl TryFrom<mir::Type> for ValueType {
     }
 }
 
-struct StringPool {
-    // symbol → (memory_offset, byte_length)
-    strings: Vec<(u32, u32)>,
-    bytes: Vec<u8>,
-}
-
-impl StringPool {
-    fn new() -> Self {
-        StringPool {
-            strings: Vec::new(),
-            bytes: Vec::new(),
-        }
-    }
-
-    fn add(&mut self, s: &str) -> (u32, u32) {
-        let offset = self.bytes.len() as u32;
-        let len = s.len() as u32;
-        self.bytes.extend_from_slice(s.as_bytes());
-        self.strings.push((offset, len));
-        (offset, len)
-    }
-}
 
 impl Builder<'_> {
     /// Recursively expand a MIR type into its flat wasm `ValueType`s.
@@ -434,10 +416,36 @@ impl Builder<'_> {
         mir: &mir::MIR,
         interner: &'interner ast::StringInterner,
     ) -> Result<WasmModule, ()> {
+        // Layout static data segment: collect live entries from all functions,
+        // sort largest-align-first for minimal padding, then lay out bytes.
+        let live_indices: std::collections::HashSet<u32> = mir
+            .functions
+            .iter()
+            .flat_map(|f| f.static_data.iter().copied())
+            .collect();
+        let mut sorted_indices: Vec<u32> = live_indices.into_iter().collect();
+        sorted_indices.sort_by(|&a, &b| {
+            mir.static_entries[b as usize]
+                .align
+                .cmp(&mir.static_entries[a as usize].align)
+        });
+        let mut segment_bytes: Vec<u8> = Vec::new();
+        let mut entry_offsets: HashMap<u32, u32> = HashMap::new();
+        for idx in sorted_indices {
+            let entry = &mir.static_entries[idx as usize];
+            let current = segment_bytes.len() as u32;
+            let aligned = current.next_multiple_of(entry.align);
+            segment_bytes.extend(std::iter::repeat(0).take((aligned - current) as usize));
+            entry_offsets.insert(idx, segment_bytes.len() as u32);
+            segment_bytes.extend_from_slice(&entry.bytes);
+        }
+        let static_segment_size = segment_bytes.len() as u32;
+
         let mut builder = Builder {
             interner,
             table: Vec::new(),
-            string_pool: StringPool::new(),
+            entry_offsets,
+            static_segment_size,
             func_wasm_index: HashMap::new(),
             global_wasm_index: HashMap::new(),
             memory_wasm_index: HashMap::new(),
@@ -567,9 +575,9 @@ impl Builder<'_> {
                 .collect::<Box<_>>(),
         };
 
-        let required_pages = match builder.string_pool.bytes.len() {
+        let required_pages = match static_segment_size {
             0 => 0,
-            len => (len as u32).div_ceil(65536),
+            len => len.div_ceil(65536),
         };
         let imported_memory_count = mir
             .imports
@@ -612,13 +620,13 @@ impl Builder<'_> {
                 imports: imports.into_boxed_slice(),
             },
             data: DataSection {
-                segments: if builder.string_pool.bytes.is_empty() {
+                segments: if segment_bytes.is_empty() {
                     Box::new([])
                 } else {
                     Box::new([DataSegment {
                         memory_index: 0,
                         offset: 0,
-                        bytes: builder.string_pool.bytes.into_boxed_slice(),
+                        bytes: segment_bytes.into_boxed_slice(),
                     }])
                 },
             },
@@ -915,21 +923,15 @@ impl Builder<'_> {
                 sink.push(Instruction::I32Const as u8);
                 table_idx.encode(sink);
             }
-            SI::StringPointer(symbol) => {
-                let s = self.interner.resolve(symbol).unwrap();
-                let (byte_offset, _) = self.string_pool.add(s);
+            SI::StaticDataPointer(data_index) => {
+                let offset = self.entry_offsets[&data_index];
                 sink.push(Instruction::I32Const as u8);
-                (byte_offset as i32).encode(sink);
+                (offset as i32).encode(sink);
             }
             SI::DataSectionEnd { memory } => {
-                // The data section end is used as the base of the writable heap.
-                // Currently all string data lives in a single pool so the offset
-                // is the same for every memory; future multi-memory support would
-                // track per-memory data section sizes.
                 let _ = self.memory_wasm_index[&memory]; // assert memory is known
-                let offset = self.string_pool.bytes.len() as i32;
                 sink.push(Instruction::I32Const as u8);
-                offset.encode(sink);
+                (self.static_segment_size as i32).encode(sink);
             }
         }
     }

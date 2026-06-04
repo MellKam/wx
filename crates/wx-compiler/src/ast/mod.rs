@@ -883,43 +883,7 @@ pub struct Spanned<T> {
     pub span: TextSpan,
 }
 
-impl Clone for Spanned<Token> {
-    fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
-}
-
-impl Clone for Spanned<SymbolU32> {
-    fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
-}
-
-impl Clone for Spanned<BinaryOp> {
-    fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
-}
-
-impl Clone for Spanned<UnaryOp> {
-    fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
-}
-
-impl Clone for Spanned<u32> {
+impl<T: Copy> Clone for Spanned<T> {
     fn clone(&self) -> Self {
         Spanned {
             inner: self.inner,
@@ -1052,6 +1016,20 @@ pub enum Expression {
         type_args: Box<[Spanned<TypeExpression>]>,
         arguments: Box<[Separated<Spanned<Expression>>]>,
     },
+    /// `[a, b, c]`
+    ArrayList {
+        elements: Box<[Spanned<Expression>]>,
+    },
+    /// `[value; count]`
+    ArrayRepeat {
+        value: Box<Spanned<Expression>>,
+        count: Box<Spanned<Expression>>,
+    },
+    /// `expr[index]`
+    Index {
+        object: Box<Spanned<Expression>>,
+        index: Box<Spanned<Expression>>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1152,8 +1130,8 @@ pub enum TypeExpression {
     /// `impl Trait`
     ImplTrait { name: Spanned<SymbolU32> },
     /// `heap::*mut u8`, `heap::[]i32` — memory-tagged pointer/slice/array.
-    /// The memory is always a single-segment path naming the memory declaration;
-    /// the inner is a Pointer, Slice, or Array type.
+    /// The memory is always a single-segment path naming the memory
+    /// declaration; the inner is a Pointer, Slice, or Array type.
     MemoryTagged {
         memory: Box<Path>,
         inner: Box<Spanned<TypeExpression>>,
@@ -1531,7 +1509,7 @@ enum BindingPower {
     Multiplicative,
     Unary,
     Cast,
-    Call,
+    Postfix,
     Member,
     Primary,
 }
@@ -2050,7 +2028,9 @@ impl<'input> Parser<'input> {
                 )));
             }
         };
-        let name_symbol = self.interner.get_or_intern(name_span.extract_str(self.source));
+        let name_symbol = self
+            .interner
+            .get_or_intern(name_span.extract_str(self.source));
         let name = Spanned {
             inner: name_symbol,
             span: name_span,
@@ -2609,7 +2589,14 @@ impl<'input> Parser<'input> {
             }
             Token::String => Some((Parser::parse_string_expression, BindingPower::Primary)),
             Token::Char => Some((Parser::parse_char_expression, BindingPower::Primary)),
-            Token::AtIdent => Some((Parser::parse_intrinsic_call_expression, BindingPower::Primary)),
+            Token::AtIdent => Some((
+                Parser::parse_intrinsic_call_expression,
+                BindingPower::Primary,
+            )),
+            Token::OpenBracket => Some((
+                Parser::parse_array_expression,
+                BindingPower::Primary,
+            )),
             _ => None,
         }
     }
@@ -2652,7 +2639,7 @@ impl<'input> Parser<'input> {
             Token::DoubleLeftArrow | Token::DoubleRightArrow => {
                 Some((Parser::parse_binary_expression, BindingPower::BitwiseShift))
             }
-            Token::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
+            Token::OpenParen => Some((Parser::parse_call_expression, BindingPower::Postfix)),
             Token::ColonColon => Some((
                 Parser::parse_type_application_expression,
                 BindingPower::Member,
@@ -2663,6 +2650,7 @@ impl<'input> Parser<'input> {
             },
             Token::Colon => Some((Parser::parse_labelled_expression, BindingPower::Primary)),
             Token::Dot => Some((Parser::parse_object_access_expression, BindingPower::Member)),
+            Token::OpenBracket => Some((Parser::parse_index_expression, BindingPower::Postfix)),
             _ => None,
         }
     }
@@ -3334,7 +3322,9 @@ impl<'input> Parser<'input> {
     fn parse_intrinsic_call_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
         let token = parser.lexer.next(); // consume @ident
         let name = Spanned {
-            inner: parser.interner.get_or_intern(token.span.extract_str(parser.source)),
+            inner: parser
+                .interner
+                .get_or_intern(token.span.extract_str(parser.source)),
             span: token.span,
         };
 
@@ -3384,6 +3374,70 @@ impl<'input> Parser<'input> {
             inner: Expression::Call {
                 callee: Box::new(callee),
                 arguments: arguments.inner,
+            },
+            span,
+        })
+    }
+
+    fn parse_array_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
+        let open_span = parser.next_expect(Token::OpenBracket)?.span;
+
+        if let Some(close) = parser.lexer.next_if(Token::CloseBracket) {
+            let span = TextSpan::new(open_span.start, close.span.end);
+            return Ok(Spanned {
+                inner: Expression::ArrayList {
+                    elements: Box::new([]),
+                },
+                span,
+            });
+        }
+
+        let first = parser.parse_expression(BindingPower::Default)?;
+
+        if parser.lexer.next_if(Token::SemiColon).is_some() {
+            let count = parser.parse_expression(BindingPower::Default)?;
+            let close_span = parser.next_expect(Token::CloseBracket)?.span;
+            let span = TextSpan::new(open_span.start, close_span.end);
+            return Ok(Spanned {
+                inner: Expression::ArrayRepeat {
+                    value: Box::new(first),
+                    count: Box::new(count),
+                },
+                span,
+            });
+        }
+
+        let mut elements = vec![first];
+        while parser.lexer.next_if(Token::Comma).is_some() {
+            if parser.lexer.peek().inner == Token::CloseBracket {
+                break;
+            }
+            elements.push(parser.parse_expression(BindingPower::Default)?);
+        }
+
+        let close_span = parser.next_expect(Token::CloseBracket)?.span;
+        let span = TextSpan::new(open_span.start, close_span.end);
+        Ok(Spanned {
+            inner: Expression::ArrayList {
+                elements: elements.into_boxed_slice(),
+            },
+            span,
+        })
+    }
+
+    fn parse_index_expression(
+        parser: &mut Parser,
+        object: Spanned<Expression>,
+        _: BindingPower,
+    ) -> Result<Spanned<Expression>, ()> {
+        _ = parser.lexer.next(); // consume `[`
+        let index = parser.parse_expression(BindingPower::Default)?;
+        let close_span = parser.next_expect(Token::CloseBracket)?.span;
+        let span = TextSpan::new(object.span.start, close_span.end);
+        Ok(Spanned {
+            inner: Expression::Index {
+                object: Box::new(object),
+                index: Box::new(index),
             },
             span,
         })

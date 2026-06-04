@@ -40,6 +40,7 @@ functions:
       ty:
         Aggregate:
           aggregate_index: 0
+    static_data: []
 signatures:
   - items:
       - U32
@@ -67,3 +68,4 @@ aggregates:
     decl_to_phys:
       - 0
       - 1
+static_entries: []

@@ -6,7 +6,8 @@ type_pool:
   - Error
   - Unit
   - Never
-  - Unknown
+  - Integer
+  - Float
   - U8
   - I8
   - U16
@@ -26,12 +27,12 @@ type_pool:
   - Struct:
       struct_index: 0
       args:
-        - 9
+        - 10
   - Function:
       signature:
         items:
-          - 17
-          - 9
+          - 18
+          - 10
         params_count: 1
 diagnostics: []
 functions:
@@ -41,7 +42,7 @@ functions:
     source: Internal
     origin: Free
     type_params: []
-    signature_index: 18
+    signature_index: 19
     name:
       inner: 4
       span:
@@ -55,12 +56,12 @@ functions:
             start: 38
             end: 39
         ty:
-          inner: 17
+          inner: 18
           span:
             start: 41
             end: 53
     result:
-      inner: 9
+      inner: 10
       span:
         start: 58
         end: 61
@@ -84,15 +85,15 @@ functions:
                   span:
                     start: 38
                     end: 39
-                ty: 17
+                ty: 18
                 mut_span: ~
                 accesses:
                   - span:
                       start: 64
                       end: 65
                     kind: Read
-            inferred_type: 9
-            expected_type: 9
+            inferred_type: 10
+            expected_type: 10
       block:
         kind:
           Block:
@@ -106,7 +107,7 @@ functions:
                       Local:
                         scope_index: 0
                         local_index: 0
-                    ty: 17
+                    ty: 18
                     span:
                       start: 64
                       end: 65
@@ -115,11 +116,11 @@ functions:
                     span:
                       start: 66
                       end: 71
-              ty: 9
+              ty: 10
               span:
                 start: 64
                 end: 71
-        ty: 9
+        ty: 10
         span:
           start: 62
           end: 73
@@ -156,7 +157,7 @@ structs:
             start: 20
             end: 25
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 27
             end: 28
@@ -168,15 +169,15 @@ structs:
           start: 41
           end: 53
 impl_members:
-  17:
+  18:
     11:
       AssociatedConst:
         id: 2
-        ty: 8
+        ty: 9
     12:
       AssociatedConst:
         id: 3
-        ty: 8
+        ty: 9
 traits: []
 trait_impls: []
 trait_impl_lookup: {}
@@ -191,7 +192,7 @@ constants:
         start: 0
         end: 0
     ty:
-      inner: 8
+      inner: 9
       span:
         start: 0
         end: 0
@@ -206,7 +207,7 @@ constants:
         start: 0
         end: 0
     ty:
-      inner: 8
+      inner: 9
       span:
         start: 0
         end: 0

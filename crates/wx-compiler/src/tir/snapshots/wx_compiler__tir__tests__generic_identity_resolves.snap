@@ -6,7 +6,8 @@ type_pool:
   - Error
   - Unit
   - Never
-  - Unknown
+  - Integer
+  - Float
   - U8
   - I8
   - U16
@@ -26,8 +27,8 @@ type_pool:
   - Function:
       signature:
         items:
-          - 16
-          - 16
+          - 17
+          - 17
         params_count: 1
 diagnostics: []
 functions:
@@ -41,7 +42,7 @@ functions:
     type_params:
       - name: 2
         bounds: []
-    signature_index: 17
+    signature_index: 18
     name:
       inner: 1
       span:
@@ -55,12 +56,12 @@ functions:
             start: 19
             end: 20
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 22
             end: 23
     result:
-      inner: 16
+      inner: 17
       span:
         start: 28
         end: 29
@@ -78,15 +79,15 @@ functions:
                   span:
                     start: 19
                     end: 20
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
                       start: 36
                       end: 37
                     kind: Read
-            inferred_type: 16
-            expected_type: 16
+            inferred_type: 17
+            expected_type: 17
       block:
         kind:
           Block:
@@ -97,11 +98,11 @@ functions:
                 Local:
                   scope_index: 0
                   local_index: 0
-              ty: 16
+              ty: 17
               span:
                 start: 36
                 end: 37
-        ty: 16
+        ty: 17
         span:
           start: 30
           end: 39

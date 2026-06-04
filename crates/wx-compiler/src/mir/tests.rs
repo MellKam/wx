@@ -159,7 +159,8 @@ fn test_size_associated_const() {
 
 #[test]
 fn test_string_literal_lowered_to_tuple() {
-    // A string literal lowers to a Packed { StringIndex(ptr), Int(len) } in MIR.
+    // A string literal lowers to Aggregate { StaticPointer(data_index), Int(len) } in MIR,
+    // and the function records the entry index in its static_data list.
     let case = TestCase::new(&format!(
         "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
         indoc! {"
@@ -209,24 +210,12 @@ const MEMORY32_TRAIT: &str = indoc! {"
     trait Memory32 {
         const OFFSET: u32;
         const MEMORY_INDEX: u32;
-        fn size(self) -> u32 {
-            wasm::memory32_size(self)
-        }
-        fn grow(self, delta: u32) -> u32 {
-            wasm::memory32_grow(self, delta)
-        }
+        fn size(self) -> u32;
+        fn grow(self, delta: u32) -> u32;
     }
 "};
 
-/// The wasm intrinsic module — must appear after the traits it references.
-const WASM_MODULE: &str = indoc! {"
-    module wasm {
-        #[intrinsic]
-        fn memory32_size(mem: impl Memory32) -> u32;
-        #[intrinsic]
-        fn memory32_grow(mem: impl Memory32, delta: u32) -> u32;
-    }
-"};
+const WASM_MODULE: &str = "";
 
 // ── inline methods
 // ────────────────────────────────────────────────────────────
@@ -848,3 +837,224 @@ fn test_multiple_calls_to_generic_produce_single_mono_instance() {
         case.mir.functions.len()
     );
 }
+
+// ── static data
+// ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_string_creates_static_entry_with_correct_bytes() {
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        fn get() -> string { \"hello\" }
+        export { get }
+    "}
+    ));
+    assert_eq!(case.mir.static_entries.len(), 1);
+    assert_eq!(&*case.mir.static_entries[0].bytes, b"hello");
+    assert_eq!(case.mir.static_entries[0].align, 1);
+
+    let func = case.mir.functions.iter().find(|f| !f.static_data.is_empty()).unwrap();
+    assert_eq!(func.static_data, vec![0u32]);
+}
+
+#[test]
+fn test_same_string_deduplicated_across_functions() {
+    // Two exported functions using the same string literal must produce exactly
+    // one static entry; both functions reference index 0.
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        fn a() -> string { \"hello\" }
+        fn b() -> string { \"hello\" }
+        export { a, b }
+    "}
+    ));
+    assert_eq!(case.mir.static_entries.len(), 1, "duplicate string must be deduplicated");
+
+    for func in &case.mir.functions {
+        if !func.static_data.is_empty() {
+            assert_eq!(func.static_data, vec![0u32]);
+        }
+    }
+}
+
+#[test]
+fn test_different_strings_produce_separate_entries() {
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        fn a() -> string { \"hello\" }
+        fn b() -> string { \"world\" }
+        export { a, b }
+    "}
+    ));
+    assert_eq!(case.mir.static_entries.len(), 2);
+    let all_bytes: Vec<&[u8]> = case.mir.static_entries.iter().map(|e| &*e.bytes).collect();
+    assert!(all_bytes.contains(&b"hello".as_slice()));
+    assert!(all_bytes.contains(&b"world".as_slice()));
+}
+
+#[test]
+fn test_dce_removes_static_data_ownership() {
+    // A DCE'd function is removed from mir.functions, so its static entry
+    // is never referenced by any live function. Codegen will skip it.
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        fn live() -> i32 { 42 }
+        fn dead() -> string { \"only-in-dead\" }
+        export { live }
+    "}
+    ));
+    // dead() removed from mir.functions by DCE.
+    assert_eq!(case.mir.functions.len(), 1);
+    // The entry may still sit in static_entries (no MIR-time compaction),
+    // but no live function references it.
+    let live_indices: std::collections::HashSet<u32> = case
+        .mir
+        .functions
+        .iter()
+        .flat_map(|f| f.static_data.iter().copied())
+        .collect();
+    assert!(live_indices.is_empty(), "live functions must not own dead static entries");
+}
+
+#[test]
+fn test_inlining_propagates_static_data_to_caller() {
+    // When an #[inline] function with a string literal is inlined into its
+    // caller, the caller must inherit the static entry index so codegen
+    // includes the string in the data segment.
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+
+        #[inline]
+        fn greeting() -> string { \"hi\" }
+
+        fn main() -> string { greeting() }
+
+        export { main }
+    "}
+    ));
+    // After inlining, only main survives.
+    assert_eq!(case.mir.functions.len(), 1);
+    assert_eq!(case.mir.static_entries.len(), 1);
+    assert_eq!(&*case.mir.static_entries[0].bytes, b"hi");
+
+    // main must own the entry (inherited from the inlined greeting).
+    assert!(
+        case.mir.functions[0].static_data.contains(&0u32),
+        "caller must own the inlined callee's static entry"
+    );
+}
+
+// ── arrays
+// ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_array_literal_bytes_are_little_endian() {
+    // [1, 2, 3] as heap::[3]i32 → 12 bytes encoding each value as 32-bit LE.
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        fn get() -> heap::[3]i32 {
+            local arr: heap::[3]i32 = [1, 2, 3];
+            arr
+        }
+        export { get }
+    "}
+    ));
+    assert_eq!(case.mir.static_entries.len(), 1);
+    assert_eq!(
+        &*case.mir.static_entries[0].bytes,
+        &[
+            1u8, 0, 0, 0, // 1_i32 LE
+            2, 0, 0, 0,   // 2_i32 LE
+            3, 0, 0, 0,   // 3_i32 LE
+        ],
+    );
+    assert_eq!(case.mir.static_entries[0].align, 4);
+}
+
+#[test]
+fn test_array_repeat_bytes_repeated() {
+    // [7; 4] as heap::[4]u8 → four bytes each equal to 7.
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        fn get() -> heap::[4]u8 {
+            local arr: heap::[4]u8 = [7; 4];
+            arr
+        }
+        export { get }
+    "}
+    ));
+    assert_eq!(case.mir.static_entries.len(), 1);
+    assert_eq!(&*case.mir.static_entries[0].bytes, &[7u8, 7, 7, 7]);
+    assert_eq!(case.mir.static_entries[0].align, 1);
+}
+
+#[test]
+fn test_array_dce_removes_static_data_ownership() {
+    // A dead function with an array literal is removed by DCE.
+    // No live function should reference its static entry.
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        fn live() -> i32 { 42 }
+        fn dead() -> heap::[3]i32 {
+            local arr: heap::[3]i32 = [1, 2, 3];
+            arr
+        }
+        export { live }
+    "}
+    ));
+    assert_eq!(case.mir.functions.len(), 1);
+    let live_indices: std::collections::HashSet<u32> = case
+        .mir
+        .functions
+        .iter()
+        .flat_map(|f| f.static_data.iter().copied())
+        .collect();
+    assert!(live_indices.is_empty(), "live functions must not reference the dead array's entry");
+}
+
+#[test]
+fn test_static_entry_alignment_matches_element_type() {
+    // i32 elements → align 4; f64 elements → align 8; u8 elements → align 1.
+    let case = TestCase::new(&format!(
+        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        indoc! {"
+        memory heap: Memory32;
+        fn ints() -> heap::[2]i32 {
+            local a: heap::[2]i32 = [10, 20];
+            a
+        }
+        fn doubles() -> heap::[2]f64 {
+            local b: heap::[2]f64 = [1.0; 2];
+            b
+        }
+        fn bytes() -> heap::[2]u8 {
+            local c: heap::[2]u8 = [1; 2];
+            c
+        }
+        export { ints, doubles, bytes }
+    "}
+    ));
+    assert_eq!(case.mir.static_entries.len(), 3);
+    let aligns: std::collections::HashSet<u32> =
+        case.mir.static_entries.iter().map(|e| e.align).collect();
+    assert!(aligns.contains(&4), "i32 array must have align 4");
+    assert!(aligns.contains(&8), "f64 array must have align 8");
+    assert!(aligns.contains(&1), "u8 array must have align 1");
+}
+

@@ -21,8 +21,6 @@ pub mod scheduler;
 #[cfg(test)]
 mod tests;
 
-use string_interner::symbol::SymbolU32;
-
 use crate::{ast, mir};
 
 pub type DataNodeIndex = u32;
@@ -102,7 +100,7 @@ impl StackResult {
 
 /// A pure (or near-pure) value computation.
 ///
-/// All variants except `GlobalGet`, `MemorySize`, `CallResult`,
+/// All variants except `GlobalGet`, `MemorySizeResult`, `CallResult`,
 /// `MemoryGrowResult`, and `LoopParam` are inserted into the CSE map; identical
 /// computations reuse the same node.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -132,9 +130,10 @@ pub enum DataNodeKind {
     FunctionRef {
         id: ast::DefId,
     },
-    /// Pointer into the data section for a string constant. CSE-eligible.
-    StringRef {
-        symbol: SymbolU32,
+    /// Pointer into the static data segment for a string or array constant.
+    /// CSE-eligible.
+    StaticDataRef {
+        data_index: u32,
     },
     /// Byte offset of the end of the data section (a link-time constant).
     /// CSE-eligible.
@@ -146,8 +145,8 @@ pub enum DataNodeKind {
     MemoryIndex {
         memory: ast::DefId,
     },
-    /// Current linear memory size in pages. Excluded from CSE (runtime state).
-    MemorySize {
+    /// Result of a `MemorySize` control node. Excluded from CSE; always spilled.
+    MemorySizeResult {
         memory: ast::DefId,
     },
 
@@ -371,10 +370,10 @@ impl DataNodeKind {
             | DataNodeKind::GtEqU { .. }
             | DataNodeKind::GlobalGet { .. }
             | DataNodeKind::FunctionRef { .. }
-            | DataNodeKind::StringRef { .. }
+            | DataNodeKind::StaticDataRef { .. }
             | DataNodeKind::MemoryOffset { .. }
             | DataNodeKind::MemoryIndex { .. }
-            | DataNodeKind::MemorySize { .. }
+            | DataNodeKind::MemorySizeResult { .. }
             | DataNodeKind::MemoryGrowResult { .. } => NodeType::Scalar(ScalarType::I32),
 
             DataNodeKind::PointerLoadResult { ty, .. } => NodeType::Scalar(*ty),
@@ -400,7 +399,7 @@ impl DataNodeKind {
         matches!(
             self,
             DataNodeKind::GlobalGet { .. }
-                | DataNodeKind::MemorySize { .. }
+                | DataNodeKind::MemorySizeResult { .. }
                 | DataNodeKind::CallResult { .. }
                 | DataNodeKind::AggregateCallResult { .. }
                 | DataNodeKind::MemoryGrowResult { .. }
@@ -463,6 +462,11 @@ pub enum ControlNode {
         target: BlockIndex,
     },
     Unreachable,
+    MemorySize {
+        memory: ast::DefId,
+        /// The `MemorySizeResult` data node produced by this operation.
+        result: DataNodeIndex,
+    },
     MemoryGrow {
         memory: ast::DefId,
         delta: DataNodeIndex,
@@ -733,10 +737,10 @@ impl Function {
             | DataNodeKind::Param { .. }
             | DataNodeKind::GlobalGet { .. }
             | DataNodeKind::FunctionRef { .. }
-            | DataNodeKind::StringRef { .. }
+            | DataNodeKind::StaticDataRef { .. }
             | DataNodeKind::MemoryOffset { .. }
             | DataNodeKind::MemoryIndex { .. }
-            | DataNodeKind::MemorySize { .. }
+            | DataNodeKind::MemorySizeResult { .. }
             | DataNodeKind::AggregateCallResult { .. }
             // LoopParam uses are registered by patch_loop_param after both
             // `before` and `after` are known.
