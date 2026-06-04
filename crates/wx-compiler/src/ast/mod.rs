@@ -47,6 +47,7 @@ pub enum Token {
     Char,
     String,
     Identifier,
+    AtIdent,
     // Delimiters
     Colon,
     ColonColon,
@@ -104,6 +105,7 @@ impl std::fmt::Display for Token {
             Char => "char",
             String => "string",
             Identifier => "identifier",
+            AtIdent => "@identifier",
             Colon => ":",
             ColonColon => "::",
             SemiColon => ";",
@@ -466,6 +468,7 @@ impl<'a> Lexer<'a> {
             '%' => self.consume_and_check('=', Token::PercentEq, Token::Percent),
             '^' => Token::Caret,
             '\'' => self.consume_char(),
+            '@' => self.consume_at_ident(),
             '\0' => Token::Eof,
             _ => Token::Unknown,
         };
@@ -543,6 +546,21 @@ impl<'a> Lexer<'a> {
         }
 
         Token::Identifier
+    }
+
+    fn consume_at_ident(&mut self) -> Token {
+        match self.chars.clone().next().unwrap_or(EOF) {
+            'A'..='Z' | 'a'..='z' | '_' => _ = self.chars.next(),
+            _ => return Token::Unknown,
+        }
+        let mut lookahead = self.chars.clone();
+        while let Some(ch) = lookahead.next() {
+            match ch {
+                'A'..='Z' | 'a'..='z' | '0'..='9' | '_' => _ = self.chars.next(),
+                _ => break,
+            }
+        }
+        Token::AtIdent
     }
 
     fn consume_whitespace(&mut self) -> Token {
@@ -865,43 +883,7 @@ pub struct Spanned<T> {
     pub span: TextSpan,
 }
 
-impl Clone for Spanned<Token> {
-    fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
-}
-
-impl Clone for Spanned<SymbolU32> {
-    fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
-}
-
-impl Clone for Spanned<BinaryOp> {
-    fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
-}
-
-impl Clone for Spanned<UnaryOp> {
-    fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
-    }
-}
-
-impl Clone for Spanned<u32> {
+impl<T: Copy> Clone for Spanned<T> {
     fn clone(&self) -> Self {
         Spanned {
             inner: self.inner,
@@ -1028,6 +1010,26 @@ pub enum Expression {
     Tuple {
         elements: Box<[Spanned<Expression>]>,
     },
+    /// `@name<T, U>(args)`
+    IntrinsicCall {
+        name: Spanned<SymbolU32>,
+        type_args: Box<[Spanned<TypeExpression>]>,
+        arguments: Box<[Separated<Spanned<Expression>>]>,
+    },
+    /// `[a, b, c]`
+    ArrayList {
+        elements: Box<[Spanned<Expression>]>,
+    },
+    /// `[value; count]`
+    ArrayRepeat {
+        value: Box<Spanned<Expression>>,
+        count: Box<Spanned<Expression>>,
+    },
+    /// `expr[index]`
+    Index {
+        object: Box<Spanned<Expression>>,
+        index: Box<Spanned<Expression>>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1128,8 +1130,8 @@ pub enum TypeExpression {
     /// `impl Trait`
     ImplTrait { name: Spanned<SymbolU32> },
     /// `heap::*mut u8`, `heap::[]i32` — memory-tagged pointer/slice/array.
-    /// The memory is always a single-segment path naming the memory declaration;
-    /// the inner is a Pointer, Slice, or Array type.
+    /// The memory is always a single-segment path naming the memory
+    /// declaration; the inner is a Pointer, Slice, or Array type.
     MemoryTagged {
         memory: Box<Path>,
         inner: Box<Spanned<TypeExpression>>,
@@ -1449,6 +1451,11 @@ pub enum Item {
         supertraits: Box<[Spanned<TypeExpression>]>,
         items: Box<[Separated<Spanned<TraitItem>>]>,
     },
+    /// `fn @name<T>(params) -> Ret;` — compiler-provided intrinsic, no body.
+    IntrinsicFunction {
+        id: DefId,
+        signature: FunctionSignature,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1465,6 +1472,7 @@ impl Item {
             | Item::Const { .. }
             | Item::Memory { .. }
             | Item::FunctionDeclaration { .. }
+            | Item::IntrinsicFunction { .. }
             | Item::ModuleDeclaration { .. } => false,
             Item::Function { .. }
             | Item::Export { .. }
@@ -1501,7 +1509,7 @@ enum BindingPower {
     Multiplicative,
     Unary,
     Cast,
-    Call,
+    Postfix,
     Member,
     Primary,
 }
@@ -2009,8 +2017,20 @@ impl<'input> Parser<'input> {
 
     fn parse_function_signature(&mut self) -> Result<Spanned<FunctionSignature>, ()> {
         let fn_span = self.lexer.next();
-        let name_span = self.next_expect(Token::Identifier)?.span;
-        let name_symbol = self.intern_identifier(name_span);
+        let name_token = self.lexer.peek();
+        let name_span = match name_token.inner {
+            Token::Identifier | Token::AtIdent => self.lexer.next().span,
+            _ => {
+                return Err(self.ast.diagnostics.push(report_unexpected_token(
+                    self.ast.file_id,
+                    name_token,
+                    Token::Identifier,
+                )));
+            }
+        };
+        let name_symbol = self
+            .interner
+            .get_or_intern(name_span.extract_str(self.source));
         let name = Spanned {
             inner: name_symbol,
             span: name_span,
@@ -2144,6 +2164,24 @@ impl<'input> Parser<'input> {
 
     fn parse_function_definition_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let signature = Parser::parse_function_signature(parser)?;
+
+        let is_intrinsic = signature
+            .inner
+            .name
+            .span
+            .extract_str(parser.source)
+            .starts_with('@');
+
+        if is_intrinsic {
+            return Ok(Spanned {
+                span: signature.span,
+                inner: Item::IntrinsicFunction {
+                    id: parser.id_generator.generate(),
+                    signature: signature.inner,
+                },
+            });
+        }
+
         let block = Parser::parse_block_expression(parser).ok().map(Box::new);
         let span = TextSpan::new(
             signature.span.start,
@@ -2209,32 +2247,36 @@ impl<'input> Parser<'input> {
             }
             Token::OpenBracket => self.parse_slice_or_array_type_expression(),
             Token::Identifier => {
-                let (first_tok, first_sym) = match Keyword::try_from(token.span.extract_str(self.source)) {
-                    Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
-                    Ok(Keyword::Impl) => {
-                        let impl_span = self.lexer.next().span;
-                        let name_token = self.next_expect(Token::Identifier)?;
-                        let name_symbol = self.intern_identifier(name_token.span);
-                        let span = TextSpan::new(impl_span.start, name_token.span.end);
-                        return Ok(Spanned {
-                            inner: TypeExpression::ImplTrait {
-                                name: Spanned { inner: name_symbol, span: name_token.span },
-                            },
-                            span,
-                        });
-                    }
-                    Ok(Keyword::SelfType) => {
-                        // `Self` is valid in type paths for `Self::AssocType`, etc.
-                        let tok = self.lexer.next();
-                        let sym = self.interner.get_or_intern("Self");
-                        (tok, sym)
-                    }
-                    _ => {
-                        let tok = self.lexer.next();
-                        let sym = self.intern_identifier(tok.span);
-                        (tok, sym)
-                    }
-                };
+                let (first_tok, first_sym) =
+                    match Keyword::try_from(token.span.extract_str(self.source)) {
+                        Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
+                        Ok(Keyword::Impl) => {
+                            let impl_span = self.lexer.next().span;
+                            let name_token = self.next_expect(Token::Identifier)?;
+                            let name_symbol = self.intern_identifier(name_token.span);
+                            let span = TextSpan::new(impl_span.start, name_token.span.end);
+                            return Ok(Spanned {
+                                inner: TypeExpression::ImplTrait {
+                                    name: Spanned {
+                                        inner: name_symbol,
+                                        span: name_token.span,
+                                    },
+                                },
+                                span,
+                            });
+                        }
+                        Ok(Keyword::SelfType) => {
+                            // `Self` is valid in type paths for `Self::AssocType`, etc.
+                            let tok = self.lexer.next();
+                            let sym = self.interner.get_or_intern("Self");
+                            (tok, sym)
+                        }
+                        _ => {
+                            let tok = self.lexer.next();
+                            let sym = self.intern_identifier(tok.span);
+                            (tok, sym)
+                        }
+                    };
                 let first_span = first_tok.span;
 
                 // `Type<T>` — direct `<` without `::` → GenericApplication (unchanged).
@@ -2252,7 +2294,10 @@ impl<'input> Parser<'input> {
                                 if p.segments.len() == 1 && p.segments[0].type_args.is_empty() {
                                     let symbol = p.segments[0].ident.inner;
                                     if parser.lexer.next_if(Token::Eq).is_some() {
-                                        let name = Spanned { inner: symbol, span: ty.span };
+                                        let name = Spanned {
+                                            inner: symbol,
+                                            span: ty.span,
+                                        };
                                         let val = parser.parse_type_expression()?;
                                         let span = TextSpan::new(ty.span.start, val.span.end);
                                         return Ok(Spanned {
@@ -2263,14 +2308,20 @@ impl<'input> Parser<'input> {
                                 }
                             }
                             let span = ty.span;
-                            Ok(Spanned { inner: GenericArg::Type(ty), span })
+                            Ok(Spanned {
+                                inner: GenericArg::Type(ty),
+                                span,
+                            })
                         },
                     }
                     .parse(self)?;
                     let span = TextSpan::new(first_span.start, args.span.end);
                     return Ok(Spanned {
                         inner: TypeExpression::GenericApplication {
-                            name: Spanned { inner: first_sym, span: first_span },
+                            name: Spanned {
+                                inner: first_sym,
+                                span: first_span,
+                            },
                             args: args.inner,
                         },
                         span,
@@ -2281,7 +2332,10 @@ impl<'input> Parser<'input> {
                 // When `::` is consumed but the next token is a non-path atom
                 // (e.g., `*`, `[`), this is a memory-tagged type (`heap::*T`).
                 let mut segments: Vec<PathSegment> = vec![PathSegment {
-                    ident: Spanned { inner: first_sym, span: first_span },
+                    ident: Spanned {
+                        inner: first_sym,
+                        span: first_span,
+                    },
                     type_args: Box::new([]),
                 }];
                 let mut path_end = first_span.end;
@@ -2303,14 +2357,20 @@ impl<'input> Parser<'input> {
                             let seg_sym = self.intern_identifier(seg_tok.span);
                             path_end = seg_tok.span.end;
                             segments.push(PathSegment {
-                                ident: Spanned { inner: seg_sym, span: seg_tok.span },
+                                ident: Spanned {
+                                    inner: seg_sym,
+                                    span: seg_tok.span,
+                                },
                                 type_args: Box::new([]),
                             });
                         }
                         _ => {
                             // `::` consumed; non-identifier follows — memory-tagged type.
                             let path_span = TextSpan::new(first_span.start, path_end);
-                            let path = Path { segments: segments.into_boxed_slice(), span: path_span };
+                            let path = Path {
+                                segments: segments.into_boxed_slice(),
+                                span: path_span,
+                            };
                             let inner = self.parse_type_atom()?;
                             let span = TextSpan::new(first_span.start, inner.span.end);
                             return Ok(Spanned {
@@ -2325,8 +2385,14 @@ impl<'input> Parser<'input> {
                 }
 
                 let path_span = TextSpan::new(first_span.start, path_end);
-                let path = Path { segments: segments.into_boxed_slice(), span: path_span };
-                Ok(Spanned { inner: TypeExpression::Path(path), span: path_span })
+                let path = Path {
+                    segments: segments.into_boxed_slice(),
+                    span: path_span,
+                };
+                Ok(Spanned {
+                    inner: TypeExpression::Path(path),
+                    span: path_span,
+                })
             }
             Token::OpenParen => self.parse_tuple_or_paren_type_expression(),
             _ => {
@@ -2430,7 +2496,9 @@ impl<'input> Parser<'input> {
         let ty = parser.parse_type_expression()?;
         // A single-segment path followed by `:` is a named parameter (`self: T`).
         let single_ident = match &ty.inner {
-            TypeExpression::Path(p) if p.segments.len() == 1 && p.segments[0].type_args.is_empty() => {
+            TypeExpression::Path(p)
+                if p.segments.len() == 1 && p.segments[0].type_args.is_empty() =>
+            {
                 Some(p.segments[0].ident.clone())
             }
             _ => None,
@@ -2521,6 +2589,14 @@ impl<'input> Parser<'input> {
             }
             Token::String => Some((Parser::parse_string_expression, BindingPower::Primary)),
             Token::Char => Some((Parser::parse_char_expression, BindingPower::Primary)),
+            Token::AtIdent => Some((
+                Parser::parse_intrinsic_call_expression,
+                BindingPower::Primary,
+            )),
+            Token::OpenBracket => Some((
+                Parser::parse_array_expression,
+                BindingPower::Primary,
+            )),
             _ => None,
         }
     }
@@ -2563,7 +2639,7 @@ impl<'input> Parser<'input> {
             Token::DoubleLeftArrow | Token::DoubleRightArrow => {
                 Some((Parser::parse_binary_expression, BindingPower::BitwiseShift))
             }
-            Token::OpenParen => Some((Parser::parse_call_expression, BindingPower::Call)),
+            Token::OpenParen => Some((Parser::parse_call_expression, BindingPower::Postfix)),
             Token::ColonColon => Some((
                 Parser::parse_type_application_expression,
                 BindingPower::Member,
@@ -2574,6 +2650,7 @@ impl<'input> Parser<'input> {
             },
             Token::Colon => Some((Parser::parse_labelled_expression, BindingPower::Primary)),
             Token::Dot => Some((Parser::parse_object_access_expression, BindingPower::Member)),
+            Token::OpenBracket => Some((Parser::parse_index_expression, BindingPower::Postfix)),
             _ => None,
         }
     }
@@ -3242,6 +3319,42 @@ impl<'input> Parser<'input> {
         Err(())
     }
 
+    fn parse_intrinsic_call_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
+        let token = parser.lexer.next(); // consume @ident
+        let name = Spanned {
+            inner: parser
+                .interner
+                .get_or_intern(token.span.extract_str(parser.source)),
+            span: token.span,
+        };
+
+        let type_args = if parser.lexer.peek().inner == Token::LeftArrow {
+            let (args, _) = parser.parse_type_args()?;
+            args
+        } else {
+            Box::new([])
+        };
+
+        let arguments = SeparatedGroup {
+            open_token: Token::OpenParen,
+            close_token: Token::CloseParen,
+            separator_token: Token::Comma,
+            item_handler: |parser| parser.parse_expression(BindingPower::Default),
+            should_warn_missing_separator: None,
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::new(token.span.start, arguments.span.end);
+        Ok(Spanned {
+            inner: Expression::IntrinsicCall {
+                name,
+                type_args,
+                arguments: arguments.inner,
+            },
+            span,
+        })
+    }
+
     fn parse_call_expression(
         parser: &mut Parser,
         callee: Spanned<Expression>,
@@ -3261,6 +3374,70 @@ impl<'input> Parser<'input> {
             inner: Expression::Call {
                 callee: Box::new(callee),
                 arguments: arguments.inner,
+            },
+            span,
+        })
+    }
+
+    fn parse_array_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
+        let open_span = parser.next_expect(Token::OpenBracket)?.span;
+
+        if let Some(close) = parser.lexer.next_if(Token::CloseBracket) {
+            let span = TextSpan::new(open_span.start, close.span.end);
+            return Ok(Spanned {
+                inner: Expression::ArrayList {
+                    elements: Box::new([]),
+                },
+                span,
+            });
+        }
+
+        let first = parser.parse_expression(BindingPower::Default)?;
+
+        if parser.lexer.next_if(Token::SemiColon).is_some() {
+            let count = parser.parse_expression(BindingPower::Default)?;
+            let close_span = parser.next_expect(Token::CloseBracket)?.span;
+            let span = TextSpan::new(open_span.start, close_span.end);
+            return Ok(Spanned {
+                inner: Expression::ArrayRepeat {
+                    value: Box::new(first),
+                    count: Box::new(count),
+                },
+                span,
+            });
+        }
+
+        let mut elements = vec![first];
+        while parser.lexer.next_if(Token::Comma).is_some() {
+            if parser.lexer.peek().inner == Token::CloseBracket {
+                break;
+            }
+            elements.push(parser.parse_expression(BindingPower::Default)?);
+        }
+
+        let close_span = parser.next_expect(Token::CloseBracket)?.span;
+        let span = TextSpan::new(open_span.start, close_span.end);
+        Ok(Spanned {
+            inner: Expression::ArrayList {
+                elements: elements.into_boxed_slice(),
+            },
+            span,
+        })
+    }
+
+    fn parse_index_expression(
+        parser: &mut Parser,
+        object: Spanned<Expression>,
+        _: BindingPower,
+    ) -> Result<Spanned<Expression>, ()> {
+        _ = parser.lexer.next(); // consume `[`
+        let index = parser.parse_expression(BindingPower::Default)?;
+        let close_span = parser.next_expect(Token::CloseBracket)?.span;
+        let span = TextSpan::new(object.span.start, close_span.end);
+        Ok(Spanned {
+            inner: Expression::Index {
+                object: Box::new(object),
+                index: Box::new(index),
             },
             span,
         })

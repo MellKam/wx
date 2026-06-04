@@ -202,9 +202,9 @@ impl<'mir> Builder<'mir> {
                 let node = self.func.ensure_node(DataNodeKind::FunctionRef { id: *id });
                 StackResult::Value(node)
             }
-            ExprKind::StringIndex { symbol } => {
-                let node = self.func.ensure_node(DataNodeKind::StringRef {
-                    symbol: *symbol,
+            ExprKind::StaticPointer { data_index } => {
+                let node = self.func.ensure_node(DataNodeKind::StaticDataRef {
+                    data_index: *data_index,
                 });
                 StackResult::Value(node)
             }
@@ -217,8 +217,16 @@ impl<'mir> Builder<'mir> {
                 StackResult::Value(node)
             }
             ExprKind::MemorySize { memory } => {
-                let node = self.func.ensure_node(DataNodeKind::MemorySize { memory: *memory });
-                StackResult::Value(node)
+                let result_node =
+                    self.func.ensure_node(DataNodeKind::MemorySizeResult { memory: *memory });
+                self.push_stmt(
+                    block_idx,
+                    ControlNode::MemorySize {
+                        memory: *memory,
+                        result: result_node,
+                    },
+                );
+                StackResult::Value(result_node)
             }
 
             // ── Arithmetic ────────────────────────────────────────────────
@@ -514,7 +522,7 @@ impl<'mir> Builder<'mir> {
             }
 
             // ── Memory ────────────────────────────────────────────────────
-            ExprKind::PointerLoad { pointer, memory } => {
+            ExprKind::PointerLoad { pointer, offset: base_offset, memory } => {
                 let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
                 match expr.ty {
                     mir::Type::Aggregate { aggregate_index } => {
@@ -529,7 +537,7 @@ impl<'mir> Builder<'mir> {
                             .collect();
                         let fields: Box<[DataNodeIndex]> = field_tys
                             .iter()
-                            .map(|&(ty, offset)| {
+                            .map(|&(ty, field_offset)| {
                                 let result = self.func.ensure_node(DataNodeKind::PointerLoadResult {
                                     address,
                                     ty,
@@ -538,7 +546,7 @@ impl<'mir> Builder<'mir> {
                                     block_idx,
                                     ControlNode::PointerLoad {
                                         address,
-                                        offset,
+                                        offset: base_offset + field_offset,
                                         result,
                                         memory: *memory,
                                     },
@@ -558,14 +566,14 @@ impl<'mir> Builder<'mir> {
                             .ensure_node(DataNodeKind::PointerLoadResult { address, ty });
                         self.push_stmt(
                             block_idx,
-                            ControlNode::PointerLoad { address, offset: 0, result, memory: *memory },
+                            ControlNode::PointerLoad { address, offset: *base_offset, result, memory: *memory },
                         );
                         StackResult::Value(result)
                     }
                 }
             }
 
-            ExprKind::PointerStore { pointer, value, memory } => {
+            ExprKind::PointerStore { pointer, value, offset: base_offset, memory } => {
                 let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
                 match value.ty {
                     mir::Type::Aggregate { .. } => {
@@ -574,12 +582,12 @@ impl<'mir> Builder<'mir> {
                         let offsets: Vec<u32> = self.mir.aggregates[aggregate_index as usize]
                             .offsets
                             .to_vec();
-                        for (&field_node, &offset) in fields.iter().zip(offsets.iter()) {
+                        for (&field_node, &field_offset) in fields.iter().zip(offsets.iter()) {
                             self.push_stmt(
                                 block_idx,
                                 ControlNode::PointerStore {
                                     address,
-                                    offset,
+                                    offset: base_offset + field_offset,
                                     value: field_node,
                                     memory: *memory,
                                 },
@@ -590,7 +598,7 @@ impl<'mir> Builder<'mir> {
                         let value_node = self.build_expr(block_idx, bindings, value).unwrap_value();
                         self.push_stmt(
                             block_idx,
-                            ControlNode::PointerStore { address, offset: 0, value: value_node, memory: *memory },
+                            ControlNode::PointerStore { address, offset: *base_offset, value: value_node, memory: *memory },
                         );
                     }
                 }

@@ -6,7 +6,8 @@ type_pool:
   - Error
   - Unit
   - Never
-  - Unknown
+  - Integer
+  - Float
   - U8
   - I8
   - U16
@@ -19,15 +20,11 @@ type_pool:
   - F64
   - Bool
   - Char
-  - Slice:
-      of: 4
-      mutable: false
-      memory: ~
   - Function:
       signature:
         items:
-          - 8
-          - 8
+          - 9
+          - 9
           - 1
         params_count: 2
   - Function:
@@ -41,6 +38,18 @@ type_pool:
   - ImportModule:
       module_index: 0
 diagnostics:
+  - severity: Error
+    code: E1038
+    message: pointer dereference requires a linear memory
+    labels:
+      - style: Primary
+        file_id: 0
+        range:
+          start: 31
+          end: 35
+        message: ""
+    notes:
+      - "declare a memory in this module: `memory <name>: Memory32;`"
   - severity: Error
     code: E1007
     message: undeclared identifier
@@ -84,7 +93,7 @@ functions:
             start: 70
             end: 73
         ty:
-          inner: 8
+          inner: 9
           span:
             start: 75
             end: 78
@@ -95,7 +104,7 @@ functions:
             start: 80
             end: 83
         ty:
-          inner: 8
+          inner: 9
           span:
             start: 85
             end: 88
@@ -171,12 +180,12 @@ functions:
                       - kind:
                           Int:
                             value: 0
-                        ty: 8
+                        ty: 9
                         span:
                           start: 156
                           end: 157
                       - kind: Error
-                        ty: 8
+                        ty: 9
                         span:
                           start: 159
                           end: 165
@@ -233,7 +242,7 @@ structs:
             start: 24
             end: 29
         ty:
-          inner: 16
+          inner: 0
           span:
             start: 31
             end: 35
@@ -245,11 +254,11 @@ impl_members:
     18:
       AssociatedConst:
         id: 3
-        ty: 8
+        ty: 9
     19:
       AssociatedConst:
         id: 4
-        ty: 8
+        ty: 9
   20: {}
 traits: []
 trait_impls: []
@@ -265,7 +274,7 @@ constants:
         start: 0
         end: 0
     ty:
-      inner: 8
+      inner: 9
       span:
         start: 0
         end: 0
@@ -280,7 +289,7 @@ constants:
         start: 0
         end: 0
     ty:
-      inner: 8
+      inner: 9
       span:
         start: 0
         end: 0

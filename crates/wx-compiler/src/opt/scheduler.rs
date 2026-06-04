@@ -26,7 +26,6 @@
 
 use std::collections::HashMap;
 
-use string_interner::symbol::SymbolU32;
 
 use crate::codegen::ValueType;
 use crate::mir;
@@ -203,14 +202,14 @@ pub enum Instruction {
     /// A function referenced as a value; the encoder pushes it into the
     /// function table and emits `i32.const <table_index>`.
     FunctionPointer(crate::ast::DefId),
-    /// A string literal; the encoder resolves the pool index to a byte offset
-    /// and emits `i32.const <byte_offset>`.
-    StringPointer(SymbolU32),
     /// End of the static data section for a given memory (base of writable
     /// heap); the encoder emits `i32.const <data_section_end>`.
     DataSectionEnd {
         memory: crate::ast::DefId,
     },
+    /// A static array; the encoder resolves the index to a byte offset in the
+    /// data segment and emits `i32.const <byte_offset>`.
+    StaticDataPointer(u32),
 }
 
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
@@ -513,6 +512,13 @@ impl<'f> Scheduler<'f> {
                 self.body.push(Instruction::Unreachable);
             }
 
+            ControlNode::MemorySize { memory, result } => {
+                self.body.push(Instruction::MemorySize(*memory));
+                let local = self.alloc_local(ScalarType::I32);
+                self.node_to_local.insert(*result, local);
+                self.body.push(Instruction::LocalSet(local));
+            }
+
             ControlNode::MemoryGrow {
                 memory,
                 delta,
@@ -677,8 +683,8 @@ impl<'f> Scheduler<'f> {
             DataNodeKind::FunctionRef { id } => {
                 self.body.push(Instruction::FunctionPointer(id));
             }
-            DataNodeKind::StringRef { symbol } => {
-                self.body.push(Instruction::StringPointer(symbol));
+            DataNodeKind::StaticDataRef { data_index } => {
+                self.body.push(Instruction::StaticDataPointer(data_index));
             }
             DataNodeKind::MemoryOffset { memory } => {
                 self.body.push(Instruction::DataSectionEnd { memory });
@@ -686,8 +692,8 @@ impl<'f> Scheduler<'f> {
             DataNodeKind::MemoryIndex { memory } => {
                 self.body.push(Instruction::MemoryIndex { memory });
             }
-            DataNodeKind::MemorySize { memory } => {
-                self.body.push(Instruction::MemorySize(memory));
+            DataNodeKind::MemorySizeResult { .. } => {
+                unreachable!("MemorySizeResult must be read from a local, not emitted inline")
             }
 
             // Arithmetic / bitwise — push left, push right, emit opcode.
@@ -980,7 +986,7 @@ impl<'f> Scheduler<'f> {
             | DataNodeKind::Float { .. }
             | DataNodeKind::Param { .. }
             | DataNodeKind::FunctionRef { .. }
-            | DataNodeKind::StringRef { .. }
+            | DataNodeKind::StaticDataRef { .. }
             | DataNodeKind::MemoryOffset { .. } => false,
 
             // Loop params whose before == after were never modified; skip.
@@ -989,9 +995,10 @@ impl<'f> Scheduler<'f> {
             // Phi nodes that folded away (left == right) don't need a local.
             DataNodeKind::Phi { left, right, .. } => left != right,
 
-            // Calls, memory.grow, and pointer loads always produce a result that must be captured.
+            // Control-node results always produce a result that must be captured.
             DataNodeKind::CallResult { .. }
             | DataNodeKind::AggregateCallResult { .. }
+            | DataNodeKind::MemorySizeResult { .. }
             | DataNodeKind::MemoryGrowResult { .. }
             | DataNodeKind::PointerLoadResult { .. } => true,
 

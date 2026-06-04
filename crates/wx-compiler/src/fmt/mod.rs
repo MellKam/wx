@@ -103,6 +103,12 @@ impl Builder {
                 items.push(Node::StaticText(";"));
                 Node::Concat(items.into())
             }
+            Item::IntrinsicFunction { signature, .. } => {
+                let mut items = Vec::new();
+                Builder::build_function_signature(&mut items, interner, signature);
+                items.push(Node::StaticText(";"));
+                Node::Concat(items.into())
+            }
             Item::Global {
                 pub_span,
                 mut_span,
@@ -1114,6 +1120,58 @@ impl Builder {
                 items.push(Node::StaticText(">"));
                 Node::Concat(items.into())
             }
+            Expression::IntrinsicCall {
+                name,
+                type_args,
+                arguments,
+            } => {
+                let mut items = Vec::new();
+                items.push(Node::StaticText("@"));
+                items.push(Self::symbol(interner, name.inner));
+                if !type_args.is_empty() {
+                    items.push(Node::StaticText("<"));
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            items.push(Node::StaticText(", "));
+                        }
+                        items.push(Self::build_type_expression(interner, &arg.inner));
+                    }
+                    items.push(Node::StaticText(">"));
+                }
+                items.push(Node::StaticText("("));
+                for (index, arg) in arguments.iter().enumerate() {
+                    items.push(Self::build_expression(interner, source, &arg.inner));
+                    if index + 1 < arguments.len() {
+                        items.push(Node::StaticText(", "));
+                    }
+                }
+                items.push(Node::StaticText(")"));
+                Node::Concat(items.into())
+            }
+            Expression::ArrayList { elements } => {
+                let mut items = vec![Node::StaticText("[")];
+                for (i, element) in elements.iter().enumerate() {
+                    if i > 0 {
+                        items.push(Node::StaticText(", "));
+                    }
+                    items.push(Self::build_expression(interner, source, element));
+                }
+                items.push(Node::StaticText("]"));
+                Node::Concat(items.into())
+            }
+            Expression::ArrayRepeat { value, count } => Node::Concat(Box::new([
+                Node::StaticText("["),
+                Self::build_expression(interner, source, value),
+                Node::StaticText("; "),
+                Self::build_expression(interner, source, count),
+                Node::StaticText("]"),
+            ])),
+            Expression::Index { object, index } => Node::Concat(Box::new([
+                Self::build_expression(interner, source, object),
+                Node::StaticText("["),
+                Self::build_expression(interner, source, index),
+                Node::StaticText("]"),
+            ])),
             Expression::Tuple { elements } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("("));

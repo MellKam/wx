@@ -32,6 +32,7 @@ functions:
                     ty: U32
               ty: U32
       ty: U32
+    static_data: []
   - id: 1
     signature_index: 0
     scopes:
@@ -63,6 +64,7 @@ functions:
                       ty: U32
               ty: U32
       ty: U32
+    static_data: []
 signatures:
   - items:
       - U32
@@ -76,3 +78,4 @@ exports:
 imports: []
 memories: []
 aggregates: []
+static_entries: []

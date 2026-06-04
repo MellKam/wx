@@ -40,9 +40,6 @@ pub enum ExprKind {
         local_index: LocalIndex,
         value: Box<Expression>,
     },
-    StringIndex {
-        symbol: SymbolU32,
-    },
     Aggregate {
         values: Box<[Expression]>,
     },
@@ -192,13 +189,22 @@ pub enum ExprKind {
     /// Load a value from the address held in `pointer`.
     PointerLoad {
         pointer: Box<Expression>,
+        /// Static byte offset added to the address (WASM memarg immediate).
+        offset: u32,
         memory: ast::DefId,
     },
     /// Store `value` to the address held in `pointer`.
     PointerStore {
         pointer: Box<Expression>,
         value: Box<Expression>,
+        /// Static byte offset added to the address (WASM memarg immediate).
+        offset: u32,
         memory: ast::DefId,
+    },
+    /// Pointer to a static data entry (index into `MIR.static_data`).
+    /// Resolves to an `i32.const <byte_offset>` at codegen time.
+    StaticPointer {
+        data_index: u32,
     },
 }
 
@@ -250,6 +256,14 @@ pub struct MemoryInfo {
     pub max_pages: Option<u32>,
 }
 
+/// One entry in the static data segment — either a string literal or an array constant.
+/// Bytes are pre-encoded; the layout (byte offset) is computed by codegen after DCE.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct StaticEntry {
+    pub bytes: Box<[u8]>,
+    pub align: u32,
+}
+
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct MIR {
     pub functions: Vec<Function>,
@@ -261,6 +275,7 @@ pub struct MIR {
     pub imports: Vec<ImportModule>,
     pub memories: Vec<MemoryInfo>,
     pub aggregates: Box<[Aggregate]>,
+    pub static_entries: Vec<StaticEntry>,
     /// Direct call edges collected during lowering: (caller_mir_id,
     /// callee_mir_id). Consumed by `run_inlining_pass` to build the call
     /// graph.
@@ -345,6 +360,10 @@ pub struct Function {
     pub signature_index: SignatureIndex,
     pub scopes: Vec<BlockScope>,
     pub block: Expression,
+    /// Indices into `MIR.static_pool.entries` owned by this function.
+    /// Codegen unions these across all live functions to determine which entries
+    /// to include in the WASM data segment.
+    pub static_data: Vec<u32>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -389,6 +408,8 @@ impl MIR {
             mono_registry: MonoRegistry::new(id_generator),
             current_function_id: None,
             call_edges: Vec::new(),
+            static_entries: Vec::new(),
+            symbol_to_entry_index: HashMap::new(),
         };
 
         // MIR functions: live defined (Internal) monomorphic functions only.
@@ -553,6 +574,7 @@ impl MIR {
                 exports
             },
             call_edges: builder.call_edges,
+            static_entries: builder.static_entries,
         };
 
         run_inlining_pass(&mut mir);
@@ -617,11 +639,15 @@ struct Builder<'tir> {
     /// function's `callers` list from actual MIR-level calls rather than
     /// TIR accesses.
     call_edges: Vec<(ast::DefId, ast::DefId)>,
+    static_entries: Vec<StaticEntry>,
+    symbol_to_entry_index: HashMap<SymbolU32, u32>,
 }
 
 struct FunctionContext {
     frame: Vec<BlockScope>,
     current_scope_index: usize,
+    /// Static pool indices referenced by expressions in this function.
+    static_data: Vec<u32>,
 }
 
 impl<'tir> Builder<'tir> {
@@ -633,35 +659,32 @@ impl<'tir> Builder<'tir> {
     /// Panics on `Error`, `Unknown`, `ImportModule`, `Enum`, or non-value
     /// types.
     pub fn compute_layout(&mut self, idx: tir::TypeIndex) -> Layout {
-        if idx == tir::Type::F32_IDX
-            || idx == tir::Type::I32_IDX
-            || idx == tir::Type::U32_IDX
-            || idx == tir::Type::CHAR_IDX
+        if idx == tir::TypeIndex::F32
+            || idx == tir::TypeIndex::I32
+            || idx == tir::TypeIndex::U32
+            || idx == tir::TypeIndex::CHAR
         {
             return Layout { size: 4, align: 4 };
         }
-        if idx == tir::Type::I64_IDX || idx == tir::Type::U64_IDX || idx == tir::Type::F64_IDX {
+        if idx == tir::TypeIndex::I64 || idx == tir::TypeIndex::U64 || idx == tir::TypeIndex::F64 {
             return Layout { size: 8, align: 8 };
         }
-        if idx == tir::Type::U8_IDX || idx == tir::Type::I8_IDX || idx == tir::Type::BOOL_IDX {
+        if idx == tir::TypeIndex::U8 || idx == tir::TypeIndex::I8 || idx == tir::TypeIndex::BOOL {
             return Layout { size: 1, align: 1 };
         }
-        if idx == tir::Type::UNIT_IDX || idx == tir::Type::NEVER_IDX {
+        if idx == tir::TypeIndex::UNIT || idx == tir::TypeIndex::NEVER {
             return Layout { size: 0, align: 1 };
         }
-        if idx == tir::Type::U16_IDX || idx == tir::Type::I16_IDX {
+        if idx == tir::TypeIndex::U16 || idx == tir::TypeIndex::I16 {
             return Layout { size: 2, align: 2 };
         }
 
-        match &self.tir.type_pool[idx as usize] {
+        match &self.tir.type_pool[idx.as_usize()] {
             tir::Type::Function { .. } | tir::Type::FunctionItem { .. } => {
                 Layout { size: 4, align: 4 }
             }
             tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
-                let tir_idx = match memory {
-                    Some(def_id) => self.tir.memory_index_lookup[def_id] as usize,
-                    None => 0,
-                };
+                let tir_idx = self.tir.memory_index_lookup[memory] as usize;
                 let pointer_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: pointer_size,
@@ -669,10 +692,7 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::Type::Slice { memory, .. } => {
-                let tir_idx = match memory {
-                    Some(def_id) => self.tir.memory_index_lookup[def_id] as usize,
-                    None => 0,
-                };
+                let tir_idx = self.tir.memory_index_lookup[memory] as usize;
                 let pointer_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: pointer_size * 2,
@@ -769,7 +789,7 @@ impl<'tir> Builder<'tir> {
         let saved = if !args.is_empty() {
             let concrete_args: Box<[tir::TypeIndex]> = args
                 .iter()
-                .map(|&a| match &self.tir.type_pool[a as usize] {
+                .map(|&a| match &self.tir.type_pool[a.as_usize()] {
                     tir::Type::TypeParam { param_index, .. } => {
                         self.current_substitutions[*param_index as usize]
                     }
@@ -798,26 +818,26 @@ impl<'tir> Builder<'tir> {
 
     fn lower_type_index(&mut self, type_idx: tir::TypeIndex) -> Type {
         match type_idx {
-            idx if idx == tir::Type::ERROR_IDX => unreachable!(),
-            idx if idx == tir::Type::UNIT_IDX => return Type::Unit,
-            idx if idx == tir::Type::NEVER_IDX => return Type::Never,
-            idx if idx == tir::Type::UNKNOWN_IDX => unreachable!(),
-            idx if idx == tir::Type::I8_IDX => return Type::I8,
-            idx if idx == tir::Type::U8_IDX => return Type::U8,
-            idx if idx == tir::Type::I16_IDX => return Type::I16,
-            idx if idx == tir::Type::U16_IDX => return Type::U16,
-            idx if idx == tir::Type::I32_IDX => return Type::I32,
-            idx if idx == tir::Type::U32_IDX => return Type::U32,
-            idx if idx == tir::Type::I64_IDX => return Type::I64,
-            idx if idx == tir::Type::U64_IDX => return Type::U64,
-            idx if idx == tir::Type::F32_IDX => return Type::F32,
-            idx if idx == tir::Type::F64_IDX => return Type::F64,
-            idx if idx == tir::Type::BOOL_IDX => return Type::Bool,
-            idx if idx == tir::Type::CHAR_IDX => return Type::U32,
+            idx if idx == tir::TypeIndex::ERROR => unreachable!(),
+            idx if idx == tir::TypeIndex::UNIT => return Type::Unit,
+            idx if idx == tir::TypeIndex::NEVER => return Type::Never,
+            idx if idx == tir::TypeIndex::INTEGER => unreachable!(),
+            idx if idx == tir::TypeIndex::I8 => return Type::I8,
+            idx if idx == tir::TypeIndex::U8 => return Type::U8,
+            idx if idx == tir::TypeIndex::I16 => return Type::I16,
+            idx if idx == tir::TypeIndex::U16 => return Type::U16,
+            idx if idx == tir::TypeIndex::I32 => return Type::I32,
+            idx if idx == tir::TypeIndex::U32 => return Type::U32,
+            idx if idx == tir::TypeIndex::I64 => return Type::I64,
+            idx if idx == tir::TypeIndex::U64 => return Type::U64,
+            idx if idx == tir::TypeIndex::F32 => return Type::F32,
+            idx if idx == tir::TypeIndex::F64 => return Type::F64,
+            idx if idx == tir::TypeIndex::BOOL => return Type::Bool,
+            idx if idx == tir::TypeIndex::CHAR => return Type::U32,
             _ => {}
         };
 
-        match self.tir.type_pool[type_idx as usize].clone() {
+        match self.tir.type_pool[type_idx.as_usize()].clone() {
             tir::Type::TypeParam { param_index, .. } => {
                 let concrete = self.current_substitutions[param_index as usize];
                 self.lower_type_index(concrete)
@@ -836,7 +856,7 @@ impl<'tir> Builder<'tir> {
                     // Resolve any TypeParam entries in type_args through current_substitutions.
                     let concrete_args: Box<[tir::TypeIndex]> = type_args
                         .iter()
-                        .map(|&ty| match &self.tir.type_pool[ty as usize] {
+                        .map(|&ty| match &self.tir.type_pool[ty.as_usize()] {
                             tir::Type::TypeParam { param_index, .. } => self
                                 .current_substitutions
                                 .get(*param_index as usize)
@@ -872,11 +892,8 @@ impl<'tir> Builder<'tir> {
                     .expect("no impl found for associated type projection during MIR lowering");
                 self.lower_type_index(concrete)
             }
-            tir::Type::Pointer { memory, .. } => Type::Pointer {
-                memory: match memory {
-                    Some(def_id) => def_id,
-                    None => self.tir.memories[0].id,
-                },
+            tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => Type::Pointer {
+                memory,
             },
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index, args } => {
@@ -889,19 +906,6 @@ impl<'tir> Builder<'tir> {
                 let aggregate_index = self.ensure_aggregate(mir_elems);
                 Type::Aggregate { aggregate_index }
             }
-            _ => unreachable!(),
-        }
-    }
-
-    fn memory_index_from_arg(&self, type_idx: tir::TypeIndex) -> ast::DefId {
-        let resolved = match &self.tir.type_pool[type_idx as usize] {
-            tir::Type::TypeParam { param_index, .. } => {
-                self.current_substitutions[*param_index as usize]
-            }
-            _ => type_idx,
-        };
-        match &self.tir.type_pool[resolved as usize] {
-            tir::Type::Memory { id, .. } => *id,
             _ => unreachable!(),
         }
     }
@@ -920,7 +924,7 @@ impl<'tir> Builder<'tir> {
     /// Converts a TIR function type (by its type-pool index) to a MIR
     /// `SignatureIndex`, interning the concrete signature on first use.
     fn intern_tir_function_type(&mut self, type_idx: tir::TypeIndex) -> SignatureIndex {
-        let sig = match &self.tir.type_pool[type_idx as usize] {
+        let sig = match &self.tir.type_pool[type_idx.as_usize()] {
             tir::Type::Function { signature } => signature.clone(),
             _ => unreachable!("expected Function type"),
         };
@@ -952,7 +956,7 @@ impl<'tir> Builder<'tir> {
             .scopes
             .iter()
             .map(|scope| {
-                let result_type_idx = scope.inferred_type.unwrap_or(tir::Type::UNIT_IDX);
+                let result_type_idx = scope.inferred_type.unwrap_or(tir::TypeIndex::UNIT);
                 let locals = scope
                     .locals
                     .iter()
@@ -977,6 +981,7 @@ impl<'tir> Builder<'tir> {
         let mut ctx = FunctionContext {
             current_scope_index: 0,
             frame,
+            static_data: Vec::new(),
         };
 
         let mut top_sink = Vec::new();
@@ -987,6 +992,7 @@ impl<'tir> Builder<'tir> {
             signature_index: self.intern_tir_function_type(func.signature_index),
             scopes: ctx.frame,
             block,
+            static_data: ctx.static_data,
         }
     }
 
@@ -994,6 +1000,7 @@ impl<'tir> Builder<'tir> {
         let mut dummy_ctx = FunctionContext {
             frame: Vec::new(),
             current_scope_index: 0,
+            static_data: Vec::new(),
         };
         let value_expr = global
             .value
@@ -1009,6 +1016,97 @@ impl<'tir> Builder<'tir> {
                 Mutability::Immutable
             },
             value: self.lower_expression(&mut dummy_ctx, &value_expr.inner, &mut Vec::new()),
+        }
+    }
+
+    /// Encode one compile-time element (Int or Float ExprKind + its TIR type)
+    /// as little-endian bytes appended to `buf`.
+    fn encode_element(buf: &mut Vec<u8>, kind: &tir::ExprKind, ty: tir::TypeIndex) {
+        match kind {
+            tir::ExprKind::Int { value } => {
+                let v = *value;
+                if ty == tir::TypeIndex::I8 || ty == tir::TypeIndex::U8 {
+                    buf.push(v as u8);
+                } else if ty == tir::TypeIndex::I16 || ty == tir::TypeIndex::U16 {
+                    buf.extend_from_slice(&(v as u16).to_le_bytes());
+                } else if ty == tir::TypeIndex::I32 || ty == tir::TypeIndex::U32 {
+                    buf.extend_from_slice(&(v as u32).to_le_bytes());
+                } else if ty == tir::TypeIndex::I64 || ty == tir::TypeIndex::U64 {
+                    buf.extend_from_slice(&(v as u64).to_le_bytes());
+                } else {
+                    unreachable!("unexpected int element type");
+                }
+            }
+            tir::ExprKind::Float { value } => {
+                if ty == tir::TypeIndex::F32 {
+                    buf.extend_from_slice(&(*value as f32).to_bits().to_le_bytes());
+                } else if ty == tir::TypeIndex::F64 {
+                    buf.extend_from_slice(&value.to_bits().to_le_bytes());
+                } else {
+                    unreachable!("unexpected float element type");
+                }
+            }
+            _ => unreachable!("array element must be a compile-time constant"),
+        }
+    }
+
+    /// Add a static data entry (array constant); returns `(index, byte_size)`.
+    fn push_static_data(&mut self, func_ctx: &mut FunctionContext, bytes: Vec<u8>, align: u32) -> (u32, u32) {
+        let size = bytes.len() as u32;
+        let idx = self.static_entries.len() as u32;
+        self.static_entries.push(StaticEntry { bytes: bytes.into_boxed_slice(), align });
+        func_ctx.static_data.push(idx);
+        (idx, size)
+    }
+
+    /// Add a string literal entry, deduplicating by symbol; returns `(index, byte_size)`.
+    fn push_string_data(&mut self, func_ctx: &mut FunctionContext, symbol: SymbolU32) -> (u32, u32) {
+        if let Some(&idx) = self.symbol_to_entry_index.get(&symbol) {
+            let size = self.static_entries[idx as usize].bytes.len() as u32;
+            func_ctx.static_data.push(idx);
+            return (idx, size);
+        }
+        let s = self.interner.resolve(symbol).expect("unresolved string symbol");
+        let size = s.len() as u32;
+        let idx = self.static_entries.len() as u32;
+        self.static_entries.push(StaticEntry {
+            bytes: s.as_bytes().to_vec().into_boxed_slice(),
+            align: 1,
+        });
+        self.symbol_to_entry_index.insert(symbol, idx);
+        func_ctx.static_data.push(idx);
+        (idx, size)
+    }
+
+    /// Build the address expression `base + index * elem_size`.
+    fn lower_index_address(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        object: &tir::Expression,
+        index: &tir::Expression,
+        elem_ty: tir::TypeIndex,
+        sink: &mut Vec<Expression>,
+    ) -> Expression {
+        let elem_size = self.compute_layout(elem_ty).size;
+        let ptr_ty = self.lower_type_index(object.ty);
+        let idx_ty = self.lower_type_index(index.ty);
+        let base = self.lower_expression(func_ctx, object, sink);
+        let idx = self.lower_expression(func_ctx, index, sink);
+        Expression {
+            kind: ExprKind::Add {
+                left: Box::new(base),
+                right: Box::new(Expression {
+                    kind: ExprKind::Mul {
+                        left: Box::new(idx),
+                        right: Box::new(Expression {
+                            kind: ExprKind::Int { value: elem_size as i64 },
+                            ty: idx_ty,
+                        }),
+                    },
+                    ty: idx_ty,
+                }),
+            },
+            ty: ptr_ty,
         }
     }
 
@@ -1060,14 +1158,14 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Function { id } => {
                 // If the FunctionItem carries non-empty type_args the reference is a
                 // monomorphized generic function; register the mono instance.
-                match self.tir.type_pool[expr.ty as usize].clone() {
+                match self.tir.type_pool[expr.ty.as_usize()].clone() {
                     tir::Type::FunctionItem {
                         id: fn_id,
                         type_args,
                     } if !type_args.is_empty() => {
                         let concrete_args: Box<[tir::TypeIndex]> = type_args
                             .iter()
-                            .map(|&ty| match &self.tir.type_pool[ty as usize] {
+                            .map(|&ty| match &self.tir.type_pool[ty.as_usize()] {
                                 tir::Type::TypeParam { param_index, .. } => self
                                     .current_substitutions
                                     .get(*param_index as usize)
@@ -1107,19 +1205,19 @@ impl<'tir> Builder<'tir> {
                 ty: Type::U32,
             },
             tir::ExprKind::String { symbol } => {
-                let len = self.interner.resolve(*symbol).unwrap().len() as i64;
+                let (data_index, size) = self.push_string_data(func_ctx, *symbol);
                 let ty = self.lower_type_index(expr.ty);
                 Expression {
                     kind: ExprKind::Aggregate {
                         values: Box::new([
                             Expression {
-                                kind: ExprKind::StringIndex { symbol: *symbol },
+                                kind: ExprKind::StaticPointer { data_index },
                                 ty: Type::Pointer {
                                     memory: self.tir.memories[0].id,
                                 },
                             },
                             Expression {
-                                kind: ExprKind::Int { value: len },
+                                kind: ExprKind::Int { value: size as i64 },
                                 ty: Type::U32,
                             },
                         ]),
@@ -1156,7 +1254,7 @@ impl<'tir> Builder<'tir> {
                 // lower `TypeParam{0}` with substitutions = [TypeParam{0}].
                 let concrete_type_args: Box<[tir::TypeIndex]> = type_args
                     .iter()
-                    .map(|&ty| match &self.tir.type_pool[ty as usize] {
+                    .map(|&ty| match &self.tir.type_pool[ty.as_usize()] {
                         tir::Type::TypeParam { param_index, .. } => self
                             .current_substitutions
                             .get(*param_index as usize)
@@ -1206,14 +1304,14 @@ impl<'tir> Builder<'tir> {
                 arguments,
             } => {
                 // Resolve object type through any active TypeParam substitution.
-                let resolved_obj_ty = match &self.tir.type_pool[object.ty as usize] {
+                let resolved_obj_ty = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::TypeParam { param_index, .. } => {
                         self.current_substitutions[*param_index as usize]
                     }
                     _ => object.ty,
                 };
                 if matches!(
-                    self.tir.type_pool[resolved_obj_ty as usize],
+                    self.tir.type_pool[resolved_obj_ty.as_usize()],
                     tir::Type::Memory { .. }
                 ) {
                     let memory = match &object.kind {
@@ -1249,7 +1347,7 @@ impl<'tir> Builder<'tir> {
                 // Resolve any TypeParam entries in type_args through active substitutions.
                 let resolved: Box<[tir::TypeIndex]> = type_args
                     .iter()
-                    .map(|&ty| match &self.tir.type_pool[ty as usize] {
+                    .map(|&ty| match &self.tir.type_pool[ty.as_usize()] {
                         tir::Type::TypeParam { param_index, .. } => self
                             .current_substitutions
                             .get(*param_index as usize)
@@ -1310,46 +1408,6 @@ impl<'tir> Builder<'tir> {
             }
 
             tir::ExprKind::Call { callee, arguments } => {
-                // Detect calls to intrinsic functions (e.g. wasm::memory32_grow).
-                // The callee is either ExprKind::Function { id } (bare reference) or
-                // ExprKind::NamespaceAccess (module member); both have ty = FunctionItem { id
-                // }.
-                let intrinsic_id = match &self.tir.type_pool[callee.ty as usize] {
-                    tir::Type::FunctionItem { id, .. } => Some(*id),
-                    _ => None,
-                };
-                if let Some(id) = intrinsic_id {
-                    let tir_idx = self.tir.function_index_lookup[&id];
-                    let tir_func = &self.tir.functions[tir_idx as usize];
-                    if tir_func
-                        .attributes
-                        .iter()
-                        .any(|a| *a == tir::FunctionAttribute::Intrinsic)
-                    {
-                        let intrinsic_name = self.interner.resolve(tir_func.name.inner).unwrap();
-                        let result_ty = self.lower_type_index(expr.ty);
-                        return match intrinsic_name {
-                            "memory32_size" => {
-                                let memory = self.memory_index_from_arg(arguments[0].ty);
-                                Expression {
-                                    kind: ExprKind::MemorySize { memory },
-                                    ty: result_ty,
-                                }
-                            }
-                            "memory32_grow" => {
-                                let memory = self.memory_index_from_arg(arguments[0].ty);
-                                let delta =
-                                    Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
-                                Expression {
-                                    kind: ExprKind::MemoryGrow { memory, delta },
-                                    ty: result_ty,
-                                }
-                            }
-                            name => unreachable!("unknown intrinsic: {name}"),
-                        };
-                    }
-                }
-
                 let callee = Box::new(self.lower_expression(func_ctx, callee, sink));
                 let arguments = arguments
                     .iter()
@@ -1409,7 +1467,7 @@ impl<'tir> Builder<'tir> {
                         let const_name_sym = self.tir.constants[const_idx].name.inner;
                         let namespace_ty = namespace.inner;
                         let const_name = self.interner.resolve(const_name_sym).unwrap();
-                        match &self.tir.type_pool[namespace_ty as usize] {
+                        match &self.tir.type_pool[namespace_ty.as_usize()] {
                             tir::Type::Memory { id, .. } => match const_name {
                                 "OFFSET" => Expression {
                                     kind: ExprKind::MemoryOffset { memory: *id },
@@ -1467,6 +1525,7 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Deref { pointer, memory_id } => Expression {
                 kind: ExprKind::PointerLoad {
                     pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
+                    offset: 0,
                     memory: *memory_id,
                 },
                 ty: self.lower_type_index(expr.ty),
@@ -1474,7 +1533,7 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::ObjectAccess { object, member } => {
                 // Memory member access — OFFSET constant; grow/size appear only as call
                 // callees.
-                if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty as usize] {
+                if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty.as_usize()] {
                     let member_name = self.interner.resolve(member.inner).unwrap_or("");
                     let memory = match &object.kind {
                         tir::ExprKind::Memory { id } => *id,
@@ -1492,7 +1551,7 @@ impl<'tir> Builder<'tir> {
                     };
                 }
 
-                let (struct_index, args) = match &self.tir.type_pool[object.ty as usize] {
+                let (struct_index, args) = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Struct { struct_index, args } => (*struct_index, args),
                     _ => unreachable!("ObjectAccess on non-struct type"),
                 };
@@ -1545,7 +1604,7 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::StructInit { fields, .. } => {
-                let (struct_index, args) = match &self.tir.type_pool[expr.ty as usize] {
+                let (struct_index, args) = match &self.tir.type_pool[expr.ty.as_usize()] {
                     tir::Type::Struct { struct_index, args } => (*struct_index, args),
                     _ => unreachable!("StructInit type must be Struct"),
                 };
@@ -1567,8 +1626,53 @@ impl<'tir> Builder<'tir> {
                     ty: Type::Aggregate { aggregate_index },
                 }
             }
+            tir::ExprKind::IntrinsicCall { name, type_args, arguments } => {
+                let name_str = self.interner.resolve(*name).unwrap_or("");
+                match name_str {
+                    "@memory_grow" => {
+                        let raw_ty = type_args[0];
+                        let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+                            tir::Type::TypeParam { param_index, .. } => self
+                                .current_substitutions
+                                .get(*param_index as usize)
+                                .copied()
+                                .unwrap_or(raw_ty),
+                            _ => raw_ty,
+                        };
+                        let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
+                            tir::Type::Memory { id, .. } => *id,
+                            _ => unreachable!("@memory_grow type arg must be a Memory type"),
+                        };
+                        let delta = Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
+                        Expression {
+                            kind: ExprKind::MemoryGrow { memory, delta },
+                            ty: self.lower_type_index(expr.ty),
+                        }
+                    }
+                    "@memory_size" => {
+                        let raw_ty = type_args[0];
+                        let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+                            tir::Type::TypeParam { param_index, .. } => self
+                                .current_substitutions
+                                .get(*param_index as usize)
+                                .copied()
+                                .unwrap_or(raw_ty),
+                            _ => raw_ty,
+                        };
+                        let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
+                            tir::Type::Memory { id, .. } => *id,
+                            _ => unreachable!("@memory_size type arg must be a Memory type"),
+                        };
+                        Expression {
+                            kind: ExprKind::MemorySize { memory },
+                            ty: self.lower_type_index(expr.ty),
+                        }
+                    }
+                    name => todo!("MIR lowering for intrinsic '{name}'"),
+                }
+            }
             tir::ExprKind::TupleInit { elements } => {
-                let types: Box<[Type]> = match &self.tir.type_pool[expr.ty as usize] {
+                let types: Box<[Type]> = match &self.tir.type_pool[expr.ty.as_usize()] {
                     tir::Type::Tuple { elements } => {
                         let elements: Box<[Type]> =
                             elements.iter().map(|&t| self.lower_type_index(t)).collect();
@@ -1793,6 +1897,64 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
+            tir::ExprKind::ArrayLiteral { elements, memory_id } => {
+                let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
+                    tir::Type::Array { of, .. } => *of,
+                    _ => unreachable!(),
+                };
+                let align = self.compute_layout(elem_ty).align;
+                let mut bytes = Vec::new();
+                for elem in elements.iter() {
+                    Self::encode_element(&mut bytes, &elem.kind, elem_ty);
+                }
+                if bytes.is_empty() {
+                    return Expression {
+                        kind: ExprKind::Int { value: 0 },
+                        ty: Type::Pointer { memory: *memory_id },
+                    };
+                }
+                let (data_index, _) = self.push_static_data(func_ctx, bytes, align);
+                Expression {
+                    kind: ExprKind::StaticPointer { data_index },
+                    ty: Type::Pointer { memory: *memory_id },
+                }
+            }
+            tir::ExprKind::ArrayRepeat { value, count, memory_id } => {
+                let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
+                    tir::Type::Array { of, .. } => *of,
+                    _ => unreachable!(),
+                };
+                let align = self.compute_layout(elem_ty).align;
+                let mut elem_bytes = Vec::new();
+                Self::encode_element(&mut elem_bytes, &value.kind, elem_ty);
+                let bytes = elem_bytes.repeat(*count as usize);
+                if bytes.is_empty() {
+                    return Expression {
+                        kind: ExprKind::Int { value: 0 },
+                        ty: Type::Pointer { memory: *memory_id },
+                    };
+                }
+                let (data_index, _) = self.push_static_data(func_ctx, bytes, align);
+                Expression {
+                    kind: ExprKind::StaticPointer { data_index },
+                    ty: Type::Pointer { memory: *memory_id },
+                }
+            }
+            tir::ExprKind::Index { object, index, memory_id } => {
+                let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
+                    tir::Type::Array { of, .. } => *of,
+                    _ => unreachable!("index lowering only supported on arrays"),
+                };
+                let addr = self.lower_index_address(func_ctx, object, index, elem_ty, sink);
+                Expression {
+                    kind: ExprKind::PointerLoad {
+                        pointer: Box::new(addr),
+                        offset: 0,
+                        memory: *memory_id,
+                    },
+                    ty: self.lower_type_index(expr.ty),
+                }
+            }
         }
     }
 
@@ -1819,8 +1981,28 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Deref { pointer, memory_id } => ExprKind::PointerStore {
                 pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
                 value: Box::new(self.lower_expression(func_ctx, right, sink)),
+                offset: 0,
                 memory: *memory_id,
             },
+            tir::ExprKind::Index { object, index, memory_id } => {
+                let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
+                    tir::Type::Array { of, .. } => *of,
+                    _ => unreachable!("index assignment only supported on arrays"),
+                };
+                let addr = self.lower_index_address(func_ctx, object, index, elem_ty, sink);
+                ExprKind::PointerStore {
+                    pointer: Box::new(addr),
+                    value: Box::new(self.lower_expression(func_ctx, right, sink)),
+                    offset: 0,
+                    memory: *memory_id,
+                }
+            }
+            tir::ExprKind::Placeholder => {
+                // `_ = expr`: evaluate rhs for side effects, discard the value.
+                ExprKind::Drop {
+                    value: Box::new(self.lower_expression(func_ctx, right, sink)),
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -1892,8 +2074,22 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::Deref { pointer, memory_id } => ExprKind::PointerStore {
                 pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
                 value: Box::new(binary_expr),
+                offset: 0,
                 memory: *memory_id,
             },
+            tir::ExprKind::Index { object, index, memory_id } => {
+                let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
+                    tir::Type::Array { of, .. } => *of,
+                    _ => unreachable!("index compound assignment only supported on arrays"),
+                };
+                let addr = self.lower_index_address(func_ctx, object, index, elem_ty, sink);
+                ExprKind::PointerStore {
+                    pointer: Box::new(addr),
+                    value: Box::new(binary_expr),
+                    offset: 0,
+                    memory: *memory_id,
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -2076,17 +2272,20 @@ fn rewrite_body(
             memory,
             delta: rw_box(delta),
         },
-        ExprKind::PointerLoad { pointer, memory } => ExprKind::PointerLoad {
+        ExprKind::PointerLoad { pointer, offset, memory } => ExprKind::PointerLoad {
             pointer: rw_box(pointer),
+            offset,
             memory,
         },
         ExprKind::PointerStore {
             pointer,
             value,
+            offset,
             memory,
         } => ExprKind::PointerStore {
             pointer: rw_box(pointer),
             value: rw_box(value),
+            offset,
             memory,
         },
         // Leaf variants — nothing to rewrite.
@@ -2095,12 +2294,12 @@ fn rewrite_body(
         | ExprKind::Function { .. }
         | ExprKind::Int { .. }
         | ExprKind::Float { .. }
-        | ExprKind::StringIndex { .. }
         | ExprKind::Global { .. }
         | ExprKind::Unreachable
         | ExprKind::MemoryOffset { .. }
         | ExprKind::MemoryIndex { .. }
-        | ExprKind::MemorySize { .. }) => k,
+        | ExprKind::MemorySize { .. }
+        | ExprKind::StaticPointer { .. }) => k,
     };
     Expression { kind, ty }
 }
@@ -2287,7 +2486,6 @@ fn inline_expr(
         | ExprKind::Function { .. }
         | ExprKind::Int { .. }
         | ExprKind::Float { .. }
-        | ExprKind::StringIndex { .. }
         | ExprKind::Global { .. }
         | ExprKind::Unreachable
         | ExprKind::LocalGet { .. }
@@ -2295,7 +2493,8 @@ fn inline_expr(
         | ExprKind::Continue { .. }
         | ExprKind::MemoryOffset { .. }
         | ExprKind::MemoryIndex { .. }
-        | ExprKind::MemorySize { .. } => {}
+        | ExprKind::MemorySize { .. }
+        | ExprKind::StaticPointer { .. } => {}
     }
 
     // After children are processed, check if this node is a call to inline_id.
@@ -2402,6 +2601,7 @@ pub fn run_inlining_pass(mir: &mut MIR) {
                     &f_body,
                     0,
                 );
+                caller_func.static_data.extend_from_slice(&f_body.static_data);
 
                 // Update graph: remove caller → f, propagate f's callees to caller.
                 graph.callees.get_mut(&caller_id).unwrap().remove(&f_id);

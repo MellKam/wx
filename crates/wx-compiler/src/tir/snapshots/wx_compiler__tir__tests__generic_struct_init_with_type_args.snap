@@ -6,7 +6,8 @@ type_pool:
   - Error
   - Unit
   - Never
-  - Unknown
+  - Integer
+  - Float
   - U8
   - I8
   - U16
@@ -26,11 +27,11 @@ type_pool:
   - Struct:
       struct_index: 0
       args:
-        - 9
+        - 10
   - Function:
       signature:
         items:
-          - 17
+          - 18
         params_count: 0
 diagnostics: []
 functions:
@@ -40,7 +41,7 @@ functions:
     source: Internal
     origin: Free
     type_params: []
-    signature_index: 18
+    signature_index: 19
     name:
       inner: 5
       span:
@@ -48,7 +49,7 @@ functions:
         end: 46
     params: []
     result:
-      inner: 17
+      inner: 18
       span:
         start: 52
         end: 61
@@ -67,8 +68,8 @@ functions:
             label: ~
             parent: ~
             locals: []
-            inferred_type: 17
-            expected_type: 17
+            inferred_type: 18
+            expected_type: 18
       block:
         kind:
           Block:
@@ -82,22 +83,22 @@ functions:
                     - kind:
                         Int:
                           value: 1
-                      ty: 9
+                      ty: 10
                       span:
                         start: 90
                         end: 91
                     - kind:
                         Int:
                           value: 2
-                      ty: 9
+                      ty: 10
                       span:
                         start: 101
                         end: 102
-              ty: 17
+              ty: 18
               span:
                 start: 68
                 end: 104
-        ty: 17
+        ty: 18
         span:
           start: 62
           end: 106
@@ -134,7 +135,7 @@ structs:
             start: 17
             end: 22
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 24
             end: 25
@@ -144,7 +145,7 @@ structs:
             start: 27
             end: 33
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 35
             end: 36

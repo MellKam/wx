@@ -20,6 +20,7 @@ functions:
                   value: 4
               ty: U32
       ty: U32
+    static_data: []
 signatures:
   - items:
       - U32
@@ -32,3 +33,4 @@ exports:
 imports: []
 memories: []
 aggregates: []
+static_entries: []

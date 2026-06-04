@@ -5,6 +5,9 @@ use indoc::indoc;
 use super::*;
 
 const STD: &str = indoc! {"
+    fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
+    fn @memory_size<M: Memory>(mem: M) -> M::Size;
+
     trait PointerSize {}
     impl PointerSize for u32 {}
     impl PointerSize for u64 {}
@@ -13,8 +16,15 @@ const STD: &str = indoc! {"
         type Size: PointerSize;
         const MEMORY_INDEX: u32;
 
-        fn grow(self, delta: Self::Size) -> Self::Size;
-        fn size(self) -> Self::Size;
+        #[inline]
+        fn grow(self, delta: Self::Size) -> Self::Size {
+            @memory_grow(self, delta)
+        }
+
+        #[inline]
+        fn size(self) -> Self::Size {
+            @memory_size(self)
+        }
     }
 
     trait Memory32: Memory<Size = u32> {}
@@ -634,9 +644,8 @@ fn test_imports() {
 #[test]
 fn test_dead_function_strings_excluded_from_data_section() {
     // String data from functions eliminated by DCE must not appear in the
-    // wasm data section. The lazy string pool only adds strings when their
-    // StringPointer instruction is actually emitted, so dead code can never
-    // contribute bytes to the binary.
+    // wasm data section. The static layout step only collects entries from
+    // live functions, so dead code never contributes bytes to the binary.
     let case = TestCase::new(&format!(
         "{STD}\n{}",
         indoc! {"
@@ -1207,7 +1216,9 @@ fn test_pointer_deref_load_and_store() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory32 {
+            min: 1,
+        };
 
         fn read(ptr: heap::*i32) -> i32 {
             ptr.*
@@ -1230,7 +1241,6 @@ fn test_pointer_deref_load_and_store() {
     let mem = instance
         .get_memory(&mut store, "heap")
         .expect("heap memory not exported");
-    mem.grow(&mut store, 1).expect("grow failed"); // allocate 1 page (64 KiB)
     let read = instance
         .get_typed_func::<i32, i32>(&mut store, "read")
         .expect("read not found");
@@ -1389,7 +1399,8 @@ fn test_struct_pointer_load_and_store() {
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
 
-// ── Generic structs ───────────────────────────────────────────────────────────
+// ── Generic structs
+// ───────────────────────────────────────────────────────────
 
 #[test]
 fn test_generic_struct_f32_fields() {
@@ -1625,7 +1636,7 @@ fn test_generic_struct_pointer_load_store() {
         }
 
         fn store_pt(ptr: heap::*mut Point<i32>, x: i32, y: i32) {
-            ptr.* = Point::{ x: x, y: y }
+            ptr.* = Point::{ x, y }
         }
 
         fn load_x(ptr: heap::*Point<i32>) -> i32 {
@@ -1646,8 +1657,7 @@ fn test_generic_struct_pointer_load_store() {
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
     let mut store = wasmtime::Store::new(&engine, ());
-    let instance =
-        wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
 
     let mem = instance
         .get_memory(&mut store, "heap")
@@ -1678,3 +1688,237 @@ fn test_generic_struct_pointer_load_store() {
     assert_eq!(load_x.call(&mut store, 16).unwrap(), 42);
     assert_eq!(load_y.call(&mut store, 16).unwrap(), 99);
 }
+
+// ── memory intrinsics
+// ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_memory_grow_and_size() {
+    // memory.size() returns the current page count; memory.grow(n) returns the
+    // old page count and extends by n pages. Both route through @memory_size /
+    // @memory_grow intrinsics via the Memory trait default methods.
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1,
+        };
+
+        fn size_pages() -> u32 {
+            heap.size()
+        }
+
+        fn grow_by(delta: u32) -> u32 {
+            heap.grow(delta)
+        }
+
+        export { heap, size_pages, grow_by }
+    "}
+    );
+    let case = TestCase::new(&src);
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let size_pages = instance
+        .get_typed_func::<(), u32>(&mut store, "size_pages")
+        .expect("size_pages not found");
+    let grow_by = instance
+        .get_typed_func::<u32, u32>(&mut store, "grow_by")
+        .expect("grow_by not found");
+
+    // Initial size is 1 page (64 KB).
+    assert_eq!(size_pages.call(&mut store, ()).unwrap(), 1);
+
+    // Grow by 2; memory.grow returns the *previous* page count.
+    let old_size = grow_by.call(&mut store, 2).unwrap();
+    assert_eq!(old_size, 1, "grow should return the old page count");
+
+    // New size is 3 pages.
+    assert_eq!(size_pages.call(&mut store, ()).unwrap(), 3);
+}
+
+#[test]
+fn test_memory_size_before_grow_ordering() {
+    // Captures memory.size() BEFORE memory.grow(), then returns the captured value.
+    // If MemorySize is treated as a floating data node, the scheduler may emit
+    // memory.size after memory.grow, returning 2 instead of 1.
+    let src = format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1,
+        };
+
+        fn capture_size_before_grow() -> u32 {
+            local before = heap.size();
+            _ = heap.grow(1);
+            before
+        }
+
+        export { capture_size_before_grow }
+    "}
+    );
+    let case = TestCase::new(&src);
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let f = instance
+        .get_typed_func::<(), u32>(&mut store, "capture_size_before_grow")
+        .expect("function not found");
+
+    // memory starts at 1 page; size() captured before grow(1) should be 1, not 2.
+    assert_eq!(
+        f.call(&mut store, ()).unwrap(),
+        1,
+        "size was captured after grow — ordering bug!"
+    );
+}
+
+// ── arrays ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_array_literal_read_by_index() {
+    // End-to-end: a static array literal is placed in the data segment at
+    // address 0; indexing it must return the right element via i32.load at
+    // base + i * elem_size.
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1,
+        };
+
+        fn get(i: u32) -> i32 {
+            local arr: heap::[4]i32 = [10, 20, 30, 40];
+            arr[i]
+        }
+
+        export { get }
+    "}
+    ));
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let get = instance
+        .get_typed_func::<u32, i32>(&mut store, "get")
+        .unwrap();
+    assert_eq!(get.call(&mut store, 0).unwrap(), 10);
+    assert_eq!(get.call(&mut store, 1).unwrap(), 20);
+    assert_eq!(get.call(&mut store, 2).unwrap(), 30);
+    assert_eq!(get.call(&mut store, 3).unwrap(), 40);
+}
+
+#[test]
+fn test_array_write_and_read_back() {
+    // Writing to a[i] and reading a[j] on a mutable heap array.  The host
+    // initialises a 4-element block at address 0, then the wx functions do
+    // a round-trip write+read to verify PointerStore/PointerLoad addressing.
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1,
+        };
+
+        fn write(arr: [4]mut i32, i: u32, v: i32) { arr[i] = v; }
+        fn read(arr: [4]i32, i: u32) -> i32 { arr[i] }
+
+        export { heap, write, read }
+    "}
+    ));
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+
+    let heap = instance.get_memory(&mut store, "heap").unwrap();
+    // No static data in this program — address 0 is free.
+    let initial: &[u8] = &[
+        1u8, 0, 0, 0, // [0] = 1
+        2, 0, 0, 0, // [1] = 2
+        3, 0, 0, 0, // [2] = 3
+        4, 0, 0, 0, // [3] = 4
+    ];
+    heap.write(&mut store, 0, initial).unwrap();
+
+    let read = instance
+        .get_typed_func::<(i32, u32), i32>(&mut store, "read")
+        .unwrap();
+    let write = instance
+        .get_typed_func::<(i32, u32, i32), ()>(&mut store, "write")
+        .unwrap();
+
+    assert_eq!(read.call(&mut store, (0, 0)).unwrap(), 1);
+    assert_eq!(read.call(&mut store, (0, 3)).unwrap(), 4);
+
+    // Overwrite index 1 and confirm the change.
+    write.call(&mut store, (0, 1, 99)).unwrap();
+    assert_eq!(read.call(&mut store, (0, 1)).unwrap(), 99);
+
+    // Ensure adjacent elements are untouched.
+    assert_eq!(read.call(&mut store, (0, 0)).unwrap(), 1);
+    assert_eq!(read.call(&mut store, (0, 2)).unwrap(), 3);
+}
+
+#[test]
+fn test_dead_array_excluded_from_data_section() {
+    // DCE removes functions that are not reachable from exports.  The static
+    // array owned by a dead function must not appear in the WASM data segment.
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1,
+        };
+
+        fn live() -> i32 { 42 }
+
+        fn dead() -> i32 {
+            local arr: [3]i32 = [0xDE, 0xAD, 0xBE];
+            arr[0]
+        }
+
+        export { live }
+    "}
+    ));
+
+    // The sentinel values from `dead` must not appear anywhere in the binary.
+    let marker = &[0xDE_u8, 0, 0, 0]; // 0xDE as LE i32
+    assert!(
+        !case.bytecode.windows(4).any(|w| w == marker),
+        "dead function's array bytes must not appear in the data section"
+    );
+}
+
+#[test]
+fn test_array_index_wat() {
+    // WAT snapshot: pins the data segment placement and the load/store
+    // instruction shape (i32.add + i32.mul offset arithmetic).
+    let case = TestCase::new(&format!(
+        "{STD}\n{}",
+        indoc! {"
+        memory heap: Memory32 {
+            min: 1,
+        };
+
+        fn get(i: u32) -> i32 {
+            local arr: [4]i32 = [10, 20, 30, 40];
+            arr[i]
+        }
+
+        export { get }
+    "}
+    ));
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+

@@ -3,15 +3,23 @@ trait Sized {
   const ALIGN: u32;
 }
 
+struct Box<M: Memory> {
+    v: M::*i32,
+}
+
+impl<M: Memory> Wrapper<M> {
+
+}
+
 #[intrinsic]
 fn pointer_add<M: Memory, T: Sized>(
-  ptr: M::*T, 
+  ptr: M::*T,
   n: M::Size
 ) -> M::*T;
 
 #[intrinsic]
 fn pointer_sub<M: Memory, T: Sized>(
-  ptr: M::*T, 
+  ptr: M::*T,
   n: M::Size
 ) -> M::*T;
 
@@ -36,5 +44,5 @@ fn test() {
 
 fn test(cond: bool) {
   local unused_value = if cond { 1 } else { 2 };
-  return 42; 
+  return 42;
 }

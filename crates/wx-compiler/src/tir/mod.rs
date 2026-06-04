@@ -66,7 +66,8 @@ pub enum Type {
     Error,
     Unit,
     Never,
-    Unknown,
+    Integer,
+    Float,
     U8,
     I8,
     U16,
@@ -84,8 +85,8 @@ pub enum Type {
     },
     Struct {
         struct_index: u32,
-        /// Empty for non-generic structs; populated when instantiated with concrete
-        /// type args, e.g. `Point<i32>` → `args = [i32_idx]`.
+        /// Empty for non-generic structs; populated when instantiated with
+        /// concrete type args, e.g. `Point<i32>` → `args = [i32_idx]`.
         args: Box<[TypeIndex]>,
     },
     Function {
@@ -100,21 +101,18 @@ pub enum Type {
     Pointer {
         to: TypeIndex,
         mutable: bool,
-        /// `Some(id)` when written as `memory::*T`.
-        memory: Option<ast::DefId>,
+        memory: ast::DefId,
     },
     Array {
         of: TypeIndex,
         size: u32,
         mutable: bool,
-        /// `Some(id)` when written as `memory::[N]T`.
-        memory: Option<ast::DefId>,
+        memory: ast::DefId,
     },
     Slice {
         of: TypeIndex,
         mutable: bool,
-        /// `Some(id)` when written as `memory::[]T`.
-        memory: Option<ast::DefId>,
+        memory: ast::DefId,
     },
     ImportModule {
         module_index: u32,
@@ -152,59 +150,84 @@ pub enum Type {
     },
 }
 
-impl Type {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize, PartialOrd, Ord))]
+pub struct TypeIndex(u32);
+
+impl TypeIndex {
+    #[inline]
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    #[inline]
+    pub fn is_comptime_number(self) -> bool {
+        self == TypeIndex::INTEGER || self == TypeIndex::FLOAT
+    }
+
+    #[inline]
+    pub fn is_primitive(self) -> bool {
+        self == TypeIndex::U8
+            || self == TypeIndex::I8
+            || self == TypeIndex::U16
+            || self == TypeIndex::I16
+            || self == TypeIndex::U32
+            || self == TypeIndex::I32
+            || self == TypeIndex::U64
+            || self == TypeIndex::I64
+            || self == TypeIndex::F32
+            || self == TypeIndex::F64
+            || self == TypeIndex::CHAR
+    }
+
+    #[inline]
+    pub fn is_integer(self) -> bool {
+        self == TypeIndex::U8
+            || self == TypeIndex::I8
+            || self == TypeIndex::U16
+            || self == TypeIndex::I16
+            || self == TypeIndex::U32
+            || self == TypeIndex::I32
+            || self == TypeIndex::U64
+            || self == TypeIndex::I64
+    }
+
+    #[inline]
+    pub fn is_float(self) -> bool {
+        self == TypeIndex::F32 || self == TypeIndex::F64
+    }
+
+    #[inline]
+    pub fn is_numeric(self) -> bool {
+        self.is_integer() || self.is_float()
+    }
+
     // Pre-allocated indices for primitive types. The `TypePool` reserves these
-    // slots at startup so comparisons like `ty == Type::U32_IDX` work without
+    // slots at startup so comparisons like `ty == TypeIndex::U32` work without
     // a pool lookup.
-    pub const ERROR_IDX: TypeIndex = 0;
-    pub const UNIT_IDX: TypeIndex = 1;
-    pub const NEVER_IDX: TypeIndex = 2;
-    pub const UNKNOWN_IDX: TypeIndex = 3;
-    pub const U8_IDX: TypeIndex = 4;
-    pub const I8_IDX: TypeIndex = 5;
-    pub const U16_IDX: TypeIndex = 6;
-    pub const I16_IDX: TypeIndex = 7;
-    pub const U32_IDX: TypeIndex = 8;
-    pub const I32_IDX: TypeIndex = 9;
-    pub const U64_IDX: TypeIndex = 10;
-    pub const I64_IDX: TypeIndex = 11;
-    pub const F32_IDX: TypeIndex = 12;
-    pub const F64_IDX: TypeIndex = 13;
-    pub const BOOL_IDX: TypeIndex = 14;
-    pub const CHAR_IDX: TypeIndex = 15;
-}
-
-impl Type {
-    fn is_primitive(&self) -> bool {
-        match self {
-            Type::I32
-            | Type::I64
-            | Type::U32
-            | Type::U64
-            | Type::F32
-            | Type::F64
-            | Type::Char
-            | Type::U8
-            | Type::I8
-            | Type::U16
-            | Type::I16 => true,
-            _ => false,
-        }
-    }
-
-    fn is_integer(&self) -> bool {
-        match self {
-            Type::I32
-            | Type::I64
-            | Type::U32
-            | Type::U64
-            | Type::U8
-            | Type::I8
-            | Type::U16
-            | Type::I16 => true,
-            _ => false,
-        }
-    }
+    pub const ERROR: TypeIndex = TypeIndex(0);
+    pub const UNIT: TypeIndex = TypeIndex(1);
+    pub const NEVER: TypeIndex = TypeIndex(2);
+    pub const INTEGER: TypeIndex = TypeIndex(3);
+    pub const FLOAT: TypeIndex = TypeIndex(4);
+    pub const U8: TypeIndex = TypeIndex(5);
+    pub const I8: TypeIndex = TypeIndex(6);
+    pub const U16: TypeIndex = TypeIndex(7);
+    pub const I16: TypeIndex = TypeIndex(8);
+    pub const U32: TypeIndex = TypeIndex(9);
+    pub const I32: TypeIndex = TypeIndex(10);
+    pub const U64: TypeIndex = TypeIndex(11);
+    pub const I64: TypeIndex = TypeIndex(12);
+    pub const F32: TypeIndex = TypeIndex(13);
+    pub const F64: TypeIndex = TypeIndex(14);
+    pub const BOOL: TypeIndex = TypeIndex(15);
+    pub const CHAR: TypeIndex = TypeIndex(16);
 }
 
 impl TryFrom<&str> for Type {
@@ -231,7 +254,6 @@ impl TryFrom<&str> for Type {
     }
 }
 
-pub type TypeIndex = u32;
 pub type LocalIndex = u32;
 pub type ScopeIndex = u32;
 pub type FunctionIndex = u32;
@@ -406,6 +428,28 @@ pub enum ExprKind {
     },
     TupleInit {
         elements: Box<[Expression]>,
+    },
+    IntrinsicCall {
+        name: SymbolU32,
+        type_args: Box<[TypeIndex]>,
+        arguments: Box<[Expression]>,
+    },
+    /// `[a, b, c]` — all elements are compile-time constants; placed in static data.
+    ArrayLiteral {
+        elements: Box<[Expression]>,
+        memory_id: ast::DefId,
+    },
+    /// `[value; count]` — repeat form; placed in static data.
+    ArrayRepeat {
+        value: Box<Expression>,
+        count: u32,
+        memory_id: ast::DefId,
+    },
+    /// `object[index]`
+    Index {
+        object: Box<Expression>,
+        index: Box<Expression>,
+        memory_id: ast::DefId,
     },
 }
 
@@ -728,7 +772,6 @@ impl Ord for ItemSource {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum FunctionAttribute {
     Inline,
-    Intrinsic,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -880,6 +923,11 @@ define_diagnostic_codes! {
         NoMemoryForPointer => "E1038",
         AmbiguousPointerMemory => "E1039",
         TypeArgCountMismatch => "E1040",
+        InvalidCast => "E1041",
+        IndexOnNonIndexable => "E1042",
+        ArraySizeMismatch => "E1043",
+        ArrayRepeatCountNotConst => "E1044",
+        ArrayElementNotConst => "E1045",
     }
 }
 
@@ -934,8 +982,9 @@ impl<'a> TypeFormatter<'a> {
     }
 
     fn write_type(&self, f: &mut impl std::fmt::Write, idx: TypeIndex) {
-        match &self.tir.type_pool[idx as usize] {
-            Type::Unknown => f.write_str("unknown").unwrap(),
+        match &self.tir.type_pool[idx.as_usize()] {
+            Type::Integer => f.write_str("integer").unwrap(),
+            Type::Float => f.write_str("float").unwrap(),
             Type::Error => f.write_str("error").unwrap(),
             Type::Unit => f.write_str("unit").unwrap(),
             Type::Bool => f.write_str("bool").unwrap(),
@@ -956,17 +1005,13 @@ impl<'a> TypeFormatter<'a> {
                 mutable,
                 memory,
             } => {
-                let (to, mutable, memory) = (*to, *mutable, *memory);
-                if let Some(id) = memory {
-                    let mi = self.tir.memory_index_lookup[&id] as usize;
-                    let name = self
-                        .interner
-                        .resolve(self.tir.memories[mi].name.inner)
-                        .unwrap_or("?");
-                    write!(f, "{}::*{}", name, if mutable { "mut " } else { "" }).unwrap();
-                } else {
-                    write!(f, "*{}", if mutable { "mut " } else { "" }).unwrap();
-                }
+                let (to, mutable, id) = (*to, *mutable, *memory);
+                let mi = self.tir.memory_index_lookup[&id] as usize;
+                let name = self
+                    .interner
+                    .resolve(self.tir.memories[mi].name.inner)
+                    .unwrap_or("?");
+                write!(f, "{}::*{}", name, if mutable { "mut " } else { "" }).unwrap();
                 self.write_type(f, to);
             }
             Type::Slice {
@@ -974,17 +1019,13 @@ impl<'a> TypeFormatter<'a> {
                 mutable,
                 memory,
             } => {
-                let (of, mutable, memory) = (*of, *mutable, *memory);
-                if let Some(id) = memory {
-                    let mi = self.tir.memory_index_lookup[&id] as usize;
-                    let name = self
-                        .interner
-                        .resolve(self.tir.memories[mi].name.inner)
-                        .unwrap_or("?");
-                    write!(f, "{}::[]{}", name, if mutable { "mut " } else { "" }).unwrap();
-                } else {
-                    write!(f, "[]{}", if mutable { "mut " } else { "" }).unwrap();
-                }
+                let (of, mutable, id) = (*of, *mutable, *memory);
+                let mi = self.tir.memory_index_lookup[&id] as usize;
+                let name = self
+                    .interner
+                    .resolve(self.tir.memories[mi].name.inner)
+                    .unwrap_or("?");
+                write!(f, "{}::[]{}", name, if mutable { "mut " } else { "" }).unwrap();
                 self.write_type(f, of);
             }
             Type::Array {
@@ -993,24 +1034,20 @@ impl<'a> TypeFormatter<'a> {
                 mutable,
                 memory,
             } => {
-                let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
-                if let Some(id) = memory {
-                    let mi = self.tir.memory_index_lookup[&id] as usize;
-                    let name = self
-                        .interner
-                        .resolve(self.tir.memories[mi].name.inner)
-                        .unwrap_or("?");
-                    write!(
-                        f,
-                        "{}::[{}]{}",
-                        name,
-                        size,
-                        if mutable { "mut " } else { "" }
-                    )
-                    .unwrap();
-                } else {
-                    write!(f, "[{}]{}", size, if mutable { "mut " } else { "" }).unwrap();
-                }
+                let (of, size, mutable, id) = (*of, *size, *mutable, *memory);
+                let mi = self.tir.memory_index_lookup[&id] as usize;
+                let name = self
+                    .interner
+                    .resolve(self.tir.memories[mi].name.inner)
+                    .unwrap_or("?");
+                write!(
+                    f,
+                    "{}::[{}]{}",
+                    name,
+                    size,
+                    if mutable { "mut " } else { "" }
+                )
+                .unwrap();
                 self.write_type(f, of);
             }
             Type::Tuple { elements } => {
@@ -1176,6 +1213,14 @@ pub struct TIR {
     pub const_index_lookup: HashMap<ast::DefId, ConstIndex>,
 }
 
+#[derive(PartialEq)]
+enum WasmPrimitive {
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
 impl TIR {
     pub fn formatter<'a>(&'a self, interner: &'a ast::StringInterner) -> TypeFormatter<'a> {
         TypeFormatter::new(self, interner)
@@ -1183,5 +1228,49 @@ impl TIR {
 
     pub fn build(compilation: &CompilationGraph, interner: &mut ast::StringInterner) -> TIR {
         builder::build(compilation, interner)
+    }
+
+    fn type_primitive(&self, ty: TypeIndex) -> Option<WasmPrimitive> {
+        match &self.type_pool[ty.as_usize()] {
+            Type::Bool
+            | Type::U8
+            | Type::I8
+            | Type::U16
+            | Type::I16
+            | Type::I32
+            | Type::U32
+            | Type::Char
+            | Type::Function { .. } => Some(WasmPrimitive::I32),
+            Type::Enum { enum_index } => {
+                let repr_type = self.enums[*enum_index as usize].ty;
+                self.type_primitive(repr_type)
+            }
+            Type::U64 | Type::I64 => Some(WasmPrimitive::I64),
+            Type::F32 => Some(WasmPrimitive::F32),
+            Type::F64 => Some(WasmPrimitive::F64),
+            Type::Array { memory, .. } | Type::Pointer { memory, .. } => {
+                let kind = self.memories[self.memory_index_lookup[memory] as usize].kind;
+                match kind {
+                    MemoryKind::Memory32 => Some(WasmPrimitive::I32),
+                    MemoryKind::Memory64 => Some(WasmPrimitive::I64),
+                }
+            }
+            Type::Tuple { .. }
+            | Type::AssociatedType { .. }
+            | Type::AssocTypeProjection { .. }
+            | Type::FunctionItem { .. }
+            | Type::Struct { .. }
+            | Type::Slice { .. }
+            | Type::Module { .. }
+            | Type::ImportModule { .. }
+            | Type::Memory { .. }
+            | Type::Trait { .. }
+            | Type::TypeParam { .. }
+            | Type::Error
+            | Type::Never
+            | Type::Unit
+            | Type::Integer
+            | Type::Float => None,
+        }
     }
 }
