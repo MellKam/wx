@@ -1,9 +1,9 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use codespan_reporting::term::{self};
-use string_interner::StringInterner;
 use wx_compiler::*;
 
 fn main() {
@@ -24,16 +24,25 @@ fn main() {
         .expect("Path argument is required");
 
     let filename = file_path.split('/').last().unwrap().to_string();
-    let mut interner = StringInterner::new();
 
-    let compilation = match vfs::load_compilation(std::path::Path::new(file_path), &mut interner) {
-        Ok(compilation) => compilation,
+    let mut builder = vfs::CompilationGraphBuilder::new();
+    let stdlib_id = builder
+        .load_crate(
+            "std.wx".to_string(),
+            &vfs::VirtualFileSource::new(HashMap::from([(
+                "std.wx".to_string(),
+                STDLIB_SOURCE.to_string(),
+            )])),
+        )
+        .unwrap();
+    let mut compilation = match builder.load_crate(file_path.clone(), &vfs::NativeFileSource) {
+        Ok(_) => builder.build(stdlib_id),
         Err(vfs::LoadError::ReadFailed { path }) => {
-            eprintln!("Error reading file {}", path.display());
+            eprintln!("Error reading file {path}");
             std::process::exit(1);
         }
-        Err(other) => {
-            eprintln!("Failed to load compilation: {:?}", other);
+        Err(_) => {
+            eprintln!("Failed to load compilation");
             std::process::exit(1);
         }
     };
@@ -66,7 +75,7 @@ fn main() {
         }
     }
 
-    let tir = tir::TIR::build(&compilation, &mut interner);
+    let tir = tir::TIR::build(&mut compilation);
 
     if !tir.diagnostics.is_empty() {
         let writer = StandardStream::stderr(ColorChoice::Always);
@@ -90,8 +99,8 @@ fn main() {
         }
     }
 
-    let mir = mir::MIR::build(&tir, &interner, compilation.id_generator);
-    let module = codegen::Builder::build(&mir, &interner).unwrap();
+    let mir = mir::MIR::build(&tir, &compilation.interner, compilation.id_generator);
+    let module = codegen::Builder::build(&mir, &compilation.interner).unwrap();
     let bytecode = module.encode();
 
     let parts = filename.split('.').collect::<Vec<&str>>();

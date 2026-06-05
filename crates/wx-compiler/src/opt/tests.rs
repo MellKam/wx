@@ -7,13 +7,15 @@
 //! The stdlib is intentionally excluded so tests don't depend on stdlib span
 //! offsets. Only language features available without stdlib are used.
 
+use std::collections::HashMap;
+
 use indoc::indoc;
 
 use crate::mir::{self, MIR};
 use crate::opt::builder::Builder;
 use crate::opt::scheduler::{Instruction, Scheduler};
 use crate::opt::{ControlNode, DataNodeKind, ScalarType, StackResult};
-use crate::{ast, tir, vfs};
+use crate::{tir, vfs};
 
 /// Minimal stdlib definitions required for memory / pointer tests.
 const STD: &str = indoc! {"
@@ -51,15 +53,28 @@ impl TestCase {
 
 impl TestCase {
     fn new(source: &str) -> Self {
-        let mut interner = ast::StringInterner::new();
-        let graph = vfs::load_single_file_compilation(
-            "main.wx".to_string(),
-            source.to_string(),
-            &mut interner,
-        )
-        .unwrap();
-        let tir = tir::TIR::build(&graph, &mut interner);
-        let mir = MIR::build(&tir, &interner, graph.id_generator);
+        let mut builder = vfs::CompilationGraphBuilder::new();
+        let stdlib_id = builder
+            .load_crate(
+                "std.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "std.wx".to_string(),
+                    STD.to_string(),
+                )])),
+            )
+            .unwrap();
+        builder
+            .load_crate(
+                "main.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "main.wx".to_string(),
+                    source.to_string(),
+                )])),
+            )
+            .unwrap();
+        let mut graph = builder.build(stdlib_id);
+        let tir = tir::TIR::build(&mut graph);
+        let mir = MIR::build(&tir, &graph.interner, graph.id_generator);
         TestCase { mir }
     }
 

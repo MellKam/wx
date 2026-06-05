@@ -1,24 +1,20 @@
-pub struct string {
-  bytes: []u8,
-}
-
 const ASCII_CASE_MASK: u8 = 0b0010_0000;
-const PAGE_SIZE: u32 = 65536;
+pub const PAGE_SIZE: u32 = 65536;
 
 pub fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
 pub fn @memory_size<M: Memory>(mem: M) -> M::Size;
-pub fn @size_of<T>(value: T) -> int;
-pub fn @align_of<T>(value: T) -> float;
 
+#[lang = "pointer_size"]
 trait PointerSize {}
 impl PointerSize for u32 {}
 impl PointerSize for u64 {}
 
-trait Memory {
+#[lang = "memory"]
+pub trait Memory {
   type Size: PointerSize;
 
   const MEMORY_INDEX: u32;
-  const DATA_END: Self::*mut u8;
+  // const DATA_END: Self::*mut u8;
 
   #[inline]
   fn grow(self, delta: Self::Size) -> Self::Size {
@@ -30,6 +26,11 @@ trait Memory {
     @memory_size(self)
   }
 }
+
+#[lang = "memory32"]
+pub trait Memory32: Memory<Size = u32> {}
+#[lang = "memory64"]
+pub trait Memory64: Memory<Size = u64> {}
 
 impl char {
   #[inline]

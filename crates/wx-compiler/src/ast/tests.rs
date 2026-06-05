@@ -13,17 +13,12 @@ struct TestCase {
 impl TestCase {
     fn new(source: &str) -> Self {
         let mut interner = StringInterner::new();
+        let mut id_generator = DefIdGenerator::new();
         let mut files = Files::new();
         let file_id = files
             .add("main.wx".to_string(), source.to_string())
             .unwrap();
-        let mut id_generator = DefIdGenerator::new();
-        let ast = Parser::parse(
-            file_id,
-            &files.get(file_id).unwrap().source,
-            &mut interner,
-            &mut id_generator,
-        );
+        let ast = Parser::parse(file_id, &files, &mut interner, &mut id_generator);
         TestCase {
             interner,
             files,
@@ -581,7 +576,10 @@ fn test_pattern_simple_binding() {
         local_definition_pattern(stmts, 1),
         Pattern::Binding { mut_span: Some(_), name } if case.interner.resolve(name.inner) == Some("y")
     ));
-    assert!(matches!(local_definition_pattern(stmts, 2), Pattern::Wildcard));
+    assert!(matches!(
+        local_definition_pattern(stmts, 2),
+        Pattern::Wildcard
+    ));
 }
 
 #[test]
@@ -600,13 +598,25 @@ fn test_pattern_tuple_destructuring() {
         panic!("expected tuple pattern")
     };
     assert_eq!(elements.len(), 2);
-    assert!(matches!(&elements[0].inner.inner, Pattern::Binding { mut_span: None, .. }));
-    assert!(matches!(&elements[1].inner.inner, Pattern::Binding { mut_span: None, .. }));
+    assert!(matches!(
+        &elements[0].inner.inner,
+        Pattern::Binding { mut_span: None, .. }
+    ));
+    assert!(matches!(
+        &elements[1].inner.inner,
+        Pattern::Binding { mut_span: None, .. }
+    ));
 
     let Pattern::Tuple { elements } = local_definition_pattern(stmts, 1) else {
         panic!("expected tuple pattern")
     };
-    assert!(matches!(&elements[0].inner.inner, Pattern::Binding { mut_span: Some(_), .. }));
+    assert!(matches!(
+        &elements[0].inner.inner,
+        Pattern::Binding {
+            mut_span: Some(_),
+            ..
+        }
+    ));
     assert!(matches!(&elements[1].inner.inner, Pattern::Wildcard));
 
     let Pattern::Tuple { elements } = local_definition_pattern(stmts, 2) else {
@@ -631,14 +641,26 @@ fn test_pattern_struct_destructuring() {
     };
     assert_eq!(case.interner.resolve(name.inner), Some("Point"));
     assert_eq!(fields.len(), 2);
-    assert!(fields[0].inner.inner.pattern.is_none(), "shorthand field should have no sub-pattern");
-    assert!(fields[1].inner.inner.pattern.is_none(), "shorthand field should have no sub-pattern");
+    assert!(
+        fields[0].inner.inner.pattern.is_none(),
+        "shorthand field should have no sub-pattern"
+    );
+    assert!(
+        fields[1].inner.inner.pattern.is_none(),
+        "shorthand field should have no sub-pattern"
+    );
 
     let Pattern::Struct { fields, .. } = local_definition_pattern(stmts, 1) else {
         panic!("expected struct pattern")
     };
-    assert!(fields[0].inner.inner.pattern.is_some(), "renamed field should have sub-pattern");
-    assert!(fields[1].inner.inner.pattern.is_some(), "renamed field should have sub-pattern");
+    assert!(
+        fields[0].inner.inner.pattern.is_some(),
+        "renamed field should have sub-pattern"
+    );
+    assert!(
+        fields[1].inner.inner.pattern.is_some(),
+        "renamed field should have sub-pattern"
+    );
 }
 
 #[test]
@@ -743,10 +765,7 @@ fn test_invalid_attribute_and_namespace_diagnostics() {
         }
     "});
 
-    assert_eq!(
-        diagnostic_codes(&case.ast),
-        vec!["E0012", "E0009", "E0013"]
-    );
+    assert_eq!(diagnostic_codes(&case.ast), vec!["E0012", "E0009", "E0013"]);
     assert_eq!(case.ast.items.len(), 2);
     assert!(matches!(item(&case.ast, 0), Item::Function { .. }));
 }
@@ -935,15 +954,9 @@ fn test_generic_struct() {
     };
     assert_eq!(case.interner.resolve(name.inner), Some("Pair"));
     assert_eq!(type_params.len(), 2);
-    assert_eq!(
-        case.interner.resolve(type_params[0].name.inner),
-        Some("T")
-    );
+    assert_eq!(case.interner.resolve(type_params[0].name.inner), Some("T"));
     assert!(type_params[0].bounds.is_empty());
-    assert_eq!(
-        case.interner.resolve(type_params[1].name.inner),
-        Some("U")
-    );
+    assert_eq!(case.interner.resolve(type_params[1].name.inner), Some("U"));
     assert!(type_params[1].bounds.is_empty());
     assert_eq!(fields.len(), 2);
 }

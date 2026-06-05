@@ -331,8 +331,7 @@ pub struct WasmModule {
     data: DataSection,
 }
 
-pub struct Builder<'interner> {
-    interner: &'interner ast::StringInterner,
+pub struct Builder {
     table: Vec<FuncIndex>,
     /// Byte offset of each live static entry in the assembled data segment.
     /// Keyed by `MIR.static_entries` index.
@@ -374,8 +373,7 @@ impl TryFrom<mir::Type> for ValueType {
     }
 }
 
-
-impl Builder<'_> {
+impl Builder {
     /// Recursively expand a MIR type into its flat wasm `ValueType`s.
     /// Unit/Never produce zero slots; Aggregate recurses into its fields.
     fn flatten_type(ty: mir::Type, aggregates: &[mir::Aggregate]) -> Vec<ValueType> {
@@ -442,7 +440,6 @@ impl Builder<'_> {
         let static_segment_size = segment_bytes.len() as u32;
 
         let mut builder = Builder {
-            interner,
             table: Vec::new(),
             entry_offsets,
             static_segment_size,

@@ -1,0 +1,13 @@
+trait UnsignedInteger {}
+
+impl UnsignedInteger for u8 {}
+impl UnsignedInteger for u16 {}
+impl UnsignedInteger for u32 {}
+impl UnsignedInteger for u64 {}
+
+fn test<U: UnsignedInteger>(u: U) {}
+
+fn main() {
+    test(42 as u32);
+    test(42 as i32);
+}

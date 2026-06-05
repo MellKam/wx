@@ -62,7 +62,7 @@ ScheduledFunction
 WASM bytecode (WasmModule::encode() → Vec<u8>)
 ```
 
-`std.wx` is embedded via `include_str!` in `lib.rs` as `STDLIB_SOURCE` and is always the first file in the `CompilationGraph`. It defines `string`, the `Memory` trait, `wasm` module intrinsics, `impl char` methods, and stdlib constants.
+`std.wx` is embedded via `include_str!` in `lib.rs` as `STDLIB_SOURCE` and is always the first file in the `CompilationGraph`. It defines the `Memory` trait, `wasm` module intrinsics, `impl char` methods, and stdlib constants.
 
 ## Key modules (`crates/wx-compiler/src/`)
 
@@ -113,7 +113,7 @@ Every type is a `TypeIndex` (u32) into `tir.type_pool`. The first 16 slots are p
 ## Language features (current state from tests)
 
 - Primitives: `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `bool`, `char`, `u8`, `i8`, `u16`, `i16`
-- `string` is a built-in struct `{ bytes: []u8 }` defined in `std.wx` (must remain struct index 0)
+- String literals have type `[]u8` (byte slice); there is no separate `string` type
 - `local` / `local mut` declarations; `global` / `global mut` for module-level state
 - `const` — compile-time evaluated, inlined at every reference site, never emitted as a WASM global
 - Functions, `fn(T) -> U` type expressions (first-class function references)
@@ -136,6 +136,8 @@ Every type is a `TypeIndex` (u32) into `tir.type_pool`. The first 16 slots are p
 3. **DCE** — BFS from exported functions; unreachable functions removed from `mir.functions`
 
 Struct layout uses alignment-sorted field ordering (fields sorted descending by alignment) to minimize padding.
+
+String literals lower to a `[]u8` slice aggregate `{ StaticPointer, len }`. Static data (string literals, array constants) is currently always placed in `memories[0]` (the first declared memory).
 
 ## Testing patterns
 
@@ -163,6 +165,5 @@ Snapshot files live in `src/tir/snapshots/` and `src/mir/snapshots/`. Never edit
 - **Pre-interned `TypeIndex` ordering:** never insert in the middle of the `intern_type` sequence in `tir::build` — every downstream type check silently gets wrong types.
 - **`ensure_signature` re-entrancy:** guarded by `sig_state`; an `InProgress` state means a cycle. Adding resolution code that calls `ensure_signature` recursively is safe only if cycles are handled.
 - **`is_numeric_cast` is the gatekeeper for `as` casts** — only integer↔integer and `char`↔`u8`/`u16` are allowed (not `u32 as char`).
-- **Struct index 0 is `string`** — `std.wx` must define `string` first.
 - **`pub fn` only:** impl methods without `pub` are not visible to user code via `Type::method()` call syntax.
 - **`#[inline]` on generics** is currently not propagated to mono instances (documented bug in `mir/tests.rs`).

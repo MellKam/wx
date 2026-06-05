@@ -1116,8 +1116,8 @@ fn report_invalid_cast(
         .with_label(span.primary_label())
 }
 
-pub fn build(compilation: &CompilationGraph, interner: &mut ast::StringInterner) -> TIR {
-    let source_modules: Vec<_> = compilation
+pub fn build(graph: &mut CompilationGraph) -> TIR {
+    let source_modules: Vec<_> = graph
         .crates
         .iter()
         .flat_map(|crate_graph| {
@@ -1154,38 +1154,42 @@ pub fn build(compilation: &CompilationGraph, interner: &mut ast::StringInterner)
         struct_index_lookup: HashMap::new(),
         constants: Vec::new(),
         const_index_lookup: HashMap::new(),
+        lang_items: None,
     };
 
     let mut symbol_lookup = HashMap::new();
     symbol_lookup.insert(
-        (SymbolNamespace::Value, interner.get_or_intern("_")),
+        (SymbolNamespace::Value, graph.interner.get_or_intern("_")),
         SymbolKind::Placeholder,
     );
     symbol_lookup.insert(
-        (SymbolNamespace::Value, interner.get_or_intern("true")),
+        (SymbolNamespace::Value, graph.interner.get_or_intern("true")),
         SymbolKind::True,
     );
     symbol_lookup.insert(
-        (SymbolNamespace::Value, interner.get_or_intern("false")),
+        (
+            SymbolNamespace::Value,
+            graph.interner.get_or_intern("false"),
+        ),
         SymbolKind::False,
     );
     symbol_lookup.insert(
         (
             SymbolNamespace::Value,
-            interner.get_or_intern("unreachable"),
+            graph.interner.get_or_intern("unreachable"),
         ),
         SymbolKind::Unreachable,
     );
     let mut builder = Builder {
         symbol_lookup,
         file_id: source_modules[0].1.file_id,
-        interner,
+        interner: &mut graph.interner,
         tir,
         trait_impl_block_lookup: HashMap::new(),
         type_index_lookup: HashMap::new(),
         sig_state: HashMap::new(),
         ast_nodes: HashMap::new(),
-        id_generator: compilation.id_generator,
+        id_generator: graph.id_generator,
     };
 
     // Order MUST match the IDX constants defined at the top of this file.
@@ -1769,7 +1773,7 @@ impl<'ast> Builder<'ast, '_> {
             ast::TypeExpression::Pointer { mutability, inner } => {
                 let to = self.resolve_type(resolve_context, inner);
                 let span = SourceSpan::new(resolve_context.file_id, type_expr.span);
-                let Some(memory) = self.resolve_ambient_memory(span) else {
+                let Ok(memory) = self.resolve_ambient_memory(span) else {
                     return TypeIndex::ERROR;
                 };
                 self.intern_type(Type::Pointer {
@@ -1781,7 +1785,7 @@ impl<'ast> Builder<'ast, '_> {
             ast::TypeExpression::Slice { mutability, inner } => {
                 let of = self.resolve_type(resolve_context, inner);
                 let span = SourceSpan::new(resolve_context.file_id, type_expr.span);
-                let Some(memory) = self.resolve_ambient_memory(span) else {
+                let Ok(memory) = self.resolve_ambient_memory(span) else {
                     return TypeIndex::ERROR;
                 };
                 self.intern_type(Type::Slice {
@@ -1797,7 +1801,7 @@ impl<'ast> Builder<'ast, '_> {
             } => {
                 let of = self.resolve_type(resolve_context, inner);
                 let span = SourceSpan::new(resolve_context.file_id, type_expr.span);
-                let Some(memory) = self.resolve_ambient_memory(span) else {
+                let Ok(memory) = self.resolve_ambient_memory(span) else {
                     return TypeIndex::ERROR;
                 };
                 self.intern_type(Type::Array {
@@ -2034,8 +2038,8 @@ impl<'ast> Builder<'ast, '_> {
     fn resolve_function_attributes(&self, attrs: &[ast::Attribute]) -> Box<[FunctionAttribute]> {
         attrs
             .iter()
-            .filter_map(|a| match self.interner.resolve(a.name.inner) {
-                Some("inline") => Some(FunctionAttribute::Inline),
+            .filter_map(|a| match (&a.value, self.interner.resolve(a.name.inner)) {
+                (ast::AttributeValue::Word, Some("inline")) => Some(FunctionAttribute::Inline),
                 _ => None,
             })
             .collect()
@@ -5289,22 +5293,15 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::String { symbol } => {
                 let unescaped = unescape_string(self.interner.resolve(*symbol).unwrap());
                 let symbol = self.interner.get_or_intern(&unescaped);
-                let string_symbol = self.interner.get_or_intern("string");
+                let memory =
+                    self.resolve_ambient_memory(SourceSpan::new(self.file_id, expr.span))?;
                 Ok(Expression {
                     kind: ExprKind::String { symbol },
-                    ty: match self.lookup_symbol(
-                        &func_ctx.resolve_context,
-                        SymbolNamespace::Type,
-                        string_symbol,
-                    ) {
-                        Some(SymbolKind::Struct { struct_index }) => {
-                            self.intern_type(Type::Struct {
-                                struct_index: *struct_index,
-                                args: Box::new([]),
-                            })
-                        }
-                        _ => panic!("built-in string struct should be defined"),
-                    },
+                    ty: self.intern_type(Type::Slice {
+                        of: TypeIndex::U8,
+                        mutable: false,
+                        memory,
+                    }),
                     span: expr.span,
                 })
             }
@@ -9478,22 +9475,21 @@ impl<'ast> Builder<'ast, '_> {
     }
 
     /// Resolve the ambient memory for an untagged pointer/array/slice type
-    /// annotation. Returns `Some(id)` when exactly one memory is in scope,
-    /// `None` with a diagnostic otherwise.
-    fn resolve_ambient_memory(&mut self, span: SourceSpan) -> Option<ast::DefId> {
+    /// annotation
+    fn resolve_ambient_memory(&mut self, span: SourceSpan) -> Result<ast::DefId, ()> {
         match self.tir.memories.len() {
             0 => {
                 self.tir
                     .diagnostics
                     .push(report_no_memory_for_pointer(span));
-                None
+                Err(())
             }
-            1 => Some(self.tir.memories[0].id),
+            1 => Ok(self.tir.memories[0].id),
             _ => {
                 self.tir
                     .diagnostics
                     .push(report_ambiguous_pointer_memory(span));
-                None
+                Err(())
             }
         }
     }
@@ -9611,7 +9607,7 @@ impl<'ast> Builder<'ast, '_> {
 
         let memory_id = match expected_memory {
             Some(id) => id,
-            None => self.resolve_ambient_memory(source_span).ok_or(())?,
+            None => self.resolve_ambient_memory(source_span)?,
         };
         let array_ty = self.intern_type(Type::Array {
             of: elem_type,
@@ -9729,7 +9725,7 @@ impl<'ast> Builder<'ast, '_> {
 
         let memory_id = match expected_memory {
             Some(id) => id,
-            None => self.resolve_ambient_memory(source_span).ok_or(())?,
+            None => self.resolve_ambient_memory(source_span)?,
         };
         let array_ty = self.intern_type(Type::Array {
             of: value.ty,

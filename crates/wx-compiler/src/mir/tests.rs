@@ -1,11 +1,12 @@
+use std::collections::HashMap;
+
 use indoc::indoc;
 
 use super::*;
-use crate::{ast, tir, vfs};
+use crate::{STDLIB_SOURCE, tir, vfs};
 
 #[allow(unused)]
 struct TestCase {
-    interner: ast::StringInterner,
     graph: vfs::CompilationGraph,
     tir: tir::TIR,
     mir: MIR,
@@ -13,21 +14,29 @@ struct TestCase {
 
 impl TestCase {
     fn new(source: &str) -> Self {
-        let mut interner = ast::StringInterner::new();
-        let graph = vfs::load_single_file_compilation(
-            "main.wx".to_string(),
-            source.to_string(),
-            &mut interner,
-        )
-        .unwrap();
-        let tir = tir::TIR::build(&graph, &mut interner);
-        let mir = MIR::build(&tir, &interner, graph.id_generator);
-        TestCase {
-            interner,
-            graph,
-            tir,
-            mir,
-        }
+        let mut builder = vfs::CompilationGraphBuilder::new();
+        let stdlib_id = builder
+            .load_crate(
+                "std.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "std.wx".to_string(),
+                    STDLIB_SOURCE.to_string(),
+                )])),
+            )
+            .unwrap();
+        builder
+            .load_crate(
+                "main.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "main.wx".to_string(),
+                    source.to_string(),
+                )])),
+            )
+            .unwrap();
+        let mut graph = builder.build(stdlib_id);
+        let tir = tir::TIR::build(&mut graph);
+        let mir = MIR::build(&tir, &graph.interner, graph.id_generator);
+        TestCase { graph, tir, mir }
     }
 }
 
@@ -656,14 +665,24 @@ fn test_generic_struct_distinct_aggregates_per_type_arg() {
     "});
     assert!(case.tir.diagnostics.is_empty());
 
-    let sig_i32 = case.mir.functions.iter().find(|f| {
-        let sig = &case.mir.signatures[f.signature_index as usize];
-        sig.result() == Type::I32
-    }).expect("get_x_i32 not found");
-    let sig_f32 = case.mir.functions.iter().find(|f| {
-        let sig = &case.mir.signatures[f.signature_index as usize];
-        sig.result() == Type::F32
-    }).expect("get_x_f32 not found");
+    let sig_i32 = case
+        .mir
+        .functions
+        .iter()
+        .find(|f| {
+            let sig = &case.mir.signatures[f.signature_index as usize];
+            sig.result() == Type::I32
+        })
+        .expect("get_x_i32 not found");
+    let sig_f32 = case
+        .mir
+        .functions
+        .iter()
+        .find(|f| {
+            let sig = &case.mir.signatures[f.signature_index as usize];
+            sig.result() == Type::F32
+        })
+        .expect("get_x_f32 not found");
 
     let agg_i32 = match case.mir.signatures[sig_i32.signature_index as usize].params()[0] {
         Type::Aggregate { aggregate_index } => aggregate_index as usize,
@@ -674,9 +693,18 @@ fn test_generic_struct_distinct_aggregates_per_type_arg() {
         _ => panic!("expected Point<f32> to be an aggregate"),
     };
 
-    assert_ne!(agg_i32, agg_f32, "Point<i32> and Point<f32> must map to distinct aggregates");
-    assert_eq!(&*case.mir.aggregates[agg_i32].values, &[Type::I32, Type::I32]);
-    assert_eq!(&*case.mir.aggregates[agg_f32].values, &[Type::F32, Type::F32]);
+    assert_ne!(
+        agg_i32, agg_f32,
+        "Point<i32> and Point<f32> must map to distinct aggregates"
+    );
+    assert_eq!(
+        &*case.mir.aggregates[agg_i32].values,
+        &[Type::I32, Type::I32]
+    );
+    assert_eq!(
+        &*case.mir.aggregates[agg_f32].values,
+        &[Type::F32, Type::F32]
+    );
 }
 
 /// Constructing and accessing a field on a concrete `Point<i32>` inside a
@@ -697,12 +725,19 @@ fn test_generic_struct_init_and_field_access_concrete() {
 
         export { run }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir.diagnostics
+    );
     assert_eq!(case.mir.functions.len(), 1);
 
-    let agg_idx = case.mir.aggregates.iter().position(|a| {
-        a.values.len() == 2 && a.values.iter().all(|&t| t == Type::I32)
-    }).expect("Point<i32> aggregate not found");
+    let agg_idx = case
+        .mir
+        .aggregates
+        .iter()
+        .position(|a| a.values.len() == 2 && a.values.iter().all(|&t| t == Type::I32))
+        .expect("Point<i32> aggregate not found");
     assert_eq!(case.mir.aggregates[agg_idx].layout.size, 8);
 }
 
@@ -725,11 +760,18 @@ fn test_generic_struct_in_generic_function_monomorphizes_correctly() {
 
         export { run }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir.diagnostics
+    );
 
-    let agg = case.mir.aggregates.iter().find(|a| {
-        a.values.len() == 1 && a.values[0] == Type::I64
-    }).expect("Box<i64> aggregate with I64 field not found");
+    let agg = case
+        .mir
+        .aggregates
+        .iter()
+        .find(|a| a.values.len() == 1 && a.values[0] == Type::I64)
+        .expect("Box<i64> aggregate with I64 field not found");
     assert_eq!(agg.layout.size, 8);
     assert_eq!(agg.layout.align, 8);
 }
@@ -855,7 +897,12 @@ fn test_string_creates_static_entry_with_correct_bytes() {
     assert_eq!(&*case.mir.static_entries[0].bytes, b"hello");
     assert_eq!(case.mir.static_entries[0].align, 1);
 
-    let func = case.mir.functions.iter().find(|f| !f.static_data.is_empty()).unwrap();
+    let func = case
+        .mir
+        .functions
+        .iter()
+        .find(|f| !f.static_data.is_empty())
+        .unwrap();
     assert_eq!(func.static_data, vec![0u32]);
 }
 
@@ -872,7 +919,11 @@ fn test_same_string_deduplicated_across_functions() {
         export { a, b }
     "}
     ));
-    assert_eq!(case.mir.static_entries.len(), 1, "duplicate string must be deduplicated");
+    assert_eq!(
+        case.mir.static_entries.len(),
+        1,
+        "duplicate string must be deduplicated"
+    );
 
     for func in &case.mir.functions {
         if !func.static_data.is_empty() {
@@ -921,7 +972,10 @@ fn test_dce_removes_static_data_ownership() {
         .iter()
         .flat_map(|f| f.static_data.iter().copied())
         .collect();
-    assert!(live_indices.is_empty(), "live functions must not own dead static entries");
+    assert!(
+        live_indices.is_empty(),
+        "live functions must not own dead static entries"
+    );
 }
 
 #[test]
@@ -976,8 +1030,8 @@ fn test_array_literal_bytes_are_little_endian() {
         &*case.mir.static_entries[0].bytes,
         &[
             1u8, 0, 0, 0, // 1_i32 LE
-            2, 0, 0, 0,   // 2_i32 LE
-            3, 0, 0, 0,   // 3_i32 LE
+            2, 0, 0, 0, // 2_i32 LE
+            3, 0, 0, 0, // 3_i32 LE
         ],
     );
     assert_eq!(case.mir.static_entries[0].align, 4);
@@ -1025,7 +1079,10 @@ fn test_array_dce_removes_static_data_ownership() {
         .iter()
         .flat_map(|f| f.static_data.iter().copied())
         .collect();
-    assert!(live_indices.is_empty(), "live functions must not reference the dead array's entry");
+    assert!(
+        live_indices.is_empty(),
+        "live functions must not reference the dead array's entry"
+    );
 }
 
 #[test]
@@ -1057,4 +1114,3 @@ fn test_static_entry_alignment_matches_element_type() {
     assert!(aligns.contains(&8), "f64 array must have align 8");
     assert!(aligns.contains(&1), "u8 array must have align 1");
 }
-

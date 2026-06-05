@@ -1,60 +1,70 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use codespan_reporting::diagnostic::Severity;
 use indoc::indoc;
 
 use super::*;
+use crate::STDLIB_SOURCE;
 use crate::tir::builder::{CharLiteralError, parse_char_literal, unescape_string};
 use crate::vfs;
 
 #[allow(unused)]
 struct TestCase {
-    interner: ast::StringInterner,
     graph: vfs::CompilationGraph,
     tir: TIR,
 }
 
-impl<'case> TestCase {
+impl TestCase {
     fn new(source: &str) -> Self {
-        let mut interner = ast::StringInterner::new();
-        let graph = vfs::load_single_file_compilation(
-            "main.wx".to_string(),
-            source.to_string(),
-            &mut interner,
-        )
-        .unwrap();
-        let tir = TIR::build(&graph, &mut interner);
-
-        TestCase {
-            interner,
-            graph,
-            tir,
-        }
+        let mut builder = vfs::CompilationGraphBuilder::new();
+        let stdlib_id = builder
+            .load_crate(
+                "std.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "std.wx".to_string(),
+                    STDLIB_SOURCE.to_string(),
+                )])),
+            )
+            .unwrap();
+        builder
+            .load_crate(
+                "main.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "main.wx".to_string(),
+                    source.to_string(),
+                )])),
+            )
+            .unwrap();
+        let mut graph = builder.build(stdlib_id);
+        let tir = TIR::build(&mut graph);
+        TestCase { graph, tir }
     }
 
     fn new_multi_file(entry_path: &str, source: &str, extra_files: &[(&str, &str)]) -> Self {
-        let mut workspace_files = HashMap::new();
+        let mut workspace_files = HashMap::from([(entry_path.to_string(), source.to_string())]);
         for (path, source) in extra_files {
-            workspace_files.insert(PathBuf::from(path), (*source).to_string());
+            workspace_files.insert((*path).to_string(), (*source).to_string());
         }
-        let file_source = vfs::VirtualFileSource::new(workspace_files);
 
-        let mut interner = ast::StringInterner::new();
-        let graph = vfs::load_single_file_compilation_with_source(
-            entry_path.to_string(),
-            source.to_string(),
-            &file_source,
-            &mut interner,
-        )
-        .unwrap();
-        let tir = TIR::build(&graph, &mut interner);
-
-        TestCase {
-            interner,
-            graph,
-            tir,
-        }
+        let mut builder = vfs::CompilationGraphBuilder::new();
+        let stdlib_id = builder
+            .load_crate(
+                "std.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "std.wx".to_string(),
+                    STD.to_string(),
+                )])),
+            )
+            .unwrap();
+        builder
+            .load_crate(
+                entry_path.to_string(),
+                &vfs::VirtualFileSource::new(workspace_files),
+            )
+            .unwrap();
+        let mut graph = builder.build(stdlib_id);
+        let tir = TIR::build(&mut graph);
+        TestCase { graph, tir }
     }
 }
 
@@ -123,7 +133,7 @@ fn test_build_with_crate_graph_lowers_child_module_items() {
         case.tir
             .functions
             .iter()
-            .any(|function| case.interner.resolve(function.name.inner) == Some("add"))
+            .any(|function| case.graph.interner.resolve(function.name.inner) == Some("add"))
     );
 }
 
@@ -459,25 +469,57 @@ fn test_coerce_binary_bitwise_i32() {
 #[test]
 fn test_coerce_int_to_i8() {
     let case = TestCase::new("fn f() -> i8 { 127 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_coerce_int_to_u8() {
     let case = TestCase::new("fn f() -> u8 { 255 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_coerce_int_to_i16() {
     let case = TestCase::new("fn f() -> i16 { 1000 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_coerce_int_to_u16() {
     let case = TestCase::new("fn f() -> u16 { 65535 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 // ── float binary arithmetic propagation ─────────────────────────────────
@@ -485,19 +527,43 @@ fn test_coerce_int_to_u16() {
 #[test]
 fn test_coerce_binary_arithmetic_f32() {
     let case = TestCase::new("fn f() -> f32 { 1.5 + 0.5 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_coerce_binary_arithmetic_f64() {
     let case = TestCase::new("fn f() -> f64 { 1.0 + 2.0 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_coerce_binary_float_multiply() {
     let case = TestCase::new("fn f() -> f64 { 2.0 * 3.0 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 // ── INTEGER + FLOAT mismatch ─────────────────────────────────────────────
@@ -509,7 +575,11 @@ fn test_integer_plus_float_literal_errors() {
     assert!(
         has_error_code(&case.tir, "E1001"),
         "expected E1001 (type mismatch for INTEGER + FLOAT), got: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -520,7 +590,11 @@ fn test_float_plus_integer_literal_errors() {
     assert!(
         has_error_code(&case.tir, "E1001"),
         "expected E1001 (type mismatch for FLOAT + INTEGER), got: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -530,13 +604,29 @@ fn test_float_plus_integer_literal_errors() {
 fn test_coerce_chained_integer_arithmetic() {
     // All three literals are INTEGER; type propagates through both additions
     let case = TestCase::new("fn f() -> i32 { 1 + 2 + 3 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_coerce_chained_float_arithmetic() {
     let case = TestCase::new("fn f() -> f64 { 1.0 + 2.0 + 3.0 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 // ── typed operand drives coercion of comptime literal ────────────────────
@@ -545,20 +635,44 @@ fn test_coerce_chained_float_arithmetic() {
 fn test_comptime_right_operand_coerced_by_typed_left() {
     // x has concrete type i32; literal `1` (INTEGER) on the right gets coerced
     let case = TestCase::new("fn f(x: i32) -> i32 { x + 1 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_comptime_left_operand_coerced_by_typed_right() {
     // literal `1` (INTEGER) on the left, x has concrete type i32 on the right
     let case = TestCase::new("fn f(x: i32) -> i32 { 1 + x } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_comptime_float_operand_coerced_by_typed_variable() {
     let case = TestCase::new("fn f(x: f64) -> f64 { x + 1.0 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 // ── coercion through local variable binding ──────────────────────────────
@@ -572,7 +686,15 @@ fn test_comptime_integer_coerced_in_local_binding() {
         }
         export { f }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -584,7 +706,15 @@ fn test_comptime_float_coerced_in_local_binding() {
         }
         export { f }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -599,7 +729,11 @@ fn test_comptime_integer_local_missing_annotation_errors() {
     assert!(
         has_error_code(&case.tir, "E1002"),
         "expected E1002 (type annotation required), got: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -612,7 +746,15 @@ fn test_comptime_literal_coerced_by_fn_param_type() {
         fn f() -> i32 { add(1, 2) }
         export { f }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -622,7 +764,15 @@ fn test_comptime_float_literal_coerced_by_fn_param_type() {
         fn f(x: f32) -> f32 { scale(x, 2.0) }
         export { f }
     "});
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 // ── comparison operators with comptime literals ──────────────────────────
@@ -634,7 +784,11 @@ fn test_comptime_integers_standalone_comparison_requires_annotation() {
     assert!(
         has_error_code(&case.tir, "E1014"),
         "expected E1014 (comparison annotation required), got: {:?}",
-        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -642,19 +796,43 @@ fn test_comptime_integers_standalone_comparison_requires_annotation() {
 fn test_comptime_integer_coerced_by_typed_comparand() {
     // Typed variable on the left drives coercion of the literal on the right
     let case = TestCase::new("fn f(x: i32) -> bool { x == 1 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_comptime_integer_coerced_by_typed_comparand_on_right() {
     let case = TestCase::new("fn f(x: i32) -> bool { 1 == x } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn test_comptime_float_coerced_by_typed_comparand() {
     let case = TestCase::new("fn f(x: f64) -> bool { x < 1.0 } export { f }");
-    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "{:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -1028,8 +1206,8 @@ fn test_size_align_constants() {
             .collect::<Vec<_>>()
     );
     // u32 is 4 bytes, aligned to 4
-    let size_sym = case.interner.get("SIZE").unwrap();
-    let align_sym = case.interner.get("ALIGN").unwrap();
+    let size_sym = case.graph.interner.get("SIZE").unwrap();
+    let align_sym = case.graph.interner.get("ALIGN").unwrap();
     let members = case.tir.impl_members.get(&TypeIndex::U32).unwrap();
     assert!(matches!(
         members[&size_sym],
@@ -1078,8 +1256,13 @@ fn test_impl_members_registered() {
         .get(&TypeIndex::I32)
         .expect("impl_members should have an entry for i32");
 
-    let abs_sym = case.interner.get("abs").expect("symbol `abs` not interned");
+    let abs_sym = case
+        .graph
+        .interner
+        .get("abs")
+        .expect("symbol `abs` not interned");
     let from_bool_sym = case
+        .graph
         .interner
         .get("from_bool")
         .expect("symbol `from_bool` not interned");
@@ -1164,7 +1347,7 @@ fn test_struct_fields_kept_in_declaration_order() {
     );
     assert!(case.tir.diagnostics.is_empty());
 
-    let mixed_sym = case.interner.get("Mixed").unwrap();
+    let mixed_sym = case.graph.interner.get("Mixed").unwrap();
     let struct_index = case
         .tir
         .type_pool
@@ -1184,7 +1367,7 @@ fn test_struct_fields_kept_in_declaration_order() {
     let field_names: Vec<&str> = case.tir.structs[struct_index as usize]
         .fields
         .iter()
-        .map(|f| case.interner.resolve(f.name.inner).unwrap())
+        .map(|f| case.graph.interner.resolve(f.name.inner).unwrap())
         .collect();
     assert_eq!(field_names, vec!["a", "b", "c", "d"]);
 }
@@ -1531,7 +1714,10 @@ fn test_impl_trait_for_type_registers_trait_impl() {
 
     // target type is Point (a struct)
     assert!(
-        matches!(case.tir.type_pool[ti.target.as_usize()], Type::Struct { .. }),
+        matches!(
+            case.tir.type_pool[ti.target.as_usize()],
+            Type::Struct { .. }
+        ),
         "target should be a struct type"
     );
 
@@ -1555,6 +1741,7 @@ fn test_impl_trait_for_type_registers_trait_impl() {
 
     // draw method is registered in TraitImpl.members
     let draw_sym = case
+        .graph
         .interner
         .get("draw")
         .expect("symbol `draw` not interned");
@@ -1599,6 +1786,7 @@ fn test_impl_trait_function_origin_is_trait_impl() {
     );
 
     let hello_sym = case
+        .graph
         .interner
         .get("hello")
         .expect("symbol `hello` not interned");
@@ -1740,13 +1928,13 @@ fn test_supertrait_resolved() {
         .tir
         .traits
         .iter()
-        .position(|t| case.interner.resolve(t.name.inner) == Some("Drawable"))
+        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Drawable"))
         .expect("Drawable not found") as u32;
     let sized_idx = case
         .tir
         .traits
         .iter()
-        .position(|t| case.interner.resolve(t.name.inner) == Some("Sized"))
+        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Sized"))
         .expect("Sized not found") as u32;
 
     assert_eq!(
@@ -2024,7 +2212,7 @@ fn test_generic_struct_definition_stores_type_params() {
         .tir
         .structs
         .iter()
-        .find(|s| case.interner.resolve(s.name.inner) == Some("Point"))
+        .find(|s| case.graph.interner.resolve(s.name.inner) == Some("Point"))
         .expect("Point struct not found");
     assert_eq!(s.type_params.len(), 1);
 }
@@ -2045,7 +2233,7 @@ fn test_generic_struct_field_type_is_type_param() {
         .tir
         .structs
         .iter()
-        .find(|s| case.interner.resolve(s.name.inner) == Some("Wrapper"))
+        .find(|s| case.graph.interner.resolve(s.name.inner) == Some("Wrapper"))
         .expect("Wrapper struct not found");
     // Field `value` should have type TypeParam { param_index: 0 }.
     assert!(
@@ -2160,14 +2348,18 @@ fn test_generic_identity_resolves() {
         errors.len()
     );
     let func = case.tir.functions.iter().find(|f| {
-        case.interner
+        case.graph
+            .interner
             .resolve(f.name.inner)
             .map(|n| n == "identity")
             .unwrap_or(false)
     });
     let func = func.expect("function 'identity' not found in TIR");
     assert_eq!(func.type_params.len(), 1, "expected one type param");
-    assert_eq!(case.interner.resolve(func.type_params[0].name), Some("T"));
+    assert_eq!(
+        case.graph.interner.resolve(func.type_params[0].name),
+        Some("T")
+    );
     assert!(
         func.type_params[0].bounds.is_empty(),
         "T should have no bounds"
@@ -2223,7 +2415,8 @@ fn test_generic_with_bound_resolves() {
         errors.len()
     );
     let func = case.tir.functions.iter().find(|f| {
-        case.interner
+        case.graph
+            .interner
             .resolve(f.name.inner)
             .map(|n| n == "call_scale")
             .unwrap_or(false)
@@ -2313,10 +2506,11 @@ fn test_assoc_type_declared_in_trait() {
         .tir
         .traits
         .iter()
-        .find(|t| case.interner.resolve(t.name.inner) == Some("Memory"))
+        .find(|t| case.graph.interner.resolve(t.name.inner) == Some("Memory"))
         .expect("trait 'Memory' not found");
 
     let size_sym = case
+        .graph
         .interner
         .get("Size")
         .expect("symbol 'Size' not interned");
@@ -2353,7 +2547,7 @@ fn test_assoc_type_projection_in_return_type() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("foo"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("foo"))
         .expect("function 'foo' not found");
 
     let result_ty = func.result.as_ref().expect("expected a return type").inner;
@@ -2436,12 +2630,13 @@ fn test_assoc_type_impl_registers_in_trait_impl() {
             case.tir
                 .traits
                 .get(ti.trait_index as usize)
-                .and_then(|t| case.interner.resolve(t.name.inner))
+                .and_then(|t| case.graph.interner.resolve(t.name.inner))
                 == Some("Memory")
         })
         .expect("TraitImpl for Memory not found");
 
     let size_sym = case
+        .graph
         .interner
         .get("Size")
         .expect("symbol 'Size' not interned");
@@ -2621,7 +2816,7 @@ fn test_memory_tagged_pointer() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
         .expect("function 'f' not found");
 
     let param_ty = f.params[0].ty.inner;
@@ -2654,7 +2849,7 @@ fn test_memory_tagged_mut_pointer() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
         .expect("function 'f' not found");
 
     let param_ty = f.params[0].ty.inner;
@@ -2687,7 +2882,7 @@ fn test_memory_tagged_slice() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
         .expect("function 'f' not found");
 
     let param_ty = f.params[0].ty.inner;
@@ -2720,7 +2915,7 @@ fn test_memory_tagged_array() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
         .expect("function 'f' not found");
 
     let param_ty = f.params[0].ty.inner;
@@ -2753,7 +2948,7 @@ fn test_memory_tagged_nested_array() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
         .expect("function 'f' not found");
 
     let outer_ty = f.params[0].ty.inner;
@@ -2815,7 +3010,7 @@ fn test_untagged_and_tagged_pointer_resolve_to_same_type() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("f"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
         .expect("function 'f' not found");
 
     let untagged = f.params[0].ty.inner;
@@ -2847,7 +3042,7 @@ fn test_function_reference_has_function_item_type() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("square"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("square"))
         .expect("function 'square' not found")
         .id;
 
@@ -2882,7 +3077,7 @@ fn test_generic_function_reference_has_function_item_not_fn_pointer() {
         .tir
         .functions
         .iter()
-        .find(|f| case.interner.resolve(f.name.inner) == Some("identity"))
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("identity"))
         .expect("function 'identity' not found")
         .id;
 
@@ -2994,7 +3189,7 @@ fn test_two_functions_have_distinct_function_item_types() {
         case.tir
             .functions
             .iter()
-            .find(|f| case.interner.resolve(f.name.inner) == Some(name))
+            .find(|f| case.graph.interner.resolve(f.name.inner) == Some(name))
             .unwrap_or_else(|| panic!("function '{}' not found", name))
             .id
     };
@@ -3743,5 +3938,46 @@ fn test_array_repeat_runtime_value_is_error() {
     assert!(
         has_error_code(&case.tir, "E1045"),
         "expected E1045 (array element not const)"
+    );
+}
+
+// ── generic trait bound checking
+// ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_generic_call_with_satisfying_type_is_ok() {
+    let case = TestCase::new(indoc! {"
+        trait UnsignedInteger {}
+        impl UnsignedInteger for u32 {}
+        fn test<U: UnsignedInteger>(u: U) {}
+        fn main() { test(42 as u32); }
+        export { main }
+    "});
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "expected no errors when calling test() with u32 (implements UnsignedInteger): {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_generic_call_with_non_satisfying_type_is_error() {
+    // i32 does NOT implement UnsignedInteger — this call should be a type error.
+    let case = TestCase::new(indoc! {"
+        trait UnsignedInteger {}
+        impl UnsignedInteger for u32 {}
+        fn test<U: UnsignedInteger>(u: U) {}
+        fn main() { test(42 as i32); }
+        export { main }
+    "});
+    assert!(
+        !case.tir.diagnostics.is_empty(),
+        "expected a type error when calling test() with i32 (does not implement UnsignedInteger)"
     );
 }

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use codespan_reporting::term::{self};
 use indoc::indoc;
@@ -35,11 +37,10 @@ const STD: &str = indoc! {"
         len: u32,
     }
 "};
-use crate::{ast, mir, tir, vfs};
+use crate::{mir, tir, vfs};
 
 #[allow(unused)]
 struct TestCase {
-    interner: ast::StringInterner,
     graph: vfs::CompilationGraph,
     tir: tir::TIR,
     mir: mir::MIR,
@@ -49,54 +50,60 @@ struct TestCase {
 
 impl<'case> TestCase {
     fn new(source: &str) -> Self {
-        let mut interner = ast::StringInterner::new();
-        let graph = vfs::load_single_file_compilation(
-            "main.wx".to_string(),
-            source.to_string(),
-            &mut interner,
-        )
-        .unwrap();
-        let crate_graph = graph.crate_graph(graph.entry_crate);
-        let ast = &crate_graph.modules[crate_graph.root.as_u32() as usize].ast;
-        if ast.diagnostics.len() > 0
-            && ast
-                .diagnostics
-                .iter()
-                .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
+        let mut builder = vfs::CompilationGraphBuilder::new();
+        let stdlib_id = builder
+            .load_crate(
+                "std.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "std.wx".to_string(),
+                    STD.to_string(),
+                )])),
+            )
+            .unwrap();
+        builder
+            .load_crate(
+                "main.wx".to_string(),
+                &vfs::VirtualFileSource::new(HashMap::from([(
+                    "main.wx".to_string(),
+                    source.to_string(),
+                )])),
+            )
+            .unwrap();
+        let mut graph = builder.build(stdlib_id);
+        let entry_crate = graph.crates.last().unwrap();
+        let ast = &entry_crate.modules[entry_crate.root.as_u32() as usize].ast;
+        if ast
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
         {
             let writer = StandardStream::stderr(ColorChoice::Always);
             let config = codespan_reporting::term::Config::default();
-
             for diagnostic in ast.diagnostics.iter() {
                 term::emit_to_io_write(&mut writer.lock(), &config, &graph.files, diagnostic)
                     .unwrap();
             }
             std::process::exit(1);
         }
-        let tir = tir::TIR::build(&graph, &mut interner);
-        if tir.diagnostics.len() > 0
-            && tir
-                .diagnostics
-                .iter()
-                .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
+        let tir = tir::TIR::build(&mut graph);
+        if tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
         {
             let writer = StandardStream::stderr(ColorChoice::Always);
             let config = codespan_reporting::term::Config::default();
-
             for diagnostic in tir.diagnostics.iter() {
                 term::emit_to_io_write(&mut writer.lock(), &config, &graph.files, diagnostic)
                     .unwrap();
             }
             std::process::exit(1);
         }
-        // insta::assert_yaml_snapshot!(tir.functions);
-        let mir = mir::MIR::build(&tir, &interner, graph.id_generator);
-        // insta::assert_yaml_snapshot!(mir);
-        let wasm = Builder::build(&mir, &interner).unwrap();
+        let mir = mir::MIR::build(&tir, &graph.interner, graph.id_generator);
+        let wasm = Builder::build(&mir, &graph.interner).unwrap();
         let bytecode = wasm.encode();
 
         TestCase {
-            interner,
             graph,
             tir,
             mir,
@@ -1921,4 +1928,3 @@ fn test_array_index_wat() {
     ));
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
-

@@ -55,7 +55,6 @@ struct AnalysisResult {
 struct CompiledRoot {
     graph: vfs::CompilationGraph,
     tir: TIR,
-    interner: ast::StringInterner,
     symbol_index: SymbolIndex,
 }
 
@@ -74,15 +73,15 @@ impl<'a> OverlayFileSource<'a> {
 }
 
 impl FileSource for OverlayFileSource<'_> {
-    fn read_to_string(&self, path: &Path) -> Result<String, LoadError> {
-        if let Some(doc) = self.open_documents.get(path) {
+    fn read_to_string(&self, path: &str) -> Result<String, LoadError> {
+        if let Some(doc) = self.open_documents.get(Path::new(path)) {
             return Ok(doc.text.clone());
         }
         self.native.read_to_string(path)
     }
 
-    fn exists(&self, path: &Path) -> bool {
-        self.open_documents.contains_key(path) || self.native.exists(path)
+    fn exists(&self, path: &str) -> bool {
+        self.open_documents.contains_key(Path::new(path)) || self.native.exists(path)
     }
 }
 
@@ -311,14 +310,21 @@ fn analyze_root(state: &mut ServerState, root: &Path) -> AnalysisResult {
 
 fn compile_root(state: &ServerState, root: &Path) -> Result<CompiledRoot, LoadError> {
     let overlay_source = OverlayFileSource::new(&state.open_documents);
-    let mut interner = ast::StringInterner::new();
-    let graph = vfs::load_compilation_with_source(root, &overlay_source, &mut interner)?;
-    let tir = TIR::build(&graph, &mut interner);
+    let mut builder = vfs::CompilationGraphBuilder::new();
+    let stdlib_id = builder.load_crate(
+        "std.wx".to_string(),
+        &vfs::VirtualFileSource::new(std::collections::HashMap::from([(
+            "std.wx".to_string(),
+            wx_compiler::STDLIB_SOURCE.to_string(),
+        )])),
+    )?;
+    builder.load_crate(root.to_str().unwrap_or_default().to_string(), &overlay_source)?;
+    let mut graph = builder.build(stdlib_id);
+    let tir = TIR::build(&mut graph);
     let symbol_index = build_symbol_index(&tir);
     Ok(CompiledRoot {
         graph,
         tir,
-        interner,
         symbol_index,
     })
 }
@@ -329,8 +335,9 @@ fn analysis_from_compiled_root(compiled: &CompiledRoot) -> AnalysisResult {
 
     for crate_graph in &compiled.graph.crates {
         for path in crate_graph.path_to_module.keys() {
-            if path.is_absolute() {
-                owned_files.insert(path.clone());
+            let path_buf = PathBuf::from(path);
+            if path_buf.is_absolute() {
+                owned_files.insert(path_buf);
             }
         }
         for diagnostic in &crate_graph.diagnostics {
@@ -354,8 +361,8 @@ fn analysis_from_load_error(root: &Path, error: LoadError) -> AnalysisResult {
 
     let (path, diagnostic) = match error {
         LoadError::ReadFailed { path } => {
-            let target = if path.is_absolute() {
-                path
+            let target = if Path::new(&path).is_absolute() {
+                PathBuf::from(&path)
             } else {
                 root.to_path_buf()
             };
@@ -365,7 +372,7 @@ fn analysis_from_load_error(root: &Path, error: LoadError) -> AnalysisResult {
                 code: None,
                 code_description: None,
                 source: Some("wx-lsp-next".to_string()),
-                message: format!("failed to read file `{}`", target.display()),
+                message: format!("failed to read file `{path}`"),
                 related_information: None,
                 tags: None,
                 data: None,
@@ -376,8 +383,8 @@ fn analysis_from_load_error(root: &Path, error: LoadError) -> AnalysisResult {
             file,
             directory_file,
         } => {
-            let target = if file.is_absolute() {
-                file
+            let target = if Path::new(&file).is_absolute() {
+                PathBuf::from(&file)
             } else {
                 root.to_path_buf()
             };
@@ -387,11 +394,7 @@ fn analysis_from_load_error(root: &Path, error: LoadError) -> AnalysisResult {
                 code: None,
                 code_description: None,
                 source: Some("wx-lsp-next".to_string()),
-                message: format!(
-                    "ambiguous module: both `{}` and `{}` exist",
-                    target.display(),
-                    directory_file.display()
-                ),
+                message: format!("ambiguous module: both `{file}` and `{directory_file}` exist"),
                 related_information: None,
                 tags: None,
                 data: None,
@@ -619,7 +622,7 @@ fn handle_hover(state: &ServerState, params: &lsp_types::HoverParams) -> Option<
     )?;
 
     let info = compiled.symbol_index.find_at_position(file_id, offset)?;
-    let text = symbol_hover_text(&compiled.tir, &compiled.interner, &info.kind)?;
+    let text = symbol_hover_text(&compiled.tir, &compiled.graph.interner, &info.kind)?;
     let range = span_to_range(
         &compiled.graph.files,
         file_id,
@@ -894,7 +897,7 @@ fn handle_formatting(
     };
 
     let formatted = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        wx_compiler::fmt::format(&module.ast, &compiled.interner, source, config)
+        wx_compiler::fmt::format(&module.ast, &compiled.graph.interner, source, config)
     }))
     .ok()?;
 
@@ -916,7 +919,7 @@ fn file_id_for_path(compiled: &CompiledRoot, path: &Path) -> Option<FileId> {
         .crates
         .iter()
         .flat_map(|crate_graph| crate_graph.modules.iter())
-        .find(|module| module.file_path == path)
+        .find(|module| Path::new(&module.file_path) == path)
         .map(|module| module.file_id)
 }
 
@@ -927,7 +930,7 @@ fn path_for_file_id(compiled: &CompiledRoot, file_id: FileId) -> Option<PathBuf>
         .iter()
         .flat_map(|crate_graph| crate_graph.modules.iter())
         .find(|module| module.file_id == file_id)
-        .map(|module| module.file_path.clone())
+        .map(|module| PathBuf::from(&module.file_path))
 }
 
 fn module_for_path<'a>(compiled: &'a CompiledRoot, path: &Path) -> Option<&'a vfs::SourceModule> {
@@ -936,7 +939,7 @@ fn module_for_path<'a>(compiled: &'a CompiledRoot, path: &Path) -> Option<&'a vf
         .crates
         .iter()
         .flat_map(|crate_graph| crate_graph.modules.iter())
-        .find(|module| module.file_path == path)
+        .find(|module| Path::new(&module.file_path) == path)
 }
 
 fn position_to_offset(

@@ -1211,6 +1211,15 @@ pub struct TIR {
     pub constants: Vec<Constant>,
     #[cfg_attr(test, serde(skip))]
     pub const_index_lookup: HashMap<ast::DefId, ConstIndex>,
+    #[cfg_attr(test, serde(skip))]
+    pub lang_items: Option<LangItems>,
+}
+
+/// Indices of stdlib traits identified by `#[lang = "..."]` attributes.
+/// `None` on the parent TIR when compiled without the standard library.
+pub struct LangItems {
+    pub memory: TraitIndex,
+    pub pointer_size: TraitIndex,
 }
 
 #[derive(PartialEq)]
@@ -1226,8 +1235,9 @@ impl TIR {
         TypeFormatter::new(self, interner)
     }
 
-    pub fn build(compilation: &CompilationGraph, interner: &mut ast::StringInterner) -> TIR {
-        builder::build(compilation, interner)
+    #[inline]
+    pub fn build(compilation: &mut CompilationGraph) -> TIR {
+        builder::build(compilation)
     }
 
     fn type_primitive(&self, ty: TypeIndex) -> Option<WasmPrimitive> {

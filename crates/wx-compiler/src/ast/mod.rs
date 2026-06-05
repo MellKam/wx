@@ -1,7 +1,7 @@
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use string_interner::symbol::SymbolU32;
 
-use crate::vfs::FileId;
+use crate::vfs::{self, FileId};
 
 #[cfg(test)]
 mod tests;
@@ -1198,10 +1198,20 @@ pub struct FunctionParam {
     pub ty: Option<Box<Spanned<TypeExpression>>>,
 }
 
-/// A single `#[name]` attribute on a function or method.
+/// The payload of an attribute, following the meta item grammar.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum AttributeValue {
+    /// `#[inline]` — name only, no payload.
+    Word,
+    /// `#[lang = "memory"]` — name plus a string literal (stored raw, including quotes).
+    NameValue(Spanned<SymbolU32>),
+}
+
+/// A single attribute on an item, e.g. `#[inline]` or `#[lang = "memory"]`.
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Attribute {
     pub name: Spanned<SymbolU32>,
+    pub value: AttributeValue,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1446,6 +1456,7 @@ pub enum Item {
     Trait {
         id: DefId,
         pub_span: Option<TextSpan>,
+        attributes: Box<[Attribute]>,
         name: Spanned<SymbolU32>,
         /// Supertrait bounds: `trait X: Y + Z { ... }`.  Empty = no bounds.
         supertraits: Box<[Spanned<TypeExpression>]>,
@@ -1753,13 +1764,14 @@ impl<T> SeparatedGroup<T> {
     }
 }
 
-impl<'input> Parser<'input> {
+impl<'ctx> Parser<'ctx> {
     pub fn parse(
         file_id: FileId,
-        source: &'input str,
-        interner: &'input mut StringInterner,
-        id_generator: &'input mut DefIdGenerator,
+        files: &'ctx vfs::Files,
+        interner: &'ctx mut StringInterner,
+        id_generator: &'ctx mut DefIdGenerator,
     ) -> AST {
+        let source = &files.get(file_id).unwrap().source;
         let mut parser = Self {
             source,
             lexer: Lexer::new(source),
@@ -1802,6 +1814,9 @@ impl<'input> Parser<'input> {
                         ref mut attributes, ..
                     }
                     | Item::FunctionDeclaration {
+                        ref mut attributes, ..
+                    }
+                    | Item::Trait {
                         ref mut attributes, ..
                     } = item.inner
                     {
@@ -1952,6 +1967,19 @@ impl<'input> Parser<'input> {
             let name_symbol = parser
                 .interner
                 .get_or_intern(name_span.extract_str(parser.source));
+
+            let value = if parser.lexer.next_if(Token::Eq).is_some() {
+                let str_token = parser.next_expect(Token::String)?;
+                let raw = str_token.span.extract_str(parser.source);
+                let sym = parser.interner.get_or_intern(raw);
+                AttributeValue::NameValue(Spanned {
+                    inner: sym,
+                    span: str_token.span,
+                })
+            } else {
+                AttributeValue::Word
+            };
+
             let close_token = parser.lexer.peek();
             if close_token.inner != Token::CloseBracket {
                 parser.ast.diagnostics.push(report_unclosed_delimiter(
@@ -1970,6 +1998,7 @@ impl<'input> Parser<'input> {
                     inner: name_symbol,
                     span: name_span,
                 },
+                value,
             });
         }
         Ok(attrs.into_boxed_slice())
@@ -2593,10 +2622,7 @@ impl<'input> Parser<'input> {
                 Parser::parse_intrinsic_call_expression,
                 BindingPower::Primary,
             )),
-            Token::OpenBracket => Some((
-                Parser::parse_array_expression,
-                BindingPower::Primary,
-            )),
+            Token::OpenBracket => Some((Parser::parse_array_expression, BindingPower::Primary)),
             _ => None,
         }
     }
@@ -4135,6 +4161,7 @@ impl<'input> Parser<'input> {
             inner: Item::Trait {
                 id: parser.id_generator.generate(),
                 pub_span: None,
+                attributes: Box::new([]),
                 name,
                 supertraits,
                 items: items.inner,

@@ -18,12 +18,7 @@ impl<'case> TestCase {
             .add("main.wx".to_string(), source.to_string())
             .unwrap();
         let mut id_generator = DefIdGenerator::new();
-        let ast = Parser::parse(
-            file_id,
-            &files.get(file_id).unwrap().source,
-            &mut interner,
-            &mut id_generator,
-        );
+        let ast = Parser::parse(file_id, &files, &mut interner, &mut id_generator);
 
         TestCase {
             interner,
