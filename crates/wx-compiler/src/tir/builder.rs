@@ -918,7 +918,7 @@ fn report_expected_trait(span: SourceSpan, kind: SymbolKind, name: String) -> Di
     let found = match kind {
         SymbolKind::Struct { .. } => "struct",
         SymbolKind::Enum { .. } => "enum",
-        SymbolKind::ImportModule { .. } => "import module",
+
         SymbolKind::Memory { .. } => "memory",
         SymbolKind::Module { .. } => "module",
         SymbolKind::Function { .. } => "function",
@@ -1138,9 +1138,10 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
         functions: Vec::new(),
         globals: Vec::new(),
         exports: HashMap::new(),
-        import_modules: Vec::new(),
+        namespaces: Vec::new(),
+        module_decls: Vec::new(),
+        import_decls: Vec::new(),
         enums: Vec::new(),
-        modules: Vec::new(),
         impl_members: HashMap::new(),
         structs: Vec::new(),
         memories: Vec::new(),
@@ -1356,38 +1357,43 @@ impl<'ast> Builder<'ast, '_> {
         pub_span: Option<ast::TextSpan>,
     ) -> ModuleIndex {
         let symbol = name.inner;
-        if let Some(SymbolKind::Module { module_index }) = self
+        if let Some(SymbolKind::Module { namespace_idx }) = self
             .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
             .cloned()
         {
-            let module = &mut self.tir.modules[module_index as usize];
-            if module.pub_span.is_none() {
-                module.pub_span = pub_span;
+            let decl = &mut self.tir.module_decls[namespace_idx as usize];
+            if decl.pub_span.is_none() {
+                decl.pub_span = pub_span;
             }
-            return module_index;
+            return namespace_idx;
         }
 
-        let module_index = self.tir.modules.len() as u32;
-        self.tir.modules.push(Module {
-            file_id,
+        let namespace_idx = self.tir.namespaces.len() as u32;
+        self.tir.namespaces.push(ModuleNamespace {
+            name: symbol,
+            parent: resolve_context.module,
+            symbols: HashMap::new(),
+        });
+        self.tir.module_decls.push(ModuleDecl {
+            namespace_idx,
+            declaring_file_id: file_id,
+            own_file_id: None,
             name,
             pub_span,
-            parent: resolve_context.module,
-            symbol_lookup: HashMap::new(),
         });
         self.insert_symbol(
             resolve_context,
             (SymbolNamespace::Type, symbol),
-            SymbolKind::Module { module_index },
+            SymbolKind::Module { namespace_idx },
         );
-        module_index
+        namespace_idx
     }
 
     fn ensure_module_path(&mut self, file_id: FileId, path: &[SymbolU32]) -> ResolveContext {
         let mut resolve_context = ResolveContext::root(file_id);
 
-        for &segment in path {
-            let module_index = self.ensure_module(
+        for (i, &segment) in path.iter().enumerate() {
+            let namespace_idx = self.ensure_module(
                 &resolve_context,
                 file_id,
                 ast::Spanned {
@@ -1396,7 +1402,11 @@ impl<'ast> Builder<'ast, '_> {
                 },
                 None,
             );
-            resolve_context = resolve_context.in_module(module_index);
+            // Set own_file_id on the last segment — that's the source module's actual file.
+            if i == path.len() - 1 {
+                self.tir.module_decls[namespace_idx as usize].own_file_id = Some(file_id);
+            }
+            resolve_context = resolve_context.in_module(namespace_idx);
         }
 
         resolve_context
@@ -1409,8 +1419,8 @@ impl<'ast> Builder<'ast, '_> {
         kind: SymbolKind,
     ) {
         if let Some(idx) = resolve_context.module {
-            self.tir.modules[idx as usize]
-                .symbol_lookup
+            self.tir.namespaces[idx as usize]
+                .symbols
                 .insert(key, kind);
         } else {
             self.symbol_lookup.insert(key, kind);
@@ -1425,19 +1435,16 @@ impl<'ast> Builder<'ast, '_> {
     ) -> Option<&SymbolKind> {
         let mut current = resolve_context.module;
         while let Some(idx) = current {
-            if let Some(kind) = self.tir.modules[idx as usize].symbol_lookup.get(&(ns, sym)) {
+            if let Some(kind) = self.tir.namespaces[idx as usize].symbols.get(&(ns, sym)) {
                 return Some(kind);
             }
-            current = self.tir.modules[idx as usize].parent;
+            current = self.tir.namespaces[idx as usize].parent;
         }
         self.symbol_lookup.get(&(ns, sym))
     }
 
     fn symbol_kind_to_type(&mut self, kind: SymbolKind) -> Option<TypeIndex> {
         match kind {
-            SymbolKind::ImportModule { module_index } => {
-                Some(self.intern_type(Type::ImportModule { module_index }))
-            }
             SymbolKind::Memory { kind, memory_index } => {
                 let id = self.tir.memories[memory_index as usize].id;
                 Some(self.intern_type(Type::Memory { kind, id }))
@@ -1445,8 +1452,8 @@ impl<'ast> Builder<'ast, '_> {
             SymbolKind::Trait { trait_index } => {
                 Some(self.intern_type(Type::Trait { trait_index }))
             }
-            SymbolKind::Module { module_index } => {
-                Some(self.intern_type(Type::Module { module_index }))
+            SymbolKind::Module { namespace_idx } => {
+                Some(self.intern_type(Type::Module { namespace_idx }))
             }
             SymbolKind::Enum { enum_index } => Some(self.intern_type(Type::Enum { enum_index })),
             SymbolKind::Struct { struct_index } => Some(self.intern_type(Type::Struct {
@@ -2109,16 +2116,6 @@ impl<'ast> Builder<'ast, '_> {
                 let const_ = &self.tir.constants[const_index as usize];
                 SourceSpan::new(const_.file_id, const_.name.span)
             }
-            SymbolKind::ImportModule { module_index } => {
-                let module = &self.tir.import_modules[module_index as usize];
-                SourceSpan::new(
-                    module.file_id,
-                    match &module.internal_name {
-                        Some(internal_name) => internal_name.span,
-                        None => module.external_name.span,
-                    },
-                )
-            }
             SymbolKind::Enum { enum_index } => {
                 let enum_ = &self.tir.enums[enum_index as usize];
                 SourceSpan::new(enum_.file_id, enum_.name.span)
@@ -2127,9 +2124,9 @@ impl<'ast> Builder<'ast, '_> {
                 let s = &self.tir.structs[struct_index as usize];
                 SourceSpan::new(s.file_id, s.name.span)
             }
-            SymbolKind::Module { module_index } => {
-                let module = &self.tir.modules[module_index as usize];
-                SourceSpan::new(module.file_id, module.name.span)
+            SymbolKind::Module { namespace_idx } => {
+                let decl = &self.tir.module_decls[namespace_idx as usize];
+                SourceSpan::new(decl.declaring_file_id, decl.name.span)
             }
             SymbolKind::Trait { trait_index } => {
                 let trait_ = &self.tir.traits[trait_index as usize];
@@ -2421,7 +2418,7 @@ impl<'ast> Builder<'ast, '_> {
             } => {
                 // Imports are processed eagerly: their signatures depend only on
                 // primitive types or previously-registered stdlib types.
-                let module_index = self.tir.import_modules.len() as u32;
+                let import_decl_index = self.tir.import_decls.len() as u32;
                 let external_name = {
                     let s = self.interner.resolve(import_module_name.inner).unwrap();
                     let unquoted = unescape_string(s);
@@ -2434,10 +2431,16 @@ impl<'ast> Builder<'ast, '_> {
                     Some(a) => a.inner,
                     None => external_name.inner,
                 };
+                let namespace_idx = self.tir.namespaces.len() as u32;
+                self.tir.namespaces.push(ModuleNamespace {
+                    name: module_sym,
+                    parent: resolve_context.module,
+                    symbols: HashMap::new(),
+                });
                 self.insert_symbol(
                     &resolve_context,
                     (SymbolNamespace::Type, module_sym),
-                    SymbolKind::ImportModule { module_index },
+                    SymbolKind::Module { namespace_idx },
                 );
                 for entry in entries.iter() {
                     match &entry.inner.inner.declaration {
@@ -2447,7 +2450,7 @@ impl<'ast> Builder<'ast, '_> {
                                 AstNodeRef::ImportedFunction {
                                     file_id,
                                     module,
-                                    import_module_index: module_index,
+                                    import_module_index: import_decl_index,
                                     decl: &entry.inner.inner.declaration,
                                 },
                             );
@@ -2489,7 +2492,8 @@ impl<'ast> Builder<'ast, '_> {
                         }
                     }
                 }
-                self.tir.import_modules.push(ImportModule {
+                self.tir.import_decls.push(ImportDecl {
+                    namespace_idx,
                     file_id,
                     external_name,
                     internal_name: alias.clone(),
@@ -3372,9 +3376,17 @@ impl<'ast> Builder<'ast, '_> {
                         attributes: Box::new([]),
                     });
                     self.tir.function_index_lookup.insert(*id, func_index);
-                    self.tir.import_modules[import_module_index as usize]
+                    let import_decl = &mut self.tir.import_decls[import_module_index as usize];
+                    import_decl
                         .lookup
                         .insert(signature.name.inner, ImportValue::Function { id: *id });
+                    let namespace_idx = import_decl.namespace_idx;
+                    self.tir.namespaces[namespace_idx as usize]
+                        .symbols
+                        .insert(
+                            (SymbolNamespace::Value, signature.name.inner),
+                            SymbolKind::Function { func_index },
+                        );
                 }
             }
 
@@ -4088,7 +4100,6 @@ impl<'ast> Builder<'ast, '_> {
             | Type::Char
             | Type::Enum { .. }
             | Type::Module { .. }
-            | Type::ImportModule { .. }
             | Type::Memory { .. }
             | Type::Trait { .. } => return ty,
             Type::Struct { args, .. } if args.is_empty() => return ty,
@@ -5615,7 +5626,6 @@ impl<'ast> Builder<'ast, '_> {
                 Type::Error
                     | Type::Integer
                     | Type::Float
-                    | Type::ImportModule { .. }
                     | Type::Module { .. }
                     | Type::Enum { .. }
                     | Type::Function { .. }
@@ -5797,8 +5807,7 @@ impl<'ast> Builder<'ast, '_> {
                     })
                 }
                 Some(
-                    SymbolKind::ImportModule { .. }
-                    | SymbolKind::Enum { .. }
+                    SymbolKind::Enum { .. }
                     | SymbolKind::Module { .. }
                     | SymbolKind::Struct { .. }
                     | SymbolKind::Trait { .. },
@@ -5980,10 +5989,10 @@ impl<'ast> Builder<'ast, '_> {
         member_span: TextSpan,
     ) -> TypeIndex {
         match &self.tir.type_pool[namespace_ty.as_usize()].clone() {
-            Type::Module { module_index } => {
-                let module_index = *module_index;
-                let kind = self.tir.modules[module_index as usize]
-                    .symbol_lookup
+            Type::Module { namespace_idx } => {
+                let namespace_idx = *namespace_idx;
+                let kind = self.tir.namespaces[namespace_idx as usize]
+                    .symbols
                     .get(&(SymbolNamespace::Type, member_sym))
                     .cloned();
                 match kind {
@@ -5995,8 +6004,8 @@ impl<'ast> Builder<'ast, '_> {
                             return TypeIndex::ERROR;
                         }
                         self.ensure_signature(def_id);
-                        match self.tir.modules[module_index as usize]
-                            .symbol_lookup
+                        match self.tir.namespaces[namespace_idx as usize]
+                            .symbols
                             .get(&(SymbolNamespace::Type, member_sym))
                             .cloned()
                         {
@@ -6185,79 +6194,9 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 }
             }
-            Type::ImportModule { module_index } => {
-                let module = &self.tir.import_modules[*module_index as usize];
-                match module.lookup.get(&member.inner).copied() {
-                    Some(ImportValue::Function { id }) => {
-                        let func_index = self.tir.function_index_lookup[&id];
-                        let caller_id = self.tir.functions[func_ctx.func_index as usize].id;
-                        self.tir.functions[func_index as usize]
-                            .accesses
-                            .push(FunctionAccess {
-                                caller: Some(caller_id),
-                                kind: FunctionAccessKind::Reference,
-                                file_id: self.file_id,
-                                span: member.span,
-                            });
-                        let signature_index =
-                            self.tir.functions[func_index as usize].signature_index;
-                        Ok(Expression {
-                            kind: ExprKind::NamespaceAccess {
-                                namespace: namespace_spanned,
-                                member: Box::new(Expression {
-                                    kind: ExprKind::Function { id },
-                                    ty: signature_index,
-                                    span: member.span,
-                                }),
-                            },
-                            ty: signature_index,
-                            span: expr_span,
-                        })
-                    }
-                    Some(ImportValue::Global { id }) => {
-                        let global_index = self.tir.global_index_lookup[&id];
-                        let global = &mut self.tir.globals[global_index as usize];
-                        global
-                            .accesses
-                            .push(SourceSpan::new(self.file_id, member.span));
-                        let ty = global.ty.inner;
-                        Ok(Expression {
-                            kind: ExprKind::NamespaceAccess {
-                                namespace: namespace_spanned,
-                                member: Box::new(Expression {
-                                    kind: ExprKind::Global { id },
-                                    ty,
-                                    span: member.span,
-                                }),
-                            },
-                            ty,
-                            span: expr_span,
-                        })
-                    }
-                    Some(ImportValue::Memory { id }) => {
-                        let memory_index = self.tir.memory_index_lookup[&id];
-                        let kind = self.tir.memories[memory_index as usize].kind;
-                        let ty = self.intern_type(Type::Memory { kind, id });
-                        Ok(Expression {
-                            kind: ExprKind::Memory { id },
-                            ty,
-                            span: expr_span,
-                        })
-                    }
-                    None => {
-                        self.tir
-                            .diagnostics
-                            .push(report_undeclared_identifier(SourceSpan::new(
-                                self.file_id,
-                                member.span,
-                            )));
-                        Err(())
-                    }
-                }
-            }
-            Type::Module { module_index } => {
-                match self.tir.modules[*module_index as usize]
-                    .symbol_lookup
+            Type::Module { namespace_idx } => {
+                match self.tir.namespaces[*namespace_idx as usize]
+                    .symbols
                     .get(&(SymbolNamespace::Value, member.inner))
                     .cloned()
                 {

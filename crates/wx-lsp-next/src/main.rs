@@ -188,7 +188,12 @@ impl LanguageServer for Backend {
             )?;
             let info = compiled.symbol_index.find_at_position(file_id, offset)?;
             let text = symbol_hover_text(&compiled.tir, &compiled.graph.interner, &info.kind)?;
-            let range = span_to_range(&compiled.graph.files, file_id, info.span.start, info.span.end)?;
+            let range = span_to_range(
+                &compiled.graph.files,
+                file_id,
+                info.span.start,
+                info.span.end,
+            )?;
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -218,7 +223,12 @@ impl LanguageServer for Backend {
             let (def_file_id, def_span) = compiled.symbol_index.find_definition(&info.kind)?;
             let def_path = path_for_file_id(compiled, def_file_id)?;
             let uri = path_to_uri(&def_path)?;
-            let range = span_to_range(&compiled.graph.files, def_file_id, def_span.start, def_span.end)?;
+            let range = span_to_range(
+                &compiled.graph.files,
+                def_file_id,
+                def_span.start,
+                def_span.end,
+            )?;
             Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
         })())
     }
@@ -238,8 +248,12 @@ impl LanguageServer for Backend {
             let info = compiled.symbol_index.find_at_position(file_id, offset)?;
             let mut refs = compiled.symbol_index.find_all_references(&info.kind);
             if !params.context.include_declaration {
-                if let Some((def_file_id, def_span)) = compiled.symbol_index.find_definition(&info.kind) {
-                    refs.retain(|(fid, span)| !(*fid == def_file_id && span.start == def_span.start));
+                if let Some((def_file_id, def_span)) =
+                    compiled.symbol_index.find_definition(&info.kind)
+                {
+                    refs.retain(|(fid, span)| {
+                        !(*fid == def_file_id && span.start == def_span.start)
+                    });
                 }
             }
             let locations = refs
@@ -281,7 +295,12 @@ impl LanguageServer for Backend {
             for (ref_file_id, ref_span) in refs {
                 let ref_path = path_for_file_id(compiled, ref_file_id)?;
                 let uri = path_to_uri(&ref_path)?;
-                let range = span_to_range(&compiled.graph.files, ref_file_id, ref_span.start, ref_span.end)?;
+                let range = span_to_range(
+                    &compiled.graph.files,
+                    ref_file_id,
+                    ref_span.start,
+                    ref_span.end,
+                )?;
                 changes.entry(uri).or_default().push(TextEdit {
                     range,
                     new_text: params.new_name.clone(),
@@ -294,17 +313,20 @@ impl LanguageServer for Backend {
         })())
     }
 
-    async fn formatting(
-        &self,
-        params: DocumentFormattingParams,
-    ) -> Result<Option<Vec<TextEdit>>> {
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let state = self.state.lock().await;
         Ok((|| {
             let path = uri_to_path(&params.text_document.uri)?;
             let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
             let compiled = state.cached.get(&root)?;
             let module = module_for_path(compiled, &path)?;
-            let source = compiled.graph.files.get(module.file_id).ok()?.source.as_str();
+            let source = compiled
+                .graph
+                .files
+                .get(module.file_id)
+                .ok()?
+                .source
+                .as_str();
             let has_errors = module.ast.diagnostics.iter().any(|d| {
                 matches!(
                     d.severity,
@@ -339,7 +361,9 @@ impl Backend {
     async fn publish_all(&self, publications: Vec<(PathBuf, Vec<Diagnostic>)>) {
         for (path, diagnostics) in publications {
             if let Some(uri) = path_to_uri(&path) {
-                self.client.publish_diagnostics(uri, diagnostics, None).await;
+                self.client
+                    .publish_diagnostics(uri, diagnostics, None)
+                    .await;
             }
         }
     }
@@ -459,10 +483,7 @@ fn collect_clear_operations(
     }
 }
 
-fn compile_root(
-    state: &ServerState,
-    root: &Path,
-) -> std::result::Result<CompiledRoot, LoadError> {
+fn compile_root(state: &ServerState, root: &Path) -> std::result::Result<CompiledRoot, LoadError> {
     let overlay_source = OverlayFileSource::new(&state.open_documents);
     let mut builder = vfs::CompilationGraphBuilder::new();
     let stdlib_id = builder.load_crate(
@@ -472,7 +493,10 @@ fn compile_root(
             wx_compiler::STDLIB_SOURCE.to_string(),
         )])),
     )?;
-    builder.load_crate(root.to_str().unwrap_or_default().to_string(), &overlay_source)?;
+    builder.load_crate(
+        root.to_str().unwrap_or_default().to_string(),
+        &overlay_source,
+    )?;
     let mut graph = builder.build(stdlib_id);
     let tir = TIR::build(&mut graph);
     let symbol_index = build_symbol_index(&tir);
@@ -486,7 +510,13 @@ fn compile_root(
                 .iter()
                 .enumerate()
                 .map(move |(mi, module)| {
-                    (PathBuf::from(&module.file_path), ModuleLoc { crate_idx: ci, module_idx: mi })
+                    (
+                        PathBuf::from(&module.file_path),
+                        ModuleLoc {
+                            crate_idx: ci,
+                            module_idx: mi,
+                        },
+                    )
                 })
         })
         .collect();
@@ -826,6 +856,23 @@ fn symbol_hover_text(
             let variant_name = interner.resolve(variant.name.inner).unwrap_or("?");
             Some(format!("{enum_name}::{variant_name}"))
         }
+        SymbolKind::Module(decl_idx) => {
+            let decl = tir.module_decls.get(*decl_idx as usize)?;
+            let name = interner.resolve(decl.name.inner).unwrap_or("?");
+            let pub_prefix = if decl.pub_span.is_some() { "pub " } else { "" };
+            Some(format!("{pub_prefix}module {name}"))
+        }
+        SymbolKind::ImportModule(decl_idx) => {
+            let decl = tir.import_decls.get(*decl_idx as usize)?;
+            let external = interner.resolve(decl.external_name.inner).unwrap_or("?");
+            match &decl.internal_name {
+                Some(alias) => {
+                    let alias_name = interner.resolve(alias.inner).unwrap_or("?");
+                    Some(format!("import \"{external}\" as {alias_name}"))
+                }
+                None => Some(format!("import \"{external}\"")),
+            }
+        }
         SymbolKind::Label { .. } => None,
         SymbolKind::Const(def_id) => {
             let ci = *tir.const_index_lookup.get(def_id)? as usize;
@@ -845,7 +892,10 @@ fn symbol_hover_text(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn file_id_for_path(compiled: &CompiledRoot, path: &Path) -> Option<FileId> {
-    let &ModuleLoc { crate_idx, module_idx } = compiled.path_to_module_loc.get(path)?;
+    let &ModuleLoc {
+        crate_idx,
+        module_idx,
+    } = compiled.path_to_module_loc.get(path)?;
     Some(compiled.graph.crates[crate_idx].modules[module_idx].file_id)
 }
 
@@ -855,15 +905,14 @@ fn path_for_file_id(compiled: &CompiledRoot, file_id: FileId) -> Option<PathBuf>
 }
 
 fn module_for_path<'a>(compiled: &'a CompiledRoot, path: &Path) -> Option<&'a vfs::SourceModule> {
-    let &ModuleLoc { crate_idx, module_idx } = compiled.path_to_module_loc.get(path)?;
+    let &ModuleLoc {
+        crate_idx,
+        module_idx,
+    } = compiled.path_to_module_loc.get(path)?;
     Some(&compiled.graph.crates[crate_idx].modules[module_idx])
 }
 
-fn position_to_offset(
-    files: &vfs::Files,
-    file_id: FileId,
-    position: Position,
-) -> Option<u32> {
+fn position_to_offset(files: &vfs::Files, file_id: FileId, position: Position) -> Option<u32> {
     let line_range = files.line_range(file_id, position.line as usize).ok()?;
     Some((line_range.start + position.character as usize) as u32)
 }
@@ -874,11 +923,7 @@ fn span_to_range(files: &vfs::Files, file_id: FileId, start: u32, end: u32) -> O
     Some(Range { start, end })
 }
 
-fn byte_to_position(
-    files: &vfs::Files,
-    file_id: FileId,
-    byte_index: usize,
-) -> Option<Position> {
+fn byte_to_position(files: &vfs::Files, file_id: FileId, byte_index: usize) -> Option<Position> {
     let line = files.line_index(file_id, byte_index).ok()?;
     let line_range = files.line_range(file_id, line).ok()?;
     let character = byte_index.saturating_sub(line_range.start);

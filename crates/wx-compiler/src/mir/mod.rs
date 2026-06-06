@@ -471,7 +471,7 @@ impl MIR {
             .collect();
 
         let imports: Vec<ImportModule> = tir
-            .import_modules
+            .import_decls
             .iter()
             .map(|module| ImportModule {
                 name: interner

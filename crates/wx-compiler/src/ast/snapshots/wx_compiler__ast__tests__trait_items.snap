@@ -10,6 +10,7 @@ items:
         Trait:
           id: 3
           pub_span: ~
+          attributes: []
           name:
             inner: 1
             span:
@@ -124,6 +125,7 @@ items:
                           span:
                             start: 83
                             end: 89
+                        value: Word
                     signature:
                       name:
                         inner: 9

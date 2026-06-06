@@ -10,6 +10,8 @@ pub enum SymbolKind {
     Const(DefId),
     Enum(u32),
     Struct(u32),
+    Module(u32),
+    ImportModule(u32),
     Local { func_id: DefId, scope_idx: ScopeIndex, local_idx: LocalIndex },
     Param { func_id: DefId, param_idx: u32 },
     EnumVariant { enum_idx: u32, variant_idx: EnumVariantIndex },
@@ -97,6 +99,8 @@ fn same_symbol(a: &SymbolKind, b: &SymbolKind) -> bool {
             SymbolKind::Label { func_id: f1, scope_idx: s1 },
             SymbolKind::Label { func_id: f2, scope_idx: s2 },
         ) => f1 == f2 && s1 == s2,
+        (SymbolKind::Module(a), SymbolKind::Module(b)) => a == b,
+        (SymbolKind::ImportModule(a), SymbolKind::ImportModule(b)) => a == b,
         _ => false,
     }
 }
@@ -256,6 +260,29 @@ pub fn build_symbol_index(tir: &TIR) -> SymbolIndex {
                 });
             }
         }
+    }
+
+    for (decl_idx, decl) in tir.module_decls.iter().enumerate() {
+        index.add(SpanInfo {
+            file_id: decl.declaring_file_id,
+            span: decl.name.span,
+            kind: SymbolKind::Module(decl_idx as u32),
+            usage: SymbolUsage::Definition,
+        });
+    }
+
+    for (decl_idx, decl) in tir.import_decls.iter().enumerate() {
+        let span = decl
+            .internal_name
+            .as_ref()
+            .map(|n| n.span)
+            .unwrap_or(decl.external_name.span);
+        index.add(SpanInfo {
+            file_id: decl.file_id,
+            span,
+            kind: SymbolKind::ImportModule(decl_idx as u32),
+            usage: SymbolUsage::Definition,
+        });
     }
 
     for export in tir.exports.values() {

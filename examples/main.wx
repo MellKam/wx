@@ -26,7 +26,7 @@ module s {
   const PI = 3.14;
 }
 
-const PI: i32 = 3.14;
+const PI: i32 = 3;
 
 trait Add {
   fn add(lhs: Self, rhs: Self) -> Self;

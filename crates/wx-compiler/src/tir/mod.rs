@@ -114,11 +114,8 @@ pub enum Type {
         mutable: bool,
         memory: ast::DefId,
     },
-    ImportModule {
-        module_index: u32,
-    },
     Module {
-        module_index: u32,
+        namespace_idx: u32,
     },
     Enum {
         enum_index: u32,
@@ -608,9 +605,6 @@ pub struct EnumVariant {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum SymbolKind {
-    ImportModule {
-        module_index: u32,
-    },
     Enum {
         enum_index: u32,
     },
@@ -618,7 +612,7 @@ pub enum SymbolKind {
         struct_index: u32,
     },
     Module {
-        module_index: u32,
+        namespace_idx: u32,
     },
     Memory {
         memory_index: u32,
@@ -672,22 +666,38 @@ pub struct Memory {
     pub max_pages: Option<u32>,
 }
 
+/// The symbol table for a module namespace — shared concept for both local
+/// modules (`module foo;` / `module foo { }`) and import blocks (`import "env" { }`).
 #[cfg_attr(test, derive(serde::Serialize))]
-pub struct Module {
-    pub file_id: FileId,
-    pub name: ast::Spanned<SymbolU32>,
-    pub pub_span: Option<ast::TextSpan>,
-    #[cfg_attr(test, serde(skip))]
+pub struct ModuleNamespace {
+    pub name: SymbolU32,
     pub parent: Option<ModuleIndex>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
-    pub symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
+    pub symbols: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
 }
 
+/// Declaration-site metadata for a locally-defined module (`module foo;` / `module foo { }`).
 #[cfg_attr(test, derive(serde::Serialize))]
-pub struct ImportModule {
+pub struct ModuleDecl {
+    /// Index into `TIR::namespaces` for this module's symbol table.
+    pub namespace_idx: ModuleIndex,
+    /// File containing the `module foo;` or `module foo { }` declaration.
+    pub declaring_file_id: FileId,
+    /// File that IS this module (`foo.wx`). `None` for inline modules.
+    pub own_file_id: Option<FileId>,
+    pub name: ast::Spanned<SymbolU32>,
+    pub pub_span: Option<ast::TextSpan>,
+}
+
+/// Declaration-site metadata for an import block (`import "env" { }`).
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct ImportDecl {
+    /// Index into `TIR::namespaces` for this import module's symbol table.
+    pub namespace_idx: ModuleIndex,
     pub file_id: FileId,
     pub external_name: ast::Spanned<SymbolU32>,
     pub internal_name: Option<ast::Spanned<SymbolU32>>,
+    /// Maps item names to imported values — used by MIR to emit the WASM import section.
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub lookup: HashMap<SymbolU32, ImportValue>,
 }
@@ -1077,15 +1087,6 @@ impl<'a> TypeFormatter<'a> {
                     f.write_char('>').unwrap();
                 }
             }
-            Type::ImportModule { module_index } => {
-                let module = &self.tir.import_modules[*module_index as usize];
-                let sym = module
-                    .internal_name
-                    .as_ref()
-                    .map(|x| x.inner)
-                    .unwrap_or(module.external_name.inner);
-                f.write_str(self.interner.resolve(sym).unwrap()).unwrap();
-            }
             Type::Enum { enum_index } => {
                 let name = self
                     .interner
@@ -1104,10 +1105,10 @@ impl<'a> TypeFormatter<'a> {
                     .unwrap();
                 f.write_str(name).unwrap();
             }
-            Type::Module { module_index } => {
+            Type::Module { namespace_idx } => {
                 let name = self
                     .interner
-                    .resolve(self.tir.modules[*module_index as usize].name.inner)
+                    .resolve(self.tir.namespaces[*namespace_idx as usize].name)
                     .unwrap();
                 f.write_str(name).unwrap();
             }
@@ -1189,9 +1190,10 @@ pub struct TIR {
     pub memories: Vec<Memory>,
     #[cfg_attr(test, serde(skip))]
     pub memory_index_lookup: HashMap<ast::DefId, MemoryIndex>,
-    pub import_modules: Vec<ImportModule>,
+    pub namespaces: Vec<ModuleNamespace>,
+    pub module_decls: Vec<ModuleDecl>,
+    pub import_decls: Vec<ImportDecl>,
     pub enums: Vec<Enum>,
-    pub modules: Vec<Module>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub exports: HashMap<SymbolU32, ExportItem>,
     pub structs: Vec<Struct>,
@@ -1272,7 +1274,6 @@ impl TIR {
             | Type::Struct { .. }
             | Type::Slice { .. }
             | Type::Module { .. }
-            | Type::ImportModule { .. }
             | Type::Memory { .. }
             | Type::Trait { .. }
             | Type::TypeParam { .. }

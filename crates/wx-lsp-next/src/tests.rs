@@ -130,7 +130,10 @@ fn refresh_file_from_child_path_discovers_root_and_republishes_root_diagnostics(
 
     assert!(
         broken_publish.iter().any(|(path, diags)| {
-            path == &root && diags.iter().any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            path == &root
+                && diags
+                    .iter()
+                    .any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         }),
         "expected refresh from child path to publish a root-file error"
     );

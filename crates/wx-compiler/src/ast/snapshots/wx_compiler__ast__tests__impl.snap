@@ -38,6 +38,7 @@ items:
                           span:
                             start: 17
                             end: 23
+                        value: Word
                     signature:
                       name:
                         inner: 3
