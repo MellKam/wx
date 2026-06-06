@@ -1,5 +1,5 @@
 import "console" {
-  fn log(message: string);
+  fn log(message: (i32, i32));
 }
 
 fn helper() -> i32 {

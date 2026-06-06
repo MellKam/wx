@@ -1257,6 +1257,30 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 }
 
 impl<'ast> Builder<'ast, '_> {
+    fn record_type_param_access(
+        &mut self,
+        owner: TypeParamOwner,
+        param_index: u32,
+        span: SourceSpan,
+    ) {
+        match owner {
+            TypeParamOwner::Function(def_id) => {
+                if let Some(&fi) = self.tir.function_index_lookup.get(&def_id) {
+                    self.tir.functions[fi as usize].type_params[param_index as usize]
+                        .accesses
+                        .push(span);
+                }
+            }
+            TypeParamOwner::Struct(def_id) => {
+                if let Some(&si) = self.tir.struct_index_lookup.get(&def_id) {
+                    self.tir.structs[si as usize].type_params[param_index as usize]
+                        .accesses
+                        .push(span);
+                }
+            }
+        }
+    }
+
     fn intern_type(&mut self, ty: Type) -> TypeIndex {
         if let Some(&idx) = self.type_index_lookup.get(&ty) {
             idx
@@ -1369,9 +1393,11 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         let namespace_idx = self.tir.namespaces.len() as u32;
+        let decl_idx = self.tir.module_decls.len() as u32;
         self.tir.namespaces.push(ModuleNamespace {
             name: symbol,
             parent: resolve_context.module,
+            declaration: ModuleDeclarationKind::Module(decl_idx),
             symbols: HashMap::new(),
         });
         self.tir.module_decls.push(ModuleDecl {
@@ -1380,6 +1406,7 @@ impl<'ast> Builder<'ast, '_> {
             own_file_id: None,
             name,
             pub_span,
+            accesses: Vec::new(),
         });
         self.insert_symbol(
             resolve_context,
@@ -1419,9 +1446,7 @@ impl<'ast> Builder<'ast, '_> {
         kind: SymbolKind,
     ) {
         if let Some(idx) = resolve_context.module {
-            self.tir.namespaces[idx as usize]
-                .symbols
-                .insert(key, kind);
+            self.tir.namespaces[idx as usize].symbols.insert(key, kind);
         } else {
             self.symbol_lookup.insert(key, kind);
         }
@@ -1492,7 +1517,18 @@ impl<'ast> Builder<'ast, '_> {
         // `Self` — the concrete type of the enclosing impl or trait block.
         if self.interner.resolve(symbol) == Some("Self") {
             return match resolve_context.self_type {
-                Some(ty) => ty,
+                Some(ty) => {
+                    if let Type::TypeParam { owner, param_index } =
+                        self.tir.type_pool[ty.as_usize()].clone()
+                    {
+                        self.record_type_param_access(
+                            owner,
+                            param_index,
+                            SourceSpan::new(resolve_context.file_id, span),
+                        );
+                    }
+                    ty
+                }
                 None => {
                     self.tir.diagnostics.push(
                         Diagnostic::error()
@@ -1510,10 +1546,14 @@ impl<'ast> Builder<'ast, '_> {
         if let Some(scope) = &resolve_context.type_param_scope {
             for (param_index, type_param) in scope.params.iter().enumerate() {
                 if type_param.name == symbol {
-                    return self.intern_type(Type::TypeParam {
-                        owner: scope.owner.clone(),
-                        param_index: param_index as u32,
-                    });
+                    let owner = scope.owner.clone();
+                    let param_index = param_index as u32;
+                    self.record_type_param_access(
+                        owner.clone(),
+                        param_index,
+                        SourceSpan::new(resolve_context.file_id, span),
+                    );
+                    return self.intern_type(Type::TypeParam { owner, param_index });
                 }
             }
         }
@@ -2317,7 +2357,7 @@ impl<'ast> Builder<'ast, '_> {
                     name: name.clone(),
                     supertraits: Vec::new(),
                     members: HashMap::new(),
-                    assoc_type_bounds: HashMap::new(),
+                    assoc_types: HashMap::new(),
                     member_def_ids: Vec::new(),
                     supertrait_bindings: HashMap::new(),
                     accesses: Vec::new(),
@@ -2450,9 +2490,11 @@ impl<'ast> Builder<'ast, '_> {
                     None => external_name.inner,
                 };
                 let namespace_idx = self.tir.namespaces.len() as u32;
+                let decl_idx = self.tir.import_decls.len() as u32;
                 self.tir.namespaces.push(ModuleNamespace {
                     name: module_sym,
                     parent: resolve_context.module,
+                    declaration: ModuleDeclarationKind::Import(decl_idx),
                     symbols: HashMap::new(),
                 });
                 self.insert_symbol(
@@ -2516,6 +2558,7 @@ impl<'ast> Builder<'ast, '_> {
                     external_name,
                     internal_name: alias.clone(),
                     lookup: HashMap::new(),
+                    accesses: Vec::new(),
                 });
             }
             ast::Item::Export { .. } => {} // handled during build pass
@@ -2684,6 +2727,7 @@ impl<'ast> Builder<'ast, '_> {
                 let struct_index = self.tir.structs.len() as u32;
                 self.tir.struct_index_lookup.insert(*id, struct_index);
                 self.tir.structs.push(Struct {
+                    id: *id,
                     file_id: self.file_id,
                     pub_span: *pub_span,
                     name: name.clone(),
@@ -2702,14 +2746,12 @@ impl<'ast> Builder<'ast, '_> {
 
             // ── enum ──────────────────────────────────────────────────────────
             AstNodeRef::Enum { item, .. } => {
-                // TODO: full enum lowering; for now just register the name so
-                // resolve_type can find it.
                 if let ast::Item::Enum {
                     id,
                     pub_span,
                     name,
                     repr,
-                    ..
+                    variants,
                 } = item
                 {
                     if !matches!(
@@ -2726,13 +2768,100 @@ impl<'ast> Builder<'ast, '_> {
                                 TypeIndex::ERROR
                             }
                         };
+
+                        let mut tir_variants: Vec<EnumVariant> =
+                            Vec::with_capacity(variants.len());
+                        let mut variant_lookup: HashMap<SymbolU32, EnumVariantIndex> =
+                            HashMap::with_capacity(variants.len());
+                        let mut seen_variants: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
+                        let mut next_auto_value: i64 = 0;
+
+                        for ast_variant in variants.iter() {
+                            let v = &ast_variant.inner.inner;
+                            let v_sym = v.name.inner;
+
+                            if let Some(&first_span) = seen_variants.get(&v_sym) {
+                                let vname = self.interner.resolve(v_sym).unwrap().to_string();
+                                self.tir.diagnostics.push(report_duplicate_definition(
+                                    DuplicateDefinitionDiagnostic {
+                                        name: &vname,
+                                        namespace: SymbolNamespace::Value,
+                                        first_definition: SourceSpan::new(
+                                            self.file_id,
+                                            first_span,
+                                        ),
+                                        second_definition: SourceSpan::new(
+                                            self.file_id,
+                                            v.name.span,
+                                        ),
+                                    },
+                                ));
+                                continue;
+                            }
+                            seen_variants.insert(v_sym, v.name.span);
+
+                            let value_expr = match &v.value {
+                                Some(explicit_expr) => {
+                                    if ty == TypeIndex::ERROR {
+                                        next_auto_value = next_auto_value.wrapping_add(1);
+                                        Expression {
+                                            kind: ExprKind::Error,
+                                            ty: TypeIndex::ERROR,
+                                            span: explicit_expr.span,
+                                        }
+                                    } else {
+                                        match self.build_const_expression(
+                                            &resolve_context,
+                                            explicit_expr,
+                                            ty,
+                                        ) {
+                                            Ok(expr) => {
+                                                if let ExprKind::Int { value } = expr.kind {
+                                                    next_auto_value = value.wrapping_add(1);
+                                                } else {
+                                                    next_auto_value =
+                                                        next_auto_value.wrapping_add(1);
+                                                }
+                                                expr
+                                            }
+                                            Err(_) => {
+                                                next_auto_value = next_auto_value.wrapping_add(1);
+                                                Expression {
+                                                    kind: ExprKind::Error,
+                                                    ty: TypeIndex::ERROR,
+                                                    span: explicit_expr.span,
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                None => {
+                                    let auto_val = next_auto_value;
+                                    next_auto_value = next_auto_value.wrapping_add(1);
+                                    Expression {
+                                        kind: ExprKind::Int { value: auto_val },
+                                        ty,
+                                        span: v.name.span,
+                                    }
+                                }
+                            };
+
+                            let variant_index = tir_variants.len() as EnumVariantIndex;
+                            variant_lookup.insert(v_sym, variant_index);
+                            tir_variants.push(EnumVariant {
+                                name: v.name.clone(),
+                                value: Box::new(value_expr),
+                                accesses: Vec::new(),
+                            });
+                        }
+
                         self.tir.enums.push(Enum {
                             file_id: self.file_id,
                             pub_span: *pub_span,
                             name: name.clone(),
                             ty,
-                            variants: Box::new([]),
-                            lookup: HashMap::new(),
+                            variants: tir_variants.into_boxed_slice(),
+                            lookup: variant_lookup,
                         });
                         self.insert_symbol(
                             &resolve_context,
@@ -2764,19 +2893,12 @@ impl<'ast> Builder<'ast, '_> {
                         .map(|k| self.get_symbol_location(k));
                     let type_params =
                         self.resolve_ast_type_params(&resolve_context, &signature.type_params);
-                    let signature_context = resolve_context.with_type_param_scope(TypeParamScope {
-                        owner: TypeParamOwner::Function(*id),
-                        params: type_params.clone(),
-                    });
-                    let (params, result) =
-                        self.build_function_signature(&signature_context, signature);
-                    let signature_index = self.intern_function(&params, result.clone());
-                    let func_index = self.tir.functions.len() as u32;
                     let origin = if resolve_context.is_root() {
                         FunctionOrigin::Free
                     } else {
                         FunctionOrigin::Module
                     };
+                    let func_index = self.tir.functions.len() as u32;
                     self.tir.functions.push(Function {
                         id: *id,
                         file_id: self.file_id,
@@ -2785,14 +2907,25 @@ impl<'ast> Builder<'ast, '_> {
                         type_params,
                         pub_span: *pub_span,
                         source: ItemSource::Internal,
-                        signature_index,
+                        signature_index: TypeIndex::ERROR,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
-                        params,
-                        result,
+                        params: Box::new([]),
+                        result: None,
                         attributes: self.resolve_function_attributes(attributes),
                     });
                     self.tir.function_index_lookup.insert(*id, func_index);
+                    let signature_context = resolve_context.with_type_param_scope(TypeParamScope {
+                        owner: TypeParamOwner::Function(*id),
+                        params: self.tir.functions[func_index as usize].type_params.clone(),
+                    });
+                    let (params, result) =
+                        self.build_function_signature(&signature_context, signature);
+                    let signature_index = self.intern_function(&params, result.clone());
+                    let func = &mut self.tir.functions[func_index as usize];
+                    func.params = params;
+                    func.result = result;
+                    func.signature_index = signature_index;
                     match existing_span {
                         Some(first_definition) => {
                             let name = self.interner.resolve(signature.name.inner).unwrap();
@@ -2992,6 +3125,13 @@ impl<'ast> Builder<'ast, '_> {
                             {
                                 let val_ty = self.resolve_type(&resolve_context, val_te);
                                 bindings.insert((st, key.inner), val_ty);
+                                if let Some(at) = self.tir.traits[st as usize]
+                                    .assoc_types
+                                    .get_mut(&key.inner)
+                                {
+                                    at.accesses.push(SourceSpan::new(self.file_id, key.span));
+                                }
+                                self.check_assoc_type_bounds(st, key.inner, val_ty, val_te.span);
                             }
                         }
                     }
@@ -3025,18 +3165,36 @@ impl<'ast> Builder<'ast, '_> {
                     let self_name_sym = self.interner.get_or_intern("Self");
                     let self_type_param = TypeParamInfo {
                         name: self_name_sym,
+                        name_span: self.tir.traits[trait_index as usize].name.span,
                         bounds: Box::new([trait_index]),
+                        accesses: Vec::new(),
                     };
                     let explicit_type_params =
                         self.resolve_ast_type_params(&resolve_context, &signature.type_params);
                     let type_params: Box<[TypeParamInfo]> = std::iter::once(self_type_param)
                         .chain(explicit_type_params)
                         .collect();
+                    let func_index = self.tir.functions.len() as u32;
+                    self.tir.functions.push(Function {
+                        id: *id,
+                        file_id: self.file_id,
+                        body: None,
+                        pub_span: None,
+                        origin: FunctionOrigin::Trait,
+                        type_params,
+                        source: ItemSource::Internal,
+                        signature_index: TypeIndex::ERROR,
+                        name: signature.name.clone(),
+                        accesses: Vec::new(),
+                        params: Box::new([]),
+                        result: None,
+                        attributes: attributes.clone(),
+                    });
+                    self.tir.function_index_lookup.insert(*id, func_index);
                     let resolve_context = resolve_context.with_type_param_scope(TypeParamScope {
                         owner: TypeParamOwner::Function(*id),
-                        params: type_params.clone(),
+                        params: self.tir.functions[func_index as usize].type_params.clone(),
                     });
-
                     let params: Box<[FunctionParam]> = signature
                         .params
                         .iter()
@@ -3066,25 +3224,11 @@ impl<'ast> Builder<'ast, '_> {
                         inner: self.resolve_type(&resolve_context, r),
                         span: r.span,
                     });
-
                     let sig_idx = self.intern_function(&params, result.clone());
-                    let func_index = self.tir.functions.len() as u32;
-                    self.tir.functions.push(Function {
-                        id: *id,
-                        file_id: self.file_id,
-                        body: None,
-                        pub_span: None,
-                        origin: FunctionOrigin::Trait,
-                        type_params,
-                        source: ItemSource::Internal,
-                        signature_index: sig_idx,
-                        name: signature.name.clone(),
-                        accesses: Vec::new(),
-                        params: params.clone(),
-                        result: result.clone(),
-                        attributes: attributes.clone(),
-                    });
-                    self.tir.function_index_lookup.insert(*id, func_index);
+                    let func = &mut self.tir.functions[func_index as usize];
+                    func.params = params;
+                    func.result = result;
+                    func.signature_index = sig_idx;
                     self.tir.traits[trait_index as usize]
                         .members
                         .insert(signature.name.inner, ImplEntry::Method(func_index));
@@ -3331,19 +3475,12 @@ impl<'ast> Builder<'ast, '_> {
                 if let ast::Item::IntrinsicFunction { id, signature } = item {
                     let type_params =
                         self.resolve_ast_type_params(&resolve_context, &signature.type_params);
-                    let signature_context = resolve_context.with_type_param_scope(TypeParamScope {
-                        owner: TypeParamOwner::Function(*id),
-                        params: type_params.clone(),
-                    });
-                    let (params, result) =
-                        self.build_function_signature(&signature_context, signature);
-                    let signature_index = self.intern_function(&params, result.clone());
-                    let func_index = self.tir.functions.len() as u32;
                     let origin = if resolve_context.is_root() {
                         FunctionOrigin::Free
                     } else {
                         FunctionOrigin::Module
                     };
+                    let func_index = self.tir.functions.len() as u32;
                     self.tir.functions.push(Function {
                         id: *id,
                         file_id: self.file_id,
@@ -3352,14 +3489,25 @@ impl<'ast> Builder<'ast, '_> {
                         type_params,
                         pub_span: None,
                         source: ItemSource::Internal,
-                        signature_index,
+                        signature_index: TypeIndex::ERROR,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
-                        params,
-                        result,
+                        params: Box::new([]),
+                        result: None,
                         attributes: Box::new([]),
                     });
                     self.tir.function_index_lookup.insert(*id, func_index);
+                    let signature_context = resolve_context.with_type_param_scope(TypeParamScope {
+                        owner: TypeParamOwner::Function(*id),
+                        params: self.tir.functions[func_index as usize].type_params.clone(),
+                    });
+                    let (params, result) =
+                        self.build_function_signature(&signature_context, signature);
+                    let signature_index = self.intern_function(&params, result.clone());
+                    let func = &mut self.tir.functions[func_index as usize];
+                    func.params = params;
+                    func.result = result;
+                    func.signature_index = signature_index;
                     self.insert_symbol(
                         &resolve_context,
                         (SymbolNamespace::Value, signature.name.inner),
@@ -3399,12 +3547,10 @@ impl<'ast> Builder<'ast, '_> {
                         .lookup
                         .insert(signature.name.inner, ImportValue::Function { id: *id });
                     let namespace_idx = import_decl.namespace_idx;
-                    self.tir.namespaces[namespace_idx as usize]
-                        .symbols
-                        .insert(
-                            (SymbolNamespace::Value, signature.name.inner),
-                            SymbolKind::Function { func_index },
-                        );
+                    self.tir.namespaces[namespace_idx as usize].symbols.insert(
+                        (SymbolNamespace::Value, signature.name.inner),
+                        SymbolKind::Function { func_index },
+                    );
                 }
             }
 
@@ -3684,9 +3830,15 @@ impl<'ast> Builder<'ast, '_> {
                         trait_index,
                     });
 
-                    self.tir.traits[trait_index as usize]
-                        .assoc_type_bounds
-                        .insert(name.inner, resolved_bounds);
+                    self.tir.traits[trait_index as usize].assoc_types.insert(
+                        name.inner,
+                        TraitAssocType {
+                            id: *id,
+                            name_span: name.span,
+                            bounds: resolved_bounds,
+                            accesses: Vec::new(),
+                        },
+                    );
                     self.tir.traits[trait_index as usize]
                         .members
                         .insert(name.inner, ImplEntry::AssociatedType { ty: placeholder });
@@ -3734,9 +3886,8 @@ impl<'ast> Builder<'ast, '_> {
                         .members
                         .insert(name.inner, entry);
 
-                    // Check that the concrete type satisfies each declared bound.
                     // Bounds are resolved lazily — ensure the trait's signature is
-                    // ready before reading assoc_type_bounds.
+                    // ready before reading assoc_types.
                     let trait_def_id = self.tir.traits[trait_index as usize]
                         .member_def_ids
                         .iter()
@@ -3751,42 +3902,13 @@ impl<'ast> Builder<'ast, '_> {
                     if let Some(did) = trait_def_id {
                         self.ensure_signature(did);
                     }
-                    let bounds = self.tir.traits[trait_index as usize]
-                        .assoc_type_bounds
-                        .get(&name.inner)
-                        .cloned()
-                        .unwrap_or_default();
-                    for bound_trait_index in bounds.iter().copied() {
-                        if !self
-                            .tir
-                            .trait_impl_lookup
-                            .contains_key(&(concrete_ty, bound_trait_index))
-                        {
-                            let bound_name = self
-                                .interner
-                                .resolve(self.tir.traits[bound_trait_index as usize].name.inner)
-                                .unwrap();
-                            let type_name = TypeFormatter {
-                                interner: &self.interner,
-                                tir: &self.tir,
-                            }
-                            .display_type(concrete_ty);
-                            self.tir.diagnostics.push(
-                                Diagnostic::error()
-                                    .with_code(DiagnosticCode::TypeMistmatch.code())
-                                    .with_message(format!(
-                                        "associated type `{}` must implement `{}`",
-                                        self.interner.resolve(name.inner).unwrap_or("?"),
-                                        bound_name,
-                                    ))
-                                    .with_label(Label::primary(self.file_id, name.span))
-                                    .with_note(format!(
-                                        "`{}` does not implement `{}`",
-                                        type_name, bound_name
-                                    )),
-                            );
-                        }
+                    if let Some(at) = self.tir.traits[trait_index as usize]
+                        .assoc_types
+                        .get_mut(&name.inner)
+                    {
+                        at.accesses.push(SourceSpan::new(self.file_id, name.span));
                     }
+                    self.check_assoc_type_bounds(trait_index, name.inner, concrete_ty, name.span);
                 }
             }
         }
@@ -3978,7 +4100,9 @@ impl<'ast> Builder<'ast, '_> {
                     .collect();
                 TypeParamInfo {
                     name: tp.name.inner,
+                    name_span: tp.name.span,
                     bounds,
+                    accesses: Vec::new(),
                 }
             })
             .collect()
@@ -4937,6 +5061,53 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Emits a diagnostic for each bound on `assoc_name` that `concrete_ty`
+    /// does not satisfy. `error_span` is where the type was written.
+    fn check_assoc_type_bounds(
+        &mut self,
+        trait_index: TraitIndex,
+        assoc_name: SymbolU32,
+        concrete_ty: TypeIndex,
+        error_span: TextSpan,
+    ) {
+        match self.tir.traits[trait_index as usize]
+            .assoc_types
+            .get(&assoc_name)
+            .map(|at| &at.bounds)
+        {
+            Some(bounds) => {
+                for bound_trait_index in bounds.iter().copied() {
+                    if !self.tir.trait_impl_lookup.contains_key(&(concrete_ty, bound_trait_index)) {
+                        let bound_name = self
+                            .interner
+                            .resolve(self.tir.traits[bound_trait_index as usize].name.inner)
+                            .unwrap();
+                        let type_name = TypeFormatter {
+                            interner: &self.interner,
+                            tir: &self.tir,
+                        }
+                        .display_type(concrete_ty);
+                        self.tir.diagnostics.push(
+                            Diagnostic::error()
+                                .with_code(DiagnosticCode::TypeMistmatch.code())
+                                .with_message(format!(
+                                    "associated type `{}` must implement `{}`",
+                                    self.interner.resolve(assoc_name).unwrap_or("?"),
+                                    bound_name,
+                                ))
+                                .with_label(Label::primary(self.file_id, error_span))
+                                .with_note(format!(
+                                    "`{}` does not implement `{}`",
+                                    type_name, bound_name
+                                )),
+                        );
+                    }
+                }
+            }
+            None => {}
         }
     }
 
@@ -6066,6 +6237,13 @@ impl<'ast> Builder<'ast, '_> {
                         .members
                         .get(&member_sym)
                     {
+                        if let Some(at) = self.tir.traits[trait_index as usize]
+                            .assoc_types
+                            .get_mut(&member_sym)
+                        {
+                            at.accesses
+                                .push(SourceSpan::new(resolve_context.file_id, member_span));
+                        }
                         return self.intern_type(Type::AssocTypeProjection {
                             trait_index,
                             assoc_name: member_sym,
@@ -6184,23 +6362,29 @@ impl<'ast> Builder<'ast, '_> {
             }
             Type::Enum { enum_index } => {
                 let enum_idx = *enum_index;
+                let enum_ty = namespace_ty;
                 let enum_ = &self.tir.enums[enum_idx as usize];
                 match enum_.lookup.get(&member.inner).copied() {
-                    Some(variant_idx) => Ok(Expression {
-                        kind: ExprKind::NamespaceAccess {
-                            namespace: namespace_spanned,
-                            member: Box::new(Expression {
-                                kind: ExprKind::EnumVariant {
-                                    enum_index: enum_idx,
-                                    variant_index: variant_idx,
-                                },
-                                ty: enum_.ty,
-                                span: member.span,
-                            }),
-                        },
-                        ty: enum_.ty,
-                        span: expr_span,
-                    }),
+                    Some(variant_idx) => {
+                        self.tir.enums[enum_idx as usize].variants[variant_idx as usize]
+                            .accesses
+                            .push(SourceSpan::new(self.file_id, member.span));
+                        Ok(Expression {
+                            kind: ExprKind::NamespaceAccess {
+                                namespace: namespace_spanned,
+                                member: Box::new(Expression {
+                                    kind: ExprKind::EnumVariant {
+                                        enum_index: enum_idx,
+                                        variant_index: variant_idx,
+                                    },
+                                    ty: enum_ty,
+                                    span: member.span,
+                                }),
+                            },
+                            ty: enum_ty,
+                            span: expr_span,
+                        })
+                    }
                     None => {
                         self.tir
                             .diagnostics
@@ -6213,7 +6397,17 @@ impl<'ast> Builder<'ast, '_> {
                 }
             }
             Type::Module { namespace_idx } => {
-                match self.tir.namespaces[*namespace_idx as usize]
+                let namespace_idx = *namespace_idx;
+                let access_span = SourceSpan::new(self.file_id, namespace_span);
+                match self.tir.namespaces[namespace_idx as usize].declaration {
+                    ModuleDeclarationKind::Module(i) => {
+                        self.tir.module_decls[i as usize].accesses.push(access_span)
+                    }
+                    ModuleDeclarationKind::Import(i) => {
+                        self.tir.import_decls[i as usize].accesses.push(access_span)
+                    }
+                }
+                match self.tir.namespaces[namespace_idx as usize]
                     .symbols
                     .get(&(SymbolNamespace::Value, member.inner))
                     .cloned()
@@ -7277,19 +7471,23 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 })
             }
-            // TODO: compare enum variants
-            // (Type::Enum { enum_index: e1 }, Type::Enum { enum_index: e2 }) if e1 == e2 =>
-            // {
-            //     Ok(Expression {
-            //         kind: ExprKind::Binary {
-            //             operator,
-            //             left: Box::new(left),
-            //             right: Box::new(right),
-            //         },
-            //         ty: Type::Bool,
-            //         span: expr.span,
-            //     })
-            // }
+            (left_type, right_type)
+                if left_type == right_type
+                    && matches!(
+                        self.tir.type_pool[left_type.as_usize()],
+                        Type::Enum { .. }
+                    ) =>
+            {
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ty: TypeIndex::BOOL,
+                    span: expr.span,
+                })
+            }
             (left_type, right_type) => {
                 self.tir
                     .diagnostics
@@ -8346,6 +8544,7 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         // Phase 3: check / coerce against the now-complete type_args.
+        let mut had_error = false;
         for (index, arg) in args.iter_mut().enumerate() {
             let param_type = match params.get(index).copied() {
                 Some(p) => p,
@@ -8356,7 +8555,9 @@ impl<'ast> Builder<'ast, '_> {
 
             if let Some(expected) = expected_type {
                 if arg.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(arg, expected)?;
+                    if self.coerce_untyped_expr(arg, expected).is_err() {
+                        had_error = true;
+                    }
                 } else if !self.coercible_to(arg.ty, expected)
                     && !self.type_param_satisfies_bound(arg.ty, expected)
                 {
@@ -8376,11 +8577,11 @@ impl<'ast> Builder<'ast, '_> {
                         self.file_id,
                         arg.span,
                     )));
-                return Err(());
+                had_error = true;
             }
         }
 
-        Ok((args, type_args))
+        if had_error { Err(()) } else { Ok((args, type_args)) }
     }
 
     fn build_call_arguments(
@@ -8390,54 +8591,59 @@ impl<'ast> Builder<'ast, '_> {
         params: &[TypeIndex],
         type_args: &[TypeIndex],
     ) -> Result<Box<[Expression]>, ()> {
-        arguments
-            .iter()
-            .enumerate()
-            .map(|(index, argument)| {
-                let expected_type = params
-                    .get(index)
-                    .copied()
-                    .and_then(|param_type| self.substitute_expected_type(param_type, type_args));
+        let mut had_error = false;
+        let mut built: Vec<Expression> = Vec::with_capacity(arguments.len());
 
-                let mut argument = self.build_expression(
-                    ctx,
-                    AccessContext {
-                        expected_type,
-                        access_kind: AccessKind::Read,
-                    },
-                    &argument.inner,
-                )?;
+        for (index, argument) in arguments.iter().enumerate() {
+            let expected_type = params
+                .get(index)
+                .copied()
+                .and_then(|param_type| self.substitute_expected_type(param_type, type_args));
 
-                if let Some(expected_type) = expected_type {
-                    if argument.ty.is_comptime_number() {
-                        self.coerce_untyped_expr(&mut argument, expected_type)?;
-                    } else if !self.coercible_to(argument.ty, expected_type)
-                        && !self.type_param_satisfies_bound(argument.ty, expected_type)
-                    {
-                        self.tir.diagnostics.push(report_type_mistmatch(
-                            TypeFormatter::new(&self.tir, &self.interner),
-                            TypeMistmatchDiagnostic {
-                                expected_type,
-                                actual_type: argument.ty,
-                                span: SourceSpan::new(self.file_id, argument.span),
-                            },
-                        ));
+            let mut argument = match self.build_expression(
+                ctx,
+                AccessContext { expected_type, access_kind: AccessKind::Read },
+                &argument.inner,
+            ) {
+                Ok(e) => e,
+                Err(_) => { had_error = true; continue; }
+            };
+
+            if let Some(expected_type) = expected_type {
+                if argument.ty.is_comptime_number() {
+                    if self.coerce_untyped_expr(&mut argument, expected_type).is_err() {
+                        had_error = true;
+                        continue;
                     }
-                } else if argument.ty.is_comptime_number() {
-                    // Argument passed to a TypeParam parameter with no concrete type
-                    // and no inference from context — require an explicit annotation.
-                    self.tir
-                        .diagnostics
-                        .push(report_type_annotation_required(SourceSpan::new(
-                            self.file_id,
-                            argument.span,
-                        )));
-                    return Err(());
+                } else if !self.coercible_to(argument.ty, expected_type)
+                    && !self.type_param_satisfies_bound(argument.ty, expected_type)
+                {
+                    self.tir.diagnostics.push(report_type_mistmatch(
+                        TypeFormatter::new(&self.tir, &self.interner),
+                        TypeMistmatchDiagnostic {
+                            expected_type,
+                            actual_type: argument.ty,
+                            span: SourceSpan::new(self.file_id, argument.span),
+                        },
+                    ));
                 }
+            } else if argument.ty.is_comptime_number() {
+                // Argument passed to a TypeParam parameter with no concrete type
+                // and no inference from context — require an explicit annotation.
+                self.tir
+                    .diagnostics
+                    .push(report_type_annotation_required(SourceSpan::new(
+                        self.file_id,
+                        argument.span,
+                    )));
+                had_error = true;
+                continue;
+            }
 
-                Ok(argument)
-            })
-            .collect::<Result<Box<_>, _>>()
+            built.push(argument);
+        }
+
+        if had_error { Err(()) } else { Ok(built.into_boxed_slice()) }
     }
 
     fn build_call_expression(

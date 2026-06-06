@@ -906,6 +906,10 @@ impl<'tir> Builder<'tir> {
                 let aggregate_index = self.ensure_aggregate(mir_elems);
                 Type::Aggregate { aggregate_index }
             }
+            tir::Type::Enum { enum_index } => {
+                let repr_ty = self.tir.enums[enum_index as usize].ty;
+                self.lower_type_index(repr_ty)
+            }
             _ => unreachable!(),
         }
     }

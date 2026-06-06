@@ -56,8 +56,16 @@
 					"match": "\\b\\d+\\.\\d+\\b"
 				},
 				{
+					"name": "constant.numeric.binary.wx",
+					"match": "\\b0b[01][01_]*\\b"
+				},
+				{
+					"name": "constant.numeric.hex.wx",
+					"match": "\\b0x[0-9a-fA-F][0-9a-fA-F_]*\\b"
+				},
+				{
 					"name": "constant.numeric.integer.wx",
-					"match": "\\b\\d+\\b"
+					"match": "\\b\\d[\\d_]*\\b"
 				}
 			]
 		},

@@ -13,17 +13,36 @@ use tower_lsp_server::ls_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position, Range, ReferenceParams,
-    RenameParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    Uri, WorkspaceEdit,
+    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, ParameterInformation,
+    ParameterLabel, Position, Range, ReferenceParams, RenameParams, SemanticToken,
+    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use wx_compiler::ast;
-use wx_compiler::tir::TIR;
+use wx_compiler::tir::{TIR, TypeParamOwner};
 use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
 
 mod symbol_index;
 use symbol_index::{SymbolIndex, SymbolKind, build_symbol_index};
+
+/// Ordered list of token types declared in the semantic tokens legend.
+/// The index of each entry is what gets emitted as `token_type` in the data.
+const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
+    SemanticTokenType::FUNCTION,       // 0
+    SemanticTokenType::VARIABLE,       // 1
+    SemanticTokenType::ENUM,           // 2
+    SemanticTokenType::STRUCT,         // 3
+    SemanticTokenType::NAMESPACE,      // 4
+    SemanticTokenType::PARAMETER,      // 5
+    SemanticTokenType::ENUM_MEMBER,    // 6
+    SemanticTokenType::INTERFACE,      // 7
+    SemanticTokenType::TYPE_PARAMETER, // 8
+    SemanticTokenType::TYPE,           // 9
+];
 
 /// URI scheme used for virtual stdlib files, e.g. `wxstd://stdlib/std.wx`.
 const STDLIB_URI_SCHEME: &str = "wxstd";
@@ -138,6 +157,22 @@ impl LanguageServer for Backend {
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                    ..Default::default()
+                }),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: SemanticTokensLegend {
+                                token_types: SEMANTIC_TOKEN_TYPES.to_vec(),
+                                token_modifiers: vec![],
+                            },
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            ..Default::default()
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             ..Default::default()
@@ -384,6 +419,130 @@ impl LanguageServer for Backend {
             }])
         })())
     }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let state = self.state.lock().await;
+        Ok((|| {
+            let loc = state.uri_to_location.get(
+                params
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .as_str(),
+            )?;
+            let compiled = state.cached.get(&loc.root)?;
+            let file_id = loc.file_id;
+            let source = compiled.graph.files.get(file_id).ok()?.source.as_str();
+            let offset = position_to_offset(
+                &compiled.graph.files,
+                file_id,
+                params.text_document_position_params.position,
+            )? as usize;
+
+            let call = find_active_call(source, offset)?;
+            let info = compiled
+                .symbol_index
+                .find_at_position(file_id, call.func_name_start as u32)?;
+            let SymbolKind::Function(def_id) = &info.kind else {
+                return None;
+            };
+            let fi = *compiled.tir.function_index_lookup.get(def_id)? as usize;
+            let func = &compiled.tir.functions[fi];
+            let fmt = compiled.tir.formatter(&compiled.graph.interner);
+            let interner = &compiled.graph.interner;
+
+            let name = interner.resolve(func.name.inner).unwrap_or("?");
+            let mut label = format!("fn {name}(");
+            let mut param_infos: Vec<ParameterInformation> = Vec::new();
+            for (i, param) in func.params.iter().enumerate() {
+                if i > 0 {
+                    label.push_str(", ");
+                }
+                let param_start = label.len() as u32;
+                let pname = interner.resolve(param.name.inner).unwrap_or("_");
+                label.push_str(pname);
+                label.push_str(": ");
+                label.push_str(&fmt.display_type(param.ty.inner));
+                let param_end = label.len() as u32;
+                param_infos.push(ParameterInformation {
+                    label: ParameterLabel::LabelOffsets([param_start, param_end]),
+                    documentation: None,
+                });
+            }
+            label.push_str(") -> ");
+            match &func.result {
+                Some(r) => label.push_str(&fmt.display_type(r.inner)),
+                None => label.push_str("unit"),
+            }
+
+            Some(SignatureHelp {
+                signatures: vec![SignatureInformation {
+                    label,
+                    documentation: None,
+                    parameters: Some(param_infos),
+                    active_parameter: Some(call.active_param as u32),
+                }],
+                active_signature: Some(0),
+                active_parameter: Some(call.active_param as u32),
+            })
+        })())
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let state = self.state.lock().await;
+        let Some(loc) = state.uri_to_location.get(params.text_document.uri.as_str()) else {
+            return Ok(None);
+        };
+        let Some(compiled) = state.cached.get(&loc.root) else {
+            return Ok(None);
+        };
+        let file_id = loc.file_id;
+        let files = &compiled.graph.files;
+
+        let mut data: Vec<SemanticToken> = Vec::new();
+        let mut prev_line = 0u32;
+        let mut prev_char = 0u32;
+
+        for entry in compiled
+            .symbol_index
+            .entries
+            .iter()
+            .filter(|e| e.file_id == file_id)
+        {
+            let Some(token_type) = symbol_kind_to_token_type(&entry.kind) else {
+                continue;
+            };
+            let Some(pos) = byte_to_position(files, file_id, entry.span.start as usize) else {
+                continue;
+            };
+            let length = entry.span.end - entry.span.start;
+            let delta_line = pos.line - prev_line;
+            let delta_start = if delta_line == 0 {
+                pos.character - prev_char
+            } else {
+                pos.character
+            };
+            data.push(SemanticToken {
+                delta_line,
+                delta_start,
+                length,
+                token_type,
+                token_modifiers_bitset: 0,
+            });
+            prev_line = pos.line;
+            prev_char = pos.character;
+        }
+
+        Ok(Some(SemanticTokensResult::Tokens(
+            tower_lsp_server::ls_types::SemanticTokens {
+                result_id: None,
+                data,
+            },
+        )))
+    }
 }
 
 impl Backend {
@@ -400,10 +559,9 @@ impl Backend {
     async fn virtual_file_content(&self, params: VirtualFileContentParams) -> Result<String> {
         debug_log!("virtual_file_content uri={}", params.uri);
         let prefix = format!("{}://{}/", STDLIB_URI_SCHEME, STDLIB_URI_AUTHORITY);
-        let filename = params
-            .uri
-            .strip_prefix(&prefix)
-            .ok_or_else(|| JsonRpcError::invalid_params(format!("not a wxstd URI: {}", params.uri)))?;
+        let filename = params.uri.strip_prefix(&prefix).ok_or_else(|| {
+            JsonRpcError::invalid_params(format!("not a wxstd URI: {}", params.uri))
+        })?;
         match filename {
             "std.wx" => Ok(wx_compiler::STDLIB_SOURCE.to_string()),
             other => Err(JsonRpcError::invalid_params(format!(
@@ -938,6 +1096,19 @@ fn symbol_hover_text(
                 None => Some(format!("import \"{external}\"")),
             }
         }
+        SymbolKind::TypeParam { owner, param_index } => {
+            let tp = match owner {
+                TypeParamOwner::Function(def_id) => {
+                    let fi = *tir.function_index_lookup.get(def_id)? as usize;
+                    tir.functions[fi].type_params.get(*param_index as usize)?
+                }
+                TypeParamOwner::Struct(def_id) => {
+                    let si = *tir.struct_index_lookup.get(def_id)? as usize;
+                    tir.structs[si].type_params.get(*param_index as usize)?
+                }
+            };
+            Some(interner.resolve(tp.name).unwrap_or("?").to_string())
+        }
         SymbolKind::Label { .. } => None,
         SymbolKind::Trait(trait_idx) => {
             let trait_ = tir.traits.get(*trait_idx as usize)?;
@@ -971,7 +1142,106 @@ fn symbol_hover_text(
             };
             Some(format!("{pub_prefix}const {name}: {type_str}"))
         }
+        SymbolKind::AssocType {
+            trait_index,
+            assoc_name,
+        } => {
+            let trait_ = tir.traits.get(*trait_index as usize)?;
+            let at = trait_.assoc_types.get(assoc_name)?;
+            let name = interner.resolve(*assoc_name).unwrap_or("?");
+            if at.bounds.is_empty() {
+                Some(format!("type {name}"))
+            } else {
+                let bounds: Vec<&str> = at
+                    .bounds
+                    .iter()
+                    .filter_map(|&ti| {
+                        tir.traits
+                            .get(ti as usize)
+                            .and_then(|t| interner.resolve(t.name.inner))
+                    })
+                    .collect();
+                Some(format!("type {name}: {}", bounds.join(" + ")))
+            }
+        }
     }
+}
+
+struct ActiveCall {
+    func_name_start: usize,
+    paren_pos: usize,
+    active_param: usize,
+}
+
+/// Scans backwards from `offset` to find the innermost open function call.
+fn find_active_call(source: &str, offset: usize) -> Option<ActiveCall> {
+    let before = &source[..offset];
+
+    // Walk backwards tracking paren depth to find the opening `(`
+    let mut depth = 0usize;
+    let mut paren_pos = None;
+    for (i, ch) in before.char_indices().rev() {
+        match ch {
+            ')' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    paren_pos = Some(i);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    let paren_pos = paren_pos?;
+
+    // Find the identifier immediately before `(`
+    let before_paren = before[..paren_pos].trim_end();
+    let name_end = before_paren.len();
+    let name_start = before_paren
+        .char_indices()
+        .rev()
+        .take_while(|(_, ch)| ch.is_alphanumeric() || *ch == '_')
+        .last()
+        .map(|(i, _)| i)?;
+    if name_start >= name_end {
+        return None;
+    }
+
+    // Count top-level commas between `(` and cursor for the active parameter index
+    let mut depth = 0usize;
+    let mut active_param = 0usize;
+    for ch in source[paren_pos + 1..offset].chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => active_param += 1,
+            _ => {}
+        }
+    }
+
+    Some(ActiveCall {
+        func_name_start: name_start,
+        paren_pos,
+        active_param,
+    })
+}
+
+fn symbol_kind_to_token_type(kind: &SymbolKind) -> Option<u32> {
+    let idx = match kind {
+        SymbolKind::Function(_) => 0,
+        SymbolKind::Global(_) | SymbolKind::Const(_) | SymbolKind::Local { .. } => 1,
+        SymbolKind::Enum(_) => 2,
+        SymbolKind::Struct(_) => 3,
+        SymbolKind::Module(_) | SymbolKind::ImportModule(_) => 4,
+        SymbolKind::Param { .. } => 5,
+        SymbolKind::EnumVariant { .. } => 6,
+        SymbolKind::Trait(_) => 7,
+        SymbolKind::TypeParam { .. } => 8,
+        SymbolKind::AssocType { .. } => 9,
+        SymbolKind::Label { .. } => return None,
+    };
+    Some(idx)
 }
 
 // ── Helpers
@@ -1057,7 +1327,11 @@ fn file_id_to_uri(compiled: &CompiledRoot, file_id: FileId) -> Option<Uri> {
     if let Some(uri) = Uri::from_file_path(path) {
         Some(uri)
     } else {
-        Uri::from_str(&format!("{}://{}/{}", STDLIB_URI_SCHEME, STDLIB_URI_AUTHORITY, name)).ok()
+        Uri::from_str(&format!(
+            "{}://{}/{}",
+            STDLIB_URI_SCHEME, STDLIB_URI_AUTHORITY, name
+        ))
+        .ok()
     }
 }
 

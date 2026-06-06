@@ -1,0 +1,66 @@
+import "console" {
+  fn log(message: string);
+}
+
+fn helper() -> i32 {
+  99
+}
+
+fn unused_variable() -> i32 {
+  local unused: i32 = 10;
+  local result: i32 = 42;
+  result
+}
+
+fn unnecessary_mutability() -> i32 {
+  local mut x: i32 = 5;
+  x * 2
+}
+
+fn mutate_immutable() -> i32 {
+  local value: i32 = 10;
+  value = 20;
+  value
+}
+
+fn type_annotation_required() -> i32 {
+  local x = 5;
+  x
+}
+
+fn int_literal_for_float() -> f32 {
+  local x: f32 = 1;
+  x
+}
+
+fn out_of_range() -> i32 {
+  local x: i32 = 9999999999;
+  x
+}
+
+fn type_mismatch() -> i32 {
+  local a: i32 = 1;
+  a == 1
+}
+
+fn unreachable_after_return() -> i32 {
+  return 1;
+  console::log("this line is never reached");
+  2
+}
+
+fn main() {
+  _ = unused_variable();
+  _ = unnecessary_mutability();
+  _ = mutate_immutable();
+  _ = unreachable_after_return();
+  _ = unreachable_after_break();
+}
+
+export {
+  main,
+}
+
+fn undeclared_identifier() -> i32 {
+  undefined_var + 1
+}

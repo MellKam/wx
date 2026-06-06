@@ -2523,8 +2523,8 @@ fn test_assoc_type_declared_in_trait() {
         "expected 'Size' in Memory::members as AssociatedType"
     );
     assert!(
-        memory_trait.assoc_type_bounds.contains_key(&size_sym),
-        "expected 'Size' in Memory::assoc_type_bounds"
+        memory_trait.assoc_types.contains_key(&size_sym),
+        "expected 'Size' in Memory::assoc_types"
     );
 }
 
@@ -3979,5 +3979,150 @@ fn test_generic_call_with_non_satisfying_type_is_error() {
     assert!(
         !case.tir.diagnostics.is_empty(),
         "expected a type error when calling test() with i32 (does not implement UnsignedInteger)"
+    );
+}
+
+// ── enum tests ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_enum_variants_are_populated() {
+    let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red = 1,
+            Green,
+            Blue,
+        }
+        export {}
+    "});
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors: {:?}", errors);
+
+    let enum_ = case.tir.enums.iter().find(|e| {
+        case.graph.interner.resolve(e.name.inner) == Some("Color")
+    }).expect("Color enum not found");
+
+    assert_eq!(enum_.variants.len(), 3, "expected 3 variants");
+    assert!(enum_.lookup.len() == 3);
+
+    let red_idx = *enum_.lookup.values().min().unwrap();
+    let red = &enum_.variants[red_idx as usize];
+    assert!(matches!(red.value.kind, ExprKind::Int { value: 1 }));
+
+    let green = &enum_.variants[1];
+    assert!(matches!(green.value.kind, ExprKind::Int { value: 2 }));
+
+    let blue = &enum_.variants[2];
+    assert!(matches!(blue.value.kind, ExprKind::Int { value: 3 }));
+}
+
+#[test]
+fn test_enum_all_implicit_variants() {
+    let case = TestCase::new(indoc! {"
+        enum Direction: u32 {
+            North,
+            East,
+            South,
+            West,
+        }
+        export {}
+    "});
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors: {:?}", errors);
+
+    let enum_ = case.tir.enums.iter().find(|e| {
+        case.graph.interner.resolve(e.name.inner) == Some("Direction")
+    }).expect("Direction enum not found");
+
+    assert_eq!(enum_.variants.len(), 4);
+    for (i, variant) in enum_.variants.iter().enumerate() {
+        assert!(
+            matches!(variant.value.kind, ExprKind::Int { value } if value == i as i64),
+            "variant {} should have value {}, got {:?}",
+            i, i, variant.value.kind
+        );
+    }
+}
+
+#[test]
+fn test_enum_variant_access_resolves() {
+    let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red = 1,
+            Green,
+            Blue,
+        }
+        fn get_red() -> Color {
+            Color::Red
+        }
+        export { get_red }
+    "});
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors accessing Color::Red: {:?}", errors);
+}
+
+#[test]
+fn test_enum_comparison() {
+    let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red = 1,
+            Green,
+            Blue,
+        }
+        fn is_red(c: Color) -> bool {
+            c == Color::Red
+        }
+        export { is_red }
+    "});
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == Severity::Error)
+        .collect();
+    assert!(errors.is_empty(), "expected no errors comparing enum values: {:?}", errors);
+}
+
+#[test]
+fn test_enum_missing_repr_is_error() {
+    let case = TestCase::new(indoc! {"
+        enum Color {
+            Red,
+            Green,
+        }
+        export {}
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "expected an error for enum without repr type"
+    );
+}
+
+#[test]
+fn test_enum_duplicate_variant_is_error() {
+    let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red,
+            Red,
+        }
+        export {}
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "expected an error for duplicate variant name"
     );
 }

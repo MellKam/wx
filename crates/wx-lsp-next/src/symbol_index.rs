@@ -1,6 +1,7 @@
 use wx_compiler::ast::{DefId, TextSpan};
-use wx_compiler::tir::{EnumVariantIndex, ExportItem, LocalIndex, ScopeIndex, TraitIndex, TIR};
+use wx_compiler::tir::{EnumVariantIndex, ExportItem, LocalIndex, ScopeIndex, TraitIndex, TypeParamOwner, TIR};
 use wx_compiler::vfs::FileId;
+use string_interner::symbol::SymbolU32;
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[derive(Clone, PartialEq, Eq)]
@@ -17,6 +18,8 @@ pub enum SymbolKind {
     EnumVariant { enum_idx: u32, variant_idx: EnumVariantIndex },
     Label { func_id: DefId, scope_idx: ScopeIndex },
     Trait(TraitIndex),
+    TypeParam { owner: TypeParamOwner, param_index: u32 },
+    AssocType { trait_index: TraitIndex, assoc_name: SymbolU32 },
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -36,7 +39,7 @@ pub struct SpanInfo {
 }
 
 pub struct SymbolIndex {
-    entries: Vec<SpanInfo>,
+    pub entries: Vec<SpanInfo>,
 }
 
 impl SymbolIndex {
@@ -103,6 +106,14 @@ fn same_symbol(a: &SymbolKind, b: &SymbolKind) -> bool {
         (SymbolKind::Module(a), SymbolKind::Module(b)) => a == b,
         (SymbolKind::ImportModule(a), SymbolKind::ImportModule(b)) => a == b,
         (SymbolKind::Trait(a), SymbolKind::Trait(b)) => a == b,
+        (
+            SymbolKind::TypeParam { owner: o1, param_index: p1 },
+            SymbolKind::TypeParam { owner: o2, param_index: p2 },
+        ) => o1 == o2 && p1 == p2,
+        (
+            SymbolKind::AssocType { trait_index: t1, assoc_name: n1 },
+            SymbolKind::AssocType { trait_index: t2, assoc_name: n2 },
+        ) => t1 == t2 && n1 == n2,
         _ => false,
     }
 }
@@ -145,6 +156,27 @@ pub fn build_symbol_index(tir: &TIR) -> SymbolIndex {
                 kind: SymbolKind::Function(func_id),
                 usage: SymbolUsage::Reference,
             });
+        }
+
+        for (param_index, tp) in function.type_params.iter().enumerate() {
+            let kind = SymbolKind::TypeParam {
+                owner: TypeParamOwner::Function(func_id),
+                param_index: param_index as u32,
+            };
+            index.add(SpanInfo {
+                file_id,
+                span: tp.name_span,
+                kind: kind.clone(),
+                usage: SymbolUsage::Definition,
+            });
+            for access in &tp.accesses {
+                index.add(SpanInfo {
+                    file_id: access.file_id,
+                    span: access.span,
+                    kind: kind.clone(),
+                    usage: SymbolUsage::Reference,
+                });
+            }
         }
 
         let num_params = function.params.len();
@@ -223,6 +255,26 @@ pub fn build_symbol_index(tir: &TIR) -> SymbolIndex {
                 usage: SymbolUsage::Reference,
             });
         }
+        for (param_index, tp) in struct_.type_params.iter().enumerate() {
+            let kind = SymbolKind::TypeParam {
+                owner: TypeParamOwner::Struct(struct_.id),
+                param_index: param_index as u32,
+            };
+            index.add(SpanInfo {
+                file_id: struct_.file_id,
+                span: tp.name_span,
+                kind: kind.clone(),
+                usage: SymbolUsage::Definition,
+            });
+            for access in &tp.accesses {
+                index.add(SpanInfo {
+                    file_id: access.file_id,
+                    span: access.span,
+                    kind: kind.clone(),
+                    usage: SymbolUsage::Reference,
+                });
+            }
+        }
     }
 
     for (enum_idx, enum_) in tir.enums.iter().enumerate() {
@@ -233,15 +285,24 @@ pub fn build_symbol_index(tir: &TIR) -> SymbolIndex {
             usage: SymbolUsage::Definition,
         });
         for (variant_idx, variant) in enum_.variants.iter().enumerate() {
+            let variant_kind = SymbolKind::EnumVariant {
+                enum_idx: enum_idx as u32,
+                variant_idx: variant_idx as EnumVariantIndex,
+            };
             index.add(SpanInfo {
                 file_id: enum_.file_id,
                 span: variant.name.span,
-                kind: SymbolKind::EnumVariant {
-                    enum_idx: enum_idx as u32,
-                    variant_idx: variant_idx as EnumVariantIndex,
-                },
+                kind: variant_kind.clone(),
                 usage: SymbolUsage::Definition,
             });
+            for access in &variant.accesses {
+                index.add(SpanInfo {
+                    file_id: access.file_id,
+                    span: access.span,
+                    kind: variant_kind.clone(),
+                    usage: SymbolUsage::Reference,
+                });
+            }
         }
     }
 
@@ -265,15 +326,37 @@ pub fn build_symbol_index(tir: &TIR) -> SymbolIndex {
     }
 
     for (decl_idx, decl) in tir.module_decls.iter().enumerate() {
+        let kind = SymbolKind::Module(decl_idx as u32);
+        let (def_file_id, def_span) = match decl.own_file_id {
+            Some(fid) => (fid, TextSpan::new(0, 0)),
+            None => (decl.declaring_file_id, decl.name.span),
+        };
         index.add(SpanInfo {
-            file_id: decl.declaring_file_id,
-            span: decl.name.span,
-            kind: SymbolKind::Module(decl_idx as u32),
+            file_id: def_file_id,
+            span: def_span,
+            kind: kind.clone(),
             usage: SymbolUsage::Definition,
         });
+        if decl.own_file_id.is_some() {
+            index.add(SpanInfo {
+                file_id: decl.declaring_file_id,
+                span: decl.name.span,
+                kind: kind.clone(),
+                usage: SymbolUsage::Reference,
+            });
+        }
+        for access in &decl.accesses {
+            index.add(SpanInfo {
+                file_id: access.file_id,
+                span: access.span,
+                kind: kind.clone(),
+                usage: SymbolUsage::Reference,
+            });
+        }
     }
 
     for (decl_idx, decl) in tir.import_decls.iter().enumerate() {
+        let kind = SymbolKind::ImportModule(decl_idx as u32);
         let span = decl
             .internal_name
             .as_ref()
@@ -282,13 +365,22 @@ pub fn build_symbol_index(tir: &TIR) -> SymbolIndex {
         index.add(SpanInfo {
             file_id: decl.file_id,
             span,
-            kind: SymbolKind::ImportModule(decl_idx as u32),
+            kind: kind.clone(),
             usage: SymbolUsage::Definition,
         });
+        for access in &decl.accesses {
+            index.add(SpanInfo {
+                file_id: access.file_id,
+                span: access.span,
+                kind: kind.clone(),
+                usage: SymbolUsage::Reference,
+            });
+        }
     }
 
     for (trait_idx, trait_) in tir.traits.iter().enumerate() {
-        let kind = SymbolKind::Trait(trait_idx as TraitIndex);
+        let trait_index = trait_idx as TraitIndex;
+        let kind = SymbolKind::Trait(trait_index);
         index.add(SpanInfo {
             file_id: trait_.file_id,
             span: trait_.name.span,
@@ -302,6 +394,25 @@ pub fn build_symbol_index(tir: &TIR) -> SymbolIndex {
                 kind: kind.clone(),
                 usage: SymbolUsage::Reference,
             });
+        }
+
+        for (assoc_name, at) in &trait_.assoc_types {
+            let at_kind =
+                SymbolKind::AssocType { trait_index, assoc_name: *assoc_name };
+            index.add(SpanInfo {
+                file_id: trait_.file_id,
+                span: at.name_span,
+                kind: at_kind.clone(),
+                usage: SymbolUsage::Definition,
+            });
+            for access in &at.accesses {
+                index.add(SpanInfo {
+                    file_id: access.file_id,
+                    span: access.span,
+                    kind: at_kind.clone(),
+                    usage: SymbolUsage::Reference,
+                });
+            }
         }
     }
 

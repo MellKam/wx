@@ -8,6 +8,7 @@ fn fibonacci(n: i32) -> i32 {
   if n <= 1 {
     return n
   }
+  
   console::log("calculating fibonacci");
   console::log("gewgew");
   fibonacci(n - 1) + fibonacci(n - 2)

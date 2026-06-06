@@ -273,6 +273,13 @@ pub struct Constant {
     pub accesses: Vec<SourceSpan>,
 }
 
+pub struct TraitAssocType {
+    pub id: ast::DefId,
+    pub name_span: ast::TextSpan,
+    pub bounds: Box<[TraitIndex]>,
+    pub accesses: Vec<SourceSpan>,
+}
+
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Trait {
     pub file_id: FileId,
@@ -280,10 +287,8 @@ pub struct Trait {
     pub supertraits: Vec<TraitIndex>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub members: HashMap<SymbolU32, ImplEntry>,
-    /// Checked during conformance to verify impl-provided types satisfy
-    /// declared bounds.
     #[cfg_attr(test, serde(skip))]
-    pub assoc_type_bounds: HashMap<SymbolU32, Box<[TraitIndex]>>,
+    pub assoc_types: HashMap<SymbolU32, TraitAssocType>,
     /// Used to demand-resolve members before reading `members`.
     #[cfg_attr(test, serde(skip))]
     pub member_def_ids: Vec<ast::DefId>,
@@ -668,12 +673,23 @@ pub struct Memory {
     pub max_pages: Option<u32>,
 }
 
+/// Back-pointer to whichever declaration created this namespace.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum ModuleDeclarationKind {
+    /// Index into `TIR::module_decls`.
+    Module(u32),
+    /// Index into `TIR::import_decls`.
+    Import(u32),
+}
+
 /// The symbol table for a module namespace — shared concept for both local
 /// modules (`module foo;` / `module foo { }`) and import blocks (`import "env" { }`).
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct ModuleNamespace {
     pub name: SymbolU32,
+    /// `None` when the parent is the root namespace (not stored in `TIR::namespaces`).
     pub parent: Option<ModuleIndex>,
+    pub declaration: ModuleDeclarationKind,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub symbols: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
 }
@@ -689,6 +705,7 @@ pub struct ModuleDecl {
     pub own_file_id: Option<FileId>,
     pub name: ast::Spanned<SymbolU32>,
     pub pub_span: Option<ast::TextSpan>,
+    pub accesses: Vec<SourceSpan>,
 }
 
 /// Declaration-site metadata for an import block (`import "env" { }`).
@@ -697,6 +714,7 @@ pub struct ImportDecl {
     /// Index into `TIR::namespaces` for this import module's symbol table.
     pub namespace_idx: ModuleIndex,
     pub file_id: FileId,
+    pub accesses: Vec<SourceSpan>,
     pub external_name: ast::Spanned<SymbolU32>,
     pub internal_name: Option<ast::Spanned<SymbolU32>>,
     /// Maps item names to imported values — used by MIR to emit the WASM import section.
@@ -818,7 +836,9 @@ pub enum FunctionOrigin {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TypeParamInfo {
     pub name: SymbolU32,
+    pub name_span: ast::TextSpan,
     pub bounds: Box<[TraitIndex]>,
+    pub accesses: Vec<SourceSpan>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -966,6 +986,7 @@ pub struct StructField {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Struct {
+    pub id: ast::DefId,
     pub file_id: FileId,
     pub pub_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,

@@ -2329,6 +2329,7 @@ version = "0.0.1"
 dependencies = [
  "codespan-reporting 0.13.1",
  "serde",
+ "string-interner",
  "tokio",
  "tower-lsp-server",
  "wx-compiler",
