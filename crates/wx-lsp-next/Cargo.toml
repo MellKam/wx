@@ -6,10 +6,7 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-lsp-server = "0.7.9"
-lsp-types = { version = "0.97.0", features = ["proposed"] }
-serde_json = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+tower-lsp-server = "0.23.0"
+tokio = { version = "1", features = ["full"] }
 wx-compiler = { path = "../wx-compiler" }
 codespan-reporting = "0.13.1"
-url = "2.5"

@@ -1,22 +1,23 @@
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::panic;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use codespan_reporting::diagnostic::{Diagnostic as CodeDiagnostic, LabelStyle, Severity};
 use codespan_reporting::files::Files as _;
-use lsp_server::{
-    Connection, ExtractError, Message, Notification, Request, RequestId, Response, ResponseError,
-};
-use lsp_types::notification::Notification as _;
-use lsp_types::{
+use tokio::sync::Mutex;
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverProviderCapability, InitializeParams, Location, MarkupContent, MarkupKind, NumberOrString,
-    OneOf, PublishDiagnosticsParams, Range, ReferenceParams, RenameParams, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, Position, Range, ReferenceParams,
+    RenameParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    Uri, WorkspaceEdit,
 };
-use wx_compiler::ast::{self};
+use tower_lsp_server::{Client, LanguageServer, LspService, Server};
+use wx_compiler::ast;
 use wx_compiler::tir::TIR;
 use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
 
@@ -52,10 +53,17 @@ struct AnalysisResult {
     owned_files: HashSet<PathBuf>,
 }
 
+#[derive(Clone, Copy)]
+struct ModuleLoc {
+    crate_idx: usize,
+    module_idx: usize,
+}
+
 struct CompiledRoot {
     graph: vfs::CompilationGraph,
     tir: TIR,
     symbol_index: SymbolIndex,
+    path_to_module_loc: HashMap<PathBuf, ModuleLoc>,
 }
 
 struct OverlayFileSource<'a> {
@@ -73,7 +81,7 @@ impl<'a> OverlayFileSource<'a> {
 }
 
 impl FileSource for OverlayFileSource<'_> {
-    fn read_to_string(&self, path: &str) -> Result<String, LoadError> {
+    fn read_to_string(&self, path: &str) -> std::result::Result<String, LoadError> {
         if let Some(doc) = self.open_documents.get(Path::new(path)) {
             return Ok(doc.text.clone());
         }
@@ -85,205 +93,293 @@ impl FileSource for OverlayFileSource<'_> {
     }
 }
 
-fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
-    debug_log!("wx-lsp-next starting");
+struct Backend {
+    client: Client,
+    state: Arc<Mutex<ServerState>>,
+}
 
-    let (connection, io_threads) = Connection::stdio();
-    let server_capabilities = serde_json::to_value(ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
-        hover_provider: Some(HoverProviderCapability::Simple(true)),
-        definition_provider: Some(OneOf::Left(true)),
-        references_provider: Some(OneOf::Left(true)),
-        rename_provider: Some(OneOf::Left(true)),
-        document_formatting_provider: Some(OneOf::Left(true)),
-        ..Default::default()
-    })?;
-
-    let initialization_params = connection.initialize(server_capabilities)?;
-    let params: InitializeParams = serde_json::from_value(initialization_params)?;
-
-    let mut state = ServerState {
-        workspace_folders: params
+impl LanguageServer for Backend {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        debug_log!("wx-lsp-next initializing");
+        let workspace_folders = params
             .workspace_folders
             .iter()
             .flatten()
             .filter_map(|folder| uri_to_path(&folder.uri))
-            .collect(),
-        ..Default::default()
-    };
-
-    main_loop(connection, &mut state)?;
-    io_threads.join()?;
-    Ok(())
-}
-
-fn main_loop(
-    connection: Connection,
-    state: &mut ServerState,
-) -> Result<(), Box<dyn Error + Sync + Send>> {
-    for msg in &connection.receiver {
-        match msg {
-            Message::Request(req) => {
-                if connection.handle_shutdown(&req)? {
-                    return Ok(());
-                }
-
-                let req = match cast_request::<lsp_types::request::HoverRequest>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_hover(state, &params);
-                        connection.sender.send(Message::Response(Response {
-                            id,
-                            result: Some(serde_json::to_value(result)?),
-                            error: None,
-                        }))?;
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                    Err(err) => return Err(err.into()),
-                };
-
-                let req = match cast_request::<lsp_types::request::GotoDefinition>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_definition(state, &params);
-                        connection.sender.send(Message::Response(Response {
-                            id,
-                            result: Some(serde_json::to_value(result)?),
-                            error: None,
-                        }))?;
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                    Err(err) => return Err(err.into()),
-                };
-
-                let req = match cast_request::<lsp_types::request::References>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_references(state, &params);
-                        connection.sender.send(Message::Response(Response {
-                            id,
-                            result: Some(serde_json::to_value(result)?),
-                            error: None,
-                        }))?;
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                    Err(err) => return Err(err.into()),
-                };
-
-                let req = match cast_request::<lsp_types::request::Rename>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_rename(state, &params);
-                        connection.sender.send(Message::Response(Response {
-                            id,
-                            result: Some(serde_json::to_value(result)?),
-                            error: None,
-                        }))?;
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                    Err(err) => return Err(err.into()),
-                };
-
-                let req = match cast_request::<lsp_types::request::Formatting>(req) {
-                    Ok((id, params)) => {
-                        let result = handle_formatting(state, &params);
-                        connection.sender.send(Message::Response(Response {
-                            id,
-                            result: Some(serde_json::to_value(result)?),
-                            error: None,
-                        }))?;
-                        continue;
-                    }
-                    Err(ExtractError::MethodMismatch(req)) => req,
-                    Err(err) => return Err(err.into()),
-                };
-
-                respond_method_not_found(&connection, req.id.clone())?;
-            }
-            Message::Notification(notif) => {
-                handle_notification(&connection, state, notif.clone())?;
-            }
-            Message::Response(_) => {}
-        }
+            .collect();
+        self.state.lock().await.workspace_folders = workspace_folders;
+        Ok(InitializeResult {
+            capabilities: ServerCapabilities {
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                    TextDocumentSyncKind::FULL,
+                )),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
     }
-    Ok(())
-}
 
-fn handle_notification(
-    connection: &Connection,
-    state: &mut ServerState,
-    notif: Notification,
-) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let notif = match cast_notification::<lsp_types::notification::DidOpenTextDocument>(notif) {
-        Ok(params) => {
-            if let Some(path) = uri_to_path(&params.text_document.uri) {
+    async fn initialized(&self, _: InitializedParams) {
+        debug_log!("wx-lsp-next initialized");
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn did_open(&self, params: DidOpenTextDocumentParams) {
+        if let Some(path) = uri_to_path(&params.text_document.uri) {
+            let publications = {
+                let mut state = self.state.lock().await;
                 state.open_documents.insert(
                     path.clone(),
                     OpenDocument {
                         text: params.text_document.text,
                     },
                 );
-                refresh_file(connection, state, &path)?;
-            }
-            return Ok(());
+                compute_refresh(&mut state, &path)
+            };
+            self.publish_all(publications).await;
         }
-        Err(ExtractError::MethodMismatch(notif)) => notif,
-        Err(err) => return Err(err.into()),
-    };
+    }
 
-    let notif = match cast_notification::<lsp_types::notification::DidChangeTextDocument>(notif) {
-        Ok(params) => {
-            if let Some(path) = uri_to_path(&params.text_document.uri) {
-                if let Some(change) = params.content_changes.into_iter().last() {
+    async fn did_change(&self, params: DidChangeTextDocumentParams) {
+        if let Some(path) = uri_to_path(&params.text_document.uri) {
+            if let Some(change) = params.content_changes.into_iter().last() {
+                let publications = {
+                    let mut state = self.state.lock().await;
                     state
                         .open_documents
                         .insert(path.clone(), OpenDocument { text: change.text });
-                    refresh_file(connection, state, &path)?;
+                    compute_refresh(&mut state, &path)
+                };
+                self.publish_all(publications).await;
+            }
+        }
+    }
+
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
+        if let Some(path) = uri_to_path(&params.text_document.uri) {
+            let publications = {
+                let mut state = self.state.lock().await;
+                state.open_documents.remove(&path);
+                compute_refresh(&mut state, &path)
+            };
+            self.publish_all(publications).await;
+        }
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let state = self.state.lock().await;
+        Ok((|| {
+            let path = uri_to_path(&params.text_document_position_params.text_document.uri)?;
+            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+            let compiled = state.cached.get(&root)?;
+            let file_id = file_id_for_path(compiled, &path)?;
+            let offset = position_to_offset(
+                &compiled.graph.files,
+                file_id,
+                params.text_document_position_params.position,
+            )?;
+            let info = compiled.symbol_index.find_at_position(file_id, offset)?;
+            let text = symbol_hover_text(&compiled.tir, &compiled.graph.interner, &info.kind)?;
+            let range = span_to_range(&compiled.graph.files, file_id, info.span.start, info.span.end)?;
+            Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("```wx\n{text}\n```"),
+                }),
+                range: Some(range),
+            })
+        })())
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let state = self.state.lock().await;
+        Ok((|| {
+            let path = uri_to_path(&params.text_document_position_params.text_document.uri)?;
+            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+            let compiled = state.cached.get(&root)?;
+            let file_id = file_id_for_path(compiled, &path)?;
+            let offset = position_to_offset(
+                &compiled.graph.files,
+                file_id,
+                params.text_document_position_params.position,
+            )?;
+            let info = compiled.symbol_index.find_at_position(file_id, offset)?;
+            let (def_file_id, def_span) = compiled.symbol_index.find_definition(&info.kind)?;
+            let def_path = path_for_file_id(compiled, def_file_id)?;
+            let uri = path_to_uri(&def_path)?;
+            let range = span_to_range(&compiled.graph.files, def_file_id, def_span.start, def_span.end)?;
+            Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+        })())
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let state = self.state.lock().await;
+        Ok((|| {
+            let path = uri_to_path(&params.text_document_position.text_document.uri)?;
+            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+            let compiled = state.cached.get(&root)?;
+            let file_id = file_id_for_path(compiled, &path)?;
+            let offset = position_to_offset(
+                &compiled.graph.files,
+                file_id,
+                params.text_document_position.position,
+            )?;
+            let info = compiled.symbol_index.find_at_position(file_id, offset)?;
+            let mut refs = compiled.symbol_index.find_all_references(&info.kind);
+            if !params.context.include_declaration {
+                if let Some((def_file_id, def_span)) = compiled.symbol_index.find_definition(&info.kind) {
+                    refs.retain(|(fid, span)| !(*fid == def_file_id && span.start == def_span.start));
                 }
             }
-            return Ok(());
-        }
-        Err(ExtractError::MethodMismatch(notif)) => notif,
-        Err(err) => return Err(err.into()),
-    };
+            let locations = refs
+                .into_iter()
+                .filter_map(|(ref_file_id, ref_span)| {
+                    let ref_path = path_for_file_id(compiled, ref_file_id)?;
+                    let uri = path_to_uri(&ref_path)?;
+                    let range = span_to_range(
+                        &compiled.graph.files,
+                        ref_file_id,
+                        ref_span.start,
+                        ref_span.end,
+                    )?;
+                    Some(Location { uri, range })
+                })
+                .collect::<Vec<_>>();
+            (!locations.is_empty()).then_some(locations)
+        })())
+    }
 
-    let notif = match cast_notification::<lsp_types::notification::DidCloseTextDocument>(notif) {
-        Ok(params) => {
-            if let Some(path) = uri_to_path(&params.text_document.uri) {
-                state.open_documents.remove(&path);
-                refresh_file(connection, state, &path)?;
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let state = self.state.lock().await;
+        Ok((|| {
+            let path = uri_to_path(&params.text_document_position.text_document.uri)?;
+            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+            let compiled = state.cached.get(&root)?;
+            let file_id = file_id_for_path(compiled, &path)?;
+            let offset = position_to_offset(
+                &compiled.graph.files,
+                file_id,
+                params.text_document_position.position,
+            )?;
+            let info = compiled.symbol_index.find_at_position(file_id, offset)?;
+            let refs = compiled.symbol_index.find_all_references(&info.kind);
+            if refs.is_empty() {
+                return None;
             }
-            return Ok(());
-        }
-        Err(ExtractError::MethodMismatch(notif)) => notif,
-        Err(err) => return Err(err.into()),
-    };
+            let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+            for (ref_file_id, ref_span) in refs {
+                let ref_path = path_for_file_id(compiled, ref_file_id)?;
+                let uri = path_to_uri(&ref_path)?;
+                let range = span_to_range(&compiled.graph.files, ref_file_id, ref_span.start, ref_span.end)?;
+                changes.entry(uri).or_default().push(TextEdit {
+                    range,
+                    new_text: params.new_name.clone(),
+                });
+            }
+            Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            })
+        })())
+    }
 
-    let _notif = notif;
-    Ok(())
+    async fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let state = self.state.lock().await;
+        Ok((|| {
+            let path = uri_to_path(&params.text_document.uri)?;
+            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
+            let compiled = state.cached.get(&root)?;
+            let module = module_for_path(compiled, &path)?;
+            let source = compiled.graph.files.get(module.file_id).ok()?.source.as_str();
+            let has_errors = module.ast.diagnostics.iter().any(|d| {
+                matches!(
+                    d.severity,
+                    codespan_reporting::diagnostic::Severity::Error
+                        | codespan_reporting::diagnostic::Severity::Bug
+                )
+            });
+            if has_errors {
+                return None;
+            }
+            let config = wx_compiler::fmt::RendererConfig {
+                indent_width: params.options.tab_size as u8,
+                ..Default::default()
+            };
+            let formatted = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+                wx_compiler::fmt::format(&module.ast, &compiled.graph.interner, source, config)
+            }))
+            .ok()?;
+            let end = byte_to_position(&compiled.graph.files, module.file_id, source.len())?;
+            Some(vec![TextEdit {
+                range: Range {
+                    start: Position::default(),
+                    end,
+                },
+                new_text: formatted,
+            }])
+        })())
+    }
 }
 
-fn refresh_file(
-    connection: &Connection,
+impl Backend {
+    async fn publish_all(&self, publications: Vec<(PathBuf, Vec<Diagnostic>)>) {
+        for (path, diagnostics) in publications {
+            if let Some(uri) = path_to_uri(&path) {
+                self.client.publish_diagnostics(uri, diagnostics, None).await;
+            }
+        }
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    debug_log!("wx-lsp-next starting");
+    let (service, socket) = LspService::new(|client| Backend {
+        client,
+        state: Arc::new(Mutex::new(ServerState::default())),
+    });
+    Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
+        .serve(service)
+        .await;
+}
+
+// ── State management ──────────────────────────────────────────────────────────
+
+pub(crate) fn compute_refresh(
     state: &mut ServerState,
     file_path: &Path,
-) -> Result<(), Box<dyn Error + Sync + Send>> {
+) -> Vec<(PathBuf, Vec<Diagnostic>)> {
     let previous_root = state.file_to_root.get(file_path).cloned();
     let current_root =
         discover_crate_root(&state.open_documents, &state.workspace_folders, file_path);
+    let mut publications = Vec::new();
 
     if let Some(root) = current_root.as_ref() {
         let analysis = analyze_root(state, root);
-        publish_analysis(connection, state, root, analysis)?;
+        publications.extend(collect_publish_operations(state, root, analysis));
     }
 
     if previous_root.as_ref() != current_root.as_ref() {
         if let Some(old_root) = previous_root {
             if current_root.as_ref() != Some(&old_root) {
-                clear_root_diagnostics(connection, state, &old_root)?;
+                publications.extend(collect_clear_operations(state, &old_root));
             }
         } else if current_root.is_none() {
-            publish_file_diagnostics(connection, file_path, Vec::new())?;
+            publications.push((file_path.to_path_buf(), Vec::new()));
         }
     }
 
@@ -291,10 +387,10 @@ fn refresh_file(
         state.file_to_root.remove(file_path);
     }
 
-    Ok(())
+    publications
 }
 
-fn analyze_root(state: &mut ServerState, root: &Path) -> AnalysisResult {
+pub(crate) fn analyze_root(state: &mut ServerState, root: &Path) -> AnalysisResult {
     match compile_root(state, root) {
         Ok(compiled) => {
             let result = analysis_from_compiled_root(&compiled);
@@ -308,7 +404,65 @@ fn analyze_root(state: &mut ServerState, root: &Path) -> AnalysisResult {
     }
 }
 
-fn compile_root(state: &ServerState, root: &Path) -> Result<CompiledRoot, LoadError> {
+fn collect_publish_operations(
+    state: &mut ServerState,
+    root: &Path,
+    analysis: AnalysisResult,
+) -> Vec<(PathBuf, Vec<Diagnostic>)> {
+    let AnalysisResult {
+        diagnostics_by_file,
+        owned_files,
+    } = analysis;
+
+    let previous = state
+        .published_by_root
+        .get(root)
+        .cloned()
+        .unwrap_or_default();
+    let publish_paths = diagnostic_publish_paths(&previous, &owned_files, &diagnostics_by_file);
+
+    for path in &owned_files {
+        state.file_to_root.insert(path.clone(), root.to_path_buf());
+    }
+    state
+        .file_to_root
+        .retain(|path, mapped_root| mapped_root != root || owned_files.contains(path));
+
+    state
+        .published_by_root
+        .insert(root.to_path_buf(), owned_files);
+
+    publish_paths
+        .into_iter()
+        .map(|path| {
+            let diagnostics = diagnostics_by_file.get(&path).cloned().unwrap_or_default();
+            (path, diagnostics)
+        })
+        .collect()
+}
+
+fn collect_clear_operations(
+    state: &mut ServerState,
+    root: &Path,
+) -> Vec<(PathBuf, Vec<Diagnostic>)> {
+    state.cached.remove(root);
+    if let Some(previous) = state.published_by_root.remove(root) {
+        previous
+            .into_iter()
+            .map(|path| {
+                state.file_to_root.remove(&path);
+                (path, Vec::new())
+            })
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn compile_root(
+    state: &ServerState,
+    root: &Path,
+) -> std::result::Result<CompiledRoot, LoadError> {
     let overlay_source = OverlayFileSource::new(&state.open_documents);
     let mut builder = vfs::CompilationGraphBuilder::new();
     let stdlib_id = builder.load_crate(
@@ -322,10 +476,25 @@ fn compile_root(state: &ServerState, root: &Path) -> Result<CompiledRoot, LoadEr
     let mut graph = builder.build(stdlib_id);
     let tir = TIR::build(&mut graph);
     let symbol_index = build_symbol_index(&tir);
+    let path_to_module_loc = graph
+        .crates
+        .iter()
+        .enumerate()
+        .flat_map(|(ci, crate_graph)| {
+            crate_graph
+                .modules
+                .iter()
+                .enumerate()
+                .map(move |(mi, module)| {
+                    (PathBuf::from(&module.file_path), ModuleLoc { crate_idx: ci, module_idx: mi })
+                })
+        })
+        .collect();
     Ok(CompiledRoot {
         graph,
         tir,
         symbol_index,
+        path_to_module_loc,
     })
 }
 
@@ -428,43 +597,7 @@ fn analysis_from_load_error(root: &Path, error: LoadError) -> AnalysisResult {
     }
 }
 
-fn publish_analysis(
-    connection: &Connection,
-    state: &mut ServerState,
-    root: &Path,
-    analysis: AnalysisResult,
-) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let AnalysisResult {
-        diagnostics_by_file,
-        owned_files,
-    } = analysis;
-
-    let previous = state
-        .published_by_root
-        .get(root)
-        .cloned()
-        .unwrap_or_default();
-    let publish_paths = diagnostic_publish_paths(&previous, &owned_files, &diagnostics_by_file);
-
-    for path in &owned_files {
-        state.file_to_root.insert(path.clone(), root.to_path_buf());
-    }
-    state
-        .file_to_root
-        .retain(|path, mapped_root| mapped_root != root || owned_files.contains(path));
-
-    for path in publish_paths {
-        let diagnostics = diagnostics_by_file.get(&path).cloned().unwrap_or_default();
-        publish_file_diagnostics(connection, &path, diagnostics)?;
-    }
-
-    state
-        .published_by_root
-        .insert(root.to_path_buf(), owned_files.clone());
-    Ok(())
-}
-
-fn diagnostic_publish_paths(
+pub(crate) fn diagnostic_publish_paths(
     previous: &HashSet<PathBuf>,
     owned_files: &HashSet<PathBuf>,
     diagnostics_by_file: &HashMap<PathBuf, Vec<Diagnostic>>,
@@ -473,21 +606,6 @@ fn diagnostic_publish_paths(
     paths.extend(owned_files.iter().cloned());
     paths.extend(diagnostics_by_file.keys().cloned());
     paths
-}
-
-fn clear_root_diagnostics(
-    connection: &Connection,
-    state: &mut ServerState,
-    root: &Path,
-) -> Result<(), Box<dyn Error + Sync + Send>> {
-    state.cached.remove(root);
-    if let Some(previous) = state.published_by_root.remove(root) {
-        for path in previous {
-            publish_file_diagnostics(connection, &path, Vec::new())?;
-            state.file_to_root.remove(&path);
-        }
-    }
-    Ok(())
 }
 
 fn add_compiler_diagnostic(
@@ -608,37 +726,6 @@ fn diagnostic_related_information(
     (!infos.is_empty()).then_some(infos)
 }
 
-// ── Handlers ─────────────────────────────────────────────────────────────────
-
-fn handle_hover(state: &ServerState, params: &lsp_types::HoverParams) -> Option<Hover> {
-    let path = uri_to_path(&params.text_document_position_params.text_document.uri)?;
-    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-    let compiled = state.cached.get(&root)?;
-    let file_id = file_id_for_path(compiled, &path)?;
-    let offset = position_to_offset(
-        &compiled.graph.files,
-        file_id,
-        params.text_document_position_params.position,
-    )?;
-
-    let info = compiled.symbol_index.find_at_position(file_id, offset)?;
-    let text = symbol_hover_text(&compiled.tir, &compiled.graph.interner, &info.kind)?;
-    let range = span_to_range(
-        &compiled.graph.files,
-        file_id,
-        info.span.start,
-        info.span.end,
-    )?;
-
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: format!("```wx\n{text}\n```"),
-        }),
-        range: Some(range),
-    })
-}
-
 fn symbol_hover_text(
     tir: &TIR,
     interner: &ast::StringInterner,
@@ -755,197 +842,27 @@ fn symbol_hover_text(
     }
 }
 
-fn handle_definition(
-    state: &ServerState,
-    params: &GotoDefinitionParams,
-) -> Option<GotoDefinitionResponse> {
-    let path = uri_to_path(&params.text_document_position_params.text_document.uri)?;
-    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-    let compiled = state.cached.get(&root)?;
-    let file_id = file_id_for_path(compiled, &path)?;
-    let offset = position_to_offset(
-        &compiled.graph.files,
-        file_id,
-        params.text_document_position_params.position,
-    )?;
-
-    let info = compiled.symbol_index.find_at_position(file_id, offset)?;
-    let (def_file_id, def_span) = compiled.symbol_index.find_definition(&info.kind)?;
-    let def_path = path_for_file_id(compiled, def_file_id)?;
-    let uri = path_to_uri(&def_path)?;
-    let range = span_to_range(
-        &compiled.graph.files,
-        def_file_id,
-        def_span.start,
-        def_span.end,
-    )?;
-
-    Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
-}
-
-fn handle_references(state: &ServerState, params: &ReferenceParams) -> Option<Vec<Location>> {
-    let path = uri_to_path(&params.text_document_position.text_document.uri)?;
-    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-    let compiled = state.cached.get(&root)?;
-    let file_id = file_id_for_path(compiled, &path)?;
-    let offset = position_to_offset(
-        &compiled.graph.files,
-        file_id,
-        params.text_document_position.position,
-    )?;
-
-    let info = compiled.symbol_index.find_at_position(file_id, offset)?;
-    let mut refs = compiled.symbol_index.find_all_references(&info.kind);
-
-    if !params.context.include_declaration {
-        if let Some((def_file_id, def_span)) = compiled.symbol_index.find_definition(&info.kind) {
-            refs.retain(|(fid, span)| !(*fid == def_file_id && span.start == def_span.start));
-        }
-    }
-
-    let locations = refs
-        .into_iter()
-        .filter_map(|(ref_file_id, ref_span)| {
-            let ref_path = path_for_file_id(compiled, ref_file_id)?;
-            let uri = path_to_uri(&ref_path)?;
-            let range = span_to_range(
-                &compiled.graph.files,
-                ref_file_id,
-                ref_span.start,
-                ref_span.end,
-            )?;
-            Some(Location { uri, range })
-        })
-        .collect::<Vec<_>>();
-
-    if locations.is_empty() {
-        None
-    } else {
-        Some(locations)
-    }
-}
-
-fn handle_rename(state: &ServerState, params: &RenameParams) -> Option<WorkspaceEdit> {
-    let path = uri_to_path(&params.text_document_position.text_document.uri)?;
-    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-    let compiled = state.cached.get(&root)?;
-    let file_id = file_id_for_path(compiled, &path)?;
-    let offset = position_to_offset(
-        &compiled.graph.files,
-        file_id,
-        params.text_document_position.position,
-    )?;
-
-    let info = compiled.symbol_index.find_at_position(file_id, offset)?;
-    let refs = compiled.symbol_index.find_all_references(&info.kind);
-    if refs.is_empty() {
-        return None;
-    }
-
-    let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
-    for (ref_file_id, ref_span) in refs {
-        let ref_path = path_for_file_id(compiled, ref_file_id)?;
-        let uri = path_to_uri(&ref_path)?;
-        let range = span_to_range(
-            &compiled.graph.files,
-            ref_file_id,
-            ref_span.start,
-            ref_span.end,
-        )?;
-        changes.entry(uri).or_default().push(TextEdit {
-            range,
-            new_text: params.new_name.clone(),
-        });
-    }
-
-    Some(WorkspaceEdit {
-        changes: Some(changes),
-        ..Default::default()
-    })
-}
-
-fn handle_formatting(
-    state: &ServerState,
-    params: &DocumentFormattingParams,
-) -> Option<Vec<TextEdit>> {
-    let path = uri_to_path(&params.text_document.uri)?;
-    let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-    let compiled = state.cached.get(&root)?;
-    let module = module_for_path(compiled, &path)?;
-    let source = compiled
-        .graph
-        .files
-        .get(module.file_id)
-        .ok()?
-        .source
-        .as_str();
-
-    let has_errors = module.ast.diagnostics.iter().any(|d| {
-        matches!(
-            d.severity,
-            codespan_reporting::diagnostic::Severity::Error
-                | codespan_reporting::diagnostic::Severity::Bug
-        )
-    });
-    if has_errors {
-        return None;
-    }
-
-    let config = wx_compiler::fmt::RendererConfig {
-        indent_width: params.options.tab_size as u8,
-        ..Default::default()
-    };
-
-    let formatted = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-        wx_compiler::fmt::format(&module.ast, &compiled.graph.interner, source, config)
-    }))
-    .ok()?;
-
-    let end = byte_to_position(&compiled.graph.files, module.file_id, source.len())?;
-    Some(vec![TextEdit {
-        range: Range {
-            start: lsp_types::Position::default(),
-            end,
-        },
-        new_text: formatted,
-    }])
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn file_id_for_path(compiled: &CompiledRoot, path: &Path) -> Option<FileId> {
-    compiled
-        .graph
-        .crates
-        .iter()
-        .flat_map(|crate_graph| crate_graph.modules.iter())
-        .find(|module| Path::new(&module.file_path) == path)
-        .map(|module| module.file_id)
+    let &ModuleLoc { crate_idx, module_idx } = compiled.path_to_module_loc.get(path)?;
+    Some(compiled.graph.crates[crate_idx].modules[module_idx].file_id)
 }
 
 fn path_for_file_id(compiled: &CompiledRoot, file_id: FileId) -> Option<PathBuf> {
-    compiled
-        .graph
-        .crates
-        .iter()
-        .flat_map(|crate_graph| crate_graph.modules.iter())
-        .find(|module| module.file_id == file_id)
-        .map(|module| PathBuf::from(&module.file_path))
+    let name = compiled.graph.files.name(file_id).ok()?;
+    Some(PathBuf::from(name))
 }
 
 fn module_for_path<'a>(compiled: &'a CompiledRoot, path: &Path) -> Option<&'a vfs::SourceModule> {
-    compiled
-        .graph
-        .crates
-        .iter()
-        .flat_map(|crate_graph| crate_graph.modules.iter())
-        .find(|module| Path::new(&module.file_path) == path)
+    let &ModuleLoc { crate_idx, module_idx } = compiled.path_to_module_loc.get(path)?;
+    Some(&compiled.graph.crates[crate_idx].modules[module_idx])
 }
 
 fn position_to_offset(
     files: &vfs::Files,
     file_id: FileId,
-    position: lsp_types::Position,
+    position: Position,
 ) -> Option<u32> {
     let line_range = files.line_range(file_id, position.line as usize).ok()?;
     Some((line_range.start + position.character as usize) as u32)
@@ -961,11 +878,11 @@ fn byte_to_position(
     files: &vfs::Files,
     file_id: FileId,
     byte_index: usize,
-) -> Option<lsp_types::Position> {
+) -> Option<Position> {
     let line = files.line_index(file_id, byte_index).ok()?;
     let line_range = files.line_range(file_id, line).ok()?;
     let character = byte_index.saturating_sub(line_range.start);
-    Some(lsp_types::Position {
+    Some(Position {
         line: line as u32,
         character: character as u32,
     })
@@ -980,28 +897,7 @@ fn severity_to_lsp(severity: Severity) -> DiagnosticSeverity {
     }
 }
 
-fn publish_file_diagnostics(
-    connection: &Connection,
-    path: &Path,
-    diagnostics: Vec<Diagnostic>,
-) -> Result<(), Box<dyn Error + Sync + Send>> {
-    let Some(uri) = path_to_uri(path) else {
-        return Ok(());
-    };
-    connection
-        .sender
-        .send(Message::Notification(lsp_server::Notification::new(
-            lsp_types::notification::PublishDiagnostics::METHOD.to_string(),
-            PublishDiagnosticsParams {
-                uri,
-                diagnostics,
-                version: None,
-            },
-        )))?;
-    Ok(())
-}
-
-fn discover_crate_root(
+pub(crate) fn discover_crate_root(
     open_documents: &HashMap<PathBuf, OpenDocument>,
     workspace_folders: &[PathBuf],
     file_path: &Path,
@@ -1036,43 +932,11 @@ fn path_exists(open_documents: &HashMap<PathBuf, OpenDocument>, path: &Path) -> 
 }
 
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
-    url::Url::parse(uri.as_str()).ok()?.to_file_path().ok()
+    uri.to_file_path().map(|cow| cow.into_owned())
 }
 
 fn path_to_uri(path: &Path) -> Option<Uri> {
-    url::Url::from_file_path(path).ok()?.as_str().parse().ok()
-}
-
-fn respond_method_not_found(
-    connection: &Connection,
-    id: RequestId,
-) -> Result<(), Box<dyn Error + Sync + Send>> {
-    connection.sender.send(Message::Response(Response {
-        id,
-        result: None,
-        error: Some(ResponseError {
-            code: lsp_server::ErrorCode::MethodNotFound as i32,
-            message: "method not supported by wx-lsp-next".to_string(),
-            data: None,
-        }),
-    }))?;
-    Ok(())
-}
-
-fn cast_request<R>(req: Request) -> Result<(RequestId, R::Params), ExtractError<Request>>
-where
-    R: lsp_types::request::Request,
-    R::Params: serde::de::DeserializeOwned,
-{
-    req.extract(R::METHOD)
-}
-
-fn cast_notification<R>(notif: Notification) -> Result<R::Params, ExtractError<Notification>>
-where
-    R: lsp_types::notification::Notification,
-    R::Params: serde::de::DeserializeOwned,
-{
-    notif.extract(R::METHOD)
+    Uri::from_file_path(path)
 }
 
 #[cfg(test)]

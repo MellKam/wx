@@ -1,5 +1,5 @@
 import "console" {
-  fn log(message: string);
+  fn log(message: []u8);
 }
 
 fn fibonacci(n: i32) -> i32 {

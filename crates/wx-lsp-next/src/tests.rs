@@ -1,39 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use lsp_server::{Connection, Message};
-use lsp_types::notification::Notification as _;
-use lsp_types::{Diagnostic, DiagnosticSeverity, PublishDiagnosticsParams, Range};
+use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range};
 
 use crate::{
-    OpenDocument, ServerState, analyze_root, diagnostic_publish_paths, discover_crate_root,
-    refresh_file, uri_to_path,
+    OpenDocument, ServerState, analyze_root, compute_refresh, diagnostic_publish_paths,
+    discover_crate_root,
 };
 
 fn open_document(text: &str) -> OpenDocument {
     OpenDocument {
         text: text.to_string(),
     }
-}
-
-fn collect_published_diagnostics(connection: &Connection) -> HashMap<PathBuf, Vec<Diagnostic>> {
-    let mut published = HashMap::new();
-
-    for message in connection.receiver.try_iter() {
-        let Message::Notification(notification) = message else {
-            continue;
-        };
-        if notification.method != lsp_types::notification::PublishDiagnostics::METHOD {
-            continue;
-        }
-
-        let params: PublishDiagnosticsParams = serde_json::from_value(notification.params)
-            .expect("publishDiagnostics params should deserialize");
-        let path = uri_to_path(&params.uri).expect("publishDiagnostics uri should be a file path");
-        published.insert(path, params.diagnostics);
-    }
-
-    published
 }
 
 #[test]
@@ -128,7 +106,6 @@ fn analyze_root_updates_multi_file_diagnostics_when_overlay_changes() {
 
 #[test]
 fn refresh_file_from_child_path_discovers_root_and_republishes_root_diagnostics() {
-    let (server, client) = Connection::memory();
     let workspace_root = PathBuf::from("/workspace");
     let root = workspace_root.join("app").join("main.wx");
     let child = workspace_root.join("app").join("math.wx");
@@ -146,18 +123,15 @@ fn refresh_file_from_child_path_discovers_root_and_republishes_root_diagnostics(
         open_document("fn add() -> bool {\n    true\n}\n"),
     );
 
-    refresh_file(&server, &mut state, &child).expect("refresh from child path should succeed");
+    let broken_publish = compute_refresh(&mut state, &child);
 
     assert_eq!(state.file_to_root.get(&child), Some(&root));
     assert_eq!(state.file_to_root.get(&root), Some(&root));
 
-    let broken_publish = collect_published_diagnostics(&client);
     assert!(
-        broken_publish
-            .get(&root)
-            .is_some_and(|diagnostics| diagnostics
-                .iter()
-                .any(|d| d.severity == Some(DiagnosticSeverity::ERROR))),
+        broken_publish.iter().any(|(path, diags)| {
+            path == &root && diags.iter().any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+        }),
         "expected refresh from child path to publish a root-file error"
     );
 
@@ -166,16 +140,15 @@ fn refresh_file_from_child_path_discovers_root_and_republishes_root_diagnostics(
         open_document("fn add() -> i32 {\n    1\n}\n"),
     );
 
-    refresh_file(&server, &mut state, &child)
-        .expect("refresh after fixing child path should succeed");
+    let fixed_publish = compute_refresh(&mut state, &child);
 
-    let fixed_publish = collect_published_diagnostics(&client);
     assert!(
-        fixed_publish
-            .get(&root)
-            .is_some_and(|diagnostics| diagnostics
-                .iter()
-                .all(|d| d.severity != Some(DiagnosticSeverity::ERROR))),
+        fixed_publish.iter().any(|(path, diags)| {
+            path == &root
+                && diags
+                    .iter()
+                    .all(|d| d.severity != Some(DiagnosticSeverity::ERROR))
+        }),
         "expected refresh from child path to clear root-file errors after fixing the child overlay"
     );
 }
