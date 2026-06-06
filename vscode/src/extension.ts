@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { workspace, ExtensionContext, commands, window } from "vscode";
+import { workspace, ExtensionContext, commands, window, Uri } from "vscode";
 import {
 	LanguageClient,
 	LanguageClientOptions,
@@ -40,7 +40,10 @@ async function startServer(serverModule: string) {
 	};
 
 	const clientOptions: LanguageClientOptions = {
-		documentSelector: [{ scheme: "file", language: "wx" }],
+		documentSelector: [
+			{ scheme: "file", language: "wx" },
+			{ scheme: "wxstd", language: "wx" },
+		],
 		synchronize: {
 			fileEvents: workspace.createFileSystemWatcher("**/*.wx"),
 		},
@@ -89,6 +92,17 @@ export function activate(context: ExtensionContext) {
 
 	// Start the language server
 	startServer(serverModule);
+
+	// Provide content for wxstd:// virtual stdlib URIs (e.g. wxstd://std.wx)
+	context.subscriptions.push(
+		workspace.registerTextDocumentContentProvider("wxstd", {
+			provideTextDocumentContent(uri: Uri): Thenable<string> {
+				return client.sendRequest("wx/virtualFileContent", {
+					uri: uri.toString(),
+				});
+			},
+		}),
+	);
 
 	// Set up format on save for WX files
 	context.subscriptions.push(

@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::panic;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use codespan_reporting::diagnostic::{Diagnostic as CodeDiagnostic, LabelStyle, Severity};
 use codespan_reporting::files::Files as _;
 use tokio::sync::Mutex;
-use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::jsonrpc::{Error as JsonRpcError, Result};
 use tower_lsp_server::ls_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -24,6 +25,16 @@ use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
 mod symbol_index;
 use symbol_index::{SymbolIndex, SymbolKind, build_symbol_index};
 
+/// URI scheme used for virtual stdlib files, e.g. `wxstd://stdlib/std.wx`.
+const STDLIB_URI_SCHEME: &str = "wxstd";
+/// Fixed authority used in virtual stdlib URIs so VS Code can detect the `.wx` extension from the path.
+const STDLIB_URI_AUTHORITY: &str = "stdlib";
+
+#[derive(serde::Deserialize)]
+struct VirtualFileContentParams {
+    uri: String,
+}
+
 #[cfg(debug_assertions)]
 macro_rules! debug_log {
     ($($arg:tt)*) => { eprintln!($($arg)*); };
@@ -39,6 +50,12 @@ struct OpenDocument {
     text: String,
 }
 
+#[derive(Clone)]
+struct UriLocation {
+    root: PathBuf,
+    file_id: FileId,
+}
+
 #[derive(Default)]
 struct ServerState {
     open_documents: HashMap<PathBuf, OpenDocument>,
@@ -46,6 +63,9 @@ struct ServerState {
     published_by_root: HashMap<PathBuf, HashSet<PathBuf>>,
     workspace_folders: Vec<PathBuf>,
     cached: HashMap<PathBuf, CompiledRoot>,
+    /// Maps every known file URI (`file://` or `wxstd://stdlib/`) to its location.
+    /// Single lookup point for all LSP handlers — no per-handler scheme checks.
+    uri_to_location: HashMap<String, UriLocation>,
 }
 
 struct AnalysisResult {
@@ -177,10 +197,15 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let state = self.state.lock().await;
         Ok((|| {
-            let path = uri_to_path(&params.text_document_position_params.text_document.uri)?;
-            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-            let compiled = state.cached.get(&root)?;
-            let file_id = file_id_for_path(compiled, &path)?;
+            let loc = state.uri_to_location.get(
+                params
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .as_str(),
+            )?;
+            let compiled = state.cached.get(&loc.root)?;
+            let file_id = loc.file_id;
             let offset = position_to_offset(
                 &compiled.graph.files,
                 file_id,
@@ -210,10 +235,15 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let state = self.state.lock().await;
         Ok((|| {
-            let path = uri_to_path(&params.text_document_position_params.text_document.uri)?;
-            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-            let compiled = state.cached.get(&root)?;
-            let file_id = file_id_for_path(compiled, &path)?;
+            let loc = state.uri_to_location.get(
+                params
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .as_str(),
+            )?;
+            let compiled = state.cached.get(&loc.root)?;
+            let file_id = loc.file_id;
             let offset = position_to_offset(
                 &compiled.graph.files,
                 file_id,
@@ -221,8 +251,7 @@ impl LanguageServer for Backend {
             )?;
             let info = compiled.symbol_index.find_at_position(file_id, offset)?;
             let (def_file_id, def_span) = compiled.symbol_index.find_definition(&info.kind)?;
-            let def_path = path_for_file_id(compiled, def_file_id)?;
-            let uri = path_to_uri(&def_path)?;
+            let uri = file_id_to_uri(compiled, def_file_id)?;
             let range = span_to_range(
                 &compiled.graph.files,
                 def_file_id,
@@ -236,10 +265,11 @@ impl LanguageServer for Backend {
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let state = self.state.lock().await;
         Ok((|| {
-            let path = uri_to_path(&params.text_document_position.text_document.uri)?;
-            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-            let compiled = state.cached.get(&root)?;
-            let file_id = file_id_for_path(compiled, &path)?;
+            let loc = state
+                .uri_to_location
+                .get(params.text_document_position.text_document.uri.as_str())?;
+            let compiled = state.cached.get(&loc.root)?;
+            let file_id = loc.file_id;
             let offset = position_to_offset(
                 &compiled.graph.files,
                 file_id,
@@ -259,8 +289,7 @@ impl LanguageServer for Backend {
             let locations = refs
                 .into_iter()
                 .filter_map(|(ref_file_id, ref_span)| {
-                    let ref_path = path_for_file_id(compiled, ref_file_id)?;
-                    let uri = path_to_uri(&ref_path)?;
+                    let uri = file_id_to_uri(compiled, ref_file_id)?;
                     let range = span_to_range(
                         &compiled.graph.files,
                         ref_file_id,
@@ -277,10 +306,11 @@ impl LanguageServer for Backend {
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let state = self.state.lock().await;
         Ok((|| {
-            let path = uri_to_path(&params.text_document_position.text_document.uri)?;
-            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-            let compiled = state.cached.get(&root)?;
-            let file_id = file_id_for_path(compiled, &path)?;
+            let loc = state
+                .uri_to_location
+                .get(params.text_document_position.text_document.uri.as_str())?;
+            let compiled = state.cached.get(&loc.root)?;
+            let file_id = loc.file_id;
             let offset = position_to_offset(
                 &compiled.graph.files,
                 file_id,
@@ -293,8 +323,7 @@ impl LanguageServer for Backend {
             }
             let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
             for (ref_file_id, ref_span) in refs {
-                let ref_path = path_for_file_id(compiled, ref_file_id)?;
-                let uri = path_to_uri(&ref_path)?;
+                let uri = file_id_to_uri(compiled, ref_file_id)?;
                 let range = span_to_range(
                     &compiled.graph.files,
                     ref_file_id,
@@ -360,11 +389,26 @@ impl LanguageServer for Backend {
 impl Backend {
     async fn publish_all(&self, publications: Vec<(PathBuf, Vec<Diagnostic>)>) {
         for (path, diagnostics) in publications {
-            if let Some(uri) = path_to_uri(&path) {
+            if let Some(uri) = Uri::from_file_path(&path) {
                 self.client
                     .publish_diagnostics(uri, diagnostics, None)
                     .await;
             }
+        }
+    }
+
+    async fn virtual_file_content(&self, params: VirtualFileContentParams) -> Result<String> {
+        debug_log!("virtual_file_content uri={}", params.uri);
+        let prefix = format!("{}://{}/", STDLIB_URI_SCHEME, STDLIB_URI_AUTHORITY);
+        let filename = params
+            .uri
+            .strip_prefix(&prefix)
+            .ok_or_else(|| JsonRpcError::invalid_params(format!("not a wxstd URI: {}", params.uri)))?;
+        match filename {
+            "std.wx" => Ok(wx_compiler::STDLIB_SOURCE.to_string()),
+            other => Err(JsonRpcError::invalid_params(format!(
+                "unknown stdlib file: {other}"
+            ))),
         }
     }
 }
@@ -372,16 +416,19 @@ impl Backend {
 #[tokio::main]
 async fn main() {
     debug_log!("wx-lsp-next starting");
-    let (service, socket) = LspService::new(|client| Backend {
+    let (service, socket) = LspService::build(|client| Backend {
         client,
         state: Arc::new(Mutex::new(ServerState::default())),
-    });
+    })
+    .custom_method("wx/virtualFileContent", Backend::virtual_file_content)
+    .finish();
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
         .serve(service)
         .await;
 }
 
-// ── State management ──────────────────────────────────────────────────────────
+// ── State management
+// ──────────────────────────────────────────────────────────
 
 pub(crate) fn compute_refresh(
     state: &mut ServerState,
@@ -418,11 +465,27 @@ pub(crate) fn analyze_root(state: &mut ServerState, root: &Path) -> AnalysisResu
     match compile_root(state, root) {
         Ok(compiled) => {
             let result = analysis_from_compiled_root(&compiled);
+            // Rebuild URI map for this root (clear stale entries first).
+            state.uri_to_location.retain(|_, loc| loc.root != root);
+            for crate_graph in &compiled.graph.crates {
+                for module in &crate_graph.modules {
+                    if let Some(uri) = file_id_to_uri(&compiled, module.file_id) {
+                        state.uri_to_location.insert(
+                            uri.as_str().to_string(),
+                            UriLocation {
+                                root: root.to_path_buf(),
+                                file_id: module.file_id,
+                            },
+                        );
+                    }
+                }
+            }
             state.cached.insert(root.to_path_buf(), compiled);
             result
         }
         Err(error) => {
             state.cached.remove(root);
+            state.uri_to_location.retain(|_, loc| loc.root != root);
             analysis_from_load_error(root, error)
         }
     }
@@ -470,6 +533,7 @@ fn collect_clear_operations(
     root: &Path,
 ) -> Vec<(PathBuf, Vec<Diagnostic>)> {
     state.cached.remove(root);
+    state.uri_to_location.retain(|_, loc| loc.root != root);
     if let Some(previous) = state.published_by_root.remove(root) {
         previous
             .into_iter()
@@ -685,12 +749,13 @@ fn add_compiler_diagnostic(
         format!("{}\n{}", diagnostic.message, label_messages.join("\n"))
     };
 
-    let primary_uri = path_to_uri(&path);
+    let primary_uri = Uri::from_file_path(&path);
     let related_information =
         diagnostic_related_information(files, diagnostic, primary_uri.as_ref(), range);
 
     let tags = diagnostic.code.as_ref().and_then(|code| {
         use std::str::FromStr;
+
         use wx_compiler::tir::DiagnosticCode;
         DiagnosticCode::from_str(code).ok().and_then(|c| match c {
             DiagnosticCode::UnreachableCode
@@ -728,7 +793,7 @@ fn diagnostic_related_information(
             return None;
         }
         let path = PathBuf::from(files.name(label.file_id).ok()?);
-        let uri = path_to_uri(&path)?;
+        let uri = Uri::from_file_path(&path)?;
         let range = span_to_range(
             files,
             label.file_id,
@@ -874,6 +939,26 @@ fn symbol_hover_text(
             }
         }
         SymbolKind::Label { .. } => None,
+        SymbolKind::Trait(trait_idx) => {
+            let trait_ = tir.traits.get(*trait_idx as usize)?;
+            let name = interner.resolve(trait_.name.inner).unwrap_or("?");
+            let mut s = format!("trait {name}");
+            if !trait_.supertraits.is_empty() {
+                s.push_str(": ");
+                for (i, &st_idx) in trait_.supertraits.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(" + ");
+                    }
+                    let st_name = tir
+                        .traits
+                        .get(st_idx as usize)
+                        .and_then(|t| interner.resolve(t.name.inner))
+                        .unwrap_or("?");
+                    s.push_str(st_name);
+                }
+            }
+            Some(s)
+        }
         SymbolKind::Const(def_id) => {
             let ci = *tir.const_index_lookup.get(def_id)? as usize;
             let constant = &tir.constants[ci];
@@ -889,20 +974,8 @@ fn symbol_hover_text(
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn file_id_for_path(compiled: &CompiledRoot, path: &Path) -> Option<FileId> {
-    let &ModuleLoc {
-        crate_idx,
-        module_idx,
-    } = compiled.path_to_module_loc.get(path)?;
-    Some(compiled.graph.crates[crate_idx].modules[module_idx].file_id)
-}
-
-fn path_for_file_id(compiled: &CompiledRoot, file_id: FileId) -> Option<PathBuf> {
-    let name = compiled.graph.files.name(file_id).ok()?;
-    Some(PathBuf::from(name))
-}
+// ── Helpers
+// ───────────────────────────────────────────────────────────────────
 
 fn module_for_path<'a>(compiled: &'a CompiledRoot, path: &Path) -> Option<&'a vfs::SourceModule> {
     let &ModuleLoc {
@@ -948,7 +1021,7 @@ pub(crate) fn discover_crate_root(
     file_path: &Path,
 ) -> Option<PathBuf> {
     if file_path.file_name().is_some_and(|name| name == "main.wx")
-        && path_exists(open_documents, file_path)
+        && (open_documents.contains_key(file_path) || file_path.exists())
     {
         return Some(file_path.to_path_buf());
     }
@@ -963,7 +1036,7 @@ pub(crate) fn discover_crate_root(
         }
 
         let candidate = dir.join("main.wx");
-        if path_exists(open_documents, &candidate) {
+        if open_documents.contains_key(&candidate) || candidate.exists() {
             return Some(candidate);
         }
         current = dir.parent();
@@ -972,16 +1045,20 @@ pub(crate) fn discover_crate_root(
     None
 }
 
-fn path_exists(open_documents: &HashMap<PathBuf, OpenDocument>, path: &Path) -> bool {
-    open_documents.contains_key(path) || path.exists()
-}
-
 fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     uri.to_file_path().map(|cow| cow.into_owned())
 }
 
-fn path_to_uri(path: &Path) -> Option<Uri> {
-    Uri::from_file_path(path)
+/// Converts a `FileId` to a URI. Real files get a `file://` URI; virtual
+/// files (non-absolute names, i.e. stdlib) get a `wxstd://stdlib/<name>` URI.
+fn file_id_to_uri(compiled: &CompiledRoot, file_id: FileId) -> Option<Uri> {
+    let name = compiled.graph.files.name(file_id).ok()?;
+    let path = Path::new(name);
+    if let Some(uri) = Uri::from_file_path(path) {
+        Some(uri)
+    } else {
+        Uri::from_str(&format!("{}://{}/{}", STDLIB_URI_SCHEME, STDLIB_URI_AUTHORITY, name)).ok()
+    }
 }
 
 #[cfg(test)]

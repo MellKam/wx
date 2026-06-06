@@ -291,6 +291,8 @@ pub struct Trait {
     /// u32}.
     #[cfg_attr(test, serde(skip))]
     pub supertrait_bindings: HashMap<(TraitIndex, SymbolU32), TypeIndex>,
+    #[cfg_attr(test, serde(skip))]
+    pub accesses: Vec<SourceSpan>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]

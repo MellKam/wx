@@ -131,10 +131,13 @@ impl Builder {
                 alias,
                 entries,
             } => Self::build_import_definition(interner, module, alias, entries),
-            Item::Memory { name, .. } => Node::Concat(
+            Item::Memory { name, kind, .. } => Node::Concat(
                 vec![
                     Node::StaticText("memory "),
                     Self::symbol(interner, name.inner),
+                    Node::StaticText(": "),
+                    Self::build_type_expression(interner, &kind.inner),
+                    Node::StaticText(";"),
                 ]
                 .into(),
             ),

@@ -2328,6 +2328,7 @@ name = "wx-lsp-next"
 version = "0.0.1"
 dependencies = [
  "codespan-reporting 0.13.1",
+ "serde",
  "tokio",
  "tower-lsp-server",
  "wx-compiler",

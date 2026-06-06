@@ -1546,12 +1546,18 @@ impl<'ast> Builder<'ast, '_> {
                     }
                     Some(kind) => {
                         if let Some(ty) = self.symbol_kind_to_type(kind) {
-                            if let Type::Struct { struct_index, .. } =
-                                self.tir.type_pool[ty.as_usize()]
-                            {
-                                self.tir.structs[struct_index as usize]
-                                    .accesses
-                                    .push(SourceSpan::new(resolve_context.file_id, span));
+                            match self.tir.type_pool[ty.as_usize()] {
+                                Type::Struct { struct_index, .. } => {
+                                    self.tir.structs[struct_index as usize]
+                                        .accesses
+                                        .push(SourceSpan::new(resolve_context.file_id, span));
+                                }
+                                Type::Trait { trait_index } => {
+                                    self.tir.traits[trait_index as usize]
+                                        .accesses
+                                        .push(SourceSpan::new(resolve_context.file_id, span));
+                                }
+                                _ => {}
                             }
                             return ty;
                         }
@@ -1570,10 +1576,18 @@ impl<'ast> Builder<'ast, '_> {
             }
             Some(kind) => {
                 if let Some(ty) = self.symbol_kind_to_type(kind) {
-                    if let Type::Struct { struct_index, .. } = self.tir.type_pool[ty.as_usize()] {
-                        self.tir.structs[struct_index as usize]
-                            .accesses
-                            .push(SourceSpan::new(resolve_context.file_id, span));
+                    match self.tir.type_pool[ty.as_usize()] {
+                        Type::Struct { struct_index, .. } => {
+                            self.tir.structs[struct_index as usize]
+                                .accesses
+                                .push(SourceSpan::new(resolve_context.file_id, span));
+                        }
+                        Type::Trait { trait_index } => {
+                            self.tir.traits[trait_index as usize]
+                                .accesses
+                                .push(SourceSpan::new(resolve_context.file_id, span));
+                        }
+                        _ => {}
                     }
                     return ty;
                 }
@@ -1921,6 +1935,9 @@ impl<'ast> Builder<'ast, '_> {
                     .cloned()
                 {
                     Some(SymbolKind::Trait { trait_index }) => {
+                        self.tir.traits[trait_index as usize]
+                            .accesses
+                            .push(SourceSpan::new(resolve_context.file_id, name.span));
                         self.intern_type(Type::Trait { trait_index })
                     }
                     Some(SymbolKind::Pending(_)) => TypeIndex::ERROR,
@@ -2303,6 +2320,7 @@ impl<'ast> Builder<'ast, '_> {
                     assoc_type_bounds: HashMap::new(),
                     member_def_ids: Vec::new(),
                     supertrait_bindings: HashMap::new(),
+                    accesses: Vec::new(),
                 });
                 self.insert_symbol(
                     &resolve_context,

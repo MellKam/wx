@@ -1,6 +1,8 @@
 import "console" {
-  fn log(message: []u8);
+  fn log(message: heap::[]u8);
 }
+
+memory heap: Memory32;
 
 fn fibonacci(n: i32) -> i32 {
   if n <= 1 {

@@ -1,5 +1,5 @@
 use wx_compiler::ast::{DefId, TextSpan};
-use wx_compiler::tir::{EnumVariantIndex, ExportItem, LocalIndex, ScopeIndex, TIR};
+use wx_compiler::tir::{EnumVariantIndex, ExportItem, LocalIndex, ScopeIndex, TraitIndex, TIR};
 use wx_compiler::vfs::FileId;
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -16,6 +16,7 @@ pub enum SymbolKind {
     Param { func_id: DefId, param_idx: u32 },
     EnumVariant { enum_idx: u32, variant_idx: EnumVariantIndex },
     Label { func_id: DefId, scope_idx: ScopeIndex },
+    Trait(TraitIndex),
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -101,6 +102,7 @@ fn same_symbol(a: &SymbolKind, b: &SymbolKind) -> bool {
         ) => f1 == f2 && s1 == s2,
         (SymbolKind::Module(a), SymbolKind::Module(b)) => a == b,
         (SymbolKind::ImportModule(a), SymbolKind::ImportModule(b)) => a == b,
+        (SymbolKind::Trait(a), SymbolKind::Trait(b)) => a == b,
         _ => false,
     }
 }
@@ -283,6 +285,24 @@ pub fn build_symbol_index(tir: &TIR) -> SymbolIndex {
             kind: SymbolKind::ImportModule(decl_idx as u32),
             usage: SymbolUsage::Definition,
         });
+    }
+
+    for (trait_idx, trait_) in tir.traits.iter().enumerate() {
+        let kind = SymbolKind::Trait(trait_idx as TraitIndex);
+        index.add(SpanInfo {
+            file_id: trait_.file_id,
+            span: trait_.name.span,
+            kind: kind.clone(),
+            usage: SymbolUsage::Definition,
+        });
+        for access in &trait_.accesses {
+            index.add(SpanInfo {
+                file_id: access.file_id,
+                span: access.span,
+                kind: kind.clone(),
+                usage: SymbolUsage::Reference,
+            });
+        }
     }
 
     for export in tir.exports.values() {

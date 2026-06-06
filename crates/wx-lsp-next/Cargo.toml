@@ -10,3 +10,4 @@ tower-lsp-server = "0.23.0"
 tokio = { version = "1", features = ["full"] }
 wx-compiler = { path = "../wx-compiler" }
 codespan-reporting = "0.13.1"
+serde = { version = "1", features = ["derive"] }
