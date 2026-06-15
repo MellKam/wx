@@ -158,8 +158,6 @@ pub fn parse_char_literal(s: &str) -> Result<char, CharLiteralError> {
 }
 
 struct Builder<'ast, 'interner> {
-    // File id is still threaded for diagnostics outside resolver context.
-    file_id: FileId,
     interner: &'interner mut ast::StringInterner,
     symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
     type_index_lookup: HashMap<Type, TypeIndex>,
@@ -196,7 +194,7 @@ struct TypeParamScope {
 #[derive(Clone)]
 struct ResolveContext {
     file_id: FileId,
-    module: Option<ModuleIndex>,
+    namespace: Option<NamespaceIndex>,
     self_type: Option<TypeIndex>,
     type_param_scope: Option<TypeParamScope>,
 }
@@ -205,21 +203,16 @@ impl ResolveContext {
     fn root(file_id: FileId) -> Self {
         Self {
             file_id,
-            module: None,
+            namespace: None,
             self_type: None,
             type_param_scope: None,
         }
     }
 
-    #[inline]
-    fn is_root(&self) -> bool {
-        self.module.is_none()
-    }
-
-    fn new(file_id: FileId, module: Option<ModuleIndex>) -> Self {
+    fn new(file_id: FileId, namespace: Option<NamespaceIndex>) -> Self {
         Self {
             file_id,
-            module,
+            namespace,
             self_type: None,
             type_param_scope: None,
         }
@@ -228,16 +221,16 @@ impl ResolveContext {
     fn with_type_param_scope(&self, scope: TypeParamScope) -> Self {
         Self {
             file_id: self.file_id,
-            module: self.module,
+            namespace: self.namespace,
             self_type: self.self_type,
             type_param_scope: Some(scope),
         }
     }
 
-    fn in_module(&self, module: ModuleIndex) -> Self {
+    fn in_namespace(&self, namespace: NamespaceIndex) -> Self {
         Self {
             file_id: self.file_id,
-            module: Some(module),
+            namespace: Some(namespace),
             self_type: self.self_type,
             type_param_scope: self.type_param_scope.clone(),
         }
@@ -246,7 +239,7 @@ impl ResolveContext {
     fn with_self_type(&self, self_type: Option<TypeIndex>) -> Self {
         Self {
             file_id: self.file_id,
-            module: self.module,
+            namespace: self.namespace,
             self_type,
             type_param_scope: self.type_param_scope.clone(),
         }
@@ -259,74 +252,74 @@ enum AstNodeRef<'ast> {
     /// Top-level `fn` or `#[intrinsic]` declaration.
     Function {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     ImplMethod {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
     /// `trait` function with or without a default body.
     TraitFunction {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     TraitConst {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     TraitAssociatedType {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     Struct {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     Enum {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     Global {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     Memory {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     Const {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     ImplConst {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
     /// Creates the `TraitImpl` entry when resolved.
     ImplTraitBlock {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     ImplTraitMethod {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         /// Parent `ImplTraitBlock` must be resolved before this can insert into
         /// `TraitImpl.members`.
         parent_id: ast::DefId,
@@ -334,31 +327,37 @@ enum AstNodeRef<'ast> {
     },
     ImplTraitConst {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
     ImplTraitAssociatedType {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
     Trait {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         trait_index: TraitIndex,
         item: &'ast ast::Item,
     },
     ImportedFunction {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
+        import_module_index: u32,
+        decl: &'ast ast::ImportDeclaration,
+    },
+    ImportedGlobal {
+        file_id: FileId,
+        namespace: Option<NamespaceIndex>,
         import_module_index: u32,
         decl: &'ast ast::ImportDeclaration,
     },
     IntrinsicFunction {
         file_id: FileId,
-        module: Option<ModuleIndex>,
+        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
 }
@@ -383,30 +382,32 @@ impl AstNodeRef<'_> {
             | AstNodeRef::ImplTraitAssociatedType { file_id, .. }
             | AstNodeRef::Trait { file_id, .. }
             | AstNodeRef::ImportedFunction { file_id, .. }
+            | AstNodeRef::ImportedGlobal { file_id, .. }
             | AstNodeRef::IntrinsicFunction { file_id, .. } => *file_id,
         }
     }
 
-    fn module(&self) -> Option<ModuleIndex> {
+    fn namespace(&self) -> Option<NamespaceIndex> {
         match self {
-            AstNodeRef::Function { module, .. }
-            | AstNodeRef::ImplMethod { module, .. }
-            | AstNodeRef::TraitFunction { module, .. }
-            | AstNodeRef::TraitConst { module, .. }
-            | AstNodeRef::TraitAssociatedType { module, .. }
-            | AstNodeRef::Struct { module, .. }
-            | AstNodeRef::Enum { module, .. }
-            | AstNodeRef::Global { module, .. }
-            | AstNodeRef::Memory { module, .. }
-            | AstNodeRef::Const { module, .. }
-            | AstNodeRef::ImplConst { module, .. }
-            | AstNodeRef::ImplTraitBlock { module, .. }
-            | AstNodeRef::ImplTraitMethod { module, .. }
-            | AstNodeRef::ImplTraitConst { module, .. }
-            | AstNodeRef::ImplTraitAssociatedType { module, .. }
-            | AstNodeRef::Trait { module, .. }
-            | AstNodeRef::ImportedFunction { module, .. }
-            | AstNodeRef::IntrinsicFunction { module, .. } => *module,
+            AstNodeRef::Function { namespace, .. }
+            | AstNodeRef::ImplMethod { namespace, .. }
+            | AstNodeRef::TraitFunction { namespace, .. }
+            | AstNodeRef::TraitConst { namespace, .. }
+            | AstNodeRef::TraitAssociatedType { namespace, .. }
+            | AstNodeRef::Struct { namespace, .. }
+            | AstNodeRef::Enum { namespace, .. }
+            | AstNodeRef::Global { namespace, .. }
+            | AstNodeRef::Memory { namespace, .. }
+            | AstNodeRef::Const { namespace, .. }
+            | AstNodeRef::ImplConst { namespace, .. }
+            | AstNodeRef::ImplTraitBlock { namespace, .. }
+            | AstNodeRef::ImplTraitMethod { namespace, .. }
+            | AstNodeRef::ImplTraitConst { namespace, .. }
+            | AstNodeRef::ImplTraitAssociatedType { namespace, .. }
+            | AstNodeRef::Trait { namespace, .. }
+            | AstNodeRef::ImportedFunction { namespace, .. }
+            | AstNodeRef::ImportedGlobal { namespace, .. }
+            | AstNodeRef::IntrinsicFunction { namespace, .. } => *namespace,
         }
     }
 }
@@ -1183,7 +1184,6 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
     );
     let mut builder = Builder {
         symbol_lookup,
-        file_id: source_modules[0].1.file_id,
         interner: &mut graph.interner,
         tir,
         trait_impl_block_lookup: HashMap::new(),
@@ -1243,10 +1243,9 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 
     // Phase 4: process exports (must run after all signatures are resolved)
     for (_, source_module) in source_modules.iter().copied() {
-        builder.file_id = source_module.file_id;
         for item in source_module.ast.items.iter() {
             if let ast::Item::Export { entries } = &item.inner.inner {
-                builder.build_exports(entries);
+                builder.build_exports(source_module.file_id, entries);
             }
         }
     }
@@ -1379,7 +1378,7 @@ impl<'ast> Builder<'ast, '_> {
         file_id: FileId,
         name: ast::Spanned<SymbolU32>,
         pub_span: Option<ast::TextSpan>,
-    ) -> ModuleIndex {
+    ) -> NamespaceIndex {
         let symbol = name.inner;
         if let Some(SymbolKind::Module { namespace_idx }) = self
             .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
@@ -1396,7 +1395,7 @@ impl<'ast> Builder<'ast, '_> {
         let decl_idx = self.tir.module_decls.len() as u32;
         self.tir.namespaces.push(ModuleNamespace {
             name: symbol,
-            parent: resolve_context.module,
+            parent: resolve_context.namespace,
             declaration: ModuleDeclarationKind::Module(decl_idx),
             symbols: HashMap::new(),
         });
@@ -1433,7 +1432,7 @@ impl<'ast> Builder<'ast, '_> {
             if i == path.len() - 1 {
                 self.tir.module_decls[namespace_idx as usize].own_file_id = Some(file_id);
             }
-            resolve_context = resolve_context.in_module(namespace_idx);
+            resolve_context = resolve_context.in_namespace(namespace_idx);
         }
 
         resolve_context
@@ -1445,7 +1444,7 @@ impl<'ast> Builder<'ast, '_> {
         key: (SymbolNamespace, SymbolU32),
         kind: SymbolKind,
     ) {
-        if let Some(idx) = resolve_context.module {
+        if let Some(idx) = resolve_context.namespace {
             self.tir.namespaces[idx as usize].symbols.insert(key, kind);
         } else {
             self.symbol_lookup.insert(key, kind);
@@ -1458,7 +1457,7 @@ impl<'ast> Builder<'ast, '_> {
         ns: SymbolNamespace,
         sym: SymbolU32,
     ) -> Option<&SymbolKind> {
-        let mut current = resolve_context.module;
+        let mut current = resolve_context.namespace;
         while let Some(idx) = current {
             if let Some(kind) = self.tir.namespaces[idx as usize].symbols.get(&(ns, sym)) {
                 return Some(kind);
@@ -2216,7 +2215,7 @@ impl<'ast> Builder<'ast, '_> {
         item: &'ast ast::Item,
         file_id: FileId,
     ) {
-        let module = resolve_context.module;
+        let namespace = resolve_context.namespace;
 
         match item {
             ast::Item::IntrinsicFunction { id, signature } => {
@@ -2229,7 +2228,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::IntrinsicFunction {
                         file_id,
-                        module,
+                        namespace,
                         item,
                     },
                 );
@@ -2245,7 +2244,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::Function {
                         file_id,
-                        module,
+                        namespace,
                         item,
                     },
                 );
@@ -2260,7 +2259,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::Global {
                         file_id,
-                        module,
+                        namespace,
                         item,
                     },
                 );
@@ -2275,7 +2274,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::Struct {
                         file_id,
-                        module,
+                        namespace,
                         item,
                     },
                 );
@@ -2290,7 +2289,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::Enum {
                         file_id,
-                        module,
+                        namespace,
                         item,
                     },
                 );
@@ -2310,7 +2309,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::Memory {
                         file_id,
-                        module,
+                        namespace,
                         item,
                     },
                 );
@@ -2325,7 +2324,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::Const {
                         file_id,
-                        module,
+                        namespace,
                         item,
                     },
                 );
@@ -2338,7 +2337,7 @@ impl<'ast> Builder<'ast, '_> {
                 // Modules are structural — register eagerly and recurse.
                 let module_index =
                     self.ensure_module(&resolve_context, file_id, name.clone(), *pub_span);
-                let child_context = resolve_context.in_module(module_index);
+                let child_context = resolve_context.in_namespace(module_index);
                 for child in items.iter() {
                     self.pre_scan_item(child_context.clone(), &child.inner.inner, file_id);
                 }
@@ -2354,6 +2353,7 @@ impl<'ast> Builder<'ast, '_> {
                 let trait_index = self.tir.traits.len() as u32;
                 self.tir.traits.push(Trait {
                     file_id,
+                    namespace: resolve_context.namespace,
                     name: name.clone(),
                     supertraits: Vec::new(),
                     members: HashMap::new(),
@@ -2371,7 +2371,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::Trait {
                         file_id,
-                        module,
+                        namespace,
                         trait_index,
                         item,
                     },
@@ -2389,7 +2389,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *id,
                                 AstNodeRef::TraitFunction {
                                     file_id,
-                                    module,
+                                    namespace,
                                     trait_index,
                                     item: &ti.inner.inner,
                                 },
@@ -2406,7 +2406,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *id,
                                 AstNodeRef::TraitConst {
                                     file_id,
-                                    module,
+                                    namespace,
                                     trait_index,
                                     item: &ti.inner.inner,
                                 },
@@ -2423,7 +2423,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *id,
                                 AstNodeRef::TraitAssociatedType {
                                     file_id,
-                                    module,
+                                    namespace,
                                     trait_index,
                                     item: &ti.inner.inner,
                                 },
@@ -2442,7 +2442,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *id,
                                 AstNodeRef::ImplMethod {
                                     file_id,
-                                    module,
+                                    namespace,
                                     impl_target: target,
                                     item: &impl_item.inner.inner,
                                 },
@@ -2453,7 +2453,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *id,
                                 AstNodeRef::ImplConst {
                                     file_id,
-                                    module,
+                                    namespace,
                                     impl_target: target,
                                     item: &impl_item.inner.inner,
                                 },
@@ -2493,7 +2493,7 @@ impl<'ast> Builder<'ast, '_> {
                 let decl_idx = self.tir.import_decls.len() as u32;
                 self.tir.namespaces.push(ModuleNamespace {
                     name: module_sym,
-                    parent: resolve_context.module,
+                    parent: resolve_context.namespace,
                     declaration: ModuleDeclarationKind::Import(decl_idx),
                     symbols: HashMap::new(),
                 });
@@ -2509,7 +2509,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *id,
                                 AstNodeRef::ImportedFunction {
                                     file_id,
-                                    module,
+                                    namespace,
                                     import_module_index: import_decl_index,
                                     decl: &entry.inner.inner.declaration,
                                 },
@@ -2523,10 +2523,11 @@ impl<'ast> Builder<'ast, '_> {
                             );
                             self.ast_nodes.insert(
                                 *id,
-                                AstNodeRef::Global {
+                                AstNodeRef::ImportedGlobal {
                                     file_id,
-                                    module,
-                                    item,
+                                    namespace,
+                                    import_module_index: import_decl_index,
+                                    decl: &entry.inner.inner.declaration,
                                 },
                             );
                         }
@@ -2545,7 +2546,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *id,
                                 AstNodeRef::Memory {
                                     file_id,
-                                    module,
+                                    namespace,
                                     item,
                                 },
                             );
@@ -2567,7 +2568,7 @@ impl<'ast> Builder<'ast, '_> {
                     *id,
                     AstNodeRef::ImplTraitBlock {
                         file_id,
-                        module,
+                        namespace,
                         item,
                     },
                 );
@@ -2578,7 +2579,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *method_id,
                                 AstNodeRef::ImplTraitMethod {
                                     file_id,
-                                    module,
+                                    namespace,
                                     parent_id: *id,
                                     item: &mi.inner.inner,
                                 },
@@ -2589,7 +2590,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *const_id,
                                 AstNodeRef::ImplTraitConst {
                                     file_id,
-                                    module,
+                                    namespace,
                                     parent_id: *id,
                                     item: &mi.inner.inner,
                                 },
@@ -2600,7 +2601,7 @@ impl<'ast> Builder<'ast, '_> {
                                 *type_id,
                                 AstNodeRef::ImplTraitAssociatedType {
                                     file_id,
-                                    module,
+                                    namespace,
                                     parent_id: *id,
                                     item: &mi.inner.inner,
                                 },
@@ -2632,11 +2633,7 @@ impl<'ast> Builder<'ast, '_> {
             }
         };
 
-        let resolve_context = ResolveContext::new(node.file_id(), node.module());
-
-        // Set up context for this node.
-        let saved_file_id = self.file_id;
-        self.file_id = node.file_id();
+        let resolve_context = ResolveContext::new(node.file_id(), node.namespace());
 
         match node.clone() {
             // ── struct ────────────────────────────────────────────────────────
@@ -2662,7 +2659,7 @@ impl<'ast> Builder<'ast, '_> {
                             let struct_ = &self.tir.structs[struct_index as usize];
                             SourceSpan::new(struct_.file_id, struct_.name.span)
                         }
-                        _ => SourceSpan::new(self.file_id, name.span),
+                        _ => SourceSpan::new(resolve_context.file_id, name.span),
                     };
                     let name_str = self.interner.resolve(name.inner).unwrap();
                     self.tir.diagnostics.push(report_duplicate_definition(
@@ -2670,10 +2667,9 @@ impl<'ast> Builder<'ast, '_> {
                             name: name_str,
                             namespace: SymbolNamespace::Type,
                             first_definition,
-                            second_definition: SourceSpan::new(self.file_id, name.span),
+                            second_definition: SourceSpan::new(resolve_context.file_id, name.span),
                         },
                     ));
-                    self.file_id = saved_file_id;
                     self.sig_state.insert(*id, ComputeState::Done);
                     return;
                 }
@@ -2706,8 +2702,8 @@ impl<'ast> Builder<'ast, '_> {
                         let fname = self.interner.resolve(sym).unwrap().to_string();
                         self.tir.diagnostics.push(report_duplicate_struct_field(
                             &fname,
-                            SourceSpan::new(self.file_id, first_span),
-                            SourceSpan::new(self.file_id, field.name.span),
+                            SourceSpan::new(resolve_context.file_id, first_span),
+                            SourceSpan::new(resolve_context.file_id, field.name.span),
                         ));
                         continue;
                     }
@@ -2728,7 +2724,8 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir.struct_index_lookup.insert(*id, struct_index);
                 self.tir.structs.push(Struct {
                     id: *id,
-                    file_id: self.file_id,
+                    file_id: resolve_context.file_id,
+                    namespace: resolve_context.namespace,
                     pub_span: *pub_span,
                     name: name.clone(),
                     type_params,
@@ -2763,14 +2760,13 @@ impl<'ast> Builder<'ast, '_> {
                             Some(r) => self.resolve_type(&resolve_context, &**r),
                             None => {
                                 self.tir.diagnostics.push(report_missing_enum_repr(
-                                    SourceSpan::new(self.file_id, name.span),
+                                    SourceSpan::new(resolve_context.file_id, name.span),
                                 ));
                                 TypeIndex::ERROR
                             }
                         };
 
-                        let mut tir_variants: Vec<EnumVariant> =
-                            Vec::with_capacity(variants.len());
+                        let mut tir_variants: Vec<EnumVariant> = Vec::with_capacity(variants.len());
                         let mut variant_lookup: HashMap<SymbolU32, EnumVariantIndex> =
                             HashMap::with_capacity(variants.len());
                         let mut seen_variants: HashMap<SymbolU32, ast::TextSpan> = HashMap::new();
@@ -2787,11 +2783,11 @@ impl<'ast> Builder<'ast, '_> {
                                         name: &vname,
                                         namespace: SymbolNamespace::Value,
                                         first_definition: SourceSpan::new(
-                                            self.file_id,
+                                            resolve_context.file_id,
                                             first_span,
                                         ),
                                         second_definition: SourceSpan::new(
-                                            self.file_id,
+                                            resolve_context.file_id,
                                             v.name.span,
                                         ),
                                     },
@@ -2856,7 +2852,8 @@ impl<'ast> Builder<'ast, '_> {
                         }
 
                         self.tir.enums.push(Enum {
-                            file_id: self.file_id,
+                            file_id: resolve_context.file_id,
+                            namespace: resolve_context.namespace,
                             pub_span: *pub_span,
                             name: name.clone(),
                             ty,
@@ -2893,20 +2890,15 @@ impl<'ast> Builder<'ast, '_> {
                         .map(|k| self.get_symbol_location(k));
                     let type_params =
                         self.resolve_ast_type_params(&resolve_context, &signature.type_params);
-                    let origin = if resolve_context.is_root() {
-                        FunctionOrigin::Free
-                    } else {
-                        FunctionOrigin::Module
-                    };
                     let func_index = self.tir.functions.len() as u32;
                     self.tir.functions.push(Function {
                         id: *id,
-                        file_id: self.file_id,
+                        file_id: resolve_context.file_id,
+                        namespace: resolve_context.namespace,
                         body: None,
-                        origin,
+                        origin: FunctionOrigin::Free,
                         type_params,
                         pub_span: *pub_span,
-                        source: ItemSource::Internal,
                         signature_index: TypeIndex::ERROR,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
@@ -2935,7 +2927,7 @@ impl<'ast> Builder<'ast, '_> {
                                     namespace: SymbolNamespace::Value,
                                     first_definition,
                                     second_definition: SourceSpan::new(
-                                        self.file_id,
+                                        resolve_context.file_id,
                                         signature.name.span,
                                     ),
                                 },
@@ -2954,7 +2946,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_missing_function_body(SourceSpan::new(
-                            self.file_id,
+                            resolve_context.file_id,
                             signature.name.span,
                         )));
                 }
@@ -2986,7 +2978,8 @@ impl<'ast> Builder<'ast, '_> {
                         let const_index = self.tir.constants.len() as ConstIndex;
                         self.tir.constants.push(Constant {
                             id: *id,
-                            file_id: self.file_id,
+                            file_id: resolve_context.file_id,
+                            namespace: resolve_context.namespace,
                             pub_span: None,
                             name: name.clone(),
                             ty: ast::Spanned {
@@ -3059,12 +3052,12 @@ impl<'ast> Builder<'ast, '_> {
                         .unwrap_or(false);
                     self.tir.functions.push(Function {
                         id: *id,
-                        file_id: self.file_id,
+                        file_id: resolve_context.file_id,
+                        namespace: resolve_context.namespace,
                         body: None,
                         type_params: Box::new([]),
                         pub_span: *pub_span,
                         origin: FunctionOrigin::Impl,
-                        source: ItemSource::Internal,
                         signature_index,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
@@ -3105,7 +3098,10 @@ impl<'ast> Builder<'ast, '_> {
                                     Diagnostic::error()
                                         .with_code(DiagnosticCode::ExpectedTrait.code())
                                         .with_message("expected a trait name")
-                                        .with_label(Label::primary(self.file_id, bound.span)),
+                                        .with_label(Label::primary(
+                                            resolve_context.file_id,
+                                            bound.span,
+                                        )),
                                 );
                                 None
                             }
@@ -3125,13 +3121,19 @@ impl<'ast> Builder<'ast, '_> {
                             {
                                 let val_ty = self.resolve_type(&resolve_context, val_te);
                                 bindings.insert((st, key.inner), val_ty);
-                                if let Some(at) = self.tir.traits[st as usize]
-                                    .assoc_types
-                                    .get_mut(&key.inner)
+                                if let Some(at) =
+                                    self.tir.traits[st as usize].assoc_types.get_mut(&key.inner)
                                 {
-                                    at.accesses.push(SourceSpan::new(self.file_id, key.span));
+                                    at.accesses
+                                        .push(SourceSpan::new(resolve_context.file_id, key.span));
                                 }
-                                self.check_assoc_type_bounds(st, key.inner, val_ty, val_te.span);
+                                self.check_assoc_type_bounds(
+                                    resolve_context.file_id,
+                                    st,
+                                    key.inner,
+                                    val_ty,
+                                    val_te.span,
+                                );
                             }
                         }
                     }
@@ -3177,12 +3179,12 @@ impl<'ast> Builder<'ast, '_> {
                     let func_index = self.tir.functions.len() as u32;
                     self.tir.functions.push(Function {
                         id: *id,
-                        file_id: self.file_id,
+                        file_id: resolve_context.file_id,
+                        namespace: resolve_context.namespace,
                         body: None,
                         pub_span: None,
                         origin: FunctionOrigin::Trait,
                         type_params,
-                        source: ItemSource::Internal,
                         signature_index: TypeIndex::ERROR,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
@@ -3246,7 +3248,8 @@ impl<'ast> Builder<'ast, '_> {
                     let const_index = self.tir.constants.len() as ConstIndex;
                     self.tir.constants.push(Constant {
                         id: *id,
-                        file_id: self.file_id,
+                        file_id: resolve_context.file_id,
+                        namespace: resolve_context.namespace,
                         pub_span: None,
                         name: name.clone(),
                         ty: Spanned {
@@ -3290,7 +3293,10 @@ impl<'ast> Builder<'ast, '_> {
                                 name: name_str,
                                 namespace: SymbolNamespace::Value,
                                 first_definition,
-                                second_definition: SourceSpan::new(self.file_id, name.span),
+                                second_definition: SourceSpan::new(
+                                    resolve_context.file_id,
+                                    name.span,
+                                ),
                             },
                         ));
                     } else {
@@ -3298,7 +3304,7 @@ impl<'ast> Builder<'ast, '_> {
                             Some(ty) => (self.resolve_type(&resolve_context, ty), ty.span),
                             None => {
                                 self.tir.diagnostics.push(report_type_annotation_required(
-                                    SourceSpan::new(self.file_id, name.span),
+                                    SourceSpan::new(resolve_context.file_id, name.span),
                                 ));
                                 (TypeIndex::ERROR, name.span)
                             }
@@ -3311,9 +3317,9 @@ impl<'ast> Builder<'ast, '_> {
                         );
                         self.tir.globals.push(Global {
                             id: *id,
-                            file_id: self.file_id,
+                            file_id: resolve_context.file_id,
+                            namespace: resolve_context.namespace,
                             value: None,
-                            source: ItemSource::Internal,
                             name: name.clone(),
                             ty: ast::Spanned {
                                 inner: ty,
@@ -3345,7 +3351,7 @@ impl<'ast> Builder<'ast, '_> {
                             Type::Trait { trait_index } => trait_index,
                             _ => {
                                 self.tir.diagnostics.push(report_invalid_memory_kind(
-                                    SourceSpan::new(self.file_id, kind.span),
+                                    SourceSpan::new(resolve_context.file_id, kind.span),
                                 ));
                                 return;
                             }
@@ -3364,7 +3370,7 @@ impl<'ast> Builder<'ast, '_> {
                             "Memory64" => MemoryKind::Memory64,
                             _ => {
                                 self.tir.diagnostics.push(report_invalid_memory_kind(
-                                    SourceSpan::new(self.file_id, kind.span),
+                                    SourceSpan::new(resolve_context.file_id, kind.span),
                                 ));
                                 return;
                             }
@@ -3372,10 +3378,9 @@ impl<'ast> Builder<'ast, '_> {
                     let memory_index = self.tir.memories.len() as u32;
                     self.tir.memories.push(Memory {
                         id: *id,
-                        file_id: self.file_id,
+                        file_id: resolve_context.file_id,
                         kind: memory_kind,
                         name: name.clone(),
-                        source: ItemSource::Internal,
                         min_pages: config
                             .as_ref()
                             .and_then(|c| c.min.as_ref().map(|s| s.inner)),
@@ -3430,7 +3435,10 @@ impl<'ast> Builder<'ast, '_> {
                                 name: name_str,
                                 namespace: SymbolNamespace::Value,
                                 first_definition,
-                                second_definition: SourceSpan::new(self.file_id, name.span),
+                                second_definition: SourceSpan::new(
+                                    resolve_context.file_id,
+                                    name.span,
+                                ),
                             },
                         ));
                     } else {
@@ -3438,7 +3446,7 @@ impl<'ast> Builder<'ast, '_> {
                             Some(ty) => (self.resolve_type(&resolve_context, ty), ty.span),
                             None => {
                                 self.tir.diagnostics.push(report_type_annotation_required(
-                                    SourceSpan::new(self.file_id, name.span),
+                                    SourceSpan::new(resolve_context.file_id, name.span),
                                 ));
                                 (TypeIndex::ERROR, name.span)
                             }
@@ -3449,7 +3457,8 @@ impl<'ast> Builder<'ast, '_> {
                             let const_index = self.tir.constants.len() as ConstIndex;
                             self.tir.constants.push(Constant {
                                 id: *id,
-                                file_id: self.file_id,
+                                file_id: resolve_context.file_id,
+                                namespace: resolve_context.namespace,
                                 pub_span: *pub_span,
                                 name: name.clone(),
                                 ty: ast::Spanned {
@@ -3475,20 +3484,15 @@ impl<'ast> Builder<'ast, '_> {
                 if let ast::Item::IntrinsicFunction { id, signature } = item {
                     let type_params =
                         self.resolve_ast_type_params(&resolve_context, &signature.type_params);
-                    let origin = if resolve_context.is_root() {
-                        FunctionOrigin::Free
-                    } else {
-                        FunctionOrigin::Module
-                    };
                     let func_index = self.tir.functions.len() as u32;
                     self.tir.functions.push(Function {
                         id: *id,
-                        file_id: self.file_id,
+                        file_id: resolve_context.file_id,
+                        namespace: resolve_context.namespace,
                         body: None,
-                        origin,
+                        origin: FunctionOrigin::Free,
                         type_params,
                         pub_span: None,
-                        source: ItemSource::Internal,
                         signature_index: TypeIndex::ERROR,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
@@ -3526,10 +3530,12 @@ impl<'ast> Builder<'ast, '_> {
                         self.build_function_signature(&resolve_context, signature);
                     let signature_index = self.intern_function(&params, result.clone());
                     let func_index = self.tir.functions.len() as u32;
+                    let import_ns_idx =
+                        self.tir.import_decls[import_module_index as usize].namespace_idx;
                     self.tir.functions.push(Function {
                         id: *id,
-                        file_id: self.file_id,
-                        source: ItemSource::External,
+                        file_id: resolve_context.file_id,
+                        namespace: Some(import_ns_idx),
                         origin: FunctionOrigin::Free,
                         signature_index,
                         body: None,
@@ -3550,6 +3556,49 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir.namespaces[namespace_idx as usize].symbols.insert(
                         (SymbolNamespace::Value, signature.name.inner),
                         SymbolKind::Function { func_index },
+                    );
+                }
+            }
+
+            AstNodeRef::ImportedGlobal {
+                import_module_index,
+                decl,
+                ..
+            } => {
+                if let ast::ImportDeclaration::Global {
+                    id,
+                    name,
+                    ty,
+                    mut_span,
+                } = decl
+                {
+                    let resolved_ty = self.resolve_type(&resolve_context, ty);
+                    let global_index = self.tir.globals.len() as u32;
+                    let import_ns_idx =
+                        self.tir.import_decls[import_module_index as usize].namespace_idx;
+                    self.tir.globals.push(Global {
+                        id: *id,
+                        file_id: resolve_context.file_id,
+                        namespace: Some(import_ns_idx),
+                        value: None,
+                        name: name.clone(),
+                        ty: ast::Spanned {
+                            inner: resolved_ty,
+                            span: ty.span,
+                        },
+                        pub_span: None,
+                        mut_span: mut_span.clone(),
+                        accesses: Vec::new(),
+                    });
+                    self.tir.global_index_lookup.insert(*id, global_index);
+                    let import_decl = &mut self.tir.import_decls[import_module_index as usize];
+                    import_decl
+                        .lookup
+                        .insert(name.inner, ImportValue::Global { id: *id });
+                    let namespace_idx = import_decl.namespace_idx;
+                    self.tir.namespaces[namespace_idx as usize].symbols.insert(
+                        (SymbolNamespace::Value, name.inner),
+                        SymbolKind::Global { global_index },
                     );
                 }
             }
@@ -3578,7 +3627,10 @@ impl<'ast> Builder<'ast, '_> {
                             Diagnostic::error()
                                 .with_code(DiagnosticCode::ExpectedTrait.code())
                                 .with_message("expected a trait name")
-                                .with_label(Label::primary(self.file_id, trait_name.span)),
+                                .with_label(Label::primary(
+                                    resolve_context.file_id,
+                                    trait_name.span,
+                                )),
                         );
                         return;
                     }
@@ -3592,7 +3644,7 @@ impl<'ast> Builder<'ast, '_> {
                     target: target_type,
                     members: HashMap::new(),
                     span: trait_name.span,
-                    file_id: self.file_id,
+                    file_id: resolve_context.file_id,
                 });
                 self.tir
                     .trait_impl_lookup
@@ -3712,12 +3764,12 @@ impl<'ast> Builder<'ast, '_> {
                     };
                     self.tir.functions.push(Function {
                         id: *id,
-                        file_id: self.file_id,
+                        file_id: resolve_context.file_id,
+                        namespace: resolve_context.namespace,
                         body: None,
                         type_params: Box::new([]),
                         pub_span: *pub_span,
                         origin: FunctionOrigin::TraitImpl { trait_impl_index },
-                        source: ItemSource::Internal,
                         signature_index,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
@@ -3767,7 +3819,8 @@ impl<'ast> Builder<'ast, '_> {
                         let const_index = self.tir.constants.len() as ConstIndex;
                         self.tir.constants.push(Constant {
                             id: *id,
-                            file_id: self.file_id,
+                            file_id: resolve_context.file_id,
+                            namespace: resolve_context.namespace,
                             pub_span: None,
                             name: name.clone(),
                             ty: ast::Spanned {
@@ -3817,7 +3870,10 @@ impl<'ast> Builder<'ast, '_> {
                                         Diagnostic::error()
                                             .with_code(DiagnosticCode::ExpectedTrait.code())
                                             .with_message("associated type bound must be a trait")
-                                            .with_label(Label::primary(self.file_id, b.span)),
+                                            .with_label(Label::primary(
+                                                resolve_context.file_id,
+                                                b.span,
+                                            )),
                                     );
                                     None
                                 }
@@ -3906,14 +3962,20 @@ impl<'ast> Builder<'ast, '_> {
                         .assoc_types
                         .get_mut(&name.inner)
                     {
-                        at.accesses.push(SourceSpan::new(self.file_id, name.span));
+                        at.accesses
+                            .push(SourceSpan::new(resolve_context.file_id, name.span));
                     }
-                    self.check_assoc_type_bounds(trait_index, name.inner, concrete_ty, name.span);
+                    self.check_assoc_type_bounds(
+                        resolve_context.file_id,
+                        trait_index,
+                        name.inner,
+                        concrete_ty,
+                        name.span,
+                    );
                 }
             }
         }
 
-        self.file_id = saved_file_id;
         self.sig_state.insert(def_id, ComputeState::Done);
     }
 
@@ -3979,9 +4041,7 @@ impl<'ast> Builder<'ast, '_> {
                 _ => return,
             },
             AstNodeRef::Global { item, .. } => {
-                let saved_file_id = self.file_id;
-                let resolve_context = ResolveContext::new(node.file_id(), node.module());
-                self.file_id = node.file_id();
+                let resolve_context = ResolveContext::new(node.file_id(), node.namespace());
 
                 let ast::Item::Global { id, value, .. } = item else {
                     unreachable!();
@@ -3992,16 +4052,13 @@ impl<'ast> Builder<'ast, '_> {
                 let value_expr =
                     match self.build_const_expression(&resolve_context, value, global_ty) {
                         Ok(value_expr) => value_expr,
-                        Err(_) => {
-                            self.file_id = saved_file_id;
-                            return;
-                        }
+                        Err(_) => return,
                     };
 
                 match value_expr.ty {
                     _ if value_expr.ty.is_comptime_number() => {
                         self.tir.diagnostics.push(report_type_annotation_required(
-                            SourceSpan::new(self.file_id, value.span),
+                            SourceSpan::new(resolve_context.file_id, value.span),
                         ));
                     }
                     ty if !self.coercible_to(ty, global_ty) => {
@@ -4010,7 +4067,7 @@ impl<'ast> Builder<'ast, '_> {
                             TypeMistmatchDiagnostic {
                                 expected_type: global_ty,
                                 actual_type: ty,
-                                span: SourceSpan::new(self.file_id, value.span),
+                                span: SourceSpan::new(resolve_context.file_id, value.span),
                             },
                         ));
                     }
@@ -4023,13 +4080,12 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 }
 
-                self.file_id = saved_file_id;
                 return;
             }
             _ => return,
         };
 
-        let resolve_context = ResolveContext::new(node.file_id(), node.module());
+        let resolve_context = ResolveContext::new(node.file_id(), node.namespace());
         let self_type = match &node {
             AstNodeRef::ImplMethod { impl_target, .. } => {
                 Some(self.resolve_type(&resolve_context, impl_target))
@@ -4048,12 +4104,9 @@ impl<'ast> Builder<'ast, '_> {
             _ => None,
         };
 
-        let saved_file_id = self.file_id;
-        self.file_id = node.file_id();
-
         let resolve_context = ResolveContext {
             file_id: resolve_context.file_id,
-            module: resolve_context.module,
+            namespace: resolve_context.namespace,
             self_type,
             type_param_scope: Some(TypeParamScope {
                 owner: TypeParamOwner::Function(self.tir.functions[func_index as usize].id),
@@ -4067,8 +4120,6 @@ impl<'ast> Builder<'ast, '_> {
             }
             Err(_) => {}
         }
-
-        self.file_id = saved_file_id;
     }
 
     fn resolve_ast_type_params(
@@ -4091,7 +4142,10 @@ impl<'ast> Builder<'ast, '_> {
                                     Diagnostic::error()
                                         .with_code(DiagnosticCode::ExpectedTrait.code())
                                         .with_message("expected a trait name as a bound")
-                                        .with_label(Label::primary(self.file_id, bound.span)),
+                                        .with_label(Label::primary(
+                                            resolve_context.file_id,
+                                            bound.span,
+                                        )),
                                 );
                                 None
                             }
@@ -4123,8 +4177,8 @@ impl<'ast> Builder<'ast, '_> {
                     let name_str = self.interner.resolve(name.inner).unwrap();
                     self.tir.diagnostics.push(report_duplicate_parameter(
                         name_str,
-                        SourceSpan::new(self.file_id, first_span),
-                        SourceSpan::new(self.file_id, name.span),
+                        SourceSpan::new(resolve_context.file_id, first_span),
+                        SourceSpan::new(resolve_context.file_id, name.span),
                     ));
                 } else {
                     seen_params.insert(name.inner, name.span);
@@ -4581,7 +4635,7 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn build_exports(&mut self, entries: &[Separated<Spanned<ast::ExportEntry>>]) {
+    fn build_exports(&mut self, file_id: FileId, entries: &[Separated<Spanned<ast::ExportEntry>>]) {
         for entry in entries.iter() {
             let internal_name = &entry.inner.inner.name;
 
@@ -4594,7 +4648,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_undeclared_identifier(SourceSpan::new(
-                            self.file_id,
+                            file_id,
                             internal_name.span,
                         )));
                     continue;
@@ -4618,7 +4672,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(FunctionAccess {
                             caller: None,
                             kind: FunctionAccessKind::Reference,
-                            file_id: self.file_id,
+                            file_id,
                             span: internal_name.span,
                         });
 
@@ -4631,7 +4685,7 @@ impl<'ast> Builder<'ast, '_> {
                 SymbolKind::Global { global_index } => {
                     self.tir.globals[global_index as usize]
                         .accesses
-                        .push(SourceSpan::new(self.file_id, internal_name.span));
+                        .push(SourceSpan::new(file_id, internal_name.span));
 
                     ExportItem::Global {
                         id: self.tir.globals[global_index as usize].id,
@@ -4647,7 +4701,7 @@ impl<'ast> Builder<'ast, '_> {
                 _ => {
                     self.tir.diagnostics.push(report_cannot_export_item(
                         self.interner.resolve(internal_name.inner).unwrap(),
-                        SourceSpan::new(self.file_id, internal_name.span),
+                        SourceSpan::new(file_id, internal_name.span),
                     ));
                     continue;
                 }
@@ -4706,8 +4760,8 @@ impl<'ast> Builder<'ast, '_> {
 
                     self.tir.diagnostics.push(report_duplicate_export(
                         name,
-                        SourceSpan::new(self.file_id, first_export_span),
-                        SourceSpan::new(self.file_id, export_span),
+                        SourceSpan::new(file_id, first_export_span),
+                        SourceSpan::new(file_id, export_span),
                     ));
                 }
                 None => {
@@ -4737,7 +4791,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_float_literal_for_integer_type(SourceSpan::new(
-                            self.file_id,
+                            resolve_context.file_id,
                             expr.span,
                         )));
                     return Err(());
@@ -4771,7 +4825,7 @@ impl<'ast> Builder<'ast, '_> {
                         let constant = &mut self.tir.constants[const_index as usize];
                         constant
                             .accesses
-                            .push(SourceSpan::new(self.file_id, expr.span));
+                            .push(SourceSpan::new(resolve_context.file_id, expr.span));
                         let id = constant.id;
                         let ty = constant.ty.inner;
                         Ok(Expression {
@@ -4784,7 +4838,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir
                             .diagnostics
                             .push(report_non_constant_global_initializer(SourceSpan::new(
-                                self.file_id,
+                                resolve_context.file_id,
                                 expr.span,
                             )));
                         Err(())
@@ -4848,7 +4902,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_non_constant_global_initializer(SourceSpan::new(
-                        self.file_id,
+                        resolve_context.file_id,
                         expr.span,
                     )));
                 Err(())
@@ -4936,7 +4990,10 @@ impl<'ast> Builder<'ast, '_> {
 
         let expressions = match self.build_block_statements(ctx, statements) {
             BlockState::Exhaustive(expressions) => {
-                self.report_local_warnings(&ctx.stack.scopes[ctx.scope_index as usize]);
+                self.report_local_warnings(
+                    ctx.resolve_context.file_id,
+                    &ctx.stack.scopes[ctx.scope_index as usize],
+                );
                 let unreachable_start = statements
                     .get(expressions.len())
                     .map(|s| s.inner.span.start)
@@ -4950,7 +5007,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_unreachable_code(SourceSpan::new(
-                            self.file_id,
+                            ctx.resolve_context.file_id,
                             TextSpan::new(start, end),
                         )));
                 }
@@ -4986,7 +5043,10 @@ impl<'ast> Builder<'ast, '_> {
                     None => None,
                 };
 
-                self.report_local_warnings(&ctx.stack.scopes[ctx.scope_index as usize]);
+                self.report_local_warnings(
+                    ctx.resolve_context.file_id,
+                    &ctx.stack.scopes[ctx.scope_index as usize],
+                );
 
                 Ok(Expression {
                     kind: ExprKind::Block {
@@ -5003,7 +5063,10 @@ impl<'ast> Builder<'ast, '_> {
             BlockKind::Block => {
                 let result = self.build_block_result(ctx, result.as_deref())?;
 
-                self.report_local_warnings(&ctx.stack.scopes[ctx.scope_index as usize]);
+                self.report_local_warnings(
+                    ctx.resolve_context.file_id,
+                    &ctx.stack.scopes[ctx.scope_index as usize],
+                );
 
                 let scope = &ctx.stack.scopes[ctx.scope_index as usize];
                 let inferred_type = scope.inferred_type.expect("should have inferred type");
@@ -5014,7 +5077,7 @@ impl<'ast> Builder<'ast, '_> {
                             TypeMistmatchDiagnostic {
                                 expected_type,
                                 actual_type: inferred_type,
-                                span: SourceSpan::new(self.file_id, block.span),
+                                span: SourceSpan::new(ctx.resolve_context.file_id, block.span),
                             },
                         ));
                         return Err(());
@@ -5035,13 +5098,13 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn report_local_warnings(&mut self, block: &BlockScope) {
+    fn report_local_warnings(&mut self, file_id: FileId, block: &BlockScope) {
         for local in block.locals.iter() {
             if local.accesses.is_empty() && local.ty != TypeIndex::ERROR {
                 self.tir
                     .diagnostics
                     .push(report_unused_variable(SourceSpan::new(
-                        self.file_id,
+                        file_id,
                         local.name.span,
                     )));
             }
@@ -5055,8 +5118,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_unnecessary_mutability(SourceSpan::new(
-                            self.file_id,
-                            mut_span,
+                            file_id, mut_span,
                         )));
                 }
                 _ => {}
@@ -5068,6 +5130,7 @@ impl<'ast> Builder<'ast, '_> {
     /// does not satisfy. `error_span` is where the type was written.
     fn check_assoc_type_bounds(
         &mut self,
+        file_id: FileId,
         trait_index: TraitIndex,
         assoc_name: SymbolU32,
         concrete_ty: TypeIndex,
@@ -5080,7 +5143,11 @@ impl<'ast> Builder<'ast, '_> {
         {
             Some(bounds) => {
                 for bound_trait_index in bounds.iter().copied() {
-                    if !self.tir.trait_impl_lookup.contains_key(&(concrete_ty, bound_trait_index)) {
+                    if !self
+                        .tir
+                        .trait_impl_lookup
+                        .contains_key(&(concrete_ty, bound_trait_index))
+                    {
                         let bound_name = self
                             .interner
                             .resolve(self.tir.traits[bound_trait_index as usize].name.inner)
@@ -5098,7 +5165,7 @@ impl<'ast> Builder<'ast, '_> {
                                     self.interner.resolve(assoc_name).unwrap_or("?"),
                                     bound_name,
                                 ))
-                                .with_label(Label::primary(self.file_id, error_span))
+                                .with_label(Label::primary(file_id, error_span))
                                 .with_note(format!(
                                     "`{}` does not implement `{}`",
                                     type_name, bound_name
@@ -5225,11 +5292,8 @@ impl<'ast> Builder<'ast, '_> {
         for function in self.tir.functions.iter() {
             if function.accesses.is_empty()
                 && function.pub_span.is_none()
-                && function.source == ItemSource::Internal
-                && !matches!(
-                    function.origin,
-                    FunctionOrigin::Trait | FunctionOrigin::Module
-                )
+                && !self.tir.is_import_namespace(function.namespace)
+                && !matches!(function.origin, FunctionOrigin::Trait)
             {
                 let name = self.interner.resolve(function.name.inner).unwrap();
                 self.tir.diagnostics.push(
@@ -5244,7 +5308,7 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         for global in self.tir.globals.iter() {
-            if global.source == ItemSource::Internal && global.accesses.is_empty() {
+            if global.accesses.is_empty() && !self.tir.is_import_namespace(global.namespace) {
                 let name = self.interner.resolve(global.name.inner).unwrap();
                 self.tir.diagnostics.push(
                     Diagnostic::warning()
@@ -5280,7 +5344,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir.diagnostics.push(
                     Diagnostic::warning()
                         .with_code(code)
-                        .with_message(format!("struct `{}` is never constructed", name))
+                        .with_message(format!("struct `{}` is never used", name))
                         .with_label(
                             SourceSpan::new(struct_.file_id, struct_.name.span).primary_label(),
                         ),
@@ -5306,10 +5370,15 @@ impl<'ast> Builder<'ast, '_> {
                 )?;
 
                 let scope = &mut ctx.stack.scopes[ctx.scope_index as usize];
-                let inferred_type = self.infer_block_type(scope, &result)?;
+                let inferred_type =
+                    self.infer_block_type(ctx.resolve_context.file_id, scope, &result)?;
                 scope.inferred_type = Some(inferred_type);
                 if result.ty.is_comptime_number() {
-                    _ = self.coerce_untyped_expr(&mut result, inferred_type);
+                    _ = self.coerce_untyped_expr(
+                        ctx.resolve_context.file_id,
+                        &mut result,
+                        inferred_type,
+                    );
                 }
 
                 Ok(Some(result))
@@ -5354,6 +5423,7 @@ impl<'ast> Builder<'ast, '_> {
 
     fn infer_block_type(
         &mut self,
+        file_id: FileId,
         scope: &BlockScope,
         value: &Expression,
     ) -> Result<TypeIndex, ()> {
@@ -5364,8 +5434,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_type_annotation_required(SourceSpan::new(
-                            self.file_id,
-                            value.span,
+                            file_id, value.span,
                         )));
                     return Err(());
                 }
@@ -5379,7 +5448,7 @@ impl<'ast> Builder<'ast, '_> {
                     TypeMistmatchDiagnostic {
                         expected_type: inferred_type,
                         actual_type: result_type,
-                        span: SourceSpan::new(self.file_id, value.span),
+                        span: SourceSpan::new(file_id, value.span),
                     },
                 ));
                 Ok(inferred_type)
@@ -5392,7 +5461,7 @@ impl<'ast> Builder<'ast, '_> {
                         TypeMistmatchDiagnostic {
                             expected_type,
                             actual_type: result_type,
-                            span: SourceSpan::new(self.file_id, value.span),
+                            span: SourceSpan::new(file_id, value.span),
                         },
                     ));
                     Err(())
@@ -5449,7 +5518,7 @@ impl<'ast> Builder<'ast, '_> {
             self.tir
                 .diagnostics
                 .push(report_type_annotation_required(SourceSpan::new(
-                    self.file_id,
+                    ctx.resolve_context.file_id,
                     value.span,
                 )));
             return Err(());
@@ -5457,7 +5526,7 @@ impl<'ast> Builder<'ast, '_> {
         self.tir
             .diagnostics
             .push(report_unused_value(SourceSpan::new(
-                self.file_id,
+                ctx.resolve_context.file_id,
                 value.span,
             )));
         Ok(value)
@@ -5493,8 +5562,10 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::String { symbol } => {
                 let unescaped = unescape_string(self.interner.resolve(*symbol).unwrap());
                 let symbol = self.interner.get_or_intern(&unescaped);
-                let memory =
-                    self.resolve_ambient_memory(SourceSpan::new(self.file_id, expr.span))?;
+                let memory = self.resolve_ambient_memory(SourceSpan::new(
+                    func_ctx.resolve_context.file_id,
+                    expr.span,
+                ))?;
                 Ok(Expression {
                     kind: ExprKind::String { symbol },
                     ty: self.intern_type(Type::Slice {
@@ -5517,7 +5588,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir
                             .diagnostics
                             .push(report_empty_char_literal(SourceSpan::new(
-                                self.file_id,
+                                func_ctx.resolve_context.file_id,
                                 expr.span,
                             )));
                         Err(())
@@ -5526,7 +5597,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir
                             .diagnostics
                             .push(report_char_literal_too_long(SourceSpan::new(
-                                self.file_id,
+                                func_ctx.resolve_context.file_id,
                                 expr.span,
                             )));
                         Err(())
@@ -5641,7 +5712,7 @@ impl<'ast> Builder<'ast, '_> {
                         Some(SymbolKind::Function { func_index }) => func_index,
                         _ => {
                             self.tir.diagnostics.push(report_undeclared_identifier(
-                                SourceSpan::new(self.file_id, name.span),
+                                SourceSpan::new(func_ctx.resolve_context.file_id, name.span),
                             ));
                             return Err(());
                         }
@@ -5652,7 +5723,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_undeclared_identifier(SourceSpan::new(
-                            self.file_id,
+                            func_ctx.resolve_context.file_id,
                             name.span,
                         )));
                     return Err(());
@@ -5721,7 +5792,7 @@ impl<'ast> Builder<'ast, '_> {
                     .cloned()
             }),
             _ => self
-                .ensure_impl_members(object.ty)
+                .ensure_impl_members(func_ctx.resolve_context.file_id, object.ty)
                 .get(&member.inner)
                 .cloned(),
         };
@@ -5732,7 +5803,7 @@ impl<'ast> Builder<'ast, '_> {
                 func.accesses.push(FunctionAccess {
                     caller: Some(caller_id),
                     kind: FunctionAccessKind::Reference,
-                    file_id: self.file_id,
+                    file_id: func_ctx.resolve_context.file_id,
                     span: member.span,
                 });
                 let ty = func.signature_index;
@@ -5793,7 +5864,7 @@ impl<'ast> Builder<'ast, '_> {
         self.tir
             .diagnostics
             .push(report_undeclared_identifier(SourceSpan::new(
-                self.file_id,
+                func_ctx.resolve_context.file_id,
                 member.span,
             )));
         Err(())
@@ -5802,7 +5873,11 @@ impl<'ast> Builder<'ast, '_> {
     /// Ensures `SIZE` and `ALIGN` are present for `ty` and returns its member
     /// map. Always use this for impl-member lookups — never access
     /// `impl_members` directly.
-    fn ensure_impl_members(&mut self, ty: TypeIndex) -> &HashMap<SymbolU32, ImplEntry> {
+    fn ensure_impl_members(
+        &mut self,
+        file_id: FileId,
+        ty: TypeIndex,
+    ) -> &HashMap<SymbolU32, ImplEntry> {
         let size_sym = self.interner.get_or_intern("SIZE");
         let already_seeded = self
             .tir
@@ -5831,7 +5906,8 @@ impl<'ast> Builder<'ast, '_> {
                 let size_index = self.tir.constants.len() as ConstIndex;
                 self.tir.constants.push(Constant {
                     id: size_id,
-                    file_id: self.file_id,
+                    file_id,
+                    namespace: None,
                     pub_span: None,
                     name: ast::Spanned {
                         inner: size_sym,
@@ -5848,7 +5924,8 @@ impl<'ast> Builder<'ast, '_> {
                 let align_index = self.tir.constants.len() as ConstIndex;
                 self.tir.constants.push(Constant {
                     id: align_id,
-                    file_id: self.file_id,
+                    file_id,
+                    namespace: None,
                     pub_span: None,
                     name: ast::Spanned {
                         inner: align_sym,
@@ -5948,7 +6025,7 @@ impl<'ast> Builder<'ast, '_> {
                     func.accesses.push(FunctionAccess {
                         caller: Some(caller_id),
                         kind: FunctionAccessKind::Reference,
-                        file_id: self.file_id,
+                        file_id: func_ctx.resolve_context.file_id,
                         span: expr_span,
                     });
                     let func_id = func.id;
@@ -5966,7 +6043,7 @@ impl<'ast> Builder<'ast, '_> {
                     let global = &mut self.tir.globals[global_index as usize];
                     global
                         .accesses
-                        .push(SourceSpan::new(self.file_id, expr_span));
+                        .push(SourceSpan::new(func_ctx.resolve_context.file_id, expr_span));
                     Ok(Expression {
                         kind: ExprKind::Global { id: global.id },
                         ty: global.ty.inner,
@@ -5977,7 +6054,7 @@ impl<'ast> Builder<'ast, '_> {
                     let constant = &mut self.tir.constants[const_index as usize];
                     constant
                         .accesses
-                        .push(SourceSpan::new(self.file_id, expr_span));
+                        .push(SourceSpan::new(func_ctx.resolve_context.file_id, expr_span));
                     let id = constant.id;
                     let ty = constant.ty.inner;
                     Ok(Expression {
@@ -6004,7 +6081,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_namespace_used_as_value(SourceSpan::new(
-                            self.file_id,
+                            func_ctx.resolve_context.file_id,
                             expr_span,
                         )));
                     Ok(Expression {
@@ -6024,7 +6101,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_undeclared_identifier(SourceSpan::new(
-                            self.file_id,
+                            func_ctx.resolve_context.file_id,
                             expr_span,
                         )));
                     Ok(Expression {
@@ -6053,7 +6130,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_undeclared_identifier(SourceSpan::new(
-                            self.file_id,
+                            func_ctx.resolve_context.file_id,
                             expr_span,
                         )));
                     return Ok(Expression {
@@ -6070,7 +6147,7 @@ impl<'ast> Builder<'ast, '_> {
                     Diagnostic::error()
                         .with_code(DiagnosticCode::TypeArgCountMismatch.code())
                         .with_message("function is not generic")
-                        .with_label(SourceSpan::new(self.file_id, expr_span)
+                        .with_label(SourceSpan::new(func_ctx.resolve_context.file_id, expr_span)
                             .primary_label()
                             .with_message("type arguments provided but this function has no type parameters")),
                 );
@@ -6091,7 +6168,7 @@ impl<'ast> Builder<'ast, '_> {
                             seg.type_args.len()
                         ))
                         .with_label(
-                            SourceSpan::new(self.file_id, expr_span)
+                            SourceSpan::new(func_ctx.resolve_context.file_id, expr_span)
                                 .primary_label()
                                 .with_message("wrong number of type arguments"),
                         ),
@@ -6115,7 +6192,7 @@ impl<'ast> Builder<'ast, '_> {
             func.accesses.push(FunctionAccess {
                 caller: Some(caller_id),
                 kind: FunctionAccessKind::Reference,
-                file_id: self.file_id,
+                file_id: func_ctx.resolve_context.file_id,
                 span: seg.ident.span,
             });
             let func_id = func.id;
@@ -6261,7 +6338,7 @@ impl<'ast> Builder<'ast, '_> {
             }
             _ => {
                 match self
-                    .ensure_impl_members(namespace_ty)
+                    .ensure_impl_members(resolve_context.file_id, namespace_ty)
                     .get(&member_sym)
                     .cloned()
                 {
@@ -6296,7 +6373,7 @@ impl<'ast> Builder<'ast, '_> {
         };
 
         match self
-            .ensure_impl_members(namespace_ty)
+            .ensure_impl_members(func_ctx.resolve_context.file_id, namespace_ty)
             .get(&member.inner)
             .cloned()
         {
@@ -6304,7 +6381,10 @@ impl<'ast> Builder<'ast, '_> {
                 if let Some(ci) = self.tir.const_index_lookup.get(&id).copied() {
                     self.tir.constants[ci as usize]
                         .accesses
-                        .push(SourceSpan::new(self.file_id, member.span));
+                        .push(SourceSpan::new(
+                            func_ctx.resolve_context.file_id,
+                            member.span,
+                        ));
                 }
                 return Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
@@ -6325,7 +6405,7 @@ impl<'ast> Builder<'ast, '_> {
                 func.accesses.push(FunctionAccess {
                     caller: Some(caller_id),
                     kind: FunctionAccessKind::Reference,
-                    file_id: self.file_id,
+                    file_id: func_ctx.resolve_context.file_id,
                     span: member.span,
                 });
                 let func_id = func.id;
@@ -6355,7 +6435,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_undeclared_identifier(SourceSpan::new(
-                        self.file_id,
+                        func_ctx.resolve_context.file_id,
                         member.span,
                     )));
                 Err(())
@@ -6368,7 +6448,10 @@ impl<'ast> Builder<'ast, '_> {
                     Some(variant_idx) => {
                         self.tir.enums[enum_idx as usize].variants[variant_idx as usize]
                             .accesses
-                            .push(SourceSpan::new(self.file_id, member.span));
+                            .push(SourceSpan::new(
+                                func_ctx.resolve_context.file_id,
+                                member.span,
+                            ));
                         Ok(Expression {
                             kind: ExprKind::NamespaceAccess {
                                 namespace: namespace_spanned,
@@ -6389,7 +6472,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir
                             .diagnostics
                             .push(report_undeclared_identifier(SourceSpan::new(
-                                self.file_id,
+                                func_ctx.resolve_context.file_id,
                                 member.span,
                             )));
                         Err(())
@@ -6398,7 +6481,7 @@ impl<'ast> Builder<'ast, '_> {
             }
             Type::Module { namespace_idx } => {
                 let namespace_idx = *namespace_idx;
-                let access_span = SourceSpan::new(self.file_id, namespace_span);
+                let access_span = SourceSpan::new(func_ctx.resolve_context.file_id, namespace_span);
                 match self.tir.namespaces[namespace_idx as usize].declaration {
                     ModuleDeclarationKind::Module(i) => {
                         self.tir.module_decls[i as usize].accesses.push(access_span)
@@ -6418,7 +6501,7 @@ impl<'ast> Builder<'ast, '_> {
                         func.accesses.push(FunctionAccess {
                             caller: Some(caller_id),
                             kind: FunctionAccessKind::Reference,
-                            file_id: self.file_id,
+                            file_id: func_ctx.resolve_context.file_id,
                             span: member.span,
                         });
                         let func_id = func.id;
@@ -6439,11 +6522,32 @@ impl<'ast> Builder<'ast, '_> {
                             span: expr_span,
                         })
                     }
+                    Some(SymbolKind::Global { global_index }) => {
+                        let global = &mut self.tir.globals[global_index as usize];
+                        global.accesses.push(SourceSpan::new(
+                            func_ctx.resolve_context.file_id,
+                            member.span,
+                        ));
+                        let global_id = global.id;
+                        let ty = global.ty.inner;
+                        Ok(Expression {
+                            kind: ExprKind::NamespaceAccess {
+                                namespace: namespace_spanned,
+                                member: Box::new(Expression {
+                                    kind: ExprKind::Global { id: global_id },
+                                    ty,
+                                    span: member.span,
+                                }),
+                            },
+                            ty,
+                            span: expr_span,
+                        })
+                    }
                     _ => {
                         self.tir
                             .diagnostics
                             .push(report_undeclared_identifier(SourceSpan::new(
-                                self.file_id,
+                                func_ctx.resolve_context.file_id,
                                 member.span,
                             )));
                         Err(())
@@ -6463,7 +6567,7 @@ impl<'ast> Builder<'ast, '_> {
                             .push(FunctionAccess {
                                 caller: Some(caller_id),
                                 kind: FunctionAccessKind::Reference,
-                                file_id: self.file_id,
+                                file_id: func_ctx.resolve_context.file_id,
                                 span: member.span,
                             });
                         let func_id = self.tir.functions[func_index as usize].id;
@@ -6485,7 +6589,10 @@ impl<'ast> Builder<'ast, '_> {
                         if let Some(ci) = self.tir.const_index_lookup.get(&id).copied() {
                             self.tir.constants[ci as usize]
                                 .accesses
-                                .push(SourceSpan::new(self.file_id, member.span));
+                                .push(SourceSpan::new(
+                                    func_ctx.resolve_context.file_id,
+                                    member.span,
+                                ));
                         }
                         Ok(Expression {
                             kind: ExprKind::NamespaceAccess {
@@ -6504,7 +6611,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir
                             .diagnostics
                             .push(report_undeclared_identifier(SourceSpan::new(
-                                self.file_id,
+                                func_ctx.resolve_context.file_id,
                                 member.span,
                             )));
                         Err(())
@@ -6518,7 +6625,10 @@ impl<'ast> Builder<'ast, '_> {
                         "type `{}` is not a namespace",
                         TypeFormatter::new(&self.tir, &self.interner,).display_type(namespace_ty),
                     ))
-                    .with_label(SourceSpan::new(self.file_id, namespace_span).primary_label());
+                    .with_label(
+                        SourceSpan::new(func_ctx.resolve_context.file_id, namespace_span)
+                            .primary_label(),
+                    );
                 self.tir.diagnostics.push(diag);
                 Err(())
             }
@@ -6586,6 +6696,7 @@ impl<'ast> Builder<'ast, '_> {
             _ => unreachable!(),
         };
 
+        let file_id = func_ctx.resolve_context.file_id;
         func_ctx.enter_block(
             BlockScope {
                 label: label.map(|l| BlockLabel {
@@ -6612,7 +6723,7 @@ impl<'ast> Builder<'ast, '_> {
                             TypeMistmatchDiagnostic {
                                 expected_type,
                                 actual_type: inferred_type,
-                                span: SourceSpan::new(self.file_id, expr.span),
+                                span: SourceSpan::new(file_id, expr.span),
                             },
                         ));
                         return Err(());
@@ -6656,7 +6767,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_undeclared_label(SourceSpan::new(
-                            self.file_id,
+                            ctx.resolve_context.file_id,
                             label.span,
                         )));
                     return Err(());
@@ -6749,7 +6860,10 @@ impl<'ast> Builder<'ast, '_> {
                             TypeMistmatchDiagnostic {
                                 expected_type: then_block.ty,
                                 actual_type: else_block.ty,
-                                span: SourceSpan::new(self.file_id, ast_else_block.span),
+                                span: SourceSpan::new(
+                                    ctx.resolve_context.file_id,
+                                    ast_else_block.span,
+                                ),
                             },
                         ));
                         return Err(());
@@ -6802,7 +6916,7 @@ impl<'ast> Builder<'ast, '_> {
             value,
         )?;
         if value.ty.is_comptime_number() {
-            self.coerce_untyped_expr(&mut value, cast_type)?;
+            self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut value, cast_type)?;
         } else {
             match (
                 self.tir.type_primitive(value.ty),
@@ -6817,7 +6931,7 @@ impl<'ast> Builder<'ast, '_> {
                         TypeFormatter::new(&self.tir, &self.interner),
                         value.ty,
                         cast_type,
-                        SourceSpan::new(self.file_id, expr.span),
+                        SourceSpan::new(ctx.resolve_context.file_id, expr.span),
                     ));
                 }
             }
@@ -6849,7 +6963,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_undeclared_label(SourceSpan::new(
-                            self.file_id,
+                            ctx.resolve_context.file_id,
                             label.span,
                         )));
 
@@ -6868,7 +6982,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_break_outside_of_loop(SourceSpan::new(
-                            self.file_id,
+                            ctx.resolve_context.file_id,
                             expr.span,
                         )));
 
@@ -6900,9 +7014,14 @@ impl<'ast> Builder<'ast, '_> {
                 )
                 .and_then(|mut value| {
                     let scope = ctx.stack.scopes.get_mut(scope_index as usize).unwrap();
-                    let inferred_type = self.infer_block_type(scope, &value)?;
+                    let inferred_type =
+                        self.infer_block_type(ctx.resolve_context.file_id, scope, &value)?;
                     if value.ty.is_comptime_number() {
-                        self.coerce_untyped_expr(&mut value, inferred_type)?;
+                        self.coerce_untyped_expr(
+                            ctx.resolve_context.file_id,
+                            &mut value,
+                            inferred_type,
+                        )?;
                     }
                     scope.inferred_type = Some(inferred_type);
 
@@ -6931,7 +7050,7 @@ impl<'ast> Builder<'ast, '_> {
                                 TypeMistmatchDiagnostic {
                                     expected_type: inferred,
                                     actual_type: TypeIndex::UNIT,
-                                    span: SourceSpan::new(self.file_id, expr.span),
+                                    span: SourceSpan::new(ctx.resolve_context.file_id, expr.span),
                                 },
                             ));
                         }
@@ -7065,7 +7184,11 @@ impl<'ast> Builder<'ast, '_> {
                         span: expr.span,
                     })
                 } else if operand.ty.is_comptime_number() {
-                    _ = self.coerce_untyped_expr(&mut operand, TypeIndex::BOOL);
+                    _ = self.coerce_untyped_expr(
+                        ctx.resolve_context.file_id,
+                        &mut operand,
+                        TypeIndex::BOOL,
+                    );
                     Ok(Expression {
                         kind: ExprKind::Unary {
                             operator,
@@ -7083,8 +7206,8 @@ impl<'ast> Builder<'ast, '_> {
                             operator.inner,
                             formatter.display_type(operand.ty)
                         ))
-                        .with_label(Label::primary(self.file_id, operand.span))
-                        .with_label(Label::secondary(self.file_id, operator.span));
+                        .with_label(Label::primary(ctx.resolve_context.file_id, operand.span))
+                        .with_label(Label::secondary(ctx.resolve_context.file_id, operator.span));
 
                     self.tir.diagnostics.push(diagnostic);
                     Ok(Expression {
@@ -7129,7 +7252,7 @@ impl<'ast> Builder<'ast, '_> {
             self.tir
                 .diagnostics
                 .push(report_type_annotation_required(SourceSpan::new(
-                    self.file_id,
+                    ctx.resolve_context.file_id,
                     left.span,
                 )));
         } else if left.ty != TypeIndex::BOOL {
@@ -7138,7 +7261,7 @@ impl<'ast> Builder<'ast, '_> {
                 TypeMistmatchDiagnostic {
                     expected_type: TypeIndex::BOOL,
                     actual_type: left.ty,
-                    span: SourceSpan::new(self.file_id, left.span),
+                    span: SourceSpan::new(ctx.resolve_context.file_id, left.span),
                 },
             ));
         }
@@ -7156,7 +7279,7 @@ impl<'ast> Builder<'ast, '_> {
             self.tir
                 .diagnostics
                 .push(report_type_annotation_required(SourceSpan::new(
-                    self.file_id,
+                    ctx.resolve_context.file_id,
                     right.span,
                 )));
         } else if right.ty != TypeIndex::BOOL {
@@ -7165,7 +7288,7 @@ impl<'ast> Builder<'ast, '_> {
                 TypeMistmatchDiagnostic {
                     expected_type: TypeIndex::BOOL,
                     actual_type: right.ty,
-                    span: SourceSpan::new(self.file_id, right.span),
+                    span: SourceSpan::new(ctx.resolve_context.file_id, right.span),
                 },
             ));
         }
@@ -7225,8 +7348,16 @@ impl<'ast> Builder<'ast, '_> {
             (l, r) if l.is_comptime_number() && r.is_comptime_number() => {
                 match access_ctx.expected_type {
                     Some(expected_type) => {
-                        self.coerce_untyped_expr(&mut left, expected_type)?;
-                        self.coerce_untyped_expr(&mut right, expected_type)?;
+                        self.coerce_untyped_expr(
+                            ctx.resolve_context.file_id,
+                            &mut left,
+                            expected_type,
+                        )?;
+                        self.coerce_untyped_expr(
+                            ctx.resolve_context.file_id,
+                            &mut right,
+                            expected_type,
+                        )?;
 
                         if !expected_type.is_integer() && expected_type != TypeIndex::BOOL {
                             self.tir
@@ -7234,7 +7365,7 @@ impl<'ast> Builder<'ast, '_> {
                                 .push(report_binary_operator_cannot_be_applied(
                                     TypeFormatter::new(&self.tir, &self.interner),
                                     BinaryOperatorCannotBeAppliedDiagnostic {
-                                        file_id: self.file_id,
+                                        file_id: ctx.resolve_context.file_id,
                                         operator: operator.clone(),
                                         operand: Spanned {
                                             inner: expected_type,
@@ -7256,7 +7387,7 @@ impl<'ast> Builder<'ast, '_> {
                     }
                     None => {
                         self.tir.diagnostics.push(report_type_annotation_required(
-                            SourceSpan::new(self.file_id, expr.span),
+                            SourceSpan::new(ctx.resolve_context.file_id, expr.span),
                         ));
                         Err(())
                     }
@@ -7269,7 +7400,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(report_binary_operator_cannot_be_applied(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 operator: operator.clone(),
                                 operand: Spanned {
                                     inner: right_type,
@@ -7278,7 +7409,7 @@ impl<'ast> Builder<'ast, '_> {
                             },
                         ));
                 }
-                self.coerce_untyped_expr(&mut left, right_type)?;
+                self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut left, right_type)?;
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -7297,7 +7428,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(report_binary_operator_cannot_be_applied(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 operator: operator.clone(),
                                 operand: Spanned {
                                     inner: left_type,
@@ -7306,7 +7437,7 @@ impl<'ast> Builder<'ast, '_> {
                             },
                         ));
                 }
-                self.coerce_untyped_expr(&mut right, left_type)?;
+                self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut right, left_type)?;
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -7338,7 +7469,7 @@ impl<'ast> Builder<'ast, '_> {
                     .push(report_binary_expression_mistmatch(
                         TypeFormatter::new(&self.tir, &self.interner),
                         BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.file_id,
+                            file_id: ctx.resolve_context.file_id,
                             left_type: Spanned {
                                 inner: left_type,
                                 span: left.span,
@@ -7411,8 +7542,8 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_comparison_type_annotation_required(
-                        SourceSpan::new(self.file_id, left.span),
-                        SourceSpan::new(self.file_id, right.span),
+                        SourceSpan::new(ctx.resolve_context.file_id, left.span),
+                        SourceSpan::new(ctx.resolve_context.file_id, right.span),
                     ));
 
                 Ok(Expression {
@@ -7426,7 +7557,7 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
             (l, ty) if l.is_comptime_number() => {
-                self.coerce_untyped_expr(&mut left, ty)?;
+                self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut left, ty)?;
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -7439,7 +7570,7 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
             (ty, r) if r.is_comptime_number() => {
-                self.coerce_untyped_expr(&mut right, ty)?;
+                self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut right, ty)?;
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -7473,10 +7604,7 @@ impl<'ast> Builder<'ast, '_> {
             }
             (left_type, right_type)
                 if left_type == right_type
-                    && matches!(
-                        self.tir.type_pool[left_type.as_usize()],
-                        Type::Enum { .. }
-                    ) =>
+                    && matches!(self.tir.type_pool[left_type.as_usize()], Type::Enum { .. }) =>
             {
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -7494,7 +7622,7 @@ impl<'ast> Builder<'ast, '_> {
                     .push(report_binary_expression_mistmatch(
                         TypeFormatter::new(&self.tir, &self.interner),
                         BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.file_id,
+                            file_id: ctx.resolve_context.file_id,
                             left_type: Spanned {
                                 inner: left_type,
                                 span: left.span,
@@ -7552,7 +7680,7 @@ impl<'ast> Builder<'ast, '_> {
                         Some(local) => local,
                         None => {
                             self.tir.diagnostics.push(report_undeclared_identifier(
-                                SourceSpan::new(self.file_id, left.span),
+                                SourceSpan::new(ctx.resolve_context.file_id, left.span),
                             ));
                             return Err(());
                         }
@@ -7562,7 +7690,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir
                             .diagnostics
                             .push(report_cannot_mutate_immutable(SourceSpan::new(
-                                self.file_id,
+                                ctx.resolve_context.file_id,
                                 expr.span,
                             )));
                     }
@@ -7580,14 +7708,14 @@ impl<'ast> Builder<'ast, '_> {
                     right,
                 )?;
                 if right.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(&mut right, local_type)?;
+                    self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut right, local_type)?;
                 } else if !self.coercible_to(right.ty, local_type) {
                     self.tir
                         .diagnostics
                         .push(report_binary_expression_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: local_type,
                                     span: left.span,
@@ -7619,7 +7747,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir
                             .diagnostics
                             .push(report_cannot_mutate_immutable(SourceSpan::new(
-                                self.file_id,
+                                ctx.resolve_context.file_id,
                                 expr.span,
                             )));
                     }
@@ -7636,14 +7764,14 @@ impl<'ast> Builder<'ast, '_> {
                     right,
                 )?;
                 if right.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(&mut right, global_type)?;
+                    self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut right, global_type)?;
                 } else if !self.coercible_to(right.ty, global_type) {
                     self.tir
                         .diagnostics
                         .push(report_binary_expression_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: global_type,
                                     span: left.span,
@@ -7680,7 +7808,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_type_annotation_required(SourceSpan::new(
-                            self.file_id,
+                            ctx.resolve_context.file_id,
                             right.span,
                         )));
                     return Err(());
@@ -7711,7 +7839,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_cannot_store_through_immutable_pointer(
-                            SourceSpan::new(self.file_id, expr.span),
+                            SourceSpan::new(ctx.resolve_context.file_id, expr.span),
                         ));
                 }
 
@@ -7724,14 +7852,18 @@ impl<'ast> Builder<'ast, '_> {
                     right,
                 )?;
                 if right_expr.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(&mut right_expr, inner_ty)?;
+                    self.coerce_untyped_expr(
+                        ctx.resolve_context.file_id,
+                        &mut right_expr,
+                        inner_ty,
+                    )?;
                 } else if !self.coercible_to(right_expr.ty, inner_ty) {
                     self.tir
                         .diagnostics
                         .push(report_binary_expression_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: inner_ty,
                                     span: left.span,
@@ -7775,7 +7907,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_cannot_mutate_immutable_array_element(
-                            SourceSpan::new(self.file_id, expr.span),
+                            SourceSpan::new(ctx.resolve_context.file_id, expr.span),
                         ));
                 }
 
@@ -7788,14 +7920,18 @@ impl<'ast> Builder<'ast, '_> {
                     right,
                 )?;
                 if right_expr.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(&mut right_expr, elem_ty)?;
+                    self.coerce_untyped_expr(
+                        ctx.resolve_context.file_id,
+                        &mut right_expr,
+                        elem_ty,
+                    )?;
                 } else if !self.coercible_to(right_expr.ty, elem_ty) {
                     self.tir
                         .diagnostics
                         .push(report_binary_expression_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: elem_ty,
                                     span: left.span,
@@ -7832,7 +7968,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_invalid_assignment_target(SourceSpan::new(
-                        self.file_id,
+                        ctx.resolve_context.file_id,
                         left.span,
                     )));
 
@@ -7877,7 +8013,7 @@ impl<'ast> Builder<'ast, '_> {
                         Some(local) => local,
                         None => {
                             self.tir.diagnostics.push(report_undeclared_identifier(
-                                SourceSpan::new(self.file_id, left.span),
+                                SourceSpan::new(ctx.resolve_context.file_id, left.span),
                             ));
                             return Err(());
                         }
@@ -7908,7 +8044,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(report_binary_operator_cannot_be_applied(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 operator,
                                 operand: Spanned {
                                     inner: local.ty,
@@ -7923,7 +8059,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_cannot_mutate_immutable(SourceSpan::new(
-                            self.file_id,
+                            ctx.resolve_context.file_id,
                             expr.span,
                         )));
                 }
@@ -7938,14 +8074,14 @@ impl<'ast> Builder<'ast, '_> {
                     right,
                 )?;
                 if right.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(&mut right, local_type)?;
+                    self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut right, local_type)?;
                 } else if !self.coercible_to(right.ty, local_type) {
                     self.tir
                         .diagnostics
                         .push(report_binary_expression_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: local_type,
                                     span: left.span,
@@ -7979,7 +8115,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(report_binary_operator_cannot_be_applied(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 operator,
                                 operand: Spanned {
                                     inner: global.ty.inner,
@@ -7995,7 +8131,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_cannot_mutate_immutable(SourceSpan::new(
-                            self.file_id,
+                            ctx.resolve_context.file_id,
                             expr.span,
                         )));
                 }
@@ -8010,14 +8146,14 @@ impl<'ast> Builder<'ast, '_> {
                     right,
                 )?;
                 if right.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(&mut right, global_type)?;
+                    self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut right, global_type)?;
                 } else if !self.coercible_to(right.ty, global_type) {
                     self.tir
                         .diagnostics
                         .push(report_binary_expression_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: global_type,
                                     span: left.span,
@@ -8053,7 +8189,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(report_binary_operator_cannot_be_applied(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 operator,
                                 operand: Spanned {
                                     inner: inner_ty,
@@ -8068,7 +8204,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_cannot_store_through_immutable_pointer(
-                            SourceSpan::new(self.file_id, expr.span),
+                            SourceSpan::new(ctx.resolve_context.file_id, expr.span),
                         ));
                 }
 
@@ -8081,14 +8217,18 @@ impl<'ast> Builder<'ast, '_> {
                     right,
                 )?;
                 if right_expr.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(&mut right_expr, inner_ty)?;
+                    self.coerce_untyped_expr(
+                        ctx.resolve_context.file_id,
+                        &mut right_expr,
+                        inner_ty,
+                    )?;
                 } else if !self.coercible_to(right_expr.ty, inner_ty) {
                     self.tir
                         .diagnostics
                         .push(report_binary_expression_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: inner_ty,
                                     span: left.span,
@@ -8132,7 +8272,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_cannot_mutate_immutable_array_element(
-                            SourceSpan::new(self.file_id, expr.span),
+                            SourceSpan::new(ctx.resolve_context.file_id, expr.span),
                         ));
                 }
                 let mut right_expr = self.build_expression(
@@ -8144,14 +8284,18 @@ impl<'ast> Builder<'ast, '_> {
                     right,
                 )?;
                 if right_expr.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(&mut right_expr, elem_ty)?;
+                    self.coerce_untyped_expr(
+                        ctx.resolve_context.file_id,
+                        &mut right_expr,
+                        elem_ty,
+                    )?;
                 } else if !self.coercible_to(right_expr.ty, elem_ty) {
                     self.tir
                         .diagnostics
                         .push(report_binary_expression_mistmatch(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryExpressionMistmatchDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: elem_ty,
                                     span: left.span,
@@ -8187,7 +8331,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_invalid_assignment_target(SourceSpan::new(
-                        self.file_id,
+                        ctx.resolve_context.file_id,
                         left.span,
                     )));
 
@@ -8222,10 +8366,15 @@ impl<'ast> Builder<'ast, '_> {
                 )
                 .and_then(|mut value| {
                     let scope = ctx.stack.scopes.get_mut(0).unwrap();
-                    let inferred_type = self.infer_block_type(scope, &value)?;
+                    let inferred_type =
+                        self.infer_block_type(ctx.resolve_context.file_id, scope, &value)?;
                     scope.inferred_type = Some(inferred_type);
                     if value.ty.is_comptime_number() {
-                        self.coerce_untyped_expr(&mut value, inferred_type)?;
+                        self.coerce_untyped_expr(
+                            ctx.resolve_context.file_id,
+                            &mut value,
+                            inferred_type,
+                        )?;
                     }
 
                     match scope.expected_type {
@@ -8235,7 +8384,7 @@ impl<'ast> Builder<'ast, '_> {
                                 TypeMistmatchDiagnostic {
                                     expected_type,
                                     actual_type: inferred_type,
-                                    span: SourceSpan::new(self.file_id, value.span),
+                                    span: SourceSpan::new(ctx.resolve_context.file_id, value.span),
                                 },
                             ));
                             return Err(());
@@ -8269,7 +8418,7 @@ impl<'ast> Builder<'ast, '_> {
                             TypeMistmatchDiagnostic {
                                 expected_type,
                                 actual_type: inferred_type,
-                                span: SourceSpan::new(self.file_id, expr.span),
+                                span: SourceSpan::new(ctx.resolve_context.file_id, expr.span),
                             },
                         ));
                         return Err(());
@@ -8331,7 +8480,7 @@ impl<'ast> Builder<'ast, '_> {
                         TypeMistmatchDiagnostic {
                             expected_type: l,
                             actual_type: r,
-                            span: SourceSpan::new(self.file_id, right.span),
+                            span: SourceSpan::new(ctx.resolve_context.file_id, right.span),
                         },
                     ));
                     return Ok(Expression {
@@ -8361,7 +8510,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(report_binary_operator_cannot_be_applied(
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryOperatorCannotBeAppliedDiagnostic {
-                                file_id: self.file_id,
+                                file_id: ctx.resolve_context.file_id,
                                 operator: operator.clone(),
                                 operand: Spanned {
                                     inner: ty,
@@ -8380,7 +8529,7 @@ impl<'ast> Builder<'ast, '_> {
                         span: expr.span,
                     });
                 }
-                self.coerce_untyped_expr(&mut left, ty)?;
+                self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut left, ty)?;
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -8394,7 +8543,7 @@ impl<'ast> Builder<'ast, '_> {
             }
             (ty, r) if r.is_comptime_number() => {
                 // TODO: check if primitive
-                self.coerce_untyped_expr(&mut right, ty)?;
+                self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut right, ty)?;
 
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -8410,7 +8559,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_unreachable_code(SourceSpan::new(
-                        self.file_id,
+                        ctx.resolve_context.file_id,
                         right.span,
                     )));
 
@@ -8420,7 +8569,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_unreachable_code(SourceSpan::new(
-                        self.file_id,
+                        ctx.resolve_context.file_id,
                         operator.span,
                     )));
 
@@ -8443,7 +8592,7 @@ impl<'ast> Builder<'ast, '_> {
                     .push(report_binary_expression_mistmatch(
                         TypeFormatter::new(&self.tir, &self.interner),
                         BinaryExpressionMistmatchDiagnostic {
-                            file_id: self.file_id,
+                            file_id: ctx.resolve_context.file_id,
                             left_type: Spanned {
                                 inner: left_type,
                                 span: left.span,
@@ -8555,7 +8704,10 @@ impl<'ast> Builder<'ast, '_> {
 
             if let Some(expected) = expected_type {
                 if arg.ty.is_comptime_number() {
-                    if self.coerce_untyped_expr(arg, expected).is_err() {
+                    if self
+                        .coerce_untyped_expr(ctx.resolve_context.file_id, arg, expected)
+                        .is_err()
+                    {
                         had_error = true;
                     }
                 } else if !self.coercible_to(arg.ty, expected)
@@ -8566,7 +8718,7 @@ impl<'ast> Builder<'ast, '_> {
                         TypeMistmatchDiagnostic {
                             expected_type: expected,
                             actual_type: arg.ty,
-                            span: SourceSpan::new(self.file_id, arg.span),
+                            span: SourceSpan::new(ctx.resolve_context.file_id, arg.span),
                         },
                     ));
                 }
@@ -8574,14 +8726,18 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_type_annotation_required(SourceSpan::new(
-                        self.file_id,
+                        ctx.resolve_context.file_id,
                         arg.span,
                     )));
                 had_error = true;
             }
         }
 
-        if had_error { Err(()) } else { Ok((args, type_args)) }
+        if had_error {
+            Err(())
+        } else {
+            Ok((args, type_args))
+        }
     }
 
     fn build_call_arguments(
@@ -8602,16 +8758,29 @@ impl<'ast> Builder<'ast, '_> {
 
             let mut argument = match self.build_expression(
                 ctx,
-                AccessContext { expected_type, access_kind: AccessKind::Read },
+                AccessContext {
+                    expected_type,
+                    access_kind: AccessKind::Read,
+                },
                 &argument.inner,
             ) {
                 Ok(e) => e,
-                Err(_) => { had_error = true; continue; }
+                Err(_) => {
+                    had_error = true;
+                    continue;
+                }
             };
 
             if let Some(expected_type) = expected_type {
                 if argument.ty.is_comptime_number() {
-                    if self.coerce_untyped_expr(&mut argument, expected_type).is_err() {
+                    if self
+                        .coerce_untyped_expr(
+                            ctx.resolve_context.file_id,
+                            &mut argument,
+                            expected_type,
+                        )
+                        .is_err()
+                    {
                         had_error = true;
                         continue;
                     }
@@ -8623,7 +8792,7 @@ impl<'ast> Builder<'ast, '_> {
                         TypeMistmatchDiagnostic {
                             expected_type,
                             actual_type: argument.ty,
-                            span: SourceSpan::new(self.file_id, argument.span),
+                            span: SourceSpan::new(ctx.resolve_context.file_id, argument.span),
                         },
                     ));
                 }
@@ -8633,7 +8802,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_type_annotation_required(SourceSpan::new(
-                        self.file_id,
+                        ctx.resolve_context.file_id,
                         argument.span,
                     )));
                 had_error = true;
@@ -8643,7 +8812,11 @@ impl<'ast> Builder<'ast, '_> {
             built.push(argument);
         }
 
-        if had_error { Err(()) } else { Ok(built.into_boxed_slice()) }
+        if had_error {
+            Err(())
+        } else {
+            Ok(built.into_boxed_slice())
+        }
     }
 
     fn build_call_expression(
@@ -8676,7 +8849,7 @@ impl<'ast> Builder<'ast, '_> {
                     .with_code(DiagnosticCode::CannotCallExpression.code())
                     .with_message("call expression requires function")
                     .with_label(
-                        SourceSpan::new(self.file_id, ast_callee.span)
+                        SourceSpan::new(ctx.resolve_context.file_id, ast_callee.span)
                             .primary_label()
                             .with_message(format!(
                                 "expected function, found `{}`",
@@ -8737,7 +8910,10 @@ impl<'ast> Builder<'ast, '_> {
                                 ArgumentCountMismatchDiagnostic {
                                     actual_count: arguments.len(),
                                     params,
-                                    call_span: SourceSpan::new(self.file_id, callee.span),
+                                    call_span: SourceSpan::new(
+                                        ctx.resolve_context.file_id,
+                                        callee.span,
+                                    ),
                                     is_method: true,
                                 },
                             ));
@@ -8794,7 +8970,7 @@ impl<'ast> Builder<'ast, '_> {
                         ArgumentCountMismatchDiagnostic {
                             actual_count: arguments.len(),
                             params,
-                            call_span: SourceSpan::new(self.file_id, callee.span),
+                            call_span: SourceSpan::new(ctx.resolve_context.file_id, callee.span),
                             is_method: false,
                         },
                     ));
@@ -8872,7 +9048,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir.diagnostics.push(
                         codespan_reporting::diagnostic::Diagnostic::error()
                             .with_message("pattern destructuring in locals is not yet supported")
-                            .with_label(Label::primary(self.file_id, pattern.span)),
+                            .with_label(Label::primary(ctx.resolve_context.file_id, pattern.span)),
                     );
                     return Err(());
                 }
@@ -8898,7 +9074,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_type_annotation_required(SourceSpan::new(
-                        self.file_id,
+                        ctx.resolve_context.file_id,
                         name.span,
                     )));
                 // Use Error type for recovery - this allows later references to work
@@ -8907,7 +9083,7 @@ impl<'ast> Builder<'ast, '_> {
             }
             (ty, None) => ty,
             (v, Some(expected_type)) if v.is_comptime_number() => {
-                self.coerce_untyped_expr(&mut value, expected_type)?;
+                self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut value, expected_type)?;
                 expected_type
             }
             (actual_type, Some(expected_type)) => {
@@ -8919,7 +9095,7 @@ impl<'ast> Builder<'ast, '_> {
                         TypeMistmatchDiagnostic {
                             expected_type,
                             actual_type,
-                            span: SourceSpan::new(self.file_id, value.span),
+                            span: SourceSpan::new(ctx.resolve_context.file_id, value.span),
                         },
                     ));
                     expected_type // Recover by using the expected type
@@ -8952,15 +9128,20 @@ impl<'ast> Builder<'ast, '_> {
 
     fn coerce_untyped_expr(
         &mut self,
+        file_id: FileId,
         expression: &mut Expression,
         target_idx: TypeIndex,
     ) -> Result<(), ()> {
         match expression.kind {
-            ExprKind::Int { .. } => self.coerce_untyped_int_expr(expression, target_idx),
-            ExprKind::Float { .. } => self.coerce_untyped_float_expr(expression, target_idx),
-            ExprKind::Unary { .. } => self.coerce_untyped_unary_expr(expression, target_idx),
+            ExprKind::Int { .. } => self.coerce_untyped_int_expr(file_id, expression, target_idx),
+            ExprKind::Float { .. } => {
+                self.coerce_untyped_float_expr(file_id, expression, target_idx)
+            }
+            ExprKind::Unary { .. } => {
+                self.coerce_untyped_unary_expr(file_id, expression, target_idx)
+            }
             ExprKind::Binary { .. } => {
-                self.coerce_untyped_binary_expression(expression, target_idx)
+                self.coerce_untyped_binary_expression(file_id, expression, target_idx)
             }
             // Any other expression kind that ends up here already had an error
             // reported; propagate failure without emitting a second diagnostic.
@@ -8970,6 +9151,7 @@ impl<'ast> Builder<'ast, '_> {
 
     fn coerce_untyped_int_expr(
         &mut self,
+        file_id: FileId,
         expr: &mut Expression,
         target_idx: TypeIndex,
     ) -> Result<(), ()> {
@@ -8988,7 +9170,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::I32,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9003,7 +9185,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::I64,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9018,7 +9200,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::U32,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9035,7 +9217,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::U64,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9050,7 +9232,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::U8,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9065,7 +9247,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::I8,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9080,7 +9262,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::U16,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9095,7 +9277,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::I16,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9110,7 +9292,7 @@ impl<'ast> Builder<'ast, '_> {
                         IntegerLiteralOutOfRangeDiagnostic {
                             ty: TypeIndex::CHAR,
                             value,
-                            span: SourceSpan::new(self.file_id, expr.span),
+                            span: SourceSpan::new(file_id, expr.span),
                         },
                     ));
             }
@@ -9120,15 +9302,14 @@ impl<'ast> Builder<'ast, '_> {
             self.tir
                 .diagnostics
                 .push(report_integer_literal_for_float_type(SourceSpan::new(
-                    self.file_id,
-                    expr.span,
+                    file_id, expr.span,
                 )));
             Err(())
         } else {
             self.tir.diagnostics.push(report_unable_to_coerce(
                 formatter,
                 target_idx,
-                SourceSpan::new(self.file_id, expr.span),
+                SourceSpan::new(file_id, expr.span),
             ));
             Err(())
         }
@@ -9136,6 +9317,7 @@ impl<'ast> Builder<'ast, '_> {
 
     fn coerce_untyped_float_expr(
         &mut self,
+        file_id: FileId,
         expr: &mut Expression,
         target_idx: TypeIndex,
     ) -> Result<(), ()> {
@@ -9151,7 +9333,7 @@ impl<'ast> Builder<'ast, '_> {
             self.tir.diagnostics.push(report_unable_to_coerce(
                 TypeFormatter::new(&self.tir, &self.interner),
                 target_idx,
-                SourceSpan::new(self.file_id, expr.span),
+                SourceSpan::new(file_id, expr.span),
             ));
             Err(())
         }
@@ -9159,6 +9341,7 @@ impl<'ast> Builder<'ast, '_> {
 
     fn coerce_untyped_unary_expr(
         &mut self,
+        file_id: FileId,
         expr: &mut Expression,
         target_idx: TypeIndex,
     ) -> Result<(), ()> {
@@ -9174,7 +9357,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir.diagnostics.push(report_unable_to_coerce(
                         TypeFormatter::new(&self.tir, &self.interner),
                         target_idx,
-                        SourceSpan::new(self.file_id, expr.span),
+                        SourceSpan::new(file_id, expr.span),
                     ));
                     return Err(());
                 }
@@ -9182,12 +9365,13 @@ impl<'ast> Builder<'ast, '_> {
             _ => unreachable!(),
         }
 
-        self.coerce_untyped_expr(operand, target_idx)
+        self.coerce_untyped_expr(file_id, operand, target_idx)
             .and_then(|_| Ok(expr.ty = target_idx))
     }
 
     fn coerce_untyped_binary_expression(
         &mut self,
+        file_id: FileId,
         expr: &mut Expression,
         target_idx: TypeIndex,
     ) -> Result<(), ()> {
@@ -9206,7 +9390,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir.diagnostics.push(report_unable_to_coerce(
                         TypeFormatter::new(&self.tir, &self.interner),
                         target_idx,
-                        SourceSpan::new(self.file_id, expr.span),
+                        SourceSpan::new(file_id, expr.span),
                     ));
                     return Err(());
                 }
@@ -9220,7 +9404,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir.diagnostics.push(report_unable_to_coerce(
                         TypeFormatter::new(&self.tir, &self.interner),
                         target_idx,
-                        SourceSpan::new(self.file_id, expr.span),
+                        SourceSpan::new(file_id, expr.span),
                     ));
                     return Err(());
                 }
@@ -9229,8 +9413,8 @@ impl<'ast> Builder<'ast, '_> {
         };
 
         match (
-            self.coerce_untyped_expr(left, target_idx),
-            self.coerce_untyped_expr(right, target_idx),
+            self.coerce_untyped_expr(file_id, left, target_idx),
+            self.coerce_untyped_expr(file_id, right, target_idx),
         ) {
             (Ok(_), Ok(_)) => {
                 expr.ty = target_idx;
@@ -9265,7 +9449,7 @@ impl<'ast> Builder<'ast, '_> {
                 Some(SymbolKind::Struct { struct_index }) => struct_index,
                 Some(_) => {
                     self.tir.diagnostics.push(report_not_a_struct_type(
-                        self.file_id,
+                        func_ctx.resolve_context.file_id,
                         self.interner.resolve(struct_name_sym).unwrap().to_string(),
                         struct_name_span,
                     ));
@@ -9275,7 +9459,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir
                         .diagnostics
                         .push(report_undeclared_identifier(SourceSpan::new(
-                            self.file_id,
+                            func_ctx.resolve_context.file_id,
                             struct_name_span,
                         )));
                     return Err(());
@@ -9317,7 +9501,7 @@ impl<'ast> Builder<'ast, '_> {
                 Type::Struct { struct_index, .. } => *struct_index,
                 _ => {
                     self.tir.diagnostics.push(report_not_a_struct_type(
-                        self.file_id,
+                        func_ctx.resolve_context.file_id,
                         self.interner.resolve(struct_name_sym).unwrap().to_string(),
                         struct_name_span,
                     ));
@@ -9367,7 +9551,7 @@ impl<'ast> Builder<'ast, '_> {
                         if type_params_len == 1 { "" } else { "s" },
                         resolved_args.len(),
                     ))
-                    .with_label(Label::primary(self.file_id, init_span)),
+                    .with_label(Label::primary(func_ctx.resolve_context.file_id, init_span)),
             );
             return Err(());
         }
@@ -9398,7 +9582,7 @@ impl<'ast> Builder<'ast, '_> {
                 None => {
                     self.tir.diagnostics.push(report_unknown_struct_field(
                         UnknownStructFieldDiagnostic {
-                            file_id: self.file_id,
+                            file_id: func_ctx.resolve_context.file_id,
                             struct_name: &struct_name,
                             field_name,
                             field_span: field.name.span,
@@ -9413,8 +9597,8 @@ impl<'ast> Builder<'ast, '_> {
                     .diagnostics
                     .push(report_duplicate_struct_field_init(
                         &field_name,
-                        SourceSpan::new(self.file_id, first_span),
-                        SourceSpan::new(self.file_id, field.name.span),
+                        SourceSpan::new(func_ctx.resolve_context.file_id, first_span),
+                        SourceSpan::new(func_ctx.resolve_context.file_id, field.name.span),
                     ));
                 continue;
             }
@@ -9459,7 +9643,11 @@ impl<'ast> Builder<'ast, '_> {
             };
 
             if field_expr.ty.is_comptime_number() {
-                match self.coerce_untyped_expr(&mut field_expr, expected_ty) {
+                match self.coerce_untyped_expr(
+                    func_ctx.resolve_context.file_id,
+                    &mut field_expr,
+                    expected_ty,
+                ) {
                     Ok(_) => {}
                     Err(_) => continue,
                 }
@@ -9469,7 +9657,7 @@ impl<'ast> Builder<'ast, '_> {
                     TypeMistmatchDiagnostic {
                         expected_type: expected_ty,
                         actual_type: field_expr.ty,
-                        span: SourceSpan::new(self.file_id, field_expr.span),
+                        span: SourceSpan::new(func_ctx.resolve_context.file_id, field_expr.span),
                     },
                 ));
                 continue;
@@ -9491,7 +9679,7 @@ impl<'ast> Builder<'ast, '_> {
         if !missing.is_empty() {
             self.tir.diagnostics.push(report_missing_struct_fields(
                 MissingStructFieldsDiagnostic {
-                    file_id: self.file_id,
+                    file_id: func_ctx.resolve_context.file_id,
                     struct_name: &struct_name,
                     missing_fields: missing,
                     init_span,
@@ -9505,7 +9693,10 @@ impl<'ast> Builder<'ast, '_> {
         });
         self.tir.structs[struct_index as usize]
             .accesses
-            .push(SourceSpan::new(self.file_id, struct_name_span));
+            .push(SourceSpan::new(
+                func_ctx.resolve_context.file_id,
+                struct_name_span,
+            ));
 
         // If any field was mentioned but failed to build (type error, coercion error,
         // …), its slot is still None even though first_mention is Some. Return
@@ -9566,7 +9757,11 @@ impl<'ast> Builder<'ast, '_> {
                 Ok(mut e) => {
                     if e.ty.is_comptime_number() {
                         if let Some(exp_ty) = expected {
-                            let _ = self.coerce_untyped_expr(&mut e, exp_ty);
+                            let _ = self.coerce_untyped_expr(
+                                func_ctx.resolve_context.file_id,
+                                &mut e,
+                                exp_ty,
+                            );
                         }
                     }
                     built.push(e);
@@ -9620,7 +9815,7 @@ impl<'ast> Builder<'ast, '_> {
             Type::Pointer { to, memory, .. } => (*to, *memory),
             _ => {
                 self.tir.diagnostics.push(report_cannot_deref_non_pointer(
-                    SourceSpan::new(self.file_id, pointer.span),
+                    SourceSpan::new(func_ctx.resolve_context.file_id, pointer.span),
                     TypeFormatter::new(&self.tir, &self.interner).display_type(pointer.ty),
                 ));
                 return Err(());
@@ -9672,7 +9867,7 @@ impl<'ast> Builder<'ast, '_> {
         span: ast::TextSpan,
         elements: &[ast::Spanned<ast::Expression>],
     ) -> Result<Expression, ()> {
-        let source_span = SourceSpan::new(self.file_id, span);
+        let source_span = SourceSpan::new(func_ctx.resolve_context.file_id, span);
 
         let (expected_of, expected_memory, expected_size, expected_mutable) =
             match access_ctx.expected_type {
@@ -9711,10 +9906,12 @@ impl<'ast> Builder<'ast, '_> {
             )?;
             if elem.ty.is_comptime_number() {
                 match expected_of {
-                    Some(of) => self.coerce_untyped_expr(&mut elem, of)?,
+                    Some(of) => {
+                        self.coerce_untyped_expr(func_ctx.resolve_context.file_id, &mut elem, of)?
+                    }
                     None => {
                         self.tir.diagnostics.push(report_type_annotation_required(
-                            SourceSpan::new(self.file_id, elem.span),
+                            SourceSpan::new(func_ctx.resolve_context.file_id, elem.span),
                         ));
                         return Err(());
                     }
@@ -9724,7 +9921,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir.diagnostics.push(
                     Diagnostic::error()
                         .with_message("array element type must be a numeric type")
-                        .with_label(Label::primary(self.file_id, elem.span)),
+                        .with_label(Label::primary(func_ctx.resolve_context.file_id, elem.span)),
                 );
                 return Err(());
             }
@@ -9732,7 +9929,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_array_element_not_const(SourceSpan::new(
-                        self.file_id,
+                        func_ctx.resolve_context.file_id,
                         elem.span,
                     )));
                 return Err(());
@@ -9749,7 +9946,7 @@ impl<'ast> Builder<'ast, '_> {
                         TypeMistmatchDiagnostic {
                             expected_type: ty,
                             actual_type: elem.ty,
-                            span: SourceSpan::new(self.file_id, elem.span),
+                            span: SourceSpan::new(func_ctx.resolve_context.file_id, elem.span),
                         },
                     ));
                     return Err(());
@@ -9797,7 +9994,7 @@ impl<'ast> Builder<'ast, '_> {
         value_expr: &ast::Spanned<ast::Expression>,
         count_expr: &ast::Spanned<ast::Expression>,
     ) -> Result<Expression, ()> {
-        let source_span = SourceSpan::new(self.file_id, span);
+        let source_span = SourceSpan::new(func_ctx.resolve_context.file_id, span);
 
         let (expected_of, expected_memory, expected_mutable) = match access_ctx.expected_type {
             Some(ty) => match self.tir.type_pool[ty.as_usize()].clone() {
@@ -9826,7 +10023,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_array_repeat_count_not_const(SourceSpan::new(
-                        self.file_id,
+                        func_ctx.resolve_context.file_id,
                         count_expr.span,
                     )));
                 return Err(());
@@ -9856,12 +10053,14 @@ impl<'ast> Builder<'ast, '_> {
         )?;
         if value.ty.is_comptime_number() {
             match expected_of {
-                Some(of) => self.coerce_untyped_expr(&mut value, of)?,
+                Some(of) => {
+                    self.coerce_untyped_expr(func_ctx.resolve_context.file_id, &mut value, of)?
+                }
                 None => {
                     self.tir
                         .diagnostics
                         .push(report_type_annotation_required(SourceSpan::new(
-                            self.file_id,
+                            func_ctx.resolve_context.file_id,
                             value.span,
                         )));
                     return Err(());
@@ -9872,7 +10071,7 @@ impl<'ast> Builder<'ast, '_> {
             self.tir.diagnostics.push(
                 Diagnostic::error()
                     .with_message("array element type must be a numeric type")
-                    .with_label(Label::primary(self.file_id, value.span)),
+                    .with_label(Label::primary(func_ctx.resolve_context.file_id, value.span)),
             );
             return Err(());
         }
@@ -9880,7 +10079,7 @@ impl<'ast> Builder<'ast, '_> {
             self.tir
                 .diagnostics
                 .push(report_array_element_not_const(SourceSpan::new(
-                    self.file_id,
+                    func_ctx.resolve_context.file_id,
                     value.span,
                 )));
             return Err(());
@@ -9938,7 +10137,7 @@ impl<'ast> Builder<'ast, '_> {
             } => (of, memory, mutable),
             _ => {
                 self.tir.diagnostics.push(report_index_on_non_indexable(
-                    SourceSpan::new(self.file_id, object.span),
+                    SourceSpan::new(func_ctx.resolve_context.file_id, object.span),
                     TypeFormatter::new(&self.tir, &self.interner).display_type(object.ty),
                 ));
                 return Err(());
@@ -9957,14 +10156,14 @@ impl<'ast> Builder<'ast, '_> {
             index_expr,
         )?;
         if index.ty.is_comptime_number() {
-            self.coerce_untyped_expr(&mut index, index_type)?;
+            self.coerce_untyped_expr(func_ctx.resolve_context.file_id, &mut index, index_type)?;
         } else if index.ty != index_type {
             self.tir.diagnostics.push(report_type_mistmatch(
                 TypeFormatter::new(&self.tir, &self.interner),
                 TypeMistmatchDiagnostic {
                     expected_type: index_type,
                     actual_type: index.ty,
-                    span: SourceSpan::new(self.file_id, index.span),
+                    span: SourceSpan::new(func_ctx.resolve_context.file_id, index.span),
                 },
             ));
         }

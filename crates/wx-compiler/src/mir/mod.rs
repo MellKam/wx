@@ -247,10 +247,20 @@ pub struct Aggregate {
     decl_to_phys: Box<[u32]>,
 }
 
+/// Whether a memory is locally defined or provided by the WASM host.
+/// `External < Internal` so a stable sort puts imported memories first,
+/// matching the WASM binary format requirement.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum MemorySource {
+    External,
+    Internal,
+}
+
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct MemoryInfo {
     pub id: ast::DefId,
-    pub source: tir::ItemSource,
+    pub source: MemorySource,
     pub kind: tir::MemoryKind,
     pub min_pages: Option<u32>,
     pub max_pages: Option<u32>,
@@ -421,7 +431,7 @@ impl MIR {
         for func in &tir.functions {
             if func.body.is_some()
                 && func.type_params.is_empty()
-                && func.source == tir::ItemSource::Internal
+                && !tir.is_import_namespace(func.namespace)
             {
                 if func
                     .attributes
@@ -466,7 +476,7 @@ impl MIR {
         let globals: Vec<Global> = tir
             .globals
             .iter()
-            .filter(|g| g.source == tir::ItemSource::Internal && g.value.is_some())
+            .filter(|g| !tir.is_import_namespace(g.namespace) && g.value.is_some())
             .map(|g| builder.lower_global(g))
             .collect();
 
@@ -520,7 +530,7 @@ impl MIR {
                 .iter()
                 .map(|m| MemoryInfo {
                     id: m.id,
-                    source: m.source,
+                    source: MemorySource::Internal,
                     kind: m.kind,
                     min_pages: m.min_pages,
                     max_pages: m.max_pages,
@@ -892,9 +902,9 @@ impl<'tir> Builder<'tir> {
                     .expect("no impl found for associated type projection during MIR lowering");
                 self.lower_type_index(concrete)
             }
-            tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => Type::Pointer {
-                memory,
-            },
+            tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
+                Type::Pointer { memory }
+            }
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index, args } => {
                 let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
@@ -1055,22 +1065,37 @@ impl<'tir> Builder<'tir> {
     }
 
     /// Add a static data entry (array constant); returns `(index, byte_size)`.
-    fn push_static_data(&mut self, func_ctx: &mut FunctionContext, bytes: Vec<u8>, align: u32) -> (u32, u32) {
+    fn push_static_data(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        bytes: Vec<u8>,
+        align: u32,
+    ) -> (u32, u32) {
         let size = bytes.len() as u32;
         let idx = self.static_entries.len() as u32;
-        self.static_entries.push(StaticEntry { bytes: bytes.into_boxed_slice(), align });
+        self.static_entries.push(StaticEntry {
+            bytes: bytes.into_boxed_slice(),
+            align,
+        });
         func_ctx.static_data.push(idx);
         (idx, size)
     }
 
     /// Add a string literal entry, deduplicating by symbol; returns `(index, byte_size)`.
-    fn push_string_data(&mut self, func_ctx: &mut FunctionContext, symbol: SymbolU32) -> (u32, u32) {
+    fn push_string_data(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        symbol: SymbolU32,
+    ) -> (u32, u32) {
         if let Some(&idx) = self.symbol_to_entry_index.get(&symbol) {
             let size = self.static_entries[idx as usize].bytes.len() as u32;
             func_ctx.static_data.push(idx);
             return (idx, size);
         }
-        let s = self.interner.resolve(symbol).expect("unresolved string symbol");
+        let s = self
+            .interner
+            .resolve(symbol)
+            .expect("unresolved string symbol");
         let size = s.len() as u32;
         let idx = self.static_entries.len() as u32;
         self.static_entries.push(StaticEntry {
@@ -1103,7 +1128,9 @@ impl<'tir> Builder<'tir> {
                     kind: ExprKind::Mul {
                         left: Box::new(idx),
                         right: Box::new(Expression {
-                            kind: ExprKind::Int { value: elem_size as i64 },
+                            kind: ExprKind::Int {
+                                value: elem_size as i64,
+                            },
                             ty: idx_ty,
                         }),
                     },
@@ -1630,7 +1657,11 @@ impl<'tir> Builder<'tir> {
                     ty: Type::Aggregate { aggregate_index },
                 }
             }
-            tir::ExprKind::IntrinsicCall { name, type_args, arguments } => {
+            tir::ExprKind::IntrinsicCall {
+                name,
+                type_args,
+                arguments,
+            } => {
                 let name_str = self.interner.resolve(*name).unwrap_or("");
                 match name_str {
                     "@memory_grow" => {
@@ -1901,7 +1932,10 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
-            tir::ExprKind::ArrayLiteral { elements, memory_id } => {
+            tir::ExprKind::ArrayLiteral {
+                elements,
+                memory_id,
+            } => {
                 let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
                     _ => unreachable!(),
@@ -1923,7 +1957,11 @@ impl<'tir> Builder<'tir> {
                     ty: Type::Pointer { memory: *memory_id },
                 }
             }
-            tir::ExprKind::ArrayRepeat { value, count, memory_id } => {
+            tir::ExprKind::ArrayRepeat {
+                value,
+                count,
+                memory_id,
+            } => {
                 let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
                     _ => unreachable!(),
@@ -1944,7 +1982,11 @@ impl<'tir> Builder<'tir> {
                     ty: Type::Pointer { memory: *memory_id },
                 }
             }
-            tir::ExprKind::Index { object, index, memory_id } => {
+            tir::ExprKind::Index {
+                object,
+                index,
+                memory_id,
+            } => {
                 let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
                     _ => unreachable!("index lowering only supported on arrays"),
@@ -1988,7 +2030,11 @@ impl<'tir> Builder<'tir> {
                 offset: 0,
                 memory: *memory_id,
             },
-            tir::ExprKind::Index { object, index, memory_id } => {
+            tir::ExprKind::Index {
+                object,
+                index,
+                memory_id,
+            } => {
                 let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
                     _ => unreachable!("index assignment only supported on arrays"),
@@ -2081,7 +2127,11 @@ impl<'tir> Builder<'tir> {
                 offset: 0,
                 memory: *memory_id,
             },
-            tir::ExprKind::Index { object, index, memory_id } => {
+            tir::ExprKind::Index {
+                object,
+                index,
+                memory_id,
+            } => {
                 let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
                     _ => unreachable!("index compound assignment only supported on arrays"),
@@ -2276,7 +2326,11 @@ fn rewrite_body(
             memory,
             delta: rw_box(delta),
         },
-        ExprKind::PointerLoad { pointer, offset, memory } => ExprKind::PointerLoad {
+        ExprKind::PointerLoad {
+            pointer,
+            offset,
+            memory,
+        } => ExprKind::PointerLoad {
             pointer: rw_box(pointer),
             offset,
             memory,
@@ -2605,7 +2659,9 @@ pub fn run_inlining_pass(mir: &mut MIR) {
                     &f_body,
                     0,
                 );
-                caller_func.static_data.extend_from_slice(&f_body.static_data);
+                caller_func
+                    .static_data
+                    .extend_from_slice(&f_body.static_data);
 
                 // Update graph: remove caller → f, propagate f's callees to caller.
                 graph.callees.get_mut(&caller_id).unwrap().remove(&f_id);

@@ -171,7 +171,7 @@ fn test_string_literal_lowered_to_tuple() {
     // A string literal lowers to Aggregate { StaticPointer(data_index), Int(len) } in MIR,
     // and the function records the entry index in its static_data list.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
         indoc! {"
         memory heap: Memory32;
 
@@ -194,7 +194,7 @@ fn test_string_literal_lowered_to_tuple() {
 fn test_string_field_access_lowered_to_local_tuple_get() {
     // Field access on a string local (ptr/len) should map to LocalTupleGet.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
         indoc! {"
         memory heap: Memory32;
 
@@ -223,8 +223,6 @@ const MEMORY32_TRAIT: &str = indoc! {"
         fn grow(self, delta: u32) -> u32;
     }
 "};
-
-const WASM_MODULE: &str = "";
 
 // ── inline methods
 // ────────────────────────────────────────────────────────────
@@ -270,7 +268,7 @@ fn test_inline_method_is_substituted() {
 fn test_memory_grow_lowers_to_memory_grow() {
     // heap.grow(delta) → MemoryGrow { memory_index: 0, delta }
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        "{MEMORY32_TRAIT}\n{}",
         indoc! {"
         memory heap: Memory32;
 
@@ -288,7 +286,7 @@ fn test_memory_grow_lowers_to_memory_grow() {
 fn test_memory_size_lowers_to_memory_size() {
     // heap.size() → MemorySize { memory_index: 0 }
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        "{MEMORY32_TRAIT}\n{}",
         indoc! {"
         memory heap: Memory32;
 
@@ -306,7 +304,7 @@ fn test_memory_size_lowers_to_memory_size() {
 fn test_memory_offset_lowers_to_memory_offset() {
     // heap::OFFSET → MemoryOffset { memory_index: 0 } (placeholder for codegen)
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        "{MEMORY32_TRAIT}\n{}",
         indoc! {"
         memory heap: Memory32;
 
@@ -324,7 +322,7 @@ fn test_memory_offset_lowers_to_memory_offset() {
 fn test_memory_index_lowers_to_int() {
     // heap::MEMORY_INDEX → Int { value: 0 } (the wasm linear memory index)
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        "{MEMORY32_TRAIT}\n{}",
         indoc! {"
         memory heap: Memory32;
 
@@ -886,7 +884,7 @@ fn test_multiple_calls_to_generic_produce_single_mono_instance() {
 #[test]
 fn test_string_creates_static_entry_with_correct_bytes() {
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
         indoc! {"
         memory heap: Memory32;
         fn get() -> string { \"hello\" }
@@ -911,7 +909,7 @@ fn test_same_string_deduplicated_across_functions() {
     // Two exported functions using the same string literal must produce exactly
     // one static entry; both functions reference index 0.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
         indoc! {"
         memory heap: Memory32;
         fn a() -> string { \"hello\" }
@@ -935,7 +933,7 @@ fn test_same_string_deduplicated_across_functions() {
 #[test]
 fn test_different_strings_produce_separate_entries() {
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
         indoc! {"
         memory heap: Memory32;
         fn a() -> string { \"hello\" }
@@ -954,7 +952,7 @@ fn test_dce_removes_static_data_ownership() {
     // A DCE'd function is removed from mir.functions, so its static entry
     // is never referenced by any live function. Codegen will skip it.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
         indoc! {"
         memory heap: Memory32;
         fn live() -> i32 { 42 }
@@ -984,7 +982,7 @@ fn test_inlining_propagates_static_data_to_caller() {
     // caller, the caller must inherit the static entry index so codegen
     // includes the string in the data segment.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{STRING_STRUCT}\n{}",
+        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
         indoc! {"
         memory heap: Memory32;
 
@@ -1015,7 +1013,7 @@ fn test_inlining_propagates_static_data_to_caller() {
 fn test_array_literal_bytes_are_little_endian() {
     // [1, 2, 3] as heap::[3]i32 → 12 bytes encoding each value as 32-bit LE.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        "{MEMORY32_TRAIT}\n{}",
         indoc! {"
         memory heap: Memory32;
         fn get() -> heap::[3]i32 {
@@ -1041,7 +1039,7 @@ fn test_array_literal_bytes_are_little_endian() {
 fn test_array_repeat_bytes_repeated() {
     // [7; 4] as heap::[4]u8 → four bytes each equal to 7.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        "{MEMORY32_TRAIT}\n{}",
         indoc! {"
         memory heap: Memory32;
         fn get() -> heap::[4]u8 {
@@ -1061,7 +1059,7 @@ fn test_array_dce_removes_static_data_ownership() {
     // A dead function with an array literal is removed by DCE.
     // No live function should reference its static entry.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        "{MEMORY32_TRAIT}\n{}",
         indoc! {"
         memory heap: Memory32;
         fn live() -> i32 { 42 }
@@ -1089,7 +1087,7 @@ fn test_array_dce_removes_static_data_ownership() {
 fn test_static_entry_alignment_matches_element_type() {
     // i32 elements → align 4; f64 elements → align 8; u8 elements → align 1.
     let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{WASM_MODULE}\n{}",
+        "{MEMORY32_TRAIT}\n{}",
         indoc! {"
         memory heap: Memory32;
         fn ints() -> heap::[2]i32 {

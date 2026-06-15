@@ -256,7 +256,7 @@ pub type ScopeIndex = u32;
 pub type FunctionIndex = u32;
 pub type GlobalIndex = u32;
 pub type ConstIndex = u32;
-pub type ModuleIndex = u32;
+pub type NamespaceIndex = u32;
 pub type MemoryIndex = u32;
 pub type EnumVariantIndex = u32;
 pub type TraitIndex = u32;
@@ -266,6 +266,7 @@ pub type TraitImplIndex = u32;
 pub struct Constant {
     pub id: ast::DefId,
     pub file_id: FileId,
+    pub namespace: Option<NamespaceIndex>,
     pub pub_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<TypeIndex>,
@@ -283,6 +284,7 @@ pub struct TraitAssocType {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Trait {
     pub file_id: FileId,
+    pub namespace: Option<NamespaceIndex>,
     pub name: ast::Spanned<SymbolU32>,
     pub supertraits: Vec<TraitIndex>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
@@ -592,6 +594,7 @@ pub enum ExportItem {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Enum {
     pub file_id: FileId,
+    pub namespace: Option<NamespaceIndex>,
     pub pub_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: TypeIndex,
@@ -668,7 +671,6 @@ pub struct Memory {
     pub file_id: FileId,
     pub name: ast::Spanned<SymbolU32>,
     pub kind: MemoryKind,
-    pub source: ItemSource,
     pub min_pages: Option<u32>,
     pub max_pages: Option<u32>,
 }
@@ -688,7 +690,7 @@ pub enum ModuleDeclarationKind {
 pub struct ModuleNamespace {
     pub name: SymbolU32,
     /// `None` when the parent is the root namespace (not stored in `TIR::namespaces`).
-    pub parent: Option<ModuleIndex>,
+    pub parent: Option<NamespaceIndex>,
     pub declaration: ModuleDeclarationKind,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub symbols: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
@@ -698,7 +700,7 @@ pub struct ModuleNamespace {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct ModuleDecl {
     /// Index into `TIR::namespaces` for this module's symbol table.
-    pub namespace_idx: ModuleIndex,
+    pub namespace_idx: NamespaceIndex,
     /// File containing the `module foo;` or `module foo { }` declaration.
     pub declaring_file_id: FileId,
     /// File that IS this module (`foo.wx`). `None` for inline modules.
@@ -712,7 +714,7 @@ pub struct ModuleDecl {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct ImportDecl {
     /// Index into `TIR::namespaces` for this import module's symbol table.
-    pub namespace_idx: ModuleIndex,
+    pub namespace_idx: NamespaceIndex,
     pub file_id: FileId,
     pub accesses: Vec<SourceSpan>,
     pub external_name: ast::Spanned<SymbolU32>,
@@ -728,14 +730,6 @@ pub struct ImportDecl {
 pub enum SymbolNamespace {
     Type,
     Value,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub enum ItemSource {
-    Internal,
-    External,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -781,22 +775,6 @@ pub enum ImplEntry {
     },
 }
 
-impl PartialOrd for ItemSource {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ItemSource {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match (self, other) {
-            (ItemSource::External, ItemSource::Internal) => std::cmp::Ordering::Less,
-            (ItemSource::Internal, ItemSource::External) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        }
-    }
-}
-
 #[derive(Clone, Copy, PartialEq)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -825,7 +803,6 @@ pub struct FunctionAccess {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum FunctionOrigin {
     Free,
-    Module,
     Impl,
     Trait,
     TraitImpl { trait_impl_index: TraitImplIndex },
@@ -846,8 +823,8 @@ pub struct TypeParamInfo {
 pub struct Function {
     pub id: DefId,
     pub file_id: FileId,
+    pub namespace: Option<NamespaceIndex>,
     pub pub_span: Option<ast::TextSpan>,
-    pub source: ItemSource,
     pub origin: FunctionOrigin,
     /// Empty = monomorphic.
     pub type_params: Box<[TypeParamInfo]>,
@@ -967,7 +944,7 @@ define_diagnostic_codes! {
 pub struct Global {
     pub id: DefId,
     pub file_id: FileId,
-    pub source: ItemSource,
+    pub namespace: Option<NamespaceIndex>,
     pub accesses: Vec<SourceSpan>,
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<TypeIndex>,
@@ -988,6 +965,7 @@ pub struct StructField {
 pub struct Struct {
     pub id: ast::DefId,
     pub file_id: FileId,
+    pub namespace: Option<NamespaceIndex>,
     pub pub_span: Option<ast::TextSpan>,
     pub name: ast::Spanned<SymbolU32>,
     /// Empty for non-generic structs.
@@ -1258,6 +1236,16 @@ enum WasmPrimitive {
 impl TIR {
     pub fn formatter<'a>(&'a self, interner: &'a ast::StringInterner) -> TypeFormatter<'a> {
         TypeFormatter::new(self, interner)
+    }
+
+    pub fn is_import_namespace(&self, namespace: Option<NamespaceIndex>) -> bool {
+        match namespace {
+            Some(idx) => match self.namespaces[idx as usize].declaration {
+                ModuleDeclarationKind::Import(_) => true,
+                ModuleDeclarationKind::Module(_) => false,
+            },
+            None => false,
+        }
     }
 
     #[inline]

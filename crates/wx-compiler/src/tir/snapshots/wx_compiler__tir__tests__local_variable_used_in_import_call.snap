@@ -100,7 +100,7 @@ type_pool:
   - Module:
       namespace_idx: 0
   - FunctionItem:
-      id: 28
+      id: 27
       type_args: []
 diagnostics:
   - severity: Error
@@ -110,20 +110,8 @@ diagnostics:
       - style: Primary
         file_id: 1
         range:
-          start: 31
-          end: 35
-        message: ""
-    notes:
-      - "declare a memory in this module: `memory <name>: Memory32;`"
-  - severity: Error
-    code: E1038
-    message: pointer dereference requires a linear memory
-    labels:
-      - style: Primary
-        file_id: 1
-        range:
-          start: 125
-          end: 131
+          start: 85
+          end: 91
         message: ""
     notes:
       - "declare a memory in this module: `memory <name>: Memory32;`"
@@ -134,8 +122,8 @@ diagnostics:
       - style: Primary
         file_id: 1
         range:
-          start: 159
-          end: 165
+          start: 119
+          end: 125
         message: ""
     notes: []
   - severity: Warning
@@ -161,99 +149,89 @@ diagnostics:
         message: ""
     notes: []
 functions:
-  - id: 10
+  - id: 2
     file_id: 0
+    namespace: ~
     pub_span: ~
-    source: Internal
-    origin: Trait
+    origin: Free
     type_params:
-      - name: 21
+      - name: 6
+        name_span:
+          start: 96
+          end: 97
         bounds:
           - 1
-    signature_index: 24
+        accesses:
+          - file_id: 0
+            span:
+              start: 112
+              end: 113
+          - file_id: 0
+            span:
+              start: 122
+              end: 123
+          - file_id: 0
+            span:
+              start: 134
+              end: 135
+    signature_index: 26
     name:
-      inner: 22
+      inner: 5
       span:
-        start: 542
-        end: 546
+        start: 83
+        end: 95
     params:
       - mut_span: ~
         name:
-          inner: 20
+          inner: 8
           span:
-            start: 547
-            end: 551
+            start: 107
+            end: 110
         ty:
-          inner: 22
+          inner: 18
           span:
-            start: 547
-            end: 551
+            start: 112
+            end: 113
+      - mut_span: ~
+        name:
+          inner: 9
+          span:
+            start: 115
+            end: 120
+        ty:
+          inner: 23
+          span:
+            start: 122
+            end: 129
     result:
       inner: 23
       span:
-        start: 556
-        end: 566
+        start: 134
+        end: 141
     accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals:
-              - name:
-                  inner: 20
-                  span:
-                    start: 547
-                    end: 551
-                ty: 22
-                mut_span: ~
-                accesses:
-                  - span:
-                      start: 586
-                      end: 590
-                    kind: Read
-            inferred_type: 23
-            expected_type: 23
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                IntrinsicCall:
-                  name: 11
-                  type_args:
-                    - 22
-                  arguments:
-                    - kind:
-                        Local:
-                          scope_index: 0
-                          local_index: 0
-                      ty: 22
-                      span:
-                        start: 586
-                        end: 590
-              ty: 23
-              span:
-                start: 573
-                end: 591
-        ty: 23
-        span:
-          start: 567
-          end: 595
+    attributes: []
+    body: ~
   - id: 9
     file_id: 0
+    namespace: ~
     pub_span: ~
-    source: Internal
     origin: Trait
     type_params:
       - name: 21
+        name_span:
+          start: 327
+          end: 333
         bounds:
           - 1
+        accesses:
+          - file_id: 0
+            span:
+              start: 462
+              end: 466
+          - file_id: 0
+            span:
+              start: 477
+              end: 481
     signature_index: 25
     name:
       inner: 19
@@ -360,61 +338,119 @@ functions:
         span:
           start: 488
           end: 523
-  - id: 2
+  - id: 10
     file_id: 0
+    namespace: ~
     pub_span: ~
-    source: Internal
-    origin: Free
+    origin: Trait
     type_params:
-      - name: 6
+      - name: 21
+        name_span:
+          start: 327
+          end: 333
         bounds:
           - 1
-    signature_index: 26
+        accesses:
+          - file_id: 0
+            span:
+              start: 556
+              end: 560
+    signature_index: 24
     name:
-      inner: 5
+      inner: 22
       span:
-        start: 83
-        end: 95
+        start: 542
+        end: 546
     params:
       - mut_span: ~
         name:
-          inner: 8
+          inner: 20
           span:
-            start: 107
-            end: 110
+            start: 547
+            end: 551
         ty:
-          inner: 18
+          inner: 22
           span:
-            start: 112
-            end: 113
-      - mut_span: ~
-        name:
-          inner: 9
-          span:
-            start: 115
-            end: 120
-        ty:
-          inner: 23
-          span:
-            start: 122
-            end: 129
+            start: 547
+            end: 551
     result:
       inner: 23
       span:
-        start: 134
-        end: 141
+        start: 556
+        end: 566
     accesses: []
-    attributes: []
-    body: ~
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 20
+                  span:
+                    start: 547
+                    end: 551
+                ty: 22
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 586
+                      end: 590
+                    kind: Read
+            inferred_type: 23
+            expected_type: 23
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                IntrinsicCall:
+                  name: 11
+                  type_args:
+                    - 22
+                  arguments:
+                    - kind:
+                        Local:
+                          scope_index: 0
+                          local_index: 0
+                      ty: 22
+                      span:
+                        start: 586
+                        end: 590
+              ty: 23
+              span:
+                start: 573
+                end: 591
+        ty: 23
+        span:
+          start: 567
+          end: 595
   - id: 3
     file_id: 0
+    namespace: ~
     pub_span: ~
-    source: Internal
     origin: Free
     type_params:
       - name: 6
+        name_span:
+          start: 163
+          end: 164
         bounds:
           - 1
+        accesses:
+          - file_id: 0
+            span:
+              start: 179
+              end: 180
+          - file_id: 0
+            span:
+              start: 185
+              end: 186
     signature_index: 28
     name:
       inner: 11
@@ -443,10 +479,10 @@ functions:
     body: ~
   - id: 14
     file_id: 0
+    namespace: ~
     pub_span:
       start: 756
       end: 758
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 29
@@ -608,10 +644,10 @@ functions:
           end: 909
   - id: 15
     file_id: 0
+    namespace: ~
     pub_span:
       start: 929
       end: 931
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 29
@@ -773,10 +809,10 @@ functions:
           end: 1082
   - id: 16
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1102
       end: 1104
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -866,10 +902,10 @@ functions:
           end: 1159
   - id: 17
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1179
       end: 1181
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1010,10 +1046,10 @@ functions:
           end: 1251
   - id: 18
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1271
       end: 1273
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1154,10 +1190,10 @@ functions:
           end: 1343
   - id: 19
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1363
       end: 1365
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1382,10 +1418,10 @@ functions:
           end: 1469
   - id: 20
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1489
       end: 1491
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1520,10 +1556,10 @@ functions:
           end: 1557
   - id: 21
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1577
       end: 1579
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1838,10 +1874,10 @@ functions:
           end: 1728
   - id: 22
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1748
       end: 1750
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -2111,10 +2147,10 @@ functions:
           end: 1872
   - id: 23
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1892
       end: 1894
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -2249,10 +2285,10 @@ functions:
           end: 1975
   - id: 24
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1995
       end: 1997
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -2567,10 +2603,10 @@ functions:
           end: 2142
   - id: 25
     file_id: 0
+    namespace: ~
     pub_span:
       start: 2162
       end: 2164
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -2975,10 +3011,10 @@ functions:
           end: 2349
   - id: 26
     file_id: 0
+    namespace: ~
     pub_span:
       start: 2369
       end: 2371
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -3111,63 +3147,63 @@ functions:
         span:
           start: 2403
           end: 2439
-  - id: 28
+  - id: 27
     file_id: 1
+    namespace: 0
     pub_span: ~
-    source: External
     origin: Free
     type_params: []
     signature_index: 31
     name:
-      inner: 67
+      inner: 65
       span:
-        start: 66
-        end: 69
+        start: 26
+        end: 29
     params:
       - mut_span: ~
         name:
-          inner: 68
+          inner: 66
           span:
-            start: 70
-            end: 73
+            start: 30
+            end: 33
         ty:
           inner: 9
           span:
-            start: 75
-            end: 78
+            start: 35
+            end: 38
       - mut_span: ~
         name:
-          inner: 69
+          inner: 67
           span:
-            start: 80
-            end: 83
+            start: 40
+            end: 43
         ty:
           inner: 9
           span:
-            start: 85
-            end: 88
+            start: 45
+            end: 48
     result: ~
     accesses:
-      - caller: 29
+      - caller: 28
         kind: DirectCall
         file_id: 1
         span:
-          start: 152
-          end: 155
+          start: 112
+          end: 115
     attributes: []
     body: ~
-  - id: 29
+  - id: 28
     file_id: 1
+    namespace: ~
     pub_span: ~
-    source: Internal
     origin: Free
     type_params: []
     signature_index: 32
     name:
-      inner: 70
+      inner: 68
       span:
-        start: 97
-        end: 101
+        start: 57
+        end: 61
     params: []
     result: ~
     accesses:
@@ -3175,8 +3211,8 @@ functions:
         kind: Reference
         file_id: 1
         span:
-          start: 180
-          end: 184
+          start: 140
+          end: 144
     attributes: []
     body:
       stack:
@@ -3200,102 +3236,85 @@ functions:
                           namespace:
                             inner: 33
                             span:
-                              start: 143
-                              end: 150
+                              start: 103
+                              end: 110
                           member:
                             kind:
                               Function:
-                                id: 28
+                                id: 27
                             ty: 34
                             span:
-                              start: 152
-                              end: 155
+                              start: 112
+                              end: 115
                       ty: 34
                       span:
-                        start: 143
-                        end: 155
+                        start: 103
+                        end: 115
                     arguments:
                       - kind:
                           Int:
                             value: 0
                         ty: 9
                         span:
-                          start: 156
-                          end: 157
+                          start: 116
+                          end: 117
                       - kind: Error
                         ty: 9
                         span:
-                          start: 159
-                          end: 165
+                          start: 119
+                          end: 125
                 ty: 1
                 span:
-                  start: 143
-                  end: 166
+                  start: 103
+                  end: 126
             result: ~
         ty: 1
         span:
-          start: 104
-          end: 169
+          start: 64
+          end: 129
 globals: []
 memories: []
 namespaces:
-  - name: 73
+  - name: 71
     parent: ~
+    declaration:
+      Import: 0
     symbols:
       ? - Value
-        - 67
+        - 65
       : Function:
           func_index: 17
 module_decls: []
 import_decls:
   - namespace_idx: 0
     file_id: 1
+    accesses:
+      - file_id: 1
+        span:
+          start: 103
+          end: 110
     external_name:
-      inner: 73
+      inner: 71
       span:
-        start: 47
-        end: 56
+        start: 7
+        end: 16
     internal_name: ~
     lookup:
-      67:
+      65:
         Function:
-          id: 28
+          id: 27
 enums: []
 exports:
-  70:
+  68:
     Function:
       internal_name:
-        inner: 70
+        inner: 68
         span:
-          start: 180
-          end: 184
+          start: 140
+          end: 144
       external_name: ~
-      id: 29
-structs:
-  - file_id: 1
-    pub_span:
-      start: 0
-      end: 3
-    name:
-      inner: 64
-      span:
-        start: 11
-        end: 17
-    type_params: []
-    fields:
-      - name:
-          inner: 65
-          span:
-            start: 24
-            end: 29
-        ty:
-          inner: 0
-          span:
-            start: 31
-            end: 35
-    lookup:
-      65: 0
-    accesses: []
+      id: 28
+structs: []
 impl_members:
   9: {}
   11: {}
@@ -3326,17 +3345,18 @@ impl_members:
       Method: 15
     63:
       Method: 16
-    78:
+    76:
+      AssociatedConst:
+        id: 29
+        ty: 9
+    77:
       AssociatedConst:
         id: 30
-        ty: 9
-    79:
-      AssociatedConst:
-        id: 31
         ty: 9
   33: {}
 traits:
   - file_id: 0
+    namespace: ~
     name:
       inner: 14
       span:
@@ -3345,6 +3365,7 @@ traits:
     supertraits: []
     members: {}
   - file_id: 0
+    namespace: ~
     name:
       inner: 7
       span:
@@ -3362,8 +3383,9 @@ traits:
       19:
         Method: 1
       22:
-        Method: 0
+        Method: 2
   - file_id: 0
+    namespace: ~
     name:
       inner: 24
       span:
@@ -3373,6 +3395,7 @@ traits:
       - 1
     members: {}
   - file_id: 0
+    namespace: ~
     name:
       inner: 26
       span:
@@ -3405,6 +3428,7 @@ type_trait_impls:
 constants:
   - id: 0
     file_id: 0
+    namespace: ~
     pub_span: ~
     name:
       inner: 1
@@ -3435,6 +3459,7 @@ constants:
           end: 1039
   - id: 1
     file_id: 0
+    namespace: ~
     pub_span:
       start: 41
       end: 44
@@ -3459,6 +3484,7 @@ constants:
     accesses: []
   - id: 8
     file_id: 0
+    namespace: ~
     pub_span: ~
     name:
       inner: 17
@@ -3472,11 +3498,12 @@ constants:
         end: 388
     value: ~
     accesses: []
-  - id: 30
+  - id: 29
     file_id: 0
+    namespace: ~
     pub_span: ~
     name:
-      inner: 78
+      inner: 76
       span:
         start: 0
         end: 0
@@ -3487,11 +3514,12 @@ constants:
         end: 0
     value: ~
     accesses: []
-  - id: 31
+  - id: 30
     file_id: 0
+    namespace: ~
     pub_span: ~
     name:
-      inner: 79
+      inner: 77
       span:
         start: 0
         end: 0

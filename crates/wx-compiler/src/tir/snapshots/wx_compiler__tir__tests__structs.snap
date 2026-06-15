@@ -145,99 +145,89 @@ diagnostics:
         message: ""
     notes: []
 functions:
-  - id: 10
+  - id: 2
     file_id: 0
+    namespace: ~
     pub_span: ~
-    source: Internal
-    origin: Trait
+    origin: Free
     type_params:
-      - name: 21
+      - name: 6
+        name_span:
+          start: 96
+          end: 97
         bounds:
           - 1
-    signature_index: 24
+        accesses:
+          - file_id: 0
+            span:
+              start: 112
+              end: 113
+          - file_id: 0
+            span:
+              start: 122
+              end: 123
+          - file_id: 0
+            span:
+              start: 134
+              end: 135
+    signature_index: 26
     name:
-      inner: 22
+      inner: 5
       span:
-        start: 542
-        end: 546
+        start: 83
+        end: 95
     params:
       - mut_span: ~
         name:
-          inner: 20
+          inner: 8
           span:
-            start: 547
-            end: 551
+            start: 107
+            end: 110
         ty:
-          inner: 22
+          inner: 18
           span:
-            start: 547
-            end: 551
+            start: 112
+            end: 113
+      - mut_span: ~
+        name:
+          inner: 9
+          span:
+            start: 115
+            end: 120
+        ty:
+          inner: 23
+          span:
+            start: 122
+            end: 129
     result:
       inner: 23
       span:
-        start: 556
-        end: 566
+        start: 134
+        end: 141
     accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals:
-              - name:
-                  inner: 20
-                  span:
-                    start: 547
-                    end: 551
-                ty: 22
-                mut_span: ~
-                accesses:
-                  - span:
-                      start: 586
-                      end: 590
-                    kind: Read
-            inferred_type: 23
-            expected_type: 23
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                IntrinsicCall:
-                  name: 11
-                  type_args:
-                    - 22
-                  arguments:
-                    - kind:
-                        Local:
-                          scope_index: 0
-                          local_index: 0
-                      ty: 22
-                      span:
-                        start: 586
-                        end: 590
-              ty: 23
-              span:
-                start: 573
-                end: 591
-        ty: 23
-        span:
-          start: 567
-          end: 595
+    attributes: []
+    body: ~
   - id: 9
     file_id: 0
+    namespace: ~
     pub_span: ~
-    source: Internal
     origin: Trait
     type_params:
       - name: 21
+        name_span:
+          start: 327
+          end: 333
         bounds:
           - 1
+        accesses:
+          - file_id: 0
+            span:
+              start: 462
+              end: 466
+          - file_id: 0
+            span:
+              start: 477
+              end: 481
     signature_index: 25
     name:
       inner: 19
@@ -344,61 +334,119 @@ functions:
         span:
           start: 488
           end: 523
-  - id: 2
+  - id: 10
     file_id: 0
+    namespace: ~
     pub_span: ~
-    source: Internal
-    origin: Free
+    origin: Trait
     type_params:
-      - name: 6
+      - name: 21
+        name_span:
+          start: 327
+          end: 333
         bounds:
           - 1
-    signature_index: 26
+        accesses:
+          - file_id: 0
+            span:
+              start: 556
+              end: 560
+    signature_index: 24
     name:
-      inner: 5
+      inner: 22
       span:
-        start: 83
-        end: 95
+        start: 542
+        end: 546
     params:
       - mut_span: ~
         name:
-          inner: 8
+          inner: 20
           span:
-            start: 107
-            end: 110
+            start: 547
+            end: 551
         ty:
-          inner: 18
+          inner: 22
           span:
-            start: 112
-            end: 113
-      - mut_span: ~
-        name:
-          inner: 9
-          span:
-            start: 115
-            end: 120
-        ty:
-          inner: 23
-          span:
-            start: 122
-            end: 129
+            start: 547
+            end: 551
     result:
       inner: 23
       span:
-        start: 134
-        end: 141
+        start: 556
+        end: 566
     accesses: []
-    attributes: []
-    body: ~
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 20
+                  span:
+                    start: 547
+                    end: 551
+                ty: 22
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 586
+                      end: 590
+                    kind: Read
+            inferred_type: 23
+            expected_type: 23
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                IntrinsicCall:
+                  name: 11
+                  type_args:
+                    - 22
+                  arguments:
+                    - kind:
+                        Local:
+                          scope_index: 0
+                          local_index: 0
+                      ty: 22
+                      span:
+                        start: 586
+                        end: 590
+              ty: 23
+              span:
+                start: 573
+                end: 591
+        ty: 23
+        span:
+          start: 567
+          end: 595
   - id: 3
     file_id: 0
+    namespace: ~
     pub_span: ~
-    source: Internal
     origin: Free
     type_params:
       - name: 6
+        name_span:
+          start: 163
+          end: 164
         bounds:
           - 1
+        accesses:
+          - file_id: 0
+            span:
+              start: 179
+              end: 180
+          - file_id: 0
+            span:
+              start: 185
+              end: 186
     signature_index: 28
     name:
       inner: 11
@@ -427,10 +475,10 @@ functions:
     body: ~
   - id: 14
     file_id: 0
+    namespace: ~
     pub_span:
       start: 756
       end: 758
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 29
@@ -592,10 +640,10 @@ functions:
           end: 909
   - id: 15
     file_id: 0
+    namespace: ~
     pub_span:
       start: 929
       end: 931
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 29
@@ -757,10 +805,10 @@ functions:
           end: 1082
   - id: 16
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1102
       end: 1104
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -850,10 +898,10 @@ functions:
           end: 1159
   - id: 17
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1179
       end: 1181
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -994,10 +1042,10 @@ functions:
           end: 1251
   - id: 18
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1271
       end: 1273
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1138,10 +1186,10 @@ functions:
           end: 1343
   - id: 19
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1363
       end: 1365
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1366,10 +1414,10 @@ functions:
           end: 1469
   - id: 20
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1489
       end: 1491
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1504,10 +1552,10 @@ functions:
           end: 1557
   - id: 21
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1577
       end: 1579
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -1822,10 +1870,10 @@ functions:
           end: 1728
   - id: 22
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1748
       end: 1750
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -2095,10 +2143,10 @@ functions:
           end: 1872
   - id: 23
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1892
       end: 1894
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -2233,10 +2281,10 @@ functions:
           end: 1975
   - id: 24
     file_id: 0
+    namespace: ~
     pub_span:
       start: 1995
       end: 1997
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -2551,10 +2599,10 @@ functions:
           end: 2142
   - id: 25
     file_id: 0
+    namespace: ~
     pub_span:
       start: 2162
       end: 2164
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -2959,10 +3007,10 @@ functions:
           end: 2349
   - id: 26
     file_id: 0
+    namespace: ~
     pub_span:
       start: 2369
       end: 2371
-    source: Internal
     origin: Impl
     type_params: []
     signature_index: 30
@@ -3097,8 +3145,8 @@ functions:
           end: 2439
   - id: 28
     file_id: 1
+    namespace: ~
     pub_span: ~
-    source: Internal
     origin: Free
     type_params: []
     signature_index: 32
@@ -3165,7 +3213,9 @@ exports:
       external_name: ~
       id: 28
 structs:
-  - file_id: 1
+  - id: 27
+    file_id: 1
+    namespace: ~
     pub_span: ~
     name:
       inner: 64
@@ -3246,6 +3296,7 @@ impl_members:
         ty: 9
 traits:
   - file_id: 0
+    namespace: ~
     name:
       inner: 14
       span:
@@ -3254,6 +3305,7 @@ traits:
     supertraits: []
     members: {}
   - file_id: 0
+    namespace: ~
     name:
       inner: 7
       span:
@@ -3271,8 +3323,9 @@ traits:
       19:
         Method: 1
       22:
-        Method: 0
+        Method: 2
   - file_id: 0
+    namespace: ~
     name:
       inner: 24
       span:
@@ -3282,6 +3335,7 @@ traits:
       - 1
     members: {}
   - file_id: 0
+    namespace: ~
     name:
       inner: 26
       span:
@@ -3314,6 +3368,7 @@ type_trait_impls:
 constants:
   - id: 0
     file_id: 0
+    namespace: ~
     pub_span: ~
     name:
       inner: 1
@@ -3344,6 +3399,7 @@ constants:
           end: 1039
   - id: 1
     file_id: 0
+    namespace: ~
     pub_span:
       start: 41
       end: 44
@@ -3368,6 +3424,7 @@ constants:
     accesses: []
   - id: 8
     file_id: 0
+    namespace: ~
     pub_span: ~
     name:
       inner: 17
@@ -3383,6 +3440,7 @@ constants:
     accesses: []
   - id: 29
     file_id: 0
+    namespace: ~
     pub_span: ~
     name:
       inner: 72
@@ -3398,6 +3456,7 @@ constants:
     accesses: []
   - id: 30
     file_id: 0
+    namespace: ~
     pub_span: ~
     name:
       inner: 73

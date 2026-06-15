@@ -9,21 +9,23 @@ use codespan_reporting::files::Files as _;
 use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::{Error as JsonRpcError, Result};
 use tower_lsp_server::ls_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, ParameterInformation,
-    ParameterLabel, Position, Range, ReferenceParams, RenameParams, SemanticToken,
-    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
-    SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkspaceEdit,
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
+    Diagnostic, InsertTextFormat,
+    DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MarkupContent, MarkupKind, NumberOrString, OneOf, ParameterInformation, ParameterLabel,
+    Position, Range, ReferenceParams, RenameParams, SemanticToken, SemanticTokenType,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use wx_compiler::ast;
-use wx_compiler::tir::{TIR, TypeParamOwner};
+use wx_compiler::ast::TextSpan;
+use wx_compiler::tir::{SourceSpan, TIR, TypeParamOwner};
 use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
 
 mod symbol_index;
@@ -153,6 +155,10 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::FULL,
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
+                    ..Default::default()
+                }),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
@@ -248,12 +254,7 @@ impl LanguageServer for Backend {
             )?;
             let info = compiled.symbol_index.find_at_position(file_id, offset)?;
             let text = symbol_hover_text(&compiled.tir, &compiled.graph.interner, &info.kind)?;
-            let range = span_to_range(
-                &compiled.graph.files,
-                file_id,
-                info.span.start,
-                info.span.end,
-            )?;
+            let range = span_to_range(&compiled.graph.files, info.source)?;
             Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -285,14 +286,14 @@ impl LanguageServer for Backend {
                 params.text_document_position_params.position,
             )?;
             let info = compiled.symbol_index.find_at_position(file_id, offset)?;
-            let (def_file_id, def_span) = compiled.symbol_index.find_definition(&info.kind)?;
-            let uri = file_id_to_uri(compiled, def_file_id)?;
-            let range = span_to_range(
-                &compiled.graph.files,
-                def_file_id,
-                def_span.start,
-                def_span.end,
-            )?;
+            let def = compiled
+                .symbol_index
+                .definitions
+                .iter()
+                .find(|e| e.kind == info.kind)
+                .map(|e| e.source)?;
+            let uri = file_id_to_uri(compiled, def.file_id)?;
+            let range = span_to_range(&compiled.graph.files, def)?;
             Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
         })())
     }
@@ -311,30 +312,35 @@ impl LanguageServer for Backend {
                 params.text_document_position.position,
             )?;
             let info = compiled.symbol_index.find_at_position(file_id, offset)?;
-            let mut refs = compiled.symbol_index.find_all_references(&info.kind);
-            if !params.context.include_declaration {
-                if let Some((def_file_id, def_span)) =
-                    compiled.symbol_index.find_definition(&info.kind)
-                {
-                    refs.retain(|(fid, span)| {
-                        !(*fid == def_file_id && span.start == def_span.start)
-                    });
-                }
-            }
-            let locations = refs
-                .into_iter()
-                .filter_map(|(ref_file_id, ref_span)| {
-                    let uri = file_id_to_uri(compiled, ref_file_id)?;
-                    let range = span_to_range(
-                        &compiled.graph.files,
-                        ref_file_id,
-                        ref_span.start,
-                        ref_span.end,
-                    )?;
+            let locations = compiled
+                .symbol_index
+                .references
+                .iter()
+                .filter(|e| e.kind == info.kind)
+                .chain(
+                    params
+                        .context
+                        .include_declaration
+                        .then(|| {
+                            compiled
+                                .symbol_index
+                                .definitions
+                                .iter()
+                                .filter(|d| d.kind == info.kind)
+                        })
+                        .into_iter()
+                        .flatten(),
+                )
+                .filter_map(|entry| {
+                    let uri = file_id_to_uri(compiled, entry.source.file_id)?;
+                    let range = span_to_range(&compiled.graph.files, entry.source)?;
                     Some(Location { uri, range })
                 })
                 .collect::<Vec<_>>();
-            (!locations.is_empty()).then_some(locations)
+            match locations.len() {
+                0 => None,
+                _ => Some(locations),
+            }
         })())
     }
 
@@ -352,23 +358,26 @@ impl LanguageServer for Backend {
                 params.text_document_position.position,
             )?;
             let info = compiled.symbol_index.find_at_position(file_id, offset)?;
-            let refs = compiled.symbol_index.find_all_references(&info.kind);
-            if refs.is_empty() {
-                return None;
-            }
             let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
-            for (ref_file_id, ref_span) in refs {
-                let uri = file_id_to_uri(compiled, ref_file_id)?;
-                let range = span_to_range(
-                    &compiled.graph.files,
-                    ref_file_id,
-                    ref_span.start,
-                    ref_span.end,
-                )?;
-                changes.entry(uri).or_default().push(TextEdit {
-                    range,
-                    new_text: params.new_name.clone(),
+            compiled
+                .symbol_index
+                .references
+                .iter()
+                .chain(compiled.symbol_index.definitions.iter())
+                .filter(|e| e.kind == info.kind)
+                .filter_map(|entry| {
+                    let uri = file_id_to_uri(compiled, entry.source.file_id)?;
+                    let range = span_to_range(&compiled.graph.files, entry.source)?;
+                    Some((uri, range))
+                })
+                .for_each(|(uri, range)| {
+                    changes.entry(uri).or_default().push(TextEdit {
+                        range,
+                        new_text: params.new_name.clone(),
+                    });
                 });
+            if changes.is_empty() {
+                return None;
             }
             Some(WorkspaceEdit {
                 changes: Some(changes),
@@ -506,19 +515,24 @@ impl LanguageServer for Backend {
         let mut prev_line = 0u32;
         let mut prev_char = 0u32;
 
-        for entry in compiled
+        let mut entries: Vec<&symbol_index::SpanInfo> = compiled
             .symbol_index
-            .entries
+            .definitions
             .iter()
-            .filter(|e| e.file_id == file_id)
-        {
+            .chain(compiled.symbol_index.references.iter())
+            .filter(|e| e.source.file_id == file_id)
+            .collect();
+        entries.sort_by_key(|e| e.source.span.start);
+
+        for entry in entries {
             let Some(token_type) = symbol_kind_to_token_type(&entry.kind) else {
                 continue;
             };
-            let Some(pos) = byte_to_position(files, file_id, entry.span.start as usize) else {
+            let Some(pos) = byte_to_position(files, file_id, entry.source.span.start as usize)
+            else {
                 continue;
             };
-            let length = entry.span.end - entry.span.start;
+            let length = entry.source.span.end - entry.source.span.start;
             let delta_line = pos.line - prev_line;
             let delta_start = if delta_line == 0 {
                 pos.character - prev_char
@@ -542,6 +556,33 @@ impl LanguageServer for Backend {
                 data,
             },
         )))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let state = self.state.lock().await;
+        let Some(loc) = state
+            .uri_to_location
+            .get(params.text_document_position.text_document.uri.as_str())
+        else {
+            return Ok(None);
+        };
+        let Some(compiled) = state.cached.get(&loc.root) else {
+            return Ok(None);
+        };
+        let file_id = loc.file_id;
+        let Ok(file) = compiled.graph.files.get(file_id) else {
+            return Ok(None);
+        };
+        let source = file.source.as_str();
+        let Some(offset) = position_to_offset(
+            &compiled.graph.files,
+            file_id,
+            params.text_document_position.position,
+        ) else {
+            return Ok(None);
+        };
+        let items = completion_items(compiled, file_id, source, offset as usize);
+        Ok(Some(CompletionResponse::Array(items)))
     }
 }
 
@@ -721,7 +762,7 @@ fn compile_root(state: &ServerState, root: &Path) -> std::result::Result<Compile
     )?;
     let mut graph = builder.build(stdlib_id);
     let tir = TIR::build(&mut graph);
-    let symbol_index = build_symbol_index(&tir);
+    let symbol_index = build_symbol_index(&tir, &graph.interner);
     let path_to_module_loc = graph
         .crates
         .iter()
@@ -884,9 +925,10 @@ fn add_compiler_diagnostic(
 
     let Some(range) = span_to_range(
         files,
-        label.file_id,
-        label.range.start as u32,
-        label.range.end as u32,
+        SourceSpan::new(
+            label.file_id,
+            TextSpan::new(label.range.start as u32, label.range.end as u32),
+        ),
     ) else {
         return;
     };
@@ -954,9 +996,10 @@ fn diagnostic_related_information(
         let uri = Uri::from_file_path(&path)?;
         let range = span_to_range(
             files,
-            label.file_id,
-            label.range.start as u32,
-            label.range.end as u32,
+            SourceSpan::new(
+                label.file_id,
+                TextSpan::new(label.range.start as u32, label.range.end as u32),
+            ),
         )?;
         Some(DiagnosticRelatedInformation {
             location: Location { uri, range },
@@ -1260,9 +1303,9 @@ fn position_to_offset(files: &vfs::Files, file_id: FileId, position: Position) -
     Some((line_range.start + position.character as usize) as u32)
 }
 
-fn span_to_range(files: &vfs::Files, file_id: FileId, start: u32, end: u32) -> Option<Range> {
-    let start = byte_to_position(files, file_id, start as usize)?;
-    let end = byte_to_position(files, file_id, end as usize)?;
+fn span_to_range(files: &vfs::Files, source: SourceSpan) -> Option<Range> {
+    let start = byte_to_position(files, source.file_id, source.span.start as usize)?;
+    let end = byte_to_position(files, source.file_id, source.span.end as usize)?;
     Some(Range { start, end })
 }
 
@@ -1333,6 +1376,98 @@ fn file_id_to_uri(compiled: &CompiledRoot, file_id: FileId) -> Option<Uri> {
         ))
         .ok()
     }
+}
+
+// ── Completion
+// ────────────────────────────────────────────────────────────
+
+fn completion_items(
+    compiled: &CompiledRoot,
+    _file_id: FileId,
+    source: &str,
+    offset: usize,
+) -> Vec<CompletionItem> {
+    let prefix_start = source[..offset]
+        .bytes()
+        .rposition(|b| !b.is_ascii_alphanumeric() && b != b'_')
+        .map_or(0, |i| i + 1);
+    let prefix = &source[prefix_start..offset];
+
+    let interner = &compiled.graph.interner;
+    let tir = &compiled.tir;
+
+    let lower = compiled
+        .symbol_index
+        .defs_by_name
+        .partition_point(|(sym, _)| interner.resolve(*sym).unwrap_or("") < prefix);
+
+    compiled.symbol_index.defs_by_name[lower..]
+        .iter()
+        .take_while(|(sym, _)| interner.resolve(*sym).unwrap_or("").starts_with(prefix))
+        .filter_map(|(sym, info)| {
+            let name = interner.resolve(*sym)?.to_string();
+            let item = match &info.kind {
+                SymbolKind::Function(def_id) => {
+                    let fi = *tir.function_index_lookup.get(def_id)? as usize;
+                    let func = &tir.functions[fi];
+                    let (insert_text, insert_text_format) = if func.params.is_empty() {
+                        (format!("{}()", name), InsertTextFormat::PLAIN_TEXT)
+                    } else {
+                        (format!("{}($1)", name), InsertTextFormat::SNIPPET)
+                    };
+                    CompletionItem {
+                        label: name,
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        insert_text: Some(insert_text),
+                        insert_text_format: Some(insert_text_format),
+                        ..Default::default()
+                    }
+                }
+                SymbolKind::Global(_) => CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::VARIABLE),
+                    ..Default::default()
+                },
+                SymbolKind::Const(_) => CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    ..Default::default()
+                },
+                SymbolKind::Struct(_) => CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::STRUCT),
+                    ..Default::default()
+                },
+                SymbolKind::Enum(_) => CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::ENUM),
+                    ..Default::default()
+                },
+                SymbolKind::EnumVariant { .. } => CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::ENUM_MEMBER),
+                    ..Default::default()
+                },
+                SymbolKind::Module(_) | SymbolKind::ImportModule(_) => CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::MODULE),
+                    ..Default::default()
+                },
+                SymbolKind::Trait(_) => CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::INTERFACE),
+                    ..Default::default()
+                },
+                SymbolKind::AssocType { .. } => CompletionItem {
+                    label: name,
+                    kind: Some(CompletionItemKind::TYPE_PARAMETER),
+                    ..Default::default()
+                },
+                _ => return None,
+            };
+            Some(item)
+        })
+        .collect()
 }
 
 #[cfg(test)]
