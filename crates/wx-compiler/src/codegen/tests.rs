@@ -593,13 +593,11 @@ fn test_fibonacci() {
 
 #[test]
 fn test_imports() {
-    let case = TestCase::new(&format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32;
 
         import \"console\" {
-            fn log(value: string) -> unit;
+            fn log(value: []u8) -> unit;
         }
 
         fn main() -> unit {
@@ -610,8 +608,7 @@ fn test_imports() {
         }
 
         export { main, heap as \"memory\" }
-    "}
-    ));
+    "});
 
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 
@@ -652,13 +649,11 @@ fn test_dead_function_strings_excluded_from_data_section() {
     // String data from functions eliminated by DCE must not appear in the
     // wasm data section. The static layout step only collects entries from
     // live functions, so dead code never contributes bytes to the binary.
-    let case = TestCase::new(&format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32;
 
         import \"env\" {
-            fn log(message: string);
+            fn log(message: []u8);
         }
 
         fn live_fn() {
@@ -670,8 +665,7 @@ fn test_dead_function_strings_excluded_from_data_section() {
         }
 
         export { live_fn, heap }
-    "}
-    ));
+    "});
 
     let bytecode = &case.bytecode;
     assert!(
@@ -1219,9 +1213,7 @@ fn test_struct_call_result_wat() {
 
 #[test]
 fn test_pointer_deref_load_and_store() {
-    let src = format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1,
         };
@@ -1235,9 +1227,7 @@ fn test_pointer_deref_load_and_store() {
         }
 
         export { heap, read, write }
-    "}
-    );
-    let case = TestCase::new(&src);
+    "});
 
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
@@ -1268,9 +1258,7 @@ fn test_pointer_deref_load_and_store() {
 
 #[test]
 fn test_pointer_deref_increment() {
-    let src = format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1
         }
@@ -1280,9 +1268,7 @@ fn test_pointer_deref_increment() {
         }
 
         export { heap, increment }
-    "}
-    );
-    let case = TestCase::new(&src);
+    "});
 
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
@@ -1321,9 +1307,7 @@ fn test_struct_pointer_load_and_store() {
     // The wasmtime checks verify field layout from the host side (byte offsets)
     // and that individual field loads return the correct values.
     // The WAT snapshot pins the emitted instruction shape.
-    let src = format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1
         }
@@ -1348,9 +1332,7 @@ fn test_struct_pointer_load_and_store() {
         }
 
         export { heap, store_point, load_x, load_y }
-    "}
-    );
-    let case = TestCase::new(&src);
+    "});
 
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
@@ -1629,9 +1611,7 @@ fn test_generic_struct_pointer_load_store() {
     // Memory load/store via a pointer to a generic struct `heap::*mut Point<i32>`.
     // Codegen must emit the correct field offsets for the monomorphized aggregate
     // (x@0, y@4), going through the same path as the non-generic pointer tests.
-    let src = format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1
         }
@@ -1656,9 +1636,7 @@ fn test_generic_struct_pointer_load_store() {
         }
 
         export { heap, store_pt, load_x, load_y }
-    "}
-    );
-    let case = TestCase::new(&src);
+    "});
 
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
@@ -1703,9 +1681,7 @@ fn test_memory_grow_and_size() {
     // memory.size() returns the current page count; memory.grow(n) returns the
     // old page count and extends by n pages. Both route through @memory_size /
     // @memory_grow intrinsics via the Memory trait default methods.
-    let src = format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1,
         };
@@ -1719,9 +1695,7 @@ fn test_memory_grow_and_size() {
         }
 
         export { heap, size_pages, grow_by }
-    "}
-    );
-    let case = TestCase::new(&src);
+    "});
 
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
@@ -1751,9 +1725,7 @@ fn test_memory_size_before_grow_ordering() {
     // Captures memory.size() BEFORE memory.grow(), then returns the captured value.
     // If MemorySize is treated as a floating data node, the scheduler may emit
     // memory.size after memory.grow, returning 2 instead of 1.
-    let src = format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1,
         };
@@ -1765,9 +1737,7 @@ fn test_memory_size_before_grow_ordering() {
         }
 
         export { capture_size_before_grow }
-    "}
-    );
-    let case = TestCase::new(&src);
+    "});
 
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
@@ -1793,9 +1763,7 @@ fn test_array_literal_read_by_index() {
     // End-to-end: a static array literal is placed in the data segment at
     // address 0; indexing it must return the right element via i32.load at
     // base + i * elem_size.
-    let case = TestCase::new(&format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1,
         };
@@ -1806,8 +1774,7 @@ fn test_array_literal_read_by_index() {
         }
 
         export { get }
-    "}
-    ));
+    "});
 
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
@@ -1828,9 +1795,7 @@ fn test_array_write_and_read_back() {
     // Writing to a[i] and reading a[j] on a mutable heap array.  The host
     // initialises a 4-element block at address 0, then the wx functions do
     // a round-trip write+read to verify PointerStore/PointerLoad addressing.
-    let case = TestCase::new(&format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1,
         };
@@ -1839,8 +1804,7 @@ fn test_array_write_and_read_back() {
         fn read(arr: [4]i32, i: u32) -> i32 { arr[i] }
 
         export { heap, write, read }
-    "}
-    ));
+    "});
 
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
@@ -1880,9 +1844,7 @@ fn test_array_write_and_read_back() {
 fn test_dead_array_excluded_from_data_section() {
     // DCE removes functions that are not reachable from exports.  The static
     // array owned by a dead function must not appear in the WASM data segment.
-    let case = TestCase::new(&format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1,
         };
@@ -1895,8 +1857,7 @@ fn test_dead_array_excluded_from_data_section() {
         }
 
         export { live }
-    "}
-    ));
+    "});
 
     // The sentinel values from `dead` must not appear anywhere in the binary.
     let marker = &[0xDE_u8, 0, 0, 0]; // 0xDE as LE i32
@@ -1910,9 +1871,7 @@ fn test_dead_array_excluded_from_data_section() {
 fn test_array_index_wat() {
     // WAT snapshot: pins the data segment placement and the load/store
     // instruction shape (i32.add + i32.mul offset arithmetic).
-    let case = TestCase::new(&format!(
-        "{STD}\n{}",
-        indoc! {"
+    let case = TestCase::new(indoc! {"
         memory heap: Memory32 {
             min: 1,
         };
@@ -1923,7 +1882,6 @@ fn test_array_index_wat() {
         }
 
         export { get }
-    "}
-    ));
+    "});
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }

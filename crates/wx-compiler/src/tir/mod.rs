@@ -775,11 +775,12 @@ pub enum ImplEntry {
     },
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
-pub enum FunctionAttribute {
+pub enum ItemAttribute {
     Inline,
+    Lang(SymbolU32),
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -801,11 +802,12 @@ pub struct FunctionAccess {
 #[derive(PartialEq, Eq)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
-pub enum FunctionOrigin {
+pub enum FunctionKind {
     Free,
     Impl,
     Trait,
     TraitImpl { trait_impl_index: TraitImplIndex },
+    Intrinsic,
 }
 
 #[derive(Clone)]
@@ -825,7 +827,7 @@ pub struct Function {
     pub file_id: FileId,
     pub namespace: Option<NamespaceIndex>,
     pub pub_span: Option<ast::TextSpan>,
-    pub origin: FunctionOrigin,
+    pub kind: FunctionKind,
     /// Empty = monomorphic.
     pub type_params: Box<[TypeParamInfo]>,
     pub signature_index: TypeIndex,
@@ -833,7 +835,7 @@ pub struct Function {
     pub params: Box<[FunctionParam]>,
     pub result: Option<Spanned<TypeIndex>>,
     pub accesses: Vec<FunctionAccess>,
-    pub attributes: Box<[FunctionAttribute]>,
+    pub attributes: Box<[ItemAttribute]>,
     pub body: Option<FunctionBody>,
 }
 
@@ -1215,14 +1217,7 @@ pub struct TIR {
     #[cfg_attr(test, serde(skip))]
     pub const_index_lookup: HashMap<ast::DefId, ConstIndex>,
     #[cfg_attr(test, serde(skip))]
-    pub lang_items: Option<LangItems>,
-}
-
-/// Indices of stdlib traits identified by `#[lang = "..."]` attributes.
-/// `None` on the parent TIR when compiled without the standard library.
-pub struct LangItems {
-    pub memory: TraitIndex,
-    pub pointer_size: TraitIndex,
+    pub lang_items: HashMap<SymbolU32, ast::DefId>,
 }
 
 #[derive(PartialEq)]

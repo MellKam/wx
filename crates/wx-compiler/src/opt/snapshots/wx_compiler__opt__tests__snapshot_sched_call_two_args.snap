@@ -9,6 +9,6 @@ locals:
 body:
   - LocalGet: 0
   - LocalGet: 1
-  - Call: 1
+  - Call: 9
   - LocalSet: 2
   - LocalGet: 2

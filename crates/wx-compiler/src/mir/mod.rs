@@ -266,8 +266,9 @@ pub struct MemoryInfo {
     pub max_pages: Option<u32>,
 }
 
-/// One entry in the static data segment — either a string literal or an array constant.
-/// Bytes are pre-encoded; the layout (byte offset) is computed by codegen after DCE.
+/// One entry in the static data segment — either a string literal or an array
+/// constant. Bytes are pre-encoded; the layout (byte offset) is computed by
+/// codegen after DCE.
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct StaticEntry {
     pub bytes: Box<[u8]>,
@@ -371,8 +372,8 @@ pub struct Function {
     pub scopes: Vec<BlockScope>,
     pub block: Expression,
     /// Indices into `MIR.static_pool.entries` owned by this function.
-    /// Codegen unions these across all live functions to determine which entries
-    /// to include in the WASM data segment.
+    /// Codegen unions these across all live functions to determine which
+    /// entries to include in the WASM data segment.
     pub static_data: Vec<u32>,
 }
 
@@ -436,7 +437,7 @@ impl MIR {
                 if func
                     .attributes
                     .iter()
-                    .any(|a| *a == tir::FunctionAttribute::Inline)
+                    .any(|a| *a == tir::ItemAttribute::Inline)
                 {
                     inline_functions.insert(func.id);
                 }
@@ -905,6 +906,17 @@ impl<'tir> Builder<'tir> {
             tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
                 Type::Pointer { memory }
             }
+            tir::Type::Slice { memory, .. } => {
+                let tir_idx = self.tir.memory_index_lookup[&memory] as usize;
+                let aggregate_index = self.ensure_aggregate(Box::new([
+                    Type::Pointer { memory },
+                    match self.tir.memories[tir_idx].kind {
+                        tir::MemoryKind::Memory32 => Type::U32,
+                        tir::MemoryKind::Memory64 => Type::U64,
+                    },
+                ]));
+                Type::Aggregate { aggregate_index }
+            }
             tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
             tir::Type::Struct { struct_index, args } => {
                 let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
@@ -1081,7 +1093,8 @@ impl<'tir> Builder<'tir> {
         (idx, size)
     }
 
-    /// Add a string literal entry, deduplicating by symbol; returns `(index, byte_size)`.
+    /// Add a string literal entry, deduplicating by symbol; returns `(index,
+    /// byte_size)`.
     fn push_string_data(
         &mut self,
         func_ctx: &mut FunctionContext,

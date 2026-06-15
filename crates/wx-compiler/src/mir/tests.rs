@@ -42,15 +42,6 @@ impl TestCase {
 
 // Minimal inline definitions shared across tests that need them.
 
-/// Defines the built-in `string` struct as a flat (ptr, len) pair.
-/// String literals lower to this shape in MIR.
-const STRING_STRUCT: &str = indoc! {"
-    pub struct string {
-        ptr: u32,
-        len: u32,
-    }
-"};
-
 /// ASCII helper and the char methods needed by tests that call
 /// `to_ascii_uppercase` / `to_ascii_lowercase`.
 const CHAR_ASCII_METHODS: &str = indoc! {"
@@ -165,53 +156,6 @@ fn test_size_associated_const() {
 
 // ── string literals
 // ───────────────────────────────────────────────────────────
-
-#[test]
-fn test_string_literal_lowered_to_tuple() {
-    // A string literal lowers to Aggregate { StaticPointer(data_index), Int(len) }
-    // in MIR, and the function records the entry index in its static_data list.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
-
-        import \"console\" {
-            fn log(ptr: u32, len: u32);
-        }
-
-        fn greet() {
-            local s = \"hello\";
-            console::log(s.ptr, s.len);
-        }
-
-        export { greet }
-    "}
-    ));
-    insta::assert_yaml_snapshot!(case.mir);
-}
-
-#[test]
-fn test_string_field_access_lowered_to_local_tuple_get() {
-    // Field access on a string local (ptr/len) should map to LocalTupleGet.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
-
-        import \"console\" {
-            fn log(ptr: u32, len: u32);
-        }
-
-        fn main() {
-            local str = \"test\";
-            console::log(str.ptr, str.len);
-        }
-
-        export { main }
-    "}
-    ));
-    insta::assert_yaml_snapshot!(case.mir);
-}
 
 /// The Memory32 trait with default method bodies that delegate to wasm
 /// intrinsics.
@@ -881,130 +825,9 @@ fn test_multiple_calls_to_generic_produce_single_mono_instance() {
 // ── static data
 // ─────────────────────────────────────────────────────────────
 
-#[test]
-fn test_string_creates_static_entry_with_correct_bytes() {
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
-        fn get() -> string { \"hello\" }
-        export { get }
-    "}
-    ));
-    assert_eq!(case.mir.static_entries.len(), 1);
-    assert_eq!(&*case.mir.static_entries[0].bytes, b"hello");
-    assert_eq!(case.mir.static_entries[0].align, 1);
-
-    let func = case
-        .mir
-        .functions
-        .iter()
-        .find(|f| !f.static_data.is_empty())
-        .unwrap();
-    assert_eq!(func.static_data, vec![0u32]);
-}
-
-#[test]
-fn test_same_string_deduplicated_across_functions() {
-    // Two exported functions using the same string literal must produce exactly
-    // one static entry; both functions reference index 0.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
-        fn a() -> string { \"hello\" }
-        fn b() -> string { \"hello\" }
-        export { a, b }
-    "}
-    ));
-    assert_eq!(
-        case.mir.static_entries.len(),
-        1,
-        "duplicate string must be deduplicated"
-    );
-
-    for func in &case.mir.functions {
-        if !func.static_data.is_empty() {
-            assert_eq!(func.static_data, vec![0u32]);
-        }
-    }
-}
-
-#[test]
-fn test_different_strings_produce_separate_entries() {
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
-        fn a() -> string { \"hello\" }
-        fn b() -> string { \"world\" }
-        export { a, b }
-    "}
-    ));
-    assert_eq!(case.mir.static_entries.len(), 2);
-    let all_bytes: Vec<&[u8]> = case.mir.static_entries.iter().map(|e| &*e.bytes).collect();
-    assert!(all_bytes.contains(&b"hello".as_slice()));
-    assert!(all_bytes.contains(&b"world".as_slice()));
-}
-
-#[test]
-fn test_dce_removes_static_data_ownership() {
-    // A DCE'd function is removed from mir.functions, so its static entry
-    // is never referenced by any live function. Codegen will skip it.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
-        fn live() -> i32 { 42 }
-        fn dead() -> string { \"only-in-dead\" }
-        export { live }
-    "}
-    ));
-    // dead() removed from mir.functions by DCE.
-    assert_eq!(case.mir.functions.len(), 1);
-    // The entry may still sit in static_entries (no MIR-time compaction),
-    // but no live function references it.
-    let live_indices: std::collections::HashSet<u32> = case
-        .mir
-        .functions
-        .iter()
-        .flat_map(|f| f.static_data.iter().copied())
-        .collect();
-    assert!(
-        live_indices.is_empty(),
-        "live functions must not own dead static entries"
-    );
-}
-
-#[test]
-fn test_inlining_propagates_static_data_to_caller() {
-    // When an #[inline] function with a string literal is inlined into its
-    // caller, the caller must inherit the static entry index so codegen
-    // includes the string in the data segment.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
-
-        #[inline]
-        fn greeting() -> string { \"hi\" }
-
-        fn main() -> string { greeting() }
-
-        export { main }
-    "}
-    ));
-    // After inlining, only main survives.
-    assert_eq!(case.mir.functions.len(), 1);
-    assert_eq!(case.mir.static_entries.len(), 1);
-    assert_eq!(&*case.mir.static_entries[0].bytes, b"hi");
-
-    // main must own the entry (inherited from the inlined greeting).
-    assert!(
-        case.mir.functions[0].static_data.contains(&0u32),
-        "caller must own the inlined callee's static entry"
-    );
-}
+// String literal tests removed: `string` is no longer a named struct type;
+// string literals produce `[]u8` slices. Static-data coverage is provided
+// by the array literal tests below.
 
 // ── arrays
 // ─────────────────────────────────────────────────────────────────────

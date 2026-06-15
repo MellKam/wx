@@ -1085,7 +1085,7 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
         struct_index_lookup: HashMap::new(),
         constants: Vec::new(),
         const_index_lookup: HashMap::new(),
-        lang_items: None,
+        lang_items: HashMap::new(),
     };
     let type_index_lookup = HashMap::from_iter(
         tir.type_pool
@@ -2039,11 +2039,24 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn resolve_function_attributes(&self, attrs: &[ast::Attribute]) -> Box<[FunctionAttribute]> {
+    fn register_lang_items(&mut self, def_id: ast::DefId, attrs: &[ItemAttribute]) {
+        for attr in attrs {
+            if let ItemAttribute::Lang(key) = attr {
+                self.tir.lang_items.insert(*key, def_id);
+            }
+        }
+    }
+
+    fn resolve_attributes(&mut self, attrs: &[ast::Attribute]) -> Box<[ItemAttribute]> {
         attrs
             .iter()
             .filter_map(|a| match (&a.value, self.interner.resolve(a.name.inner)) {
-                (ast::AttributeValue::Word, Some("inline")) => Some(FunctionAttribute::Inline),
+                (ast::AttributeValue::Word, Some("inline")) => Some(ItemAttribute::Inline),
+                (ast::AttributeValue::NameValue(value), Some("lang")) => {
+                    let raw = self.interner.resolve(value.inner).unwrap_or("");
+                    let key = self.interner.get_or_intern(&unescape_string(raw));
+                    Some(ItemAttribute::Lang(key))
+                }
                 _ => None,
             })
             .collect()
@@ -2808,13 +2821,15 @@ impl<'ast> Builder<'ast, '_> {
                         .map(|k| self.get_symbol_location(k));
                     let type_params =
                         self.resolve_ast_type_params(&resolve_context, &signature.type_params);
+                    let func_attrs = self.resolve_attributes(attributes);
+                    self.register_lang_items(*id, &func_attrs);
                     let func_index = self.tir.functions.len() as u32;
                     self.tir.functions.push(Function {
                         id: *id,
                         file_id: resolve_context.file_id,
                         namespace: resolve_context.namespace,
                         body: None,
-                        origin: FunctionOrigin::Free,
+                        kind: FunctionKind::Free,
                         type_params,
                         pub_span: *pub_span,
                         signature_index: TypeIndex::ERROR,
@@ -2822,7 +2837,7 @@ impl<'ast> Builder<'ast, '_> {
                         accesses: Vec::new(),
                         params: Box::new([]),
                         result: None,
-                        attributes: self.resolve_function_attributes(attributes),
+                        attributes: func_attrs,
                     });
                     self.tir.function_index_lookup.insert(*id, func_index);
                     let signature_context = resolve_context.with_type_param_scope(TypeParamScope {
@@ -2962,6 +2977,8 @@ impl<'ast> Builder<'ast, '_> {
                         span: r.span,
                     });
                     let signature_index = self.intern_function(&params, result.clone());
+                    let func_attrs = self.resolve_attributes(attributes);
+                    self.register_lang_items(*id, &func_attrs);
                     let func_index = self.tir.functions.len() as u32;
                     let is_method = signature
                         .params
@@ -2975,13 +2992,13 @@ impl<'ast> Builder<'ast, '_> {
                         body: None,
                         type_params: Box::new([]),
                         pub_span: *pub_span,
-                        origin: FunctionOrigin::Impl,
+                        kind: FunctionKind::Impl,
                         signature_index,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
                         params,
                         result,
-                        attributes: self.resolve_function_attributes(attributes),
+                        attributes: func_attrs,
                     });
                     self.tir.function_index_lookup.insert(*id, func_index);
                     self.tir.impl_members.entry(self_type).or_default().insert(
@@ -2999,10 +3016,17 @@ impl<'ast> Builder<'ast, '_> {
             AstNodeRef::Trait {
                 trait_index, item, ..
             } => {
-                let supertraits = match item {
-                    ast::Item::Trait { supertraits, .. } => supertraits,
+                let (supertraits, trait_id, attributes) = match item {
+                    ast::Item::Trait {
+                        id,
+                        supertraits,
+                        attributes,
+                        ..
+                    } => (supertraits, id, attributes),
                     _ => unreachable!(),
                 };
+                let resolved_attrs = self.resolve_attributes(attributes);
+                self.register_lang_items(*trait_id, &resolved_attrs);
 
                 let resolved: Vec<TraitIndex> = supertraits
                     .iter()
@@ -3079,7 +3103,8 @@ impl<'ast> Builder<'ast, '_> {
                         param_index: 0,
                     });
                     let resolve_context = resolve_context.with_self_type(Some(self_type_param_idx));
-                    let attributes = self.resolve_function_attributes(attributes);
+                    let attributes = self.resolve_attributes(attributes);
+                    self.register_lang_items(*id, &attributes);
 
                     // Self occupies slot 0; any explicit generics on the method start at 1.
                     let self_name_sym = self.interner.get_or_intern("Self");
@@ -3101,7 +3126,7 @@ impl<'ast> Builder<'ast, '_> {
                         namespace: resolve_context.namespace,
                         body: None,
                         pub_span: None,
-                        origin: FunctionOrigin::Trait,
+                        kind: FunctionKind::Trait,
                         type_params,
                         signature_index: TypeIndex::ERROR,
                         name: signature.name.clone(),
@@ -3414,7 +3439,7 @@ impl<'ast> Builder<'ast, '_> {
                         file_id: resolve_context.file_id,
                         namespace: resolve_context.namespace,
                         body: None,
-                        origin: FunctionOrigin::Free,
+                        kind: FunctionKind::Intrinsic,
                         type_params,
                         pub_span: None,
                         signature_index: TypeIndex::ERROR,
@@ -3460,7 +3485,7 @@ impl<'ast> Builder<'ast, '_> {
                         id: *id,
                         file_id: resolve_context.file_id,
                         namespace: Some(import_ns_idx),
-                        origin: FunctionOrigin::Free,
+                        kind: FunctionKind::Free,
                         signature_index,
                         body: None,
                         type_params: Box::new([]),
@@ -3686,6 +3711,8 @@ impl<'ast> Builder<'ast, '_> {
                     } else {
                         ImplEntry::AssociatedFn(func_index)
                     };
+                    let func_attrs = self.resolve_attributes(attributes);
+                    self.register_lang_items(*id, &func_attrs);
                     self.tir.functions.push(Function {
                         id: *id,
                         file_id: resolve_context.file_id,
@@ -3693,13 +3720,13 @@ impl<'ast> Builder<'ast, '_> {
                         body: None,
                         type_params: Box::new([]),
                         pub_span: *pub_span,
-                        origin: FunctionOrigin::TraitImpl { trait_impl_index },
+                        kind: FunctionKind::TraitImpl { trait_impl_index },
                         signature_index,
                         name: signature.name.clone(),
                         accesses: Vec::new(),
                         params,
                         result,
-                        attributes: self.resolve_function_attributes(attributes),
+                        attributes: func_attrs,
                     });
                     self.tir.function_index_lookup.insert(*id, func_index);
                     self.tir
@@ -5220,7 +5247,7 @@ impl<'ast> Builder<'ast, '_> {
             if function.accesses.is_empty()
                 && function.pub_span.is_none()
                 && !self.tir.is_import_namespace(function.namespace)
-                && !matches!(function.origin, FunctionOrigin::Trait)
+                && !matches!(function.kind, FunctionKind::Trait | FunctionKind::Intrinsic)
             {
                 let name = self.interner.resolve(function.name.inner).unwrap();
                 self.tir.diagnostics.push(

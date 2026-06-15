@@ -122,34 +122,12 @@ diagnostics:
           end: 99
         message: ""
     notes: []
-  - severity: Warning
-    code: W1004
-    message: "function `@memory_grow` is never used"
-    labels:
-      - style: Primary
-        file_id: 0
-        range:
-          start: 83
-          end: 95
-        message: ""
-    notes: []
-  - severity: Warning
-    code: W1004
-    message: "function `@memory_size` is never used"
-    labels:
-      - style: Primary
-        file_id: 0
-        range:
-          start: 150
-          end: 162
-        message: ""
-    notes: []
 functions:
   - id: 2
     file_id: 0
     namespace: ~
     pub_span: ~
-    origin: Free
+    kind: Intrinsic
     type_params:
       - name: 6
         name_span:
@@ -211,7 +189,7 @@ functions:
     file_id: 0
     namespace: ~
     pub_span: ~
-    origin: Trait
+    kind: Trait
     type_params:
       - name: 21
         name_span:
@@ -338,7 +316,7 @@ functions:
     file_id: 0
     namespace: ~
     pub_span: ~
-    origin: Trait
+    kind: Trait
     type_params:
       - name: 21
         name_span:
@@ -430,7 +408,7 @@ functions:
     file_id: 0
     namespace: ~
     pub_span: ~
-    origin: Free
+    kind: Intrinsic
     type_params:
       - name: 6
         name_span:
@@ -479,7 +457,7 @@ functions:
     pub_span:
       start: 756
       end: 758
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 29
     name:
@@ -644,7 +622,7 @@ functions:
     pub_span:
       start: 929
       end: 931
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 29
     name:
@@ -809,7 +787,7 @@ functions:
     pub_span:
       start: 1102
       end: 1104
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -902,7 +880,7 @@ functions:
     pub_span:
       start: 1179
       end: 1181
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -1046,7 +1024,7 @@ functions:
     pub_span:
       start: 1271
       end: 1273
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -1190,7 +1168,7 @@ functions:
     pub_span:
       start: 1363
       end: 1365
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -1418,7 +1396,7 @@ functions:
     pub_span:
       start: 1489
       end: 1491
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -1556,7 +1534,7 @@ functions:
     pub_span:
       start: 1577
       end: 1579
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -1874,7 +1852,7 @@ functions:
     pub_span:
       start: 1748
       end: 1750
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -2147,7 +2125,7 @@ functions:
     pub_span:
       start: 1892
       end: 1894
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -2285,7 +2263,7 @@ functions:
     pub_span:
       start: 1995
       end: 1997
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -2603,7 +2581,7 @@ functions:
     pub_span:
       start: 2162
       end: 2164
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -3011,7 +2989,7 @@ functions:
     pub_span:
       start: 2369
       end: 2371
-    origin: Impl
+    kind: Impl
     type_params: []
     signature_index: 30
     name:
@@ -3147,7 +3125,7 @@ functions:
     file_id: 1
     namespace: ~
     pub_span: ~
-    origin: Free
+    kind: Free
     type_params: []
     signature_index: 32
     name:
@@ -3286,11 +3264,11 @@ impl_members:
       Method: 15
     63:
       Method: 16
-    72:
+    76:
       AssociatedConst:
         id: 29
         ty: 9
-    73:
+    77:
       AssociatedConst:
         id: 30
         ty: 9
@@ -3443,7 +3421,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 72
+      inner: 76
       span:
         start: 0
         end: 0
@@ -3459,7 +3437,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 73
+      inner: 77
       span:
         start: 0
         end: 0
