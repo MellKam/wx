@@ -60,7 +60,7 @@ impl<'case> TestCase {
                 )])),
             )
             .unwrap();
-        builder
+        let root_id = builder
             .load_crate(
                 "main.wx".to_string(),
                 &vfs::VirtualFileSource::new(HashMap::from([(
@@ -69,17 +69,16 @@ impl<'case> TestCase {
                 )])),
             )
             .unwrap();
-        let mut graph = builder.build(stdlib_id);
-        let entry_crate = graph.crates.last().unwrap();
-        let ast = &entry_crate.modules[entry_crate.root.as_u32() as usize].ast;
-        if ast
+        let mut graph = builder.build(root_id, stdlib_id);
+        let root_crate = &graph.crates[root_id.as_usize()];
+        if root_crate
             .diagnostics
             .iter()
             .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
         {
             let writer = StandardStream::stderr(ColorChoice::Always);
             let config = codespan_reporting::term::Config::default();
-            for diagnostic in ast.diagnostics.iter() {
+            for diagnostic in root_crate.diagnostics.iter() {
                 term::emit_to_io_write(&mut writer.lock(), &config, &graph.files, diagnostic)
                     .unwrap();
             }

@@ -165,10 +165,10 @@ struct Builder<'ast, 'interner> {
     id_generator: ast::DefIdGenerator,
 
     // ── demand-driven resolution ──────────────────────────────────────────────
-    /// Populated in Phase 1.
-    ast_nodes: HashMap<ast::DefId, AstNodeRef<'ast>>,
-    /// Prevents re-entrant ensure_signature calls.
-    sig_state: HashMap<ast::DefId, ComputeState>,
+    /// Populated in Phase 1, in parse order. Index matches `sig_state` entries.
+    ast_nodes: Vec<AstEntry<'ast>>,
+    /// Maps DefId → SigEntry; populated after Phase 1 with exact capacity.
+    sig_state: HashMap<ast::DefId, SigEntry>,
     /// Maps ImplTraitBlock DefId → TraitImplIndex; populated when the block
     /// resolves.
     trait_impl_block_lookup: HashMap<ast::DefId, TraitImplIndex>,
@@ -181,8 +181,23 @@ enum BlockState<T> {
 
 #[derive(Clone, Copy, PartialEq)]
 enum ComputeState {
+    Pending,
     InProgress,
     Done,
+}
+
+#[derive(Clone)]
+struct AstEntry<'ast> {
+    def_id: ast::DefId,
+    file_id: FileId,
+    namespace: Option<NamespaceIndex>,
+    node: AstNodeRef<'ast>,
+}
+
+#[derive(Clone, Copy)]
+struct SigEntry {
+    node_idx: usize,
+    state: ComputeState,
 }
 
 #[derive(Clone)]
@@ -200,15 +215,6 @@ struct ResolveContext {
 }
 
 impl ResolveContext {
-    fn root(file_id: FileId) -> Self {
-        Self {
-            file_id,
-            namespace: None,
-            self_type: None,
-            type_param_scope: None,
-        }
-    }
-
     fn new(file_id: FileId, namespace: Option<NamespaceIndex>) -> Self {
         Self {
             file_id,
@@ -227,15 +233,6 @@ impl ResolveContext {
         }
     }
 
-    fn in_namespace(&self, namespace: NamespaceIndex) -> Self {
-        Self {
-            file_id: self.file_id,
-            namespace: Some(namespace),
-            self_type: self.self_type,
-            type_param_scope: self.type_param_scope.clone(),
-        }
-    }
-
     fn with_self_type(&self, self_type: Option<TypeIndex>) -> Self {
         Self {
             file_id: self.file_id,
@@ -247,169 +244,82 @@ impl ResolveContext {
 }
 
 /// AST node reference for demand-driven resolution.
+/// Resolution context (`file_id`, `namespace`) lives in `AstEntry`.
 #[derive(Clone)]
 enum AstNodeRef<'ast> {
     /// Top-level `fn` or `#[intrinsic]` declaration.
     Function {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     ImplMethod {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
     /// `trait` function with or without a default body.
     TraitFunction {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     TraitConst {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     TraitAssociatedType {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         trait_index: u32,
         item: &'ast ast::TraitItem,
     },
     Struct {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     Enum {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     Global {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     Memory {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     Const {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     ImplConst {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
     /// Creates the `TraitImpl` entry when resolved.
     ImplTraitBlock {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
     ImplTraitMethod {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         /// Parent `ImplTraitBlock` must be resolved before this can insert into
         /// `TraitImpl.members`.
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
     ImplTraitConst {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
     ImplTraitAssociatedType {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         parent_id: ast::DefId,
         item: &'ast ast::ImplItem,
     },
     Trait {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         trait_index: TraitIndex,
         item: &'ast ast::Item,
     },
     ImportedFunction {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         import_module_index: u32,
         decl: &'ast ast::ImportDeclaration,
     },
     ImportedGlobal {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         import_module_index: u32,
         decl: &'ast ast::ImportDeclaration,
     },
     IntrinsicFunction {
-        file_id: FileId,
-        namespace: Option<NamespaceIndex>,
         item: &'ast ast::Item,
     },
-}
-
-impl AstNodeRef<'_> {
-    fn file_id(&self) -> FileId {
-        match self {
-            AstNodeRef::Function { file_id, .. }
-            | AstNodeRef::ImplMethod { file_id, .. }
-            | AstNodeRef::TraitFunction { file_id, .. }
-            | AstNodeRef::TraitConst { file_id, .. }
-            | AstNodeRef::TraitAssociatedType { file_id, .. }
-            | AstNodeRef::Struct { file_id, .. }
-            | AstNodeRef::Enum { file_id, .. }
-            | AstNodeRef::Global { file_id, .. }
-            | AstNodeRef::Memory { file_id, .. }
-            | AstNodeRef::Const { file_id, .. }
-            | AstNodeRef::ImplConst { file_id, .. }
-            | AstNodeRef::ImplTraitBlock { file_id, .. }
-            | AstNodeRef::ImplTraitMethod { file_id, .. }
-            | AstNodeRef::ImplTraitConst { file_id, .. }
-            | AstNodeRef::ImplTraitAssociatedType { file_id, .. }
-            | AstNodeRef::Trait { file_id, .. }
-            | AstNodeRef::ImportedFunction { file_id, .. }
-            | AstNodeRef::ImportedGlobal { file_id, .. }
-            | AstNodeRef::IntrinsicFunction { file_id, .. } => *file_id,
-        }
-    }
-
-    fn namespace(&self) -> Option<NamespaceIndex> {
-        match self {
-            AstNodeRef::Function { namespace, .. }
-            | AstNodeRef::ImplMethod { namespace, .. }
-            | AstNodeRef::TraitFunction { namespace, .. }
-            | AstNodeRef::TraitConst { namespace, .. }
-            | AstNodeRef::TraitAssociatedType { namespace, .. }
-            | AstNodeRef::Struct { namespace, .. }
-            | AstNodeRef::Enum { namespace, .. }
-            | AstNodeRef::Global { namespace, .. }
-            | AstNodeRef::Memory { namespace, .. }
-            | AstNodeRef::Const { namespace, .. }
-            | AstNodeRef::ImplConst { namespace, .. }
-            | AstNodeRef::ImplTraitBlock { namespace, .. }
-            | AstNodeRef::ImplTraitMethod { namespace, .. }
-            | AstNodeRef::ImplTraitConst { namespace, .. }
-            | AstNodeRef::ImplTraitAssociatedType { namespace, .. }
-            | AstNodeRef::Trait { namespace, .. }
-            | AstNodeRef::ImportedFunction { namespace, .. }
-            | AstNodeRef::ImportedGlobal { namespace, .. }
-            | AstNodeRef::IntrinsicFunction { namespace, .. } => *namespace,
-        }
-    }
 }
 
 fn report_missing_enum_repr(span: SourceSpan) -> Diagnostic<FileId> {
@@ -1135,7 +1045,26 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 
     let tir = TIR {
         diagnostics: Vec::new(),
-        type_pool: Vec::new(),
+        type_pool: vec![
+            // Order MUST match the IDX constants defined at the top of this file.
+            Type::Error,
+            Type::Unit,
+            Type::Never,
+            Type::Integer,
+            Type::Float,
+            Type::U8,
+            Type::I8,
+            Type::U16,
+            Type::I16,
+            Type::U32,
+            Type::I32,
+            Type::U64,
+            Type::I64,
+            Type::F32,
+            Type::F64,
+            Type::Bool,
+            Type::Char,
+        ],
         functions: Vec::new(),
         globals: Vec::new(),
         exports: HashMap::new(),
@@ -1158,7 +1087,12 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
         const_index_lookup: HashMap::new(),
         lang_items: None,
     };
-
+    let type_index_lookup = HashMap::from_iter(
+        tir.type_pool
+            .iter()
+            .enumerate()
+            .map(|(idx, ty)| (ty.clone(), TypeIndex(idx as u32))),
+    );
     let mut symbol_lookup = HashMap::new();
     symbol_lookup.insert(
         (SymbolNamespace::Value, graph.interner.get_or_intern("_")),
@@ -1187,55 +1121,41 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
         interner: &mut graph.interner,
         tir,
         trait_impl_block_lookup: HashMap::new(),
-        type_index_lookup: HashMap::new(),
+        type_index_lookup,
         sig_state: HashMap::new(),
-        ast_nodes: HashMap::new(),
+        ast_nodes: Vec::new(),
         id_generator: graph.id_generator,
     };
-
-    // Order MUST match the IDX constants defined at the top of this file.
-    builder.intern_type(Type::Error);
-    builder.intern_type(Type::Unit);
-    builder.intern_type(Type::Never);
-    builder.intern_type(Type::Integer);
-    builder.intern_type(Type::Float);
-    builder.intern_type(Type::U8);
-    builder.intern_type(Type::I8);
-    builder.intern_type(Type::U16);
-    builder.intern_type(Type::I16);
-    builder.intern_type(Type::U32);
-    builder.intern_type(Type::I32);
-    builder.intern_type(Type::U64);
-    builder.intern_type(Type::I64);
-    builder.intern_type(Type::F32);
-    builder.intern_type(Type::F64);
-    builder.intern_type(Type::Bool);
-    builder.intern_type(Type::Char);
 
     // Phase 1: register all top-level items into ast_nodes / pending
     for (crate_graph, source_module) in source_modules.iter().copied() {
         let module_path = crate_graph.module_symbol_path(source_module.id);
-        let resolve_context = builder.ensure_module_path(source_module.file_id, &module_path);
+        let namespace = builder.ensure_module_path(source_module.file_id, &module_path);
         for item in source_module.ast.items.iter() {
-            builder.pre_scan_item(
-                resolve_context.clone(),
-                &item.inner.inner,
-                source_module.file_id,
-            );
+            builder.pre_scan_item(source_module.file_id, namespace, &item.inner.inner);
         }
     }
 
-    // Phase 2: demand-resolve signatures for every registered def_id.
-    // Sort by raw id so processing order is deterministic (parse order).
-    let mut def_ids: Vec<ast::DefId> = builder.ast_nodes.keys().copied().collect();
-    def_ids.sort_by_key(|id| id.as_u32());
-    for def_id in &def_ids {
-        builder.ensure_signature(*def_id);
+    // Build sig_state from ast_nodes with exact capacity; all start as Pending.
+    builder.sig_state = HashMap::with_capacity(builder.ast_nodes.len());
+    for (node_idx, entry) in builder.ast_nodes.iter().enumerate() {
+        builder.sig_state.insert(
+            entry.def_id,
+            SigEntry {
+                node_idx,
+                state: ComputeState::Pending,
+            },
+        );
     }
 
-    // Phase 3: demand-resolve bodies for every registered def_id
-    for def_id in &def_ids {
-        builder.ensure_body(*def_id);
+    // Phase 2: demand-resolve signatures in parse order (vec is already ordered).
+    for i in 0..builder.ast_nodes.len() {
+        builder.ensure_signature(builder.ast_nodes[i].def_id);
+    }
+
+    // Phase 3: demand-resolve bodies in parse order.
+    for i in 0..builder.ast_nodes.len() {
+        builder.ensure_body(builder.ast_nodes[i].def_id);
     }
 
     // Phase 3.5: verify every trait impl provides all required items
@@ -1374,14 +1294,14 @@ impl<'ast> Builder<'ast, '_> {
 
     fn ensure_module(
         &mut self,
-        resolve_context: &ResolveContext,
         file_id: FileId,
+        namespace: Option<NamespaceIndex>,
         name: ast::Spanned<SymbolU32>,
         pub_span: Option<ast::TextSpan>,
     ) -> NamespaceIndex {
         let symbol = name.inner;
         if let Some(SymbolKind::Module { namespace_idx }) = self
-            .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
+            .lookup_symbol(namespace, (SymbolNamespace::Type, symbol))
             .cloned()
         {
             let decl = &mut self.tir.module_decls[namespace_idx as usize];
@@ -1395,7 +1315,7 @@ impl<'ast> Builder<'ast, '_> {
         let decl_idx = self.tir.module_decls.len() as u32;
         self.tir.namespaces.push(ModuleNamespace {
             name: symbol,
-            parent: resolve_context.namespace,
+            parent: namespace,
             declaration: ModuleDeclarationKind::Module(decl_idx),
             symbols: HashMap::new(),
         });
@@ -1408,20 +1328,24 @@ impl<'ast> Builder<'ast, '_> {
             accesses: Vec::new(),
         });
         self.insert_symbol(
-            resolve_context,
+            namespace,
             (SymbolNamespace::Type, symbol),
             SymbolKind::Module { namespace_idx },
         );
         namespace_idx
     }
 
-    fn ensure_module_path(&mut self, file_id: FileId, path: &[SymbolU32]) -> ResolveContext {
-        let mut resolve_context = ResolveContext::root(file_id);
+    fn ensure_module_path(
+        &mut self,
+        file_id: FileId,
+        path: &[SymbolU32],
+    ) -> Option<NamespaceIndex> {
+        let mut namespace: Option<NamespaceIndex> = None;
 
         for (i, &segment) in path.iter().enumerate() {
             let namespace_idx = self.ensure_module(
-                &resolve_context,
                 file_id,
+                namespace,
                 ast::Spanned {
                     inner: segment,
                     span: ast::TextSpan::new(0, 0),
@@ -1432,19 +1356,19 @@ impl<'ast> Builder<'ast, '_> {
             if i == path.len() - 1 {
                 self.tir.module_decls[namespace_idx as usize].own_file_id = Some(file_id);
             }
-            resolve_context = resolve_context.in_namespace(namespace_idx);
+            namespace = Some(namespace_idx);
         }
 
-        resolve_context
+        namespace
     }
 
     fn insert_symbol(
         &mut self,
-        resolve_context: &ResolveContext,
+        namespace: Option<NamespaceIndex>,
         key: (SymbolNamespace, SymbolU32),
         kind: SymbolKind,
     ) {
-        if let Some(idx) = resolve_context.namespace {
+        if let Some(idx) = namespace {
             self.tir.namespaces[idx as usize].symbols.insert(key, kind);
         } else {
             self.symbol_lookup.insert(key, kind);
@@ -1453,18 +1377,17 @@ impl<'ast> Builder<'ast, '_> {
 
     fn lookup_symbol(
         &self,
-        resolve_context: &ResolveContext,
-        ns: SymbolNamespace,
-        sym: SymbolU32,
+        namespace: Option<NamespaceIndex>,
+        key: (SymbolNamespace, SymbolU32),
     ) -> Option<&SymbolKind> {
-        let mut current = resolve_context.namespace;
+        let mut current = namespace;
         while let Some(idx) = current {
-            if let Some(kind) = self.tir.namespaces[idx as usize].symbols.get(&(ns, sym)) {
+            if let Some(kind) = self.tir.namespaces[idx as usize].symbols.get(&key) {
                 return Some(kind);
             }
             current = self.tir.namespaces[idx as usize].parent;
         }
-        self.symbol_lookup.get(&(ns, sym))
+        self.symbol_lookup.get(&key)
     }
 
     fn symbol_kind_to_type(&mut self, kind: SymbolKind) -> Option<TypeIndex> {
@@ -1557,11 +1480,17 @@ impl<'ast> Builder<'ast, '_> {
             }
         }
         match self
-            .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
+            .lookup_symbol(resolve_context.namespace, (SymbolNamespace::Type, symbol))
             .copied()
         {
             Some(SymbolKind::Pending(def_id)) => {
-                if self.sig_state.get(&def_id) == Some(&ComputeState::InProgress) {
+                if matches!(
+                    self.sig_state.get(&def_id),
+                    Some(SigEntry {
+                        state: ComputeState::InProgress,
+                        ..
+                    })
+                ) {
                     self.tir
                         .diagnostics
                         .push(report_cyclic_type_dependency(SourceSpan::new(
@@ -1572,7 +1501,7 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 self.ensure_signature(def_id);
                 match self
-                    .lookup_symbol(resolve_context, SymbolNamespace::Type, symbol)
+                    .lookup_symbol(resolve_context.namespace, (SymbolNamespace::Type, symbol))
                     .cloned()
                 {
                     Some(SymbolKind::TraitAssocType { assoc_name, .. }) => {
@@ -1964,13 +1893,19 @@ impl<'ast> Builder<'ast, '_> {
                 // Full APIT support requires monomorphisation; for now we record the
                 // trait type so callers can at least see the constraint.
                 if let Some(SymbolKind::Pending(def_id)) = self
-                    .lookup_symbol(resolve_context, SymbolNamespace::Type, name.inner)
+                    .lookup_symbol(
+                        resolve_context.namespace,
+                        (SymbolNamespace::Type, name.inner),
+                    )
                     .cloned()
                 {
                     self.ensure_signature(def_id);
                 }
                 match self
-                    .lookup_symbol(resolve_context, SymbolNamespace::Type, name.inner)
+                    .lookup_symbol(
+                        resolve_context.namespace,
+                        (SymbolNamespace::Type, name.inner),
+                    )
                     .cloned()
                 {
                     Some(SymbolKind::Trait { trait_index }) => {
@@ -2002,7 +1937,10 @@ impl<'ast> Builder<'ast, '_> {
             }
             ast::TypeExpression::GenericApplication { name, args } => {
                 match self
-                    .lookup_symbol(resolve_context, SymbolNamespace::Type, name.inner)
+                    .lookup_symbol(
+                        resolve_context.namespace,
+                        (SymbolNamespace::Type, name.inner),
+                    )
                     .copied()
                 {
                     Some(SymbolKind::Pending(def_id)) => {
@@ -2011,7 +1949,10 @@ impl<'ast> Builder<'ast, '_> {
                     _ => {}
                 }
                 match self
-                    .lookup_symbol(resolve_context, SymbolNamespace::Type, name.inner)
+                    .lookup_symbol(
+                        resolve_context.namespace,
+                        (SymbolNamespace::Type, name.inner),
+                    )
                     .copied()
                 {
                     Some(SymbolKind::Struct { struct_index }) => {
@@ -2211,139 +2152,121 @@ impl<'ast> Builder<'ast, '_> {
     /// types.
     fn pre_scan_item(
         &mut self,
-        resolve_context: ResolveContext,
-        item: &'ast ast::Item,
         file_id: FileId,
+        namespace: Option<NamespaceIndex>,
+        item: &'ast ast::Item,
     ) {
-        let namespace = resolve_context.namespace;
-
         match item {
             ast::Item::IntrinsicFunction { id, signature } => {
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Value, signature.name.inner),
                     SymbolKind::Pending(*id),
                 );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::IntrinsicFunction {
-                        file_id,
-                        namespace,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::IntrinsicFunction { item },
+                });
             }
             ast::Item::Function { id, signature, .. }
             | ast::Item::FunctionDeclaration { id, signature, .. } => {
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Value, signature.name.inner),
                     SymbolKind::Pending(*id),
                 );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::Function {
-                        file_id,
-                        namespace,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::Function { item },
+                });
             }
             ast::Item::Global { id, name, .. } => {
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Value, name.inner),
                     SymbolKind::Pending(*id),
                 );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::Global {
-                        file_id,
-                        namespace,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::Global { item },
+                });
             }
             ast::Item::Struct { id, name, .. } => {
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Type, name.inner),
                     SymbolKind::Pending(*id),
                 );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::Struct {
-                        file_id,
-                        namespace,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::Struct { item },
+                });
             }
             ast::Item::Enum { id, name, .. } => {
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Type, name.inner),
                     SymbolKind::Pending(*id),
                 );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::Enum {
-                        file_id,
-                        namespace,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::Enum { item },
+                });
             }
             ast::Item::Memory { id, name, .. } => {
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Type, name.inner),
                     SymbolKind::Pending(*id),
                 );
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Value, name.inner),
                     SymbolKind::Pending(*id),
                 );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::Memory {
-                        file_id,
-                        namespace,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::Memory { item },
+                });
             }
             ast::Item::Const { id, name, .. } => {
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Value, name.inner),
                     SymbolKind::Pending(*id),
                 );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::Const {
-                        file_id,
-                        namespace,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::Const { item },
+                });
             }
             ast::Item::Module {
                 name,
                 items,
                 pub_span,
             } => {
-                // Modules are structural — register eagerly and recurse.
-                let module_index =
-                    self.ensure_module(&resolve_context, file_id, name.clone(), *pub_span);
-                let child_context = resolve_context.in_namespace(module_index);
+                let namespace_index =
+                    self.ensure_module(file_id, namespace, name.clone(), *pub_span);
                 for child in items.iter() {
-                    self.pre_scan_item(child_context.clone(), &child.inner.inner, file_id);
+                    self.pre_scan_item(file_id, Some(namespace_index), &child.inner.inner);
                 }
             }
             ast::Item::ModuleDeclaration { name, pub_span } => {
-                self.ensure_module(&resolve_context, file_id, name.clone(), *pub_span);
+                self.ensure_module(file_id, namespace, name.clone(), *pub_span);
             }
             ast::Item::Trait {
                 id, name, items, ..
@@ -2353,7 +2276,7 @@ impl<'ast> Builder<'ast, '_> {
                 let trait_index = self.tir.traits.len() as u32;
                 self.tir.traits.push(Trait {
                     file_id,
-                    namespace: resolve_context.namespace,
+                    namespace,
                     name: name.clone(),
                     supertraits: Vec::new(),
                     members: HashMap::new(),
@@ -2363,71 +2286,68 @@ impl<'ast> Builder<'ast, '_> {
                     accesses: Vec::new(),
                 });
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Type, name.inner),
                     SymbolKind::Trait { trait_index },
                 );
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::Trait {
-                        file_id,
-                        namespace,
-                        trait_index,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::Trait { trait_index, item },
+                });
                 let mut ids: Vec<ast::DefId> = Vec::new();
                 for ti in items.iter() {
                     match &ti.inner.inner {
                         ast::TraitItem::Function { id, signature, .. } => {
                             self.insert_symbol(
-                                &resolve_context,
+                                namespace,
                                 (SymbolNamespace::Value, signature.name.inner),
                                 SymbolKind::Pending(*id),
                             );
-                            self.ast_nodes.insert(
-                                *id,
-                                AstNodeRef::TraitFunction {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::TraitFunction {
                                     trait_index,
                                     item: &ti.inner.inner,
                                 },
-                            );
+                            });
                             ids.push(*id);
                         }
                         ast::TraitItem::Const { id, name, .. } => {
                             self.insert_symbol(
-                                &resolve_context,
+                                namespace,
                                 (SymbolNamespace::Value, name.inner),
                                 SymbolKind::Pending(*id),
                             );
-                            self.ast_nodes.insert(
-                                *id,
-                                AstNodeRef::TraitConst {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::TraitConst {
                                     trait_index,
                                     item: &ti.inner.inner,
                                 },
-                            );
+                            });
                             ids.push(*id);
                         }
                         ast::TraitItem::AssociatedType { id, name, .. } => {
                             self.insert_symbol(
-                                &resolve_context,
+                                namespace,
                                 (SymbolNamespace::Type, name.inner),
                                 SymbolKind::Pending(*id),
                             );
-                            self.ast_nodes.insert(
-                                *id,
-                                AstNodeRef::TraitAssociatedType {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::TraitAssociatedType {
                                     trait_index,
                                     item: &ti.inner.inner,
                                 },
-                            );
+                            });
                             ids.push(*id);
                         }
                     }
@@ -2438,26 +2358,26 @@ impl<'ast> Builder<'ast, '_> {
                 for impl_item in items.iter() {
                     match &impl_item.inner.inner {
                         ast::ImplItem::Method { id, .. } => {
-                            self.ast_nodes.insert(
-                                *id,
-                                AstNodeRef::ImplMethod {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::ImplMethod {
                                     impl_target: target,
                                     item: &impl_item.inner.inner,
                                 },
-                            );
+                            });
                         }
                         ast::ImplItem::Const { id, .. } => {
-                            self.ast_nodes.insert(
-                                *id,
-                                AstNodeRef::ImplConst {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::ImplConst {
                                     impl_target: target,
                                     item: &impl_item.inner.inner,
                                 },
-                            );
+                            });
                         }
                         ast::ImplItem::AssociatedType { name, .. } => {
                             self.tir
@@ -2493,63 +2413,61 @@ impl<'ast> Builder<'ast, '_> {
                 let decl_idx = self.tir.import_decls.len() as u32;
                 self.tir.namespaces.push(ModuleNamespace {
                     name: module_sym,
-                    parent: resolve_context.namespace,
+                    parent: namespace,
                     declaration: ModuleDeclarationKind::Import(decl_idx),
                     symbols: HashMap::new(),
                 });
                 self.insert_symbol(
-                    &resolve_context,
+                    namespace,
                     (SymbolNamespace::Type, module_sym),
                     SymbolKind::Module { namespace_idx },
                 );
                 for entry in entries.iter() {
                     match &entry.inner.inner.declaration {
                         ast::ImportDeclaration::Function { id, .. } => {
-                            self.ast_nodes.insert(
-                                *id,
-                                AstNodeRef::ImportedFunction {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::ImportedFunction {
                                     import_module_index: import_decl_index,
                                     decl: &entry.inner.inner.declaration,
                                 },
-                            );
+                            });
                         }
                         ast::ImportDeclaration::Global { id, name, .. } => {
                             self.insert_symbol(
-                                &resolve_context,
+                                namespace,
                                 (SymbolNamespace::Value, name.inner),
                                 SymbolKind::Pending(*id),
                             );
-                            self.ast_nodes.insert(
-                                *id,
-                                AstNodeRef::ImportedGlobal {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::ImportedGlobal {
                                     import_module_index: import_decl_index,
                                     decl: &entry.inner.inner.declaration,
                                 },
-                            );
+                            });
                         }
                         ast::ImportDeclaration::Memory { id, name, .. } => {
                             self.insert_symbol(
-                                &resolve_context,
+                                namespace,
                                 (SymbolNamespace::Type, name.inner),
                                 SymbolKind::Pending(*id),
                             );
                             self.insert_symbol(
-                                &resolve_context,
+                                namespace,
                                 (SymbolNamespace::Value, name.inner),
                                 SymbolKind::Pending(*id),
                             );
-                            self.ast_nodes.insert(
-                                *id,
-                                AstNodeRef::Memory {
-                                    file_id,
-                                    namespace,
-                                    item,
-                                },
-                            );
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::Memory { item },
+                            });
                         }
                     }
                 }
@@ -2564,48 +2482,46 @@ impl<'ast> Builder<'ast, '_> {
             }
             ast::Item::Export { .. } => {} // handled during build pass
             ast::Item::ImplTrait { id, items, .. } => {
-                self.ast_nodes.insert(
-                    *id,
-                    AstNodeRef::ImplTraitBlock {
-                        file_id,
-                        namespace,
-                        item,
-                    },
-                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::ImplTraitBlock { item },
+                });
                 for mi in items.iter() {
                     match &mi.inner.inner {
                         ast::ImplItem::Method { id: method_id, .. } => {
-                            self.ast_nodes.insert(
-                                *method_id,
-                                AstNodeRef::ImplTraitMethod {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *method_id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::ImplTraitMethod {
                                     parent_id: *id,
                                     item: &mi.inner.inner,
                                 },
-                            );
+                            });
                         }
                         ast::ImplItem::Const { id: const_id, .. } => {
-                            self.ast_nodes.insert(
-                                *const_id,
-                                AstNodeRef::ImplTraitConst {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *const_id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::ImplTraitConst {
                                     parent_id: *id,
                                     item: &mi.inner.inner,
                                 },
-                            );
+                            });
                         }
                         ast::ImplItem::AssociatedType { id: type_id, .. } => {
-                            self.ast_nodes.insert(
-                                *type_id,
-                                AstNodeRef::ImplTraitAssociatedType {
-                                    file_id,
-                                    namespace,
+                            self.ast_nodes.push(AstEntry {
+                                def_id: *type_id,
+                                file_id,
+                                namespace,
+                                node: AstNodeRef::ImplTraitAssociatedType {
                                     parent_id: *id,
                                     item: &mi.inner.inner,
                                 },
-                            );
+                            });
                         }
                     }
                 }
@@ -2618,26 +2534,26 @@ impl<'ast> Builder<'ast, '_> {
     /// Resolves the signature of `def_id`. Idempotent; detects cycles via
     /// `sig_state`.
     fn ensure_signature(&mut self, def_id: ast::DefId) {
-        match self.sig_state.get(&def_id) {
-            Some(ComputeState::Done) => return,
-            Some(ComputeState::InProgress) => return, // cycle already reported by resolve_type
-            None => {}
-        }
-        self.sig_state.insert(def_id, ComputeState::InProgress);
-
-        let node = match self.ast_nodes.get(&def_id).cloned() {
-            Some(n) => n,
-            None => {
-                self.sig_state.insert(def_id, ComputeState::Done);
-                return;
+        let node_idx = {
+            let entry = self.sig_state.get_mut(&def_id).unwrap();
+            match entry.state {
+                ComputeState::Done | ComputeState::InProgress => return,
+                ComputeState::Pending => entry.state = ComputeState::InProgress,
             }
+            entry.node_idx
         };
+        let AstEntry {
+            file_id,
+            namespace,
+            node,
+            ..
+        } = self.ast_nodes[node_idx].clone();
 
-        let resolve_context = ResolveContext::new(node.file_id(), node.namespace());
+        let resolve_context = ResolveContext::new(file_id, namespace);
 
-        match node.clone() {
+        match node {
             // ── struct ────────────────────────────────────────────────────────
-            AstNodeRef::Struct { item, .. } => {
+            AstNodeRef::Struct { item } => {
                 let (id, pub_span, name, ast_type_params, fields) = match item {
                     ast::Item::Struct {
                         id,
@@ -2650,7 +2566,10 @@ impl<'ast> Builder<'ast, '_> {
                 };
                 // Duplicate check.
                 if let Some(existing) = self
-                    .lookup_symbol(&resolve_context, SymbolNamespace::Type, name.inner)
+                    .lookup_symbol(
+                        resolve_context.namespace,
+                        (SymbolNamespace::Type, name.inner),
+                    )
                     .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                     .cloned()
                 {
@@ -2670,7 +2589,7 @@ impl<'ast> Builder<'ast, '_> {
                             second_definition: SourceSpan::new(resolve_context.file_id, name.span),
                         },
                     ));
-                    self.sig_state.insert(*id, ComputeState::Done);
+                    self.sig_state.get_mut(&def_id).unwrap().state = ComputeState::Done;
                     return;
                 }
 
@@ -2734,7 +2653,7 @@ impl<'ast> Builder<'ast, '_> {
                     accesses: Vec::new(),
                 });
                 self.insert_symbol(
-                    &resolve_context,
+                    resolve_context.namespace,
                     (SymbolNamespace::Type, name.inner),
                     SymbolKind::Struct { struct_index },
                 );
@@ -2742,7 +2661,7 @@ impl<'ast> Builder<'ast, '_> {
             }
 
             // ── enum ──────────────────────────────────────────────────────────
-            AstNodeRef::Enum { item, .. } => {
+            AstNodeRef::Enum { item } => {
                 if let ast::Item::Enum {
                     id,
                     pub_span,
@@ -2752,7 +2671,7 @@ impl<'ast> Builder<'ast, '_> {
                 } = item
                 {
                     if !matches!(
-                        self.lookup_symbol(&resolve_context, SymbolNamespace::Type, name.inner),
+                        self.lookup_symbol(resolve_context.namespace, (SymbolNamespace::Type, name.inner)),
                         Some(k) if !matches!(k, SymbolKind::Pending(_))
                     ) {
                         let enum_index = self.tir.enums.len() as u32;
@@ -2861,7 +2780,7 @@ impl<'ast> Builder<'ast, '_> {
                             lookup: variant_lookup,
                         });
                         self.insert_symbol(
-                            &resolve_context,
+                            resolve_context.namespace,
                             (SymbolNamespace::Type, name.inner),
                             SymbolKind::Enum { enum_index },
                         );
@@ -2871,7 +2790,7 @@ impl<'ast> Builder<'ast, '_> {
             }
 
             // ── free function / function declaration ──────────────────────────
-            AstNodeRef::Function { item, .. } => match item {
+            AstNodeRef::Function { item } => match item {
                 ast::Item::Function {
                     id,
                     signature,
@@ -2881,9 +2800,8 @@ impl<'ast> Builder<'ast, '_> {
                 } => {
                     let existing_span = self
                         .lookup_symbol(
-                            &resolve_context,
-                            SymbolNamespace::Value,
-                            signature.name.inner,
+                            resolve_context.namespace,
+                            (SymbolNamespace::Value, signature.name.inner),
                         )
                         .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                         .cloned()
@@ -2935,7 +2853,7 @@ impl<'ast> Builder<'ast, '_> {
                         }
                         None => {
                             self.insert_symbol(
-                                &resolve_context,
+                                resolve_context.namespace,
                                 (SymbolNamespace::Value, signature.name.inner),
                                 SymbolKind::Function { func_index },
                             );
@@ -3271,7 +3189,7 @@ impl<'ast> Builder<'ast, '_> {
             }
 
             // ── global ────────────────────────────────────────────────────────
-            AstNodeRef::Global { item, .. } => {
+            AstNodeRef::Global { item } => {
                 if let ast::Item::Global {
                     pub_span,
                     mut_span,
@@ -3282,7 +3200,10 @@ impl<'ast> Builder<'ast, '_> {
                 } = item
                 {
                     if let Some(first_def) = self
-                        .lookup_symbol(&resolve_context, SymbolNamespace::Value, name.inner)
+                        .lookup_symbol(
+                            resolve_context.namespace,
+                            (SymbolNamespace::Value, name.inner),
+                        )
                         .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                         .cloned()
                     {
@@ -3311,7 +3232,7 @@ impl<'ast> Builder<'ast, '_> {
                         };
                         let global_index = self.tir.globals.len() as u32;
                         self.insert_symbol(
-                            &resolve_context,
+                            resolve_context.namespace,
                             (SymbolNamespace::Value, name.inner),
                             SymbolKind::Global { global_index },
                         );
@@ -3335,7 +3256,7 @@ impl<'ast> Builder<'ast, '_> {
             }
 
             // ── memory ────────────────────────────────────────────────────────
-            AstNodeRef::Memory { item, .. } => {
+            AstNodeRef::Memory { item } => {
                 if let ast::Item::Memory {
                     name,
                     kind,
@@ -3395,7 +3316,7 @@ impl<'ast> Builder<'ast, '_> {
                     });
                     self.seed_memory_trait_impl(trait_index, memory_type);
                     self.insert_symbol(
-                        &resolve_context,
+                        resolve_context.namespace,
                         (SymbolNamespace::Type, name.inner),
                         SymbolKind::Memory {
                             memory_index,
@@ -3403,7 +3324,7 @@ impl<'ast> Builder<'ast, '_> {
                         },
                     );
                     self.insert_symbol(
-                        &resolve_context,
+                        resolve_context.namespace,
                         (SymbolNamespace::Value, name.inner),
                         SymbolKind::Memory {
                             memory_index,
@@ -3414,7 +3335,7 @@ impl<'ast> Builder<'ast, '_> {
             }
 
             // ── const ─────────────────────────────────────────────────────────
-            AstNodeRef::Const { item, .. } => {
+            AstNodeRef::Const { item } => {
                 if let ast::Item::Const {
                     id,
                     pub_span,
@@ -3424,7 +3345,10 @@ impl<'ast> Builder<'ast, '_> {
                 } = item
                 {
                     if let Some(first_def) = self
-                        .lookup_symbol(&resolve_context, SymbolNamespace::Value, name.inner)
+                        .lookup_symbol(
+                            resolve_context.namespace,
+                            (SymbolNamespace::Value, name.inner),
+                        )
                         .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                         .cloned()
                     {
@@ -3470,7 +3394,7 @@ impl<'ast> Builder<'ast, '_> {
                             });
                             self.tir.const_index_lookup.insert(*id, const_index);
                             self.insert_symbol(
-                                &resolve_context,
+                                resolve_context.namespace,
                                 (SymbolNamespace::Value, name.inner),
                                 SymbolKind::Const { const_index },
                             );
@@ -3480,7 +3404,7 @@ impl<'ast> Builder<'ast, '_> {
             }
 
             // ── imported function ─────────────────────────────────────────────
-            AstNodeRef::IntrinsicFunction { item, .. } => {
+            AstNodeRef::IntrinsicFunction { item } => {
                 if let ast::Item::IntrinsicFunction { id, signature } = item {
                     let type_params =
                         self.resolve_ast_type_params(&resolve_context, &signature.type_params);
@@ -3513,7 +3437,7 @@ impl<'ast> Builder<'ast, '_> {
                     func.result = result;
                     func.signature_index = signature_index;
                     self.insert_symbol(
-                        &resolve_context,
+                        resolve_context.namespace,
                         (SymbolNamespace::Value, signature.name.inner),
                         SymbolKind::Function { func_index },
                     );
@@ -3607,7 +3531,7 @@ impl<'ast> Builder<'ast, '_> {
             // Resolves the trait and target types, creates the `TraitImpl`
             // entry, and populates the lookup tables. Methods and consts
             // demand-drive this arm before inserting into `TraitImpl.members`.
-            AstNodeRef::ImplTraitBlock { item, .. } => {
+            AstNodeRef::ImplTraitBlock { item } => {
                 let (block_id, trait_name, target) = match item {
                     ast::Item::ImplTrait {
                         id,
@@ -3670,8 +3594,8 @@ impl<'ast> Builder<'ast, '_> {
                         Some(fi) => fi,
                         None => continue,
                     };
-                    let node = match self.ast_nodes.get(&tid) {
-                        Some(n) => n,
+                    let node = match self.sig_state.get(&tid) {
+                        Some(e) => &self.ast_nodes[e.node_idx].node,
                         None => continue,
                     };
                     if let AstNodeRef::TraitFunction { item, .. } = node {
@@ -3902,11 +3826,11 @@ impl<'ast> Builder<'ast, '_> {
                     // Replace Pending with TraitAssocType only if it's still our
                     // own Pending — never clobber a same-named resolved symbol.
                     if matches!(
-                        self.lookup_symbol(&resolve_context, SymbolNamespace::Type, name.inner),
+                        self.lookup_symbol(resolve_context.namespace, (SymbolNamespace::Type, name.inner)),
                         Some(SymbolKind::Pending(d)) if *d == *id
                     ) {
                         self.insert_symbol(
-                            &resolve_context,
+                            resolve_context.namespace,
                             (SymbolNamespace::Type, name.inner),
                             SymbolKind::TraitAssocType {
                                 trait_index,
@@ -3950,7 +3874,7 @@ impl<'ast> Builder<'ast, '_> {
                         .copied()
                         .find(|&did| {
                             matches!(
-                                self.ast_nodes.get(&did),
+                                self.sig_state.get(&did).map(|e| &self.ast_nodes[e.node_idx].node),
                                 Some(AstNodeRef::TraitAssociatedType { item, .. })
                                     if matches!(item, ast::TraitItem::AssociatedType { name: n, .. } if n.inner == name.inner)
                             )
@@ -3976,7 +3900,7 @@ impl<'ast> Builder<'ast, '_> {
             }
         }
 
-        self.sig_state.insert(def_id, ComputeState::Done);
+        self.sig_state.get_mut(&def_id).unwrap().state = ComputeState::Done;
     }
 
     // ── query: ensure_body ────────────────────────────────────────────────────
@@ -3986,14 +3910,17 @@ impl<'ast> Builder<'ast, '_> {
     fn ensure_body(&mut self, def_id: ast::DefId) {
         self.ensure_signature(def_id);
 
-        let node = match self.ast_nodes.get(&def_id).cloned() {
-            Some(n) => n,
-            None => return,
-        };
+        let node_idx = self.sig_state.get(&def_id).unwrap().node_idx;
+        let AstEntry {
+            file_id,
+            namespace,
+            node,
+            ..
+        } = self.ast_nodes[node_idx].clone();
 
         // Extract (sig, body_expr, func_index) — only function-like nodes have bodies.
-        let (sig, body_expr, func_index) = match &node {
-            AstNodeRef::Function { item, .. } => match item {
+        let (sig, body_expr, func_index) = match node {
+            AstNodeRef::Function { item } => match item {
                 ast::Item::Function {
                     id,
                     signature,
@@ -4040,8 +3967,8 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 _ => return,
             },
-            AstNodeRef::Global { item, .. } => {
-                let resolve_context = ResolveContext::new(node.file_id(), node.namespace());
+            AstNodeRef::Global { item } => {
+                let resolve_context = ResolveContext::new(file_id, namespace);
 
                 let ast::Item::Global { id, value, .. } = item else {
                     unreachable!();
@@ -4085,7 +4012,7 @@ impl<'ast> Builder<'ast, '_> {
             _ => return,
         };
 
-        let resolve_context = ResolveContext::new(node.file_id(), node.namespace());
+        let resolve_context = ResolveContext::new(file_id, namespace);
         let self_type = match &node {
             AstNodeRef::ImplMethod { impl_target, .. } => {
                 Some(self.resolve_type(&resolve_context, impl_target))
@@ -4808,7 +4735,7 @@ impl<'ast> Builder<'ast, '_> {
                 let seg = path.segments.last().expect("path non-empty");
                 let symbol = seg.ident.inner;
                 match self
-                    .lookup_symbol(&resolve_context, SymbolNamespace::Value, symbol)
+                    .lookup_symbol(resolve_context.namespace, (SymbolNamespace::Value, symbol))
                     .cloned()
                 {
                     Some(SymbolKind::True) => Ok(Expression {
@@ -5691,9 +5618,8 @@ impl<'ast> Builder<'ast, '_> {
 
         let kind = self
             .lookup_symbol(
-                &func_ctx.resolve_context,
-                SymbolNamespace::Value,
-                name.inner,
+                func_ctx.resolve_context.namespace,
+                (SymbolNamespace::Value, name.inner),
             )
             .cloned();
 
@@ -5703,9 +5629,8 @@ impl<'ast> Builder<'ast, '_> {
                     self.ensure_signature(def_id);
                     match self
                         .lookup_symbol(
-                            &func_ctx.resolve_context,
-                            SymbolNamespace::Value,
-                            name.inner,
+                            func_ctx.resolve_context.namespace,
+                            (SymbolNamespace::Value, name.inner),
                         )
                         .cloned()
                     {
@@ -6000,7 +5925,10 @@ impl<'ast> Builder<'ast, '_> {
             }
 
             return match self
-                .lookup_symbol(&func_ctx.resolve_context, SymbolNamespace::Value, symbol)
+                .lookup_symbol(
+                    func_ctx.resolve_context.namespace,
+                    (SymbolNamespace::Value, symbol),
+                )
                 .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                 .cloned()
             {
@@ -6118,9 +6046,8 @@ impl<'ast> Builder<'ast, '_> {
             let seg = &path.segments[0];
             let func_index = match self
                 .lookup_symbol(
-                    &func_ctx.resolve_context,
-                    SymbolNamespace::Value,
-                    seg.ident.inner,
+                    func_ctx.resolve_context.namespace,
+                    (SymbolNamespace::Value, seg.ident.inner),
                 )
                 .filter(|k| !matches!(k, SymbolKind::Pending(_)))
                 .cloned()
@@ -6263,7 +6190,13 @@ impl<'ast> Builder<'ast, '_> {
                     .cloned();
                 match kind {
                     Some(SymbolKind::Pending(def_id)) => {
-                        if self.sig_state.get(&def_id) == Some(&ComputeState::InProgress) {
+                        if matches!(
+                            self.sig_state.get(&def_id),
+                            Some(SigEntry {
+                                state: ComputeState::InProgress,
+                                ..
+                            })
+                        ) {
                             self.tir.diagnostics.push(report_cyclic_type_dependency(
                                 SourceSpan::new(resolve_context.file_id, member_span),
                             ));

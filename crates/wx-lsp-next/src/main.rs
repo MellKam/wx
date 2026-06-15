@@ -10,17 +10,17 @@ use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::{Error as JsonRpcError, Result};
 use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, InsertTextFormat,
-    DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, DidChangeTextDocumentParams,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MarkupContent, MarkupKind, NumberOrString, OneOf, ParameterInformation, ParameterLabel,
-    Position, Range, ReferenceParams, RenameParams, SemanticToken, SemanticTokenType,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri, WorkspaceEdit,
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    InsertTextFormat, Location, MarkupContent, MarkupKind, NumberOrString, OneOf,
+    ParameterInformation, ParameterLabel, Position, Range, ReferenceParams, RenameParams,
+    SemanticToken, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
+    SignatureHelpParams, SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use wx_compiler::ast;
@@ -48,7 +48,8 @@ const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
 
 /// URI scheme used for virtual stdlib files, e.g. `wxstd://stdlib/std.wx`.
 const STDLIB_URI_SCHEME: &str = "wxstd";
-/// Fixed authority used in virtual stdlib URIs so VS Code can detect the `.wx` extension from the path.
+/// Fixed authority used in virtual stdlib URIs so VS Code can detect the `.wx`
+/// extension from the path.
 const STDLIB_URI_AUTHORITY: &str = "stdlib";
 
 #[derive(serde::Deserialize)]
@@ -756,11 +757,11 @@ fn compile_root(state: &ServerState, root: &Path) -> std::result::Result<Compile
             wx_compiler::STDLIB_SOURCE.to_string(),
         )])),
     )?;
-    builder.load_crate(
+    let root_id = builder.load_crate(
         root.to_str().unwrap_or_default().to_string(),
         &overlay_source,
     )?;
-    let mut graph = builder.build(stdlib_id);
+    let mut graph = builder.build(root_id, stdlib_id);
     let tir = TIR::build(&mut graph);
     let symbol_index = build_symbol_index(&tir, &graph.interner);
     let path_to_module_loc = graph
@@ -822,6 +823,7 @@ fn analysis_from_load_error(root: &Path, error: LoadError) -> AnalysisResult {
     let mut owned_files = HashSet::new();
 
     let (path, diagnostic) = match error {
+        // TODO: rewrite this
         LoadError::ReadFailed { path } => {
             let target = if Path::new(&path).is_absolute() {
                 PathBuf::from(&path)

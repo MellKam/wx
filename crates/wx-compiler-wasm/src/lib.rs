@@ -15,13 +15,13 @@ pub fn compile(filename: String, source: String) -> Result<Vec<u8>, JsValue> {
             )])),
         )
         .map_err(|err| serde_wasm_bindgen::to_value(&format!("{err:?}")).unwrap())?;
-    builder
+    let root_id = builder
         .load_crate(
             filename.clone(),
             &vfs::VirtualFileSource::new(HashMap::from([(filename, source)])),
         )
         .map_err(|err| serde_wasm_bindgen::to_value(&format!("{err:?}")).unwrap())?;
-    let mut compilation = builder.build(stdlib_id);
+    let mut compilation = builder.build(root_id, stdlib_id);
     let ast_diagnostics: Vec<_> = compilation
         .crates
         .iter()

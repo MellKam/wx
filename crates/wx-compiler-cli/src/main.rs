@@ -36,7 +36,7 @@ fn main() {
         )
         .unwrap();
     let mut compilation = match builder.load_crate(file_path.clone(), &vfs::NativeFileSource) {
-        Ok(_) => builder.build(stdlib_id),
+        Ok(root_id) => builder.build(root_id, stdlib_id),
         Err(vfs::LoadError::ReadFailed { path }) => {
             eprintln!("Error reading file {path}");
             std::process::exit(1);

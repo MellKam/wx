@@ -4,9 +4,8 @@ use codespan_reporting::diagnostic::Severity;
 use indoc::indoc;
 
 use super::*;
-use crate::STDLIB_SOURCE;
 use crate::tir::builder::{CharLiteralError, parse_char_literal, unescape_string};
-use crate::vfs;
+use crate::{STDLIB_SOURCE, vfs};
 
 #[allow(unused)]
 struct TestCase {
@@ -26,7 +25,7 @@ impl TestCase {
                 )])),
             )
             .unwrap();
-        builder
+        let root_id = builder
             .load_crate(
                 "main.wx".to_string(),
                 &vfs::VirtualFileSource::new(HashMap::from([(
@@ -35,7 +34,7 @@ impl TestCase {
                 )])),
             )
             .unwrap();
-        let mut graph = builder.build(stdlib_id);
+        let mut graph = builder.build(root_id, stdlib_id);
         let tir = TIR::build(&mut graph);
         TestCase { graph, tir }
     }
@@ -56,13 +55,13 @@ impl TestCase {
                 )])),
             )
             .unwrap();
-        builder
+        let root_id = builder
             .load_crate(
                 entry_path.to_string(),
                 &vfs::VirtualFileSource::new(workspace_files),
             )
             .unwrap();
-        let mut graph = builder.build(stdlib_id);
+        let mut graph = builder.build(root_id, stdlib_id);
         let tir = TIR::build(&mut graph);
         TestCase { graph, tir }
     }
@@ -261,7 +260,8 @@ fn test_imported_global() {
 
         export { read }
     "});
-    // TODO: change to diagnostics.is_empty() once unused-warning for lib/stdlib items is fixed
+    // TODO: change to diagnostics.is_empty() once unused-warning for lib/stdlib
+    // items is fixed
     assert!(
         !case
             .tir
@@ -269,8 +269,8 @@ fn test_imported_global() {
             .iter()
             .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
     );
-    // Both imported globals land in tir.globals with no value and namespace pointing
-    // to the import block.
+    // Both imported globals land in tir.globals with no value and namespace
+    // pointing to the import block.
     assert_eq!(case.tir.globals.len(), 2);
     assert!(case.tir.globals.iter().all(|g| g.value.is_none()));
     assert!(
@@ -752,7 +752,8 @@ fn test_comptime_float_coerced_in_local_binding() {
 
 #[test]
 fn test_comptime_integer_local_missing_annotation_errors() {
-    // No type annotation on the binding and no outer context → type annotation required
+    // No type annotation on the binding and no outer context → type annotation
+    // required
     let case = TestCase::new(indoc! {"
         fn f() {
             local x = 1 + 2;
@@ -3565,7 +3566,8 @@ fn test_generic_struct_method() {
     no_errors(&case);
 }
 
-// ── Array literals ────────────────────────────────────────────────────────────
+// ── Array literals
+// ────────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "array literals with type coercion not yet fully implemented"]
@@ -3650,7 +3652,8 @@ fn test_array_literal_size_mismatch_is_error() {
 
 #[test]
 fn test_array_literal_no_annotation_is_error() {
-    // Without a type annotation the element type cannot be inferred from comptime ints.
+    // Without a type annotation the element type cannot be inferred from comptime
+    // ints.
     let case = TestCase::new(&format!(
         "{STD}\n{}",
         indoc! {"
@@ -3709,7 +3712,8 @@ fn test_array_literal_mixed_element_types_is_error() {
     has_error_matching(&case, "array element type must be a numeric type");
 }
 
-// ── Array repeat ──────────────────────────────────────────────────────────────
+// ── Array repeat
+// ──────────────────────────────────────────────────────────────
 
 #[test]
 #[ignore = "array literals with type coercion not yet fully implemented"]
@@ -3808,7 +3812,8 @@ fn test_array_repeat_non_numeric_value_is_error() {
     has_error_matching(&case, "array element type must be a numeric type");
 }
 
-// ── Index operator ────────────────────────────────────────────────────────────
+// ── Index operator
+// ────────────────────────────────────────────────────────────
 
 #[test]
 fn test_index_read_from_array() {
@@ -3932,7 +3937,8 @@ fn test_index_memory64_requires_u64_index() {
 
 #[test]
 fn test_index_ambiguous_memory_is_error() {
-    // Two memories and no tag on the array type — cannot resolve memory for indexing.
+    // Two memories and no tag on the array type — cannot resolve memory for
+    // indexing.
     let case = TestCase::new(&format!(
         "{STD}\n{}",
         indoc! {"
@@ -3941,8 +3947,8 @@ fn test_index_ambiguous_memory_is_error() {
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "}
     ));
-    // The array type already carries heap's memory id, so indexing it should succeed
-    // even with two memories declared.
+    // The array type already carries heap's memory id, so indexing it should
+    // succeed even with two memories declared.
     no_errors(&case);
 }
 
@@ -4021,7 +4027,8 @@ fn test_generic_call_with_non_satisfying_type_is_error() {
     );
 }
 
-// ── enum tests ────────────────────────────────────────────────────────────────
+// ── enum tests
+// ────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_enum_variants_are_populated() {

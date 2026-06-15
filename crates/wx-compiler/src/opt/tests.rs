@@ -63,7 +63,7 @@ impl TestCase {
                 )])),
             )
             .unwrap();
-        builder
+        let root_id = builder
             .load_crate(
                 "main.wx".to_string(),
                 &vfs::VirtualFileSource::new(HashMap::from([(
@@ -72,7 +72,7 @@ impl TestCase {
                 )])),
             )
             .unwrap();
-        let mut graph = builder.build(stdlib_id);
+        let mut graph = builder.build(root_id, stdlib_id);
         let tir = tir::TIR::build(&mut graph);
         let mir = MIR::build(&tir, &graph.interner, graph.id_generator);
         TestCase { mir }
@@ -1304,7 +1304,8 @@ fn test_sched_struct_pointer_store() {
         body
     );
 
-    // Field offsets are in the instruction immediates — no address arithmetic needed.
+    // Field offsets are in the instruction immediates — no address arithmetic
+    // needed.
     let add_count = body
         .iter()
         .filter(|i| matches!(i, Instruction::I32Add))

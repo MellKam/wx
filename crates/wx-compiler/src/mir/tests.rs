@@ -24,7 +24,7 @@ impl TestCase {
                 )])),
             )
             .unwrap();
-        builder
+        let root_id = builder
             .load_crate(
                 "main.wx".to_string(),
                 &vfs::VirtualFileSource::new(HashMap::from([(
@@ -33,7 +33,7 @@ impl TestCase {
                 )])),
             )
             .unwrap();
-        let mut graph = builder.build(stdlib_id);
+        let mut graph = builder.build(root_id, stdlib_id);
         let tir = tir::TIR::build(&mut graph);
         let mir = MIR::build(&tir, &graph.interner, graph.id_generator);
         TestCase { graph, tir, mir }
@@ -168,8 +168,8 @@ fn test_size_associated_const() {
 
 #[test]
 fn test_string_literal_lowered_to_tuple() {
-    // A string literal lowers to Aggregate { StaticPointer(data_index), Int(len) } in MIR,
-    // and the function records the entry index in its static_data list.
+    // A string literal lowers to Aggregate { StaticPointer(data_index), Int(len) }
+    // in MIR, and the function records the entry index in its static_data list.
     let case = TestCase::new(&format!(
         "{MEMORY32_TRAIT}\n{STRING_STRUCT}\n{}",
         indoc! {"

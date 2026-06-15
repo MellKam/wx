@@ -164,6 +164,11 @@ impl ModuleId {
     pub fn as_u32(self) -> u32 {
         self.0
     }
+
+    #[inline]
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -176,9 +181,13 @@ impl CrateId {
     pub fn as_u32(self) -> u32 {
         self.0
     }
+
+    #[inline]
+    pub fn as_usize(self) -> usize {
+        self.0 as usize
+    }
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct SourceModule {
     pub crate_id: CrateId,
     pub id: ModuleId,
@@ -190,26 +199,21 @@ pub struct SourceModule {
     pub ast: ast::AST,
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct CrateGraph {
     pub id: CrateId,
     pub root: ModuleId,
     pub entry_path: String,
     pub modules: Vec<SourceModule>,
-    #[cfg_attr(test, serde(skip))]
     pub diagnostics: Vec<Diagnostic<FileId>>,
-    #[cfg_attr(test, serde(skip))]
     pub path_to_module: HashMap<String, ModuleId>,
 }
 
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct CompilationGraph {
     pub files: Files,
     pub crates: Vec<CrateGraph>,
     pub stdlib_crate: CrateId,
-    #[cfg_attr(test, serde(skip))]
+    pub root_crate: CrateId,
     pub id_generator: ast::DefIdGenerator,
-    #[cfg_attr(test, serde(skip))]
     pub interner: ast::StringInterner,
 }
 
@@ -241,26 +245,15 @@ impl CompilationGraphBuilder {
         Ok(crate_id)
     }
 
-    pub fn build(self, stdlib_crate: CrateId) -> CompilationGraph {
+    pub fn build(self, root_crate: CrateId, stdlib_crate: CrateId) -> CompilationGraph {
         CompilationGraph {
             files: self.files,
             crates: self.crates,
             stdlib_crate,
+            root_crate,
             id_generator: self.id_generator,
             interner: self.interner,
         }
-    }
-}
-
-impl CompilationGraph {
-    pub fn asts_in_build_order(&self) -> Box<[&ast::AST]> {
-        let mut asts = Vec::with_capacity(self.crates.len());
-        for crate_graph in &self.crates {
-            for module in &crate_graph.modules {
-                asts.push(&module.ast);
-            }
-        }
-        asts.into_boxed_slice()
     }
 }
 
@@ -428,9 +421,8 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::STDLIB_SOURCE;
-
     use super::*;
+    use crate::STDLIB_SOURCE;
 
     fn temp_test_dir(test_name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -562,7 +554,7 @@ mod tests {
                 )])),
             )
             .expect("failed to load stdlib crate");
-        builder
+        let root_id = builder
             .load_crate(
                 "src/main.wx".to_string(),
                 &VirtualFileSource::new(HashMap::from([
@@ -571,7 +563,7 @@ mod tests {
                 ])),
             )
             .expect("failed to load crate");
-        let graph = builder.build(stdlib_id);
+        let graph = builder.build(root_id, stdlib_id);
 
         let entry_crate = &graph.crates[1];
         assert_eq!(entry_crate.modules.len(), 2);
