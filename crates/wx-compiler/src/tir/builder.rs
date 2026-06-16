@@ -342,7 +342,7 @@ fn report_invalid_memory_kind(span: SourceSpan) -> Diagnostic<FileId> {
         .with_code(DiagnosticCode::InvalidMemoryKind.code())
         .with_message("invalid memory kind")
         .with_label(span.primary_label())
-        .with_note("expected `Memory32` or `Memory64`")
+        .with_note("expected `Memory<Size = u32>` or `Memory<Size = u64>`")
 }
 
 struct DuplicateDefinitionDiagnostic<'a> {
@@ -711,7 +711,7 @@ fn report_no_memory_for_pointer(span: SourceSpan) -> Diagnostic<FileId> {
         .with_code(DiagnosticCode::NoMemoryForPointer.code())
         .with_message("pointer dereference requires a linear memory")
         .with_label(span.primary_label())
-        .with_note("declare a memory in this module: `memory <name>: Memory32;`")
+        .with_note("declare a memory in this module: `memory <name>: Memory<Size = u32>;`")
 }
 
 fn report_ambiguous_pointer_memory(span: SourceSpan) -> Diagnostic<FileId> {
@@ -1197,6 +1197,7 @@ impl<'ast> Builder<'ast, '_> {
                         .push(span);
                 }
             }
+            TypeParamOwner::Trait(_) => {}
         }
     }
 
@@ -1808,7 +1809,6 @@ impl<'ast> Builder<'ast, '_> {
                 self.intern_type(Type::Tuple { elements: elems })
             }
             ast::TypeExpression::MemoryTagged { memory, inner } => {
-                // The memory path must name a memory declaration.
                 let memory_ty = self.resolve_type_identifier(
                     resolve_context,
                     memory.segments[0].ident.inner,
@@ -1817,8 +1817,10 @@ impl<'ast> Builder<'ast, '_> {
                 if memory_ty == TypeIndex::ERROR {
                     return TypeIndex::ERROR;
                 }
-                let id = match &self.tir.type_pool[memory_ty.as_usize()] {
-                    Type::Memory { id, .. } => *id,
+                match &self.tir.type_pool[memory_ty.as_usize()] {
+                    Type::Memory { .. }
+                    | Type::TypeParam { .. }
+                    | Type::AssocTypeProjection { .. } => {}
                     _ => {
                         self.tir.diagnostics.push(
                             Diagnostic::error()
@@ -1836,7 +1838,7 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 };
                 // Resolve the inner expression directly by AST kind so the outer
-                // memory id is applied without triggering ambient memory resolution
+                // memory is applied without triggering ambient memory resolution
                 // for untagged pointer/array/slice annotations.
                 match &inner.inner {
                     ast::TypeExpression::Pointer {
@@ -1847,7 +1849,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.intern_type(Type::Pointer {
                             to,
                             mutable: mutability.is_some(),
-                            memory: id,
+                            memory: memory_ty,
                         })
                     }
                     ast::TypeExpression::Array {
@@ -1860,7 +1862,7 @@ impl<'ast> Builder<'ast, '_> {
                             of,
                             size: size.inner as u32,
                             mutable: mutability.is_some(),
-                            memory: id,
+                            memory: memory_ty,
                         })
                     }
                     ast::TypeExpression::Slice {
@@ -1871,7 +1873,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.intern_type(Type::Slice {
                             of,
                             mutable: mutability.is_some(),
-                            memory: id,
+                            memory: memory_ty,
                         })
                     }
                     _ => {
@@ -1885,52 +1887,6 @@ impl<'ast> Builder<'ast, '_> {
                                     inner.span,
                                 )),
                         );
-                        TypeIndex::ERROR
-                    }
-                }
-            }
-            ast::TypeExpression::ImplTrait { name } => {
-                // Full APIT support requires monomorphisation; for now we record the
-                // trait type so callers can at least see the constraint.
-                if let Some(SymbolKind::Pending(def_id)) = self
-                    .lookup_symbol(
-                        resolve_context.namespace,
-                        (SymbolNamespace::Type, name.inner),
-                    )
-                    .cloned()
-                {
-                    self.ensure_signature(def_id);
-                }
-                match self
-                    .lookup_symbol(
-                        resolve_context.namespace,
-                        (SymbolNamespace::Type, name.inner),
-                    )
-                    .cloned()
-                {
-                    Some(SymbolKind::Trait { trait_index }) => {
-                        self.tir.traits[trait_index as usize]
-                            .accesses
-                            .push(SourceSpan::new(resolve_context.file_id, name.span));
-                        self.intern_type(Type::Trait { trait_index })
-                    }
-                    Some(SymbolKind::Pending(_)) => TypeIndex::ERROR,
-                    Some(kind) => {
-                        let name_str = self.interner.resolve(name.inner).unwrap().to_string();
-                        self.tir.diagnostics.push(report_expected_trait(
-                            SourceSpan::new(resolve_context.file_id, name.span),
-                            kind,
-                            name_str,
-                        ));
-                        TypeIndex::ERROR
-                    }
-                    None => {
-                        self.tir
-                            .diagnostics
-                            .push(report_undeclared_type(SourceSpan::new(
-                                resolve_context.file_id,
-                                name.span,
-                            )));
                         TypeIndex::ERROR
                     }
                 }
@@ -2090,6 +2046,8 @@ impl<'ast> Builder<'ast, '_> {
                 })
                 .map(|tp| tp.bounds.as_ref())
                 .unwrap_or(&[]),
+            // Self in a trait item is bounded by the trait itself.
+            TypeParamOwner::Trait(_) => &[],
         }
     }
 
@@ -3184,8 +3142,12 @@ impl<'ast> Builder<'ast, '_> {
             AstNodeRef::TraitConst {
                 trait_index, item, ..
             } => {
-                let resolve_context = resolve_context
-                    .with_self_type(Some(self.intern_type(Type::Trait { trait_index })));
+                // Self is a TypeParam owned by the trait so `Self::*mut u8` is valid.
+                let self_type_param = self.intern_type(Type::TypeParam {
+                    owner: TypeParamOwner::Trait(trait_index),
+                    param_index: 0,
+                });
+                let resolve_context = resolve_context.with_self_type(Some(self_type_param));
                 if let ast::TraitItem::Const { id, name, ty } = item {
                     let ty_idx = self.resolve_type(&resolve_context, ty);
                     let const_index = self.tir.constants.len() as ConstIndex;
@@ -3289,8 +3251,46 @@ impl<'ast> Builder<'ast, '_> {
                     config,
                 } = item
                 {
-                    // Resolve the trait type and ensure all its functions are
-                    // registered before seed_memory_trait_impl reads them.
+                    let size_symbol = self.interner.get_or_intern("Size");
+                    // `kind` must be `Memory<Size = u32>` or `Memory<Size = u64>`.
+                    // Extract the Size binding from the GenericApplication to
+                    // determine MemoryKind, then resolve the base trait normally.
+                    let size_binding_ty = match &kind.inner {
+                        ast::TypeExpression::GenericApplication { args, .. } => {
+                            args.iter().find_map(|sep| match &sep.inner.inner {
+                                ast::GenericArg::Binding { name, ty }
+                                    if name.inner == size_symbol =>
+                                {
+                                    Some(ty)
+                                }
+                                _ => None,
+                            })
+                        }
+                        _ => None,
+                    };
+                    let memory_kind =
+                        match size_binding_ty {
+                            Some(ty) => {
+                                let resolved = self.resolve_type(&resolve_context, ty);
+                                if resolved == TypeIndex::U32 {
+                                    MemoryKind::Memory32
+                                } else if resolved == TypeIndex::U64 {
+                                    MemoryKind::Memory64
+                                } else {
+                                    self.tir.diagnostics.push(report_invalid_memory_kind(
+                                        SourceSpan::new(resolve_context.file_id, kind.span),
+                                    ));
+                                    return;
+                                }
+                            }
+                            None => {
+                                self.tir.diagnostics.push(report_invalid_memory_kind(
+                                    SourceSpan::new(resolve_context.file_id, kind.span),
+                                ));
+                                return;
+                            }
+                        };
+                    // Resolve the base trait and ensure its functions are registered.
                     let type_idx = self.resolve_type(&resolve_context, kind);
                     let trait_index =
                         match self.tir.type_pool[type_idx.as_usize()] {
@@ -3306,21 +3306,6 @@ impl<'ast> Builder<'ast, '_> {
                     for tid in trait_fn_ids {
                         self.ensure_signature(tid);
                     }
-                    let memory_kind =
-                        match self
-                            .interner
-                            .resolve(self.tir.traits[trait_index as usize].name.inner)
-                            .unwrap()
-                        {
-                            "Memory32" => MemoryKind::Memory32,
-                            "Memory64" => MemoryKind::Memory64,
-                            _ => {
-                                self.tir.diagnostics.push(report_invalid_memory_kind(
-                                    SourceSpan::new(resolve_context.file_id, kind.span),
-                                ));
-                                return;
-                            }
-                        };
                     let memory_index = self.tir.memories.len() as u32;
                     self.tir.memories.push(Memory {
                         id: *id,
@@ -3339,7 +3324,14 @@ impl<'ast> Builder<'ast, '_> {
                         kind: memory_kind,
                         id: *id,
                     });
-                    self.seed_memory_trait_impl(trait_index, memory_type);
+                    // Pass the `Size` binding from `Memory<Size = u32/u64>` so that
+                    // `Self::Size` resolves to the concrete type in impl_members.
+                    let size_ty = match memory_kind {
+                        MemoryKind::Memory32 => TypeIndex::U32,
+                        MemoryKind::Memory64 => TypeIndex::U64,
+                    };
+                    let bindings = HashMap::from([(size_symbol, size_ty)]);
+                    self.seed_memory_trait_impl_with(trait_index, memory_type, &bindings);
                     self.insert_symbol(
                         resolve_context.namespace,
                         (SymbolNamespace::Type, name.inner),
@@ -4183,14 +4175,15 @@ impl<'ast> Builder<'ast, '_> {
                 memory,
             } => {
                 let (to, mutable, memory) = (*to, *mutable, *memory);
-                let next = self.substitute_type(to, type_args);
-                return if next == to {
+                let next_to = self.substitute_type(to, type_args);
+                let next_memory = self.substitute_type(memory, type_args);
+                return if next_to == to && next_memory == memory {
                     ty
                 } else {
                     self.intern_type(Type::Pointer {
-                        to: next,
+                        to: next_to,
                         mutable,
-                        memory,
+                        memory: next_memory,
                     })
                 };
             }
@@ -4201,15 +4194,16 @@ impl<'ast> Builder<'ast, '_> {
                 memory,
             } => {
                 let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
-                let next = self.substitute_type(of, type_args);
-                return if next == of {
+                let next_of = self.substitute_type(of, type_args);
+                let next_memory = self.substitute_type(memory, type_args);
+                return if next_of == of && next_memory == memory {
                     ty
                 } else {
                     self.intern_type(Type::Array {
-                        of: next,
+                        of: next_of,
                         size,
                         mutable,
-                        memory,
+                        memory: next_memory,
                     })
                 };
             }
@@ -4219,14 +4213,15 @@ impl<'ast> Builder<'ast, '_> {
                 memory,
             } => {
                 let (of, mutable, memory) = (*of, *mutable, *memory);
-                let next = self.substitute_type(of, type_args);
-                return if next == of {
+                let next_of = self.substitute_type(of, type_args);
+                let next_memory = self.substitute_type(memory, type_args);
+                return if next_of == of && next_memory == memory {
                     ty
                 } else {
                     self.intern_type(Type::Slice {
-                        of: next,
+                        of: next_of,
                         mutable,
-                        memory,
+                        memory: next_memory,
                     })
                 };
             }
@@ -4475,8 +4470,9 @@ impl<'ast> Builder<'ast, '_> {
                     mutable: actual_mutable,
                     memory: actual_memory,
                 },
-            ) if pattern_mutable == actual_mutable && pattern_memory == actual_memory => {
+            ) if pattern_mutable == actual_mutable => {
                 self.infer_type_args_from_types(pattern_to, actual_to, type_args);
+                self.infer_type_args_from_types(pattern_memory, actual_memory, type_args);
             }
             (
                 Type::Array {
@@ -4491,11 +4487,9 @@ impl<'ast> Builder<'ast, '_> {
                     mutable: actual_mutable,
                     memory: actual_memory,
                 },
-            ) if pattern_size == actual_size
-                && pattern_mutable == actual_mutable
-                && pattern_memory == actual_memory =>
-            {
+            ) if pattern_size == actual_size && pattern_mutable == actual_mutable => {
                 self.infer_type_args_from_types(pattern_of, actual_of, type_args);
+                self.infer_type_args_from_types(pattern_memory, actual_memory, type_args);
             }
             (
                 Type::Slice {
@@ -4508,8 +4502,9 @@ impl<'ast> Builder<'ast, '_> {
                     mutable: actual_mutable,
                     memory: actual_memory,
                 },
-            ) if pattern_mutable == actual_mutable && pattern_memory == actual_memory => {
+            ) if pattern_mutable == actual_mutable => {
                 self.infer_type_args_from_types(pattern_of, actual_of, type_args);
+                self.infer_type_args_from_types(pattern_memory, actual_memory, type_args);
             }
             (
                 Type::Struct {
@@ -4529,10 +4524,6 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn seed_memory_trait_impl(&mut self, trait_index: u32, memory_type: TypeIndex) {
-        self.seed_memory_trait_impl_with(trait_index, memory_type, &HashMap::new());
-    }
-
     fn seed_memory_trait_impl_with(
         &mut self,
         trait_index: u32,
@@ -4541,48 +4532,48 @@ impl<'ast> Builder<'ast, '_> {
         // E.g. Memory32's `Memory<Size=u32>` provides {"Size" → u32}.
         bindings: &HashMap<SymbolU32, TypeIndex>,
     ) {
-        // Seed supertrait members first (lower priority); own members override them.
-        let st_list = self.tir.traits[trait_index as usize].supertraits.clone();
-        for &st in &st_list {
-            // Pass bindings declared at *this* trait's supertrait use site down to st.
-            let st_bindings: HashMap<SymbolU32, TypeIndex> = self.tir.traits[trait_index as usize]
-                .supertrait_bindings
-                .iter()
-                .filter_map(|(&(ti, sym), &ty)| if ti == st { Some((sym, ty)) } else { None })
-                .collect();
-            self.seed_memory_trait_impl_with(st, memory_type, &st_bindings);
-        }
         // Ensure all member signatures in this trait are resolved.
         for did in self.tir.traits[trait_index as usize].member_def_ids.clone() {
             self.ensure_signature(did);
         }
         let self_symbol = self.interner.get_or_intern("self");
-        let members: Vec<(SymbolU32, ImplEntry)> = self.tir.traits[trait_index as usize]
+        let raw_members: Vec<(SymbolU32, ImplEntry)> = self.tir.traits[trait_index as usize]
             .members
             .iter()
-            .map(|(&sym, entry)| match entry {
+            .map(|(&sym, entry)| (sym, entry.clone()))
+            .collect();
+        let mut members: Vec<(SymbolU32, ImplEntry)> = Vec::with_capacity(raw_members.len());
+        for (sym, entry) in raw_members {
+            let processed = match entry {
                 ImplEntry::Method(fi) => {
-                    let func = &self.tir.functions[*fi as usize];
-                    let entry = if func
+                    let func = &self.tir.functions[fi as usize];
+                    if func
                         .params
                         .first()
                         .map(|p| p.name.inner == self_symbol)
                         .unwrap_or(false)
                     {
-                        ImplEntry::Method(*fi)
+                        ImplEntry::Method(fi)
                     } else {
-                        ImplEntry::AssociatedFn(*fi)
-                    };
-                    (sym, entry)
+                        ImplEntry::AssociatedFn(fi)
+                    }
                 }
                 ImplEntry::AssociatedType { ty } => {
-                    // Substitute placeholder with the concrete binding if provided.
-                    let concrete = bindings.get(&sym).copied().unwrap_or(*ty);
-                    (sym, ImplEntry::AssociatedType { ty: concrete })
+                    let concrete = bindings.get(&sym).copied().unwrap_or(ty);
+                    ImplEntry::AssociatedType { ty: concrete }
                 }
-                other => (sym, other.clone()),
-            })
-            .collect();
+                ImplEntry::AssociatedConst { id, ty } => {
+                    // Substitute Self (TypeParam at param_index 0) with the concrete memory type.
+                    let concrete_ty = self.substitute_type(ty, &[memory_type]);
+                    ImplEntry::AssociatedConst {
+                        id,
+                        ty: concrete_ty,
+                    }
+                }
+                other => other,
+            };
+            members.push((sym, processed));
+        }
         let slot = self.tir.impl_members.entry(memory_type).or_default();
         for (sym, entry) in members {
             slot.insert(sym, entry);
@@ -5516,7 +5507,7 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::String { symbol } => {
                 let unescaped = unescape_string(self.interner.resolve(*symbol).unwrap());
                 let symbol = self.interner.get_or_intern(&unescaped);
-                let memory = self.resolve_ambient_memory(SourceSpan::new(
+                let memory_ty = self.resolve_ambient_memory(SourceSpan::new(
                     func_ctx.resolve_context.file_id,
                     expr.span,
                 ))?;
@@ -5525,7 +5516,7 @@ impl<'ast> Builder<'ast, '_> {
                     ty: self.intern_type(Type::Slice {
                         of: TypeIndex::U8,
                         mutable: false,
-                        memory,
+                        memory: memory_ty,
                     }),
                     span: expr.span,
                 })
@@ -7789,7 +7780,7 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 });
             }
-            ExprKind::Deref { pointer, memory_id } => {
+            ExprKind::Deref { pointer, memory } => {
                 let (inner_ty, mutable) = match &self.tir.type_pool[pointer.ty.as_usize()] {
                     Type::Pointer { to, mutable, .. } => (*to, *mutable),
                     _ => unreachable!("Deref ExprKind must have Pointer type"),
@@ -7842,7 +7833,7 @@ impl<'ast> Builder<'ast, '_> {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         left: Box::new(Expression {
-                            kind: ExprKind::Deref { pointer, memory_id },
+                            kind: ExprKind::Deref { pointer, memory },
                             ty: left_ty,
                             span: left_span,
                         }),
@@ -7856,7 +7847,7 @@ impl<'ast> Builder<'ast, '_> {
             ExprKind::Index {
                 object,
                 index,
-                memory_id,
+                memory,
             } => {
                 let elem_ty = left.ty;
                 let mutable = match &self.tir.type_pool[object.ty.as_usize()] {
@@ -7912,7 +7903,7 @@ impl<'ast> Builder<'ast, '_> {
                             kind: ExprKind::Index {
                                 object,
                                 index,
-                                memory_id,
+                                memory,
                             },
                             ty: elem_ty,
                             span: left_span,
@@ -8137,7 +8128,7 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 })
             }
-            ExprKind::Deref { pointer, memory_id } => {
+            ExprKind::Deref { pointer, memory } => {
                 let (inner_ty, mutable) = match &self.tir.type_pool[pointer.ty.as_usize()] {
                     Type::Pointer { to, mutable, .. } => (*to, *mutable),
                     _ => unreachable!("Deref ExprKind must have Pointer type"),
@@ -8207,7 +8198,7 @@ impl<'ast> Builder<'ast, '_> {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         left: Box::new(Expression {
-                            kind: ExprKind::Deref { pointer, memory_id },
+                            kind: ExprKind::Deref { pointer, memory },
                             ty: left_ty,
                             span: left_span,
                         }),
@@ -8221,7 +8212,7 @@ impl<'ast> Builder<'ast, '_> {
             ExprKind::Index {
                 object,
                 index,
-                memory_id,
+                memory,
             } => {
                 let elem_ty = left.ty;
                 let mutable = match &self.tir.type_pool[object.ty.as_usize()] {
@@ -8275,7 +8266,7 @@ impl<'ast> Builder<'ast, '_> {
                             kind: ExprKind::Index {
                                 object,
                                 index,
-                                memory_id,
+                                memory,
                             },
                             ty: elem_ty,
                             span: left_span,
@@ -9771,7 +9762,7 @@ impl<'ast> Builder<'ast, '_> {
             pointer,
         )?;
 
-        let (inner_ty, memory_id) = match &self.tir.type_pool[pointer.ty.as_usize()] {
+        let (inner_ty, memory) = match &self.tir.type_pool[pointer.ty.as_usize()] {
             Type::Pointer { to, memory, .. } => (*to, *memory),
             _ => {
                 self.tir.diagnostics.push(report_cannot_deref_non_pointer(
@@ -9785,16 +9776,14 @@ impl<'ast> Builder<'ast, '_> {
         Ok(Expression {
             kind: ExprKind::Deref {
                 pointer: Box::new(pointer),
-                memory_id,
+                memory,
             },
             ty: inner_ty,
             span,
         })
     }
 
-    /// Resolve the ambient memory for an untagged pointer/array/slice type
-    /// annotation
-    fn resolve_ambient_memory(&mut self, span: SourceSpan) -> Result<ast::DefId, ()> {
+    fn resolve_ambient_memory(&mut self, span: SourceSpan) -> Result<TypeIndex, ()> {
         match self.tir.memories.len() {
             0 => {
                 self.tir
@@ -9802,7 +9791,12 @@ impl<'ast> Builder<'ast, '_> {
                     .push(report_no_memory_for_pointer(span));
                 Err(())
             }
-            1 => Ok(self.tir.memories[0].id),
+            1 => {
+                let mem = &self.tir.memories[0];
+                let id = mem.id;
+                let kind = mem.kind;
+                Ok(self.intern_type(Type::Memory { id, kind }))
+            }
             _ => {
                 self.tir
                     .diagnostics
@@ -9812,11 +9806,40 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    fn pointer_type_for_memory(&self, memory_id: ast::DefId) -> TypeIndex {
-        let idx = self.tir.memory_index_lookup[&memory_id];
-        match self.tir.memories[idx as usize].kind {
-            MemoryKind::Memory32 => TypeIndex::U32,
-            MemoryKind::Memory64 => TypeIndex::U64,
+    fn pointer_type_for_memory(&mut self, memory: TypeIndex) -> TypeIndex {
+        match &self.tir.type_pool[memory.as_usize()].clone() {
+            Type::Memory { id, .. } => {
+                let idx = self.tir.memory_index_lookup[id];
+                match self.tir.memories[idx as usize].kind {
+                    MemoryKind::Memory32 => TypeIndex::U32,
+                    MemoryKind::Memory64 => TypeIndex::U64,
+                }
+            }
+            Type::TypeParam { owner, param_index } => {
+                // Generic `M: Memory` — the index type is `M::Size`.
+                // Find the first bound trait that declares `Size` as an assoc type.
+                let size_sym = self.interner.get_or_intern("Size");
+                let param_index = *param_index;
+                let bounds = self
+                    .type_param_bounds_by_owner(owner.clone(), param_index)
+                    .to_owned();
+                let trait_index = bounds.iter().copied().find(|&ti| {
+                    self.tir.traits[ti as usize]
+                        .assoc_types
+                        .contains_key(&size_sym)
+                });
+                match trait_index {
+                    Some(trait_index) => self.intern_type(Type::AssocTypeProjection {
+                        trait_index,
+                        assoc_name: size_sym,
+                        param_index,
+                    }),
+                    // No bound with Size — fall back to untyped; will be caught
+                    // by type checking if the user provides a typed index.
+                    None => TypeIndex::INTEGER,
+                }
+            }
+            _ => TypeIndex::INTEGER,
         }
     }
 
@@ -9925,21 +9948,21 @@ impl<'ast> Builder<'ast, '_> {
             }
         };
 
-        let memory_id = match expected_memory {
-            Some(id) => id,
+        let memory = match expected_memory {
+            Some(m) => m,
             None => self.resolve_ambient_memory(source_span)?,
         };
         let array_ty = self.intern_type(Type::Array {
             of: elem_type,
             size: elements.len() as u32,
             mutable: expected_mutable,
-            memory: memory_id,
+            memory,
         });
 
         Ok(Expression {
             kind: ExprKind::ArrayLiteral {
                 elements: built.into_boxed_slice(),
-                memory_id,
+                memory,
             },
             ty: array_ty,
             span,
@@ -10045,22 +10068,22 @@ impl<'ast> Builder<'ast, '_> {
             return Err(());
         }
 
-        let memory_id = match expected_memory {
-            Some(id) => id,
+        let memory = match expected_memory {
+            Some(m) => m,
             None => self.resolve_ambient_memory(source_span)?,
         };
         let array_ty = self.intern_type(Type::Array {
             of: value.ty,
             size: count,
             mutable: expected_mutable,
-            memory: memory_id,
+            memory,
         });
 
         Ok(Expression {
             kind: ExprKind::ArrayRepeat {
                 value: Box::new(value),
                 count,
-                memory_id,
+                memory,
             },
             ty: array_ty,
             span,
@@ -10104,8 +10127,7 @@ impl<'ast> Builder<'ast, '_> {
             }
         };
 
-        let memory_id = memory;
-        let index_type = self.pointer_type_for_memory(memory_id);
+        let index_type = self.pointer_type_for_memory(memory);
 
         let mut index = self.build_expression(
             func_ctx,
@@ -10132,7 +10154,7 @@ impl<'ast> Builder<'ast, '_> {
             kind: ExprKind::Index {
                 object: Box::new(object),
                 index: Box::new(index),
-                memory_id,
+                memory,
             },
             ty: elem_type,
             span,

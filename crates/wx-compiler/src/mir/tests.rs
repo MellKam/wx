@@ -157,17 +157,6 @@ fn test_size_associated_const() {
 // ── string literals
 // ───────────────────────────────────────────────────────────
 
-/// The Memory32 trait with default method bodies that delegate to wasm
-/// intrinsics.
-const MEMORY32_TRAIT: &str = indoc! {"
-    trait Memory32 {
-        const OFFSET: u32;
-        const MEMORY_INDEX: u32;
-        fn size(self) -> u32;
-        fn grow(self, delta: u32) -> u32;
-    }
-"};
-
 // ── inline methods
 // ────────────────────────────────────────────────────────────
 
@@ -211,72 +200,87 @@ fn test_inline_method_is_substituted() {
 #[test]
 fn test_memory_grow_lowers_to_memory_grow() {
     // heap.grow(delta) → MemoryGrow { memory_index: 0, delta }
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
 
         pub fn f(delta: u32) -> u32 {
             heap.grow(delta)
         }
 
         export { f }
-    "}
-    ));
+    "});
     insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_memory_size_lowers_to_memory_size() {
     // heap.size() → MemorySize { memory_index: 0 }
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
 
         pub fn f() -> u32 {
             heap.size()
         }
 
         export { f }
-    "}
-    ));
+    "});
     insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
-fn test_memory_offset_lowers_to_memory_offset() {
-    // heap::OFFSET → MemoryOffset { memory_index: 0 } (placeholder for codegen)
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
+fn test_memory_data_end_lowers_to_memory_offset() {
+    // heap::DATA_END → MemoryOffset { memory_index: 0 }
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
 
-        pub fn f() -> u32 {
-            heap::OFFSET
+        pub fn f() -> heap::*mut u8 {
+            heap::DATA_END
         }
 
         export { f }
-    "}
-    ));
+    "});
     insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_memory_index_lowers_to_int() {
     // heap::MEMORY_INDEX → Int { value: 0 } (the wasm linear memory index)
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
 
         pub fn f() -> u32 {
             heap::MEMORY_INDEX
         }
 
         export { f }
-    "}
-    ));
+    "});
+    insta::assert_yaml_snapshot!(case.mir);
+}
+
+// ── generic over Memory ───────────────────────────────────────────────────────
+
+#[test]
+fn test_generic_over_memory_monomorphizes_size_type() {
+    // A generic fn<M: Memory> called with two concrete memories must produce
+    // two monomorphized instances with the right concrete Size types (u32 / u64).
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+        memory stack: Memory<Size = u64>;
+
+        fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
+            n
+        }
+
+        pub fn use_heap(n: u32) -> u32 {
+            pass(heap, n)
+        }
+
+        pub fn use_stack(n: u64) -> u64 {
+            pass(stack, n)
+        }
+
+        export { use_heap, use_stack }
+    "});
     insta::assert_yaml_snapshot!(case.mir);
 }
 
@@ -835,17 +839,14 @@ fn test_multiple_calls_to_generic_produce_single_mono_instance() {
 #[test]
 fn test_array_literal_bytes_are_little_endian() {
     // [1, 2, 3] as heap::[3]i32 → 12 bytes encoding each value as 32-bit LE.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
         fn get() -> heap::[3]i32 {
             local arr: heap::[3]i32 = [1, 2, 3];
             arr
         }
         export { get }
-    "}
-    ));
+    "});
     assert_eq!(case.mir.static_entries.len(), 1);
     assert_eq!(
         &*case.mir.static_entries[0].bytes,
@@ -861,17 +862,14 @@ fn test_array_literal_bytes_are_little_endian() {
 #[test]
 fn test_array_repeat_bytes_repeated() {
     // [7; 4] as heap::[4]u8 → four bytes each equal to 7.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
         fn get() -> heap::[4]u8 {
             local arr: heap::[4]u8 = [7; 4];
             arr
         }
         export { get }
-    "}
-    ));
+    "});
     assert_eq!(case.mir.static_entries.len(), 1);
     assert_eq!(&*case.mir.static_entries[0].bytes, &[7u8, 7, 7, 7]);
     assert_eq!(case.mir.static_entries[0].align, 1);
@@ -881,18 +879,15 @@ fn test_array_repeat_bytes_repeated() {
 fn test_array_dce_removes_static_data_ownership() {
     // A dead function with an array literal is removed by DCE.
     // No live function should reference its static entry.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
         fn live() -> i32 { 42 }
         fn dead() -> heap::[3]i32 {
             local arr: heap::[3]i32 = [1, 2, 3];
             arr
         }
         export { live }
-    "}
-    ));
+    "});
     assert_eq!(case.mir.functions.len(), 1);
     let live_indices: std::collections::HashSet<u32> = case
         .mir
@@ -909,10 +904,8 @@ fn test_array_dce_removes_static_data_ownership() {
 #[test]
 fn test_static_entry_alignment_matches_element_type() {
     // i32 elements → align 4; f64 elements → align 8; u8 elements → align 1.
-    let case = TestCase::new(&format!(
-        "{MEMORY32_TRAIT}\n{}",
-        indoc! {"
-        memory heap: Memory32;
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
         fn ints() -> heap::[2]i32 {
             local a: heap::[2]i32 = [10, 20];
             a
@@ -926,8 +919,7 @@ fn test_static_entry_alignment_matches_element_type() {
             c
         }
         export { ints, doubles, bytes }
-    "}
-    ));
+    "});
     assert_eq!(case.mir.static_entries.len(), 3);
     let aligns: std::collections::HashSet<u32> =
         case.mir.static_entries.iter().map(|e| e.align).collect();

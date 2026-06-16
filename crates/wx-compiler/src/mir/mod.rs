@@ -662,6 +662,22 @@ struct FunctionContext {
 }
 
 impl<'tir> Builder<'tir> {
+    /// Resolve a memory `TypeIndex` to its concrete `ast::DefId`.
+    /// If the index is a `TypeParam`, substitutes via `current_substitutions`
+    /// (same step `lower_type_index` performs for type params).
+    fn resolve_memory_id(&self, memory_ty: tir::TypeIndex) -> ast::DefId {
+        let concrete = match &self.tir.type_pool[memory_ty.as_usize()] {
+            tir::Type::TypeParam { param_index, .. } => {
+                self.current_substitutions[*param_index as usize]
+            }
+            _ => memory_ty,
+        };
+        match &self.tir.type_pool[concrete.as_usize()] {
+            tir::Type::Memory { id, .. } => *id,
+            _ => unreachable!("memory TypeIndex does not resolve to Type::Memory"),
+        }
+    }
+
     /// Compute the memory layout of a type.
     ///
     /// Fields of structs and tuples are sorted by alignment descending before
@@ -695,7 +711,8 @@ impl<'tir> Builder<'tir> {
                 Layout { size: 4, align: 4 }
             }
             tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
-                let tir_idx = self.tir.memory_index_lookup[memory] as usize;
+                let id = self.resolve_memory_id(*memory);
+                let tir_idx = self.tir.memory_index_lookup[&id] as usize;
                 let pointer_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: pointer_size,
@@ -703,7 +720,8 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::Type::Slice { memory, .. } => {
-                let tir_idx = self.tir.memory_index_lookup[memory] as usize;
+                let id = self.resolve_memory_id(*memory);
+                let tir_idx = self.tir.memory_index_lookup[&id] as usize;
                 let pointer_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: pointer_size * 2,
@@ -904,9 +922,11 @@ impl<'tir> Builder<'tir> {
                 self.lower_type_index(concrete)
             }
             tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
+                let memory = self.resolve_memory_id(memory);
                 Type::Pointer { memory }
             }
             tir::Type::Slice { memory, .. } => {
+                let memory = self.resolve_memory_id(memory);
                 let tir_idx = self.tir.memory_index_lookup[&memory] as usize;
                 let aggregate_index = self.ensure_aggregate(Box::new([
                     Type::Pointer { memory },
@@ -1513,7 +1533,7 @@ impl<'tir> Builder<'tir> {
                         let const_name = self.interner.resolve(const_name_sym).unwrap();
                         match &self.tir.type_pool[namespace_ty.as_usize()] {
                             tir::Type::Memory { id, .. } => match const_name {
-                                "OFFSET" => Expression {
+                                "DATA_END" => Expression {
                                     kind: ExprKind::MemoryOffset { memory: *id },
                                     ty: result_ty,
                                 },
@@ -1566,35 +1586,15 @@ impl<'tir> Builder<'tir> {
                     }
                 }
             }
-            tir::ExprKind::Deref { pointer, memory_id } => Expression {
+            tir::ExprKind::Deref { pointer, memory } => Expression {
                 kind: ExprKind::PointerLoad {
                     pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
                     offset: 0,
-                    memory: *memory_id,
+                    memory: self.resolve_memory_id(*memory),
                 },
                 ty: self.lower_type_index(expr.ty),
             },
             tir::ExprKind::ObjectAccess { object, member } => {
-                // Memory member access — OFFSET constant; grow/size appear only as call
-                // callees.
-                if let tir::Type::Memory { .. } = &self.tir.type_pool[object.ty.as_usize()] {
-                    let member_name = self.interner.resolve(member.inner).unwrap_or("");
-                    let memory = match &object.kind {
-                        tir::ExprKind::Memory { id } => *id,
-                        _ => unreachable!("memory member access on non-memory expression"),
-                    };
-                    return match member_name {
-                        "OFFSET" => Expression {
-                            kind: ExprKind::MemoryOffset { memory },
-                            ty: self.lower_type_index(expr.ty),
-                        },
-                        _ => unreachable!(
-                            "unexpected memory member in non-call position: {}",
-                            member_name
-                        ),
-                    };
-                }
-
                 let (struct_index, args) = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Struct { struct_index, args } => (*struct_index, args),
                     _ => unreachable!("ObjectAccess on non-struct type"),
@@ -1947,12 +1947,13 @@ impl<'tir> Builder<'tir> {
             }
             tir::ExprKind::ArrayLiteral {
                 elements,
-                memory_id,
+                memory,
             } => {
                 let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
                     _ => unreachable!(),
                 };
+                let memory_id = self.resolve_memory_id(*memory);
                 let align = self.compute_layout(elem_ty).align;
                 let mut bytes = Vec::new();
                 for elem in elements.iter() {
@@ -1961,24 +1962,25 @@ impl<'tir> Builder<'tir> {
                 if bytes.is_empty() {
                     return Expression {
                         kind: ExprKind::Int { value: 0 },
-                        ty: Type::Pointer { memory: *memory_id },
+                        ty: Type::Pointer { memory: memory_id },
                     };
                 }
                 let (data_index, _) = self.push_static_data(func_ctx, bytes, align);
                 Expression {
                     kind: ExprKind::StaticPointer { data_index },
-                    ty: Type::Pointer { memory: *memory_id },
+                    ty: Type::Pointer { memory: memory_id },
                 }
             }
             tir::ExprKind::ArrayRepeat {
                 value,
                 count,
-                memory_id,
+                memory,
             } => {
                 let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
                     _ => unreachable!(),
                 };
+                let memory_id = self.resolve_memory_id(*memory);
                 let align = self.compute_layout(elem_ty).align;
                 let mut elem_bytes = Vec::new();
                 Self::encode_element(&mut elem_bytes, &value.kind, elem_ty);
@@ -1986,19 +1988,19 @@ impl<'tir> Builder<'tir> {
                 if bytes.is_empty() {
                     return Expression {
                         kind: ExprKind::Int { value: 0 },
-                        ty: Type::Pointer { memory: *memory_id },
+                        ty: Type::Pointer { memory: memory_id },
                     };
                 }
                 let (data_index, _) = self.push_static_data(func_ctx, bytes, align);
                 Expression {
                     kind: ExprKind::StaticPointer { data_index },
-                    ty: Type::Pointer { memory: *memory_id },
+                    ty: Type::Pointer { memory: memory_id },
                 }
             }
             tir::ExprKind::Index {
                 object,
                 index,
-                memory_id,
+                memory,
             } => {
                 let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
@@ -2009,7 +2011,7 @@ impl<'tir> Builder<'tir> {
                     kind: ExprKind::PointerLoad {
                         pointer: Box::new(addr),
                         offset: 0,
-                        memory: *memory_id,
+                        memory: self.resolve_memory_id(*memory),
                     },
                     ty: self.lower_type_index(expr.ty),
                 }
@@ -2037,16 +2039,16 @@ impl<'tir> Builder<'tir> {
                 id: *id,
                 value: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
-            tir::ExprKind::Deref { pointer, memory_id } => ExprKind::PointerStore {
+            tir::ExprKind::Deref { pointer, memory } => ExprKind::PointerStore {
                 pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
                 value: Box::new(self.lower_expression(func_ctx, right, sink)),
                 offset: 0,
-                memory: *memory_id,
+                memory: self.resolve_memory_id(*memory),
             },
             tir::ExprKind::Index {
                 object,
                 index,
-                memory_id,
+                memory,
             } => {
                 let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
@@ -2057,7 +2059,7 @@ impl<'tir> Builder<'tir> {
                     pointer: Box::new(addr),
                     value: Box::new(self.lower_expression(func_ctx, right, sink)),
                     offset: 0,
-                    memory: *memory_id,
+                    memory: self.resolve_memory_id(*memory),
                 }
             }
             tir::ExprKind::Placeholder => {
@@ -2134,16 +2136,16 @@ impl<'tir> Builder<'tir> {
                 id: *id,
                 value: Box::new(binary_expr),
             },
-            tir::ExprKind::Deref { pointer, memory_id } => ExprKind::PointerStore {
+            tir::ExprKind::Deref { pointer, memory } => ExprKind::PointerStore {
                 pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
                 value: Box::new(binary_expr),
                 offset: 0,
-                memory: *memory_id,
+                memory: self.resolve_memory_id(*memory),
             },
             tir::ExprKind::Index {
                 object,
                 index,
-                memory_id,
+                memory,
             } => {
                 let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
@@ -2154,7 +2156,7 @@ impl<'tir> Builder<'tir> {
                     pointer: Box::new(addr),
                     value: Box::new(binary_expr),
                     offset: 0,
-                    memory: *memory_id,
+                    memory: self.resolve_memory_id(*memory),
                 }
             }
             _ => unreachable!(),

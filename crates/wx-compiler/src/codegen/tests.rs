@@ -29,9 +29,6 @@ const STD: &str = indoc! {"
         }
     }
 
-    trait Memory32: Memory<Size = u32> {}
-    trait Memory64: Memory<Size = u64> {}
-
     pub struct string {
         ptr: u32,
         len: u32,
@@ -594,7 +591,7 @@ fn test_fibonacci() {
 #[test]
 fn test_imports() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
 
         import \"console\" {
             fn log(value: []u8) -> unit;
@@ -650,7 +647,7 @@ fn test_dead_function_strings_excluded_from_data_section() {
     // wasm data section. The static layout step only collects entries from
     // live functions, so dead code never contributes bytes to the binary.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
 
         import \"env\" {
             fn log(message: []u8);
@@ -1214,7 +1211,7 @@ fn test_struct_call_result_wat() {
 #[test]
 fn test_pointer_deref_load_and_store() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1,
         };
 
@@ -1259,7 +1256,7 @@ fn test_pointer_deref_load_and_store() {
 #[test]
 fn test_pointer_deref_increment() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1
         }
 
@@ -1308,7 +1305,7 @@ fn test_struct_pointer_load_and_store() {
     // and that individual field loads return the correct values.
     // The WAT snapshot pins the emitted instruction shape.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1
         }
 
@@ -1612,7 +1609,7 @@ fn test_generic_struct_pointer_load_store() {
     // Codegen must emit the correct field offsets for the monomorphized aggregate
     // (x@0, y@4), going through the same path as the non-generic pointer tests.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1
         }
 
@@ -1682,7 +1679,7 @@ fn test_memory_grow_and_size() {
     // old page count and extends by n pages. Both route through @memory_size /
     // @memory_grow intrinsics via the Memory trait default methods.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1,
         };
 
@@ -1726,7 +1723,7 @@ fn test_memory_size_before_grow_ordering() {
     // If MemorySize is treated as a floating data node, the scheduler may emit
     // memory.size after memory.grow, returning 2 instead of 1.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1,
         };
 
@@ -1764,7 +1761,7 @@ fn test_array_literal_read_by_index() {
     // address 0; indexing it must return the right element via i32.load at
     // base + i * elem_size.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1,
         };
 
@@ -1796,7 +1793,7 @@ fn test_array_write_and_read_back() {
     // initialises a 4-element block at address 0, then the wx functions do
     // a round-trip write+read to verify PointerStore/PointerLoad addressing.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1,
         };
 
@@ -1845,7 +1842,7 @@ fn test_dead_array_excluded_from_data_section() {
     // DCE removes functions that are not reachable from exports.  The static
     // array owned by a dead function must not appear in the WASM data segment.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1,
         };
 
@@ -1872,7 +1869,7 @@ fn test_array_index_wat() {
     // WAT snapshot: pins the data segment placement and the load/store
     // instruction shape (i32.add + i32.mul offset arithmetic).
     let case = TestCase::new(indoc! {"
-        memory heap: Memory32 {
+        memory heap: Memory<Size = u32> {
             min: 1,
         };
 

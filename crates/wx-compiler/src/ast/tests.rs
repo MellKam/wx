@@ -104,7 +104,7 @@ fn test_top_level_items() {
             a + b
         }
 
-        memory MEM: Memory32;
+        memory MEM: Memory<Size = u32>;
         global mut counter: i32 = 0;
         const MAX: i32 = 100;
 
@@ -176,17 +176,6 @@ fn test_fn_pointer_param() {
     let case = TestCase::new(indoc! {"
         fn apply(f: fn(i32) -> i32, x: i32) -> i32 {
             f(x)
-        }
-    "});
-    insta::assert_yaml_snapshot!(case.ast);
-}
-
-#[test]
-fn test_impl_trait_param() {
-    // `impl Trait` as a parameter type and return type
-    let case = TestCase::new(indoc! {"
-        fn grow(mem: impl Memory32, delta: u32) -> u32 {
-            delta
         }
     "});
     insta::assert_yaml_snapshot!(case.ast);
@@ -982,7 +971,7 @@ fn test_import_alias_and_entry_kinds() {
         import \"env\" as host {
             fn log(message: string);
             global mut counter: i32;
-            memory MEM: Memory32;
+            memory MEM: Memory<Size = u32>;
         }
     "});
 

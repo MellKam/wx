@@ -57,6 +57,8 @@ impl FunctionSignature {
 pub enum TypeParamOwner {
     Function(DefId),
     Struct(DefId),
+    /// `Self` type parameter implicit in trait items (consts, assoc types).
+    Trait(TraitIndex),
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -101,18 +103,18 @@ pub enum Type {
     Pointer {
         to: TypeIndex,
         mutable: bool,
-        memory: ast::DefId,
+        memory: TypeIndex,
     },
     Array {
         of: TypeIndex,
         size: u32,
         mutable: bool,
-        memory: ast::DefId,
+        memory: TypeIndex,
     },
     Slice {
         of: TypeIndex,
         mutable: bool,
-        memory: ast::DefId,
+        memory: TypeIndex,
     },
     Module {
         namespace_idx: u32,
@@ -294,8 +296,7 @@ pub struct Trait {
     /// Used to demand-resolve members before reading `members`.
     #[cfg_attr(test, serde(skip))]
     pub member_def_ids: Vec<ast::DefId>,
-    /// E.g. `trait Memory32: Memory<Size = u32>` → {(Memory_idx, "Size") →
-    /// u32}.
+    /// E.g. `trait Foo: Bar<Assoc = u32>` → {(Bar_idx, "Assoc") → u32}.
     #[cfg_attr(test, serde(skip))]
     pub supertrait_bindings: HashMap<(TraitIndex, SymbolU32), TypeIndex>,
     #[cfg_attr(test, serde(skip))]
@@ -426,7 +427,7 @@ pub enum ExprKind {
     },
     Deref {
         pointer: Box<Expression>,
-        memory_id: ast::DefId,
+        memory: TypeIndex,
     },
     StructInit {
         struct_index: u32,
@@ -443,19 +444,19 @@ pub enum ExprKind {
     /// `[a, b, c]` — all elements are compile-time constants; placed in static data.
     ArrayLiteral {
         elements: Box<[Expression]>,
-        memory_id: ast::DefId,
+        memory: TypeIndex,
     },
     /// `[value; count]` — repeat form; placed in static data.
     ArrayRepeat {
         value: Box<Expression>,
         count: u32,
-        memory_id: ast::DefId,
+        memory: TypeIndex,
     },
     /// `object[index]`
     Index {
         object: Box<Expression>,
         index: Box<Expression>,
-        memory_id: ast::DefId,
+        memory: TypeIndex,
     },
 }
 
@@ -1018,13 +1019,9 @@ impl<'a> TypeFormatter<'a> {
                 mutable,
                 memory,
             } => {
-                let (to, mutable, id) = (*to, *mutable, *memory);
-                let mi = self.tir.memory_index_lookup[&id] as usize;
-                let name = self
-                    .interner
-                    .resolve(self.tir.memories[mi].name.inner)
-                    .unwrap_or("?");
-                write!(f, "{}::*{}", name, if mutable { "mut " } else { "" }).unwrap();
+                let (to, mutable, memory) = (*to, *mutable, *memory);
+                self.write_type(f, memory);
+                write!(f, "::*{}", if mutable { "mut " } else { "" }).unwrap();
                 self.write_type(f, to);
             }
             Type::Slice {
@@ -1032,13 +1029,9 @@ impl<'a> TypeFormatter<'a> {
                 mutable,
                 memory,
             } => {
-                let (of, mutable, id) = (*of, *mutable, *memory);
-                let mi = self.tir.memory_index_lookup[&id] as usize;
-                let name = self
-                    .interner
-                    .resolve(self.tir.memories[mi].name.inner)
-                    .unwrap_or("?");
-                write!(f, "{}::[]{}", name, if mutable { "mut " } else { "" }).unwrap();
+                let (of, mutable, memory) = (*of, *mutable, *memory);
+                self.write_type(f, memory);
+                write!(f, "::[]{}", if mutable { "mut " } else { "" }).unwrap();
                 self.write_type(f, of);
             }
             Type::Array {
@@ -1047,20 +1040,9 @@ impl<'a> TypeFormatter<'a> {
                 mutable,
                 memory,
             } => {
-                let (of, size, mutable, id) = (*of, *size, *mutable, *memory);
-                let mi = self.tir.memory_index_lookup[&id] as usize;
-                let name = self
-                    .interner
-                    .resolve(self.tir.memories[mi].name.inner)
-                    .unwrap_or("?");
-                write!(
-                    f,
-                    "{}::[{}]{}",
-                    name,
-                    size,
-                    if mutable { "mut " } else { "" }
-                )
-                .unwrap();
+                let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
+                self.write_type(f, memory);
+                write!(f, "::[{}]{}", size, if mutable { "mut " } else { "" }).unwrap();
                 self.write_type(f, of);
             }
             Type::Tuple { elements } => {
@@ -1097,10 +1079,14 @@ impl<'a> TypeFormatter<'a> {
                     .unwrap();
                 f.write_str(name).unwrap();
             }
-            Type::Memory { kind, .. } => match kind {
-                MemoryKind::Memory32 => f.write_str("Memory32").unwrap(),
-                MemoryKind::Memory64 => f.write_str("Memory64").unwrap(),
-            },
+            Type::Memory { id, .. } => {
+                let mi = self.tir.memory_index_lookup[id] as usize;
+                let name = self
+                    .interner
+                    .resolve(self.tir.memories[mi].name.inner)
+                    .unwrap_or("?");
+                f.write_str(name).unwrap();
+            }
             Type::Trait { trait_index } => {
                 let name = self
                     .interner
@@ -1149,17 +1135,20 @@ impl<'a> TypeFormatter<'a> {
                 }
             }
             Type::TypeParam { owner, param_index } => {
-                let symbol = match owner {
+                let name = match owner {
                     TypeParamOwner::Function(def_id) => {
                         let fi = self.tir.function_index_lookup[def_id] as usize;
-                        self.tir.functions[fi].type_params[*param_index as usize].name
+                        let sym = self.tir.functions[fi].type_params[*param_index as usize].name;
+                        self.interner.resolve(sym).unwrap()
                     }
                     TypeParamOwner::Struct(def_id) => {
                         let si = self.tir.struct_index_lookup[def_id] as usize;
-                        self.tir.structs[si].type_params[*param_index as usize].name
+                        let sym = self.tir.structs[si].type_params[*param_index as usize].name;
+                        self.interner.resolve(sym).unwrap()
                     }
+                    TypeParamOwner::Trait(_) => "Self",
                 };
-                f.write_str(self.interner.resolve(symbol).unwrap()).unwrap();
+                f.write_str(name).unwrap();
             }
             Type::AssociatedType {
                 assoc_name,
@@ -1267,10 +1256,15 @@ impl TIR {
             Type::F32 => Some(WasmPrimitive::F32),
             Type::F64 => Some(WasmPrimitive::F64),
             Type::Array { memory, .. } | Type::Pointer { memory, .. } => {
-                let kind = self.memories[self.memory_index_lookup[memory] as usize].kind;
-                match kind {
-                    MemoryKind::Memory32 => Some(WasmPrimitive::I32),
-                    MemoryKind::Memory64 => Some(WasmPrimitive::I64),
+                match &self.type_pool[memory.as_usize()] {
+                    Type::Memory { id, .. } => {
+                        let kind = self.memories[self.memory_index_lookup[id] as usize].kind;
+                        match kind {
+                            MemoryKind::Memory32 => Some(WasmPrimitive::I32),
+                            MemoryKind::Memory64 => Some(WasmPrimitive::I64),
+                        }
+                    }
+                    _ => None,
                 }
             }
             Type::Tuple { .. }

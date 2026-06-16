@@ -1473,7 +1473,7 @@ fn test_pub_struct_no_unused_warning() {
 #[test]
 fn test_memory_declaration_registers_kind() {
     let case32 = TestCase::new_multi_file("main.wx", indoc! {"
-        memory MEM: Memory32;
+        memory MEM: Memory<Size = u32>;
     "}, &[]);
     assert!(case32.tir.diagnostics.is_empty(), "unexpected diagnostics");
     assert_eq!(
@@ -1487,7 +1487,7 @@ fn test_memory_declaration_registers_kind() {
     );
 
     let case64 = TestCase::new_multi_file("main.wx", indoc! {"
-        memory MEM: Memory64;
+        memory MEM: Memory<Size = u64>;
     "}, &[]);
     assert!(case64.tir.diagnostics.is_empty(), "unexpected diagnostics");
     assert_eq!(
@@ -1553,15 +1553,13 @@ const STD: &str = indoc! {"
         fn size(self) -> Self::Size;
     }
 
-    trait Memory32: Memory<Size = u32> {}
-    trait Memory64: Memory<Size = u64> {}
 "};
 
 #[test]
 fn test_memory_index_const_resolves() {
     // `MEM::MEMORY_INDEX` — namespace access to a memory constant resolves cleanly.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory MEM: Memory32;
+        memory MEM: Memory<Size = u32>;
         pub fn f() -> u32 { MEM::MEMORY_INDEX }
     "}, &[]);
     assert!(
@@ -1580,7 +1578,7 @@ fn test_memory_size_call_resolves() {
     // `.size()` is a method from the Memory trait; calling it should produce no
     // errors.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory MEM: Memory32;
+        memory MEM: Memory<Size = u32>;
         pub fn f() { _ = MEM.size(); }
     "}, &[]);
     assert!(
@@ -1599,7 +1597,7 @@ fn test_memory_grow_call_resolves() {
     // `.grow()` is a method from the Memory trait; calling it should produce no
     // errors.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory MEM: Memory32;
+        memory MEM: Memory<Size = u32>;
         pub fn f() { _ = MEM.grow(1); }
     "}, &[]);
     assert!(
@@ -1616,7 +1614,7 @@ fn test_memory_grow_call_resolves() {
 #[test]
 fn test_memory_unknown_member_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory MEM: Memory32;
+        memory MEM: Memory<Size = u32>;
         fn f() { _ = MEM::pages; }
     "}, &[]);
     assert!(
@@ -1633,7 +1631,7 @@ fn test_memory_as_value_in_expression() {
     // Memory identifiers are valid value expressions (for method calls like
     // MEM.grow(1)).
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory MEM: Memory32;
+        memory MEM: Memory<Size = u32>;
         fn f() { _ = MEM; }
     "}, &[]);
     assert!(
@@ -1643,40 +1641,6 @@ fn test_memory_as_value_in_expression() {
             .iter()
             .any(|d| d.code.as_deref() == Some("E1030")),
         "memory identifier should be usable as a value expression"
-    );
-}
-
-// ── impl Trait errors
-// ─────────────────────────────────────────────────────────
-
-#[test]
-fn test_impl_struct_is_error() {
-    // Using a struct in `impl` position must emit E1031.
-    let case = TestCase::new(indoc! {"
-        struct S {}
-        fn f(x: impl S) -> i32 { 5 }
-    "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E1031")),
-        "expected E1031 for struct used in impl position"
-    );
-}
-
-#[test]
-fn test_impl_undeclared_type_is_error() {
-    // A name that doesn't resolve at all should emit E1021.
-    let case = TestCase::new(indoc! {"
-        fn f(x: impl Unknown) -> i32 { 5 }
-    "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E1021")),
-        "expected E1021 for undeclared name in impl position"
     );
 }
 
@@ -2788,7 +2752,7 @@ fn test_assoc_type_projection_in_pointer_wrapper() {
     // pointer types. Untagged `*C::Item` resolves memory from the single
     // ambient memory declaration.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             trait Container {
                 type Item;
             }
@@ -2797,6 +2761,71 @@ fn test_assoc_type_projection_in_pointer_wrapper() {
             }
             fn wrap<C: Container>(ptr: *C::Item) {
                 process(ptr)
+            }
+        "}, &[]);
+    no_errors(&case);
+}
+
+// ── generic functions over Memory ────────────────────────────────────────────
+
+#[test]
+fn test_generic_over_memory_size_in_signature() {
+    // A generic fn<M: Memory>(M::Size) → M::Size must resolve without errors:
+    // M::Size stays as AssocTypeProjection in the generic signature.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
+                n
+            }
+        "}, &[]);
+    no_errors(&case);
+}
+
+#[test]
+fn test_generic_over_memory_called_with_concrete_memory() {
+    // Calling pass(heap, 42u32) must unify M=heap → M::Size=u32 with no errors.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
+                n
+            }
+            pub fn caller(n: u32) -> u32 {
+                pass(heap, n)
+            }
+        "}, &[]);
+    no_errors(&case);
+}
+
+#[test]
+fn test_generic_over_memory_wrong_size_type_is_error() {
+    // Passing i64 where M::Size=u32 is expected must be a type error.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
+                n
+            }
+            pub fn caller(n: i64) -> u32 {
+                pass(heap, n)
+            }
+        "}, &[]);
+    has_error(&case, "type mismatch");
+}
+
+#[test]
+fn test_generic_over_memory_two_concrete_memories() {
+    // The same generic fn called with both a Memory32 and a Memory64 must
+    // resolve correctly for each — M::Size = u32 and M::Size = u64.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            memory stack: Memory<Size = u64>;
+            fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
+                n
+            }
+            pub fn use_heap(n: u32) -> u32 {
+                pass(heap, n)
+            }
+            pub fn use_stack(n: u64) -> u64 {
+                pass(stack, n)
             }
         "}, &[]);
     no_errors(&case);
@@ -2823,7 +2852,7 @@ fn test_module_namespace_type_access() {
 fn test_memory_tagged_pointer() {
     // `heap::*i32` resolves to Type::Pointer { memory: Some(heap_id) }
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(p: heap::*i32) {
                 unreachable
             }
@@ -2839,21 +2868,20 @@ fn test_memory_tagged_pointer() {
         .expect("function 'f' not found");
 
     let param_ty = f.params[0].ty.inner;
-    assert!(
-        matches!(
-            case.tir.type_pool[param_ty.as_usize()],
-            Type::Pointer { mutable: false, memory: id, .. } if id == heap_id
-        ),
-        "expected heap::*i32 (immutable pointer tagged with heap), got index {}",
-        param_ty.as_u32()
-    );
+    let is_heap_ptr = match &case.tir.type_pool[param_ty.as_usize()] {
+        Type::Pointer { mutable: false, memory, .. } => {
+            matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+        }
+        _ => false,
+    };
+    assert!(is_heap_ptr, "expected heap::*i32 (immutable pointer tagged with heap), got index {}", param_ty.as_u32());
 }
 
 #[test]
 fn test_memory_tagged_mut_pointer() {
     // `heap::*mut i64` — mutable pointer tagged with heap memory
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(p: heap::*mut i64) {
                 unreachable
             }
@@ -2869,21 +2897,20 @@ fn test_memory_tagged_mut_pointer() {
         .expect("function 'f' not found");
 
     let param_ty = f.params[0].ty.inner;
-    assert!(
-        matches!(
-            case.tir.type_pool[param_ty.as_usize()],
-            Type::Pointer { mutable: true, memory: id, .. } if id == heap_id
-        ),
-        "expected heap::*mut i64 (mutable pointer tagged with heap), got index {}",
-        param_ty.as_u32()
-    );
+    let is_heap_ptr = match &case.tir.type_pool[param_ty.as_usize()] {
+        Type::Pointer { mutable: true, memory, .. } => {
+            matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+        }
+        _ => false,
+    };
+    assert!(is_heap_ptr, "expected heap::*mut i64 (mutable pointer tagged with heap), got index {}", param_ty.as_u32());
 }
 
 #[test]
 fn test_memory_tagged_slice() {
     // `heap::[]u8` resolves to Type::Slice { memory: Some(heap_id) }
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(s: heap::[]u8) {
                 unreachable
             }
@@ -2899,21 +2926,20 @@ fn test_memory_tagged_slice() {
         .expect("function 'f' not found");
 
     let param_ty = f.params[0].ty.inner;
-    assert!(
-        matches!(
-            case.tir.type_pool[param_ty.as_usize()],
-            Type::Slice { memory: id, .. } if id == heap_id
-        ),
-        "expected heap::[]u8 (slice tagged with heap), got index {}",
-        param_ty.as_u32()
-    );
+    let is_heap_slice = match &case.tir.type_pool[param_ty.as_usize()] {
+        Type::Slice { memory, .. } => {
+            matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+        }
+        _ => false,
+    };
+    assert!(is_heap_slice, "expected heap::[]u8 (slice tagged with heap), got index {}", param_ty.as_u32());
 }
 
 #[test]
 fn test_memory_tagged_array() {
     // `heap::[4]u8` resolves to Type::Array { size: 4, memory: Some(heap_id) }
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]u8) {
                 unreachable
             }
@@ -2929,21 +2955,20 @@ fn test_memory_tagged_array() {
         .expect("function 'f' not found");
 
     let param_ty = f.params[0].ty.inner;
-    assert!(
-        matches!(
-            case.tir.type_pool[param_ty.as_usize()],
-            Type::Array { size: 4, memory: id, .. } if id == heap_id
-        ),
-        "expected heap::[4]u8 (array tagged with heap), got index {}",
-        param_ty.as_u32()
-    );
+    let is_heap_array = match &case.tir.type_pool[param_ty.as_usize()] {
+        Type::Array { size: 4, memory, .. } => {
+            matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+        }
+        _ => false,
+    };
+    assert!(is_heap_array, "expected heap::[4]u8 (array tagged with heap), got index {}", param_ty.as_u32());
 }
 
 #[test]
 fn test_memory_tagged_nested_array() {
     // `heap::[4]heap::[4]u8` — outer array in heap, elements are heap-tagged arrays
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]heap::[4]u8) {
                 unreachable
             }
@@ -2959,33 +2984,26 @@ fn test_memory_tagged_nested_array() {
         .expect("function 'f' not found");
 
     let outer_ty = f.params[0].ty.inner;
+    let is_heap_mem = |memory: &TypeIndex| {
+        matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+    };
     let (inner_ty, outer_tagged) = match &case.tir.type_pool[outer_ty.as_usize()] {
-        Type::Array {
-            of,
-            size: 4,
-            memory: id,
-            ..
-        } if *id == heap_id => (*of, true),
+        Type::Array { of, size: 4, memory, .. } if is_heap_mem(memory) => (*of, true),
         _ => (TypeIndex::ERROR, false),
     };
-    assert!(
-        outer_tagged,
-        "outer array should be tagged with heap memory"
-    );
-    assert!(
-        matches!(
-            case.tir.type_pool[inner_ty.as_usize()],
-            Type::Array { size: 4, memory: id, .. } if id == heap_id
-        ),
-        "inner array should also be tagged with heap memory"
-    );
+    assert!(outer_tagged, "outer array should be tagged with heap memory");
+    let inner_tagged = match &case.tir.type_pool[inner_ty.as_usize()] {
+        Type::Array { size: 4, memory, .. } => is_heap_mem(memory),
+        _ => false,
+    };
+    assert!(inner_tagged, "inner array should also be tagged with heap memory");
 }
 
 #[test]
 fn test_memory_tagged_non_pointer_is_error() {
     // `heap::i32` — memory namespace before a scalar type should error
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(x: heap::i32) {
                 unreachable
             }
@@ -3000,7 +3018,7 @@ fn test_memory_tagged_non_pointer_is_error() {
 fn test_untagged_and_tagged_pointer_resolve_to_same_type() {
     // With one memory in scope, `*i32` and `heap::*i32` resolve to the same type.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: *i32, b: heap::*i32) {
                 unreachable
             }
@@ -3310,7 +3328,7 @@ fn test_type_application_in_if_else_unifies() {
 #[test]
 fn test_deref_load_through_pointer() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         fn read(ptr: heap::*i32) -> i32 { ptr.* }
     "}, &[]);
     no_errors(&case);
@@ -3319,7 +3337,7 @@ fn test_deref_load_through_pointer() {
 #[test]
 fn test_deref_store_through_mutable_pointer() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         fn write(ptr: heap::*mut i32) { ptr.* = 42 }
     "}, &[]);
     no_errors(&case);
@@ -3328,7 +3346,7 @@ fn test_deref_store_through_mutable_pointer() {
 #[test]
 fn test_deref_arithmetic_assignment_through_mutable_pointer() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         fn increment(ptr: heap::*mut i32) { ptr.* += 1 }
     "}, &[]);
     no_errors(&case);
@@ -3359,7 +3377,7 @@ fn test_deref_no_memory_is_error() {
 #[test]
 fn test_deref_store_through_immutable_pointer_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         fn bad(ptr: heap::*i32) { ptr.* = 42 }
     "}, &[]);
     has_error_matching(&case, "immutable pointer");
@@ -3368,7 +3386,7 @@ fn test_deref_store_through_immutable_pointer_is_error() {
 #[test]
 fn test_deref_arithmetic_assignment_through_immutable_pointer_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         fn bad(ptr: heap::*i32) { ptr.* += 1 }
     "}, &[]);
     has_error_matching(&case, "immutable pointer");
@@ -3377,7 +3395,7 @@ fn test_deref_arithmetic_assignment_through_immutable_pointer_is_error() {
 #[test]
 fn test_deref_type_mismatch_on_store_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         fn bad(ptr: heap::*mut i32) { ptr.* = true }
     "}, &[]);
     has_error_matching(&case, "cannot assign");
@@ -3513,10 +3531,9 @@ fn test_generic_struct_method() {
 // ────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "array literals with type coercion not yet fully implemented"]
 fn test_array_literal_basic() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() -> heap::[3]i32 {
                 local x: heap::[3]i32 = [1, 2, 3];
                 x
@@ -3526,10 +3543,9 @@ fn test_array_literal_basic() {
 }
 
 #[test]
-#[ignore = "array literals with type coercion not yet fully implemented"]
 fn test_array_literal_mutable() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() -> heap::[3]mut i32 {
                 local x: heap::[3]mut i32 = [1, 2, 3];
                 x
@@ -3539,10 +3555,9 @@ fn test_array_literal_mutable() {
 }
 
 #[test]
-#[ignore = "array literals with type coercion not yet fully implemented"]
 fn test_array_literal_float_elements() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() -> heap::[2]f32 {
                 local x: heap::[2]f32 = [1.0, 2.0];
                 x
@@ -3552,10 +3567,9 @@ fn test_array_literal_float_elements() {
 }
 
 #[test]
-#[ignore = "array literals with type coercion not yet fully implemented"]
 fn test_array_literal_empty_with_annotation() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() -> heap::[0]i32 {
                 local x: heap::[0]i32 = [];
                 x
@@ -3567,7 +3581,7 @@ fn test_array_literal_empty_with_annotation() {
 #[test]
 fn test_array_literal_size_mismatch_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() {
                 local x: heap::[3]i32 = [1, 2];
             }
@@ -3583,7 +3597,7 @@ fn test_array_literal_no_annotation_is_error() {
     // Without a type annotation the element type cannot be inferred from comptime
     // ints.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() {
                 local x = [1, 2, 3];
             }
@@ -3611,7 +3625,7 @@ fn test_array_literal_no_memory_is_error() {
 #[test]
 fn test_array_literal_non_numeric_element_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() {
                 local x: heap::[2]i32 = [true, false];
             }
@@ -3623,7 +3637,7 @@ fn test_array_literal_non_numeric_element_is_error() {
 fn test_array_literal_mixed_element_types_is_error() {
     // Mixing a typed expression (true: bool) after a comptime int should mismatch.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(b: bool) {
                 local x: heap::[2]bool = [b, b];
             }
@@ -3635,10 +3649,9 @@ fn test_array_literal_mixed_element_types_is_error() {
 // ──────────────────────────────────────────────────────────────
 
 #[test]
-#[ignore = "array literals with type coercion not yet fully implemented"]
 fn test_array_repeat_basic() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() -> heap::[4]i32 {
                 local x: heap::[4]i32 = [0; 4];
                 x
@@ -3648,10 +3661,9 @@ fn test_array_repeat_basic() {
 }
 
 #[test]
-#[ignore = "array literals with type coercion not yet fully implemented"]
 fn test_array_repeat_float() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() -> heap::[8]f64 {
                 local x: heap::[8]f64 = [0.0; 8];
                 x
@@ -3663,7 +3675,7 @@ fn test_array_repeat_float() {
 #[test]
 fn test_array_repeat_count_not_const_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(n: u32) {
                 local x: heap::[4]i32 = [0; n];
             }
@@ -3677,7 +3689,7 @@ fn test_array_repeat_count_not_const_is_error() {
 #[test]
 fn test_array_repeat_size_mismatch_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() {
                 local x: heap::[4]i32 = [0; 3];
             }
@@ -3691,7 +3703,7 @@ fn test_array_repeat_size_mismatch_is_error() {
 #[test]
 fn test_array_repeat_no_annotation_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f() {
                 local x = [0; 4];
             }
@@ -3705,7 +3717,7 @@ fn test_array_repeat_no_annotation_is_error() {
 #[test]
 fn test_array_repeat_non_numeric_value_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(b: bool) {
                 local x: heap::[4]i32 = [b; 4];
             }
@@ -3719,7 +3731,7 @@ fn test_array_repeat_non_numeric_value_is_error() {
 #[test]
 fn test_index_read_from_array() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "}, &[]);
     no_errors(&case);
@@ -3728,7 +3740,7 @@ fn test_index_read_from_array() {
 #[test]
 fn test_index_read_from_slice() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[]i32) -> i32 { a[0] }
         "}, &[]);
     no_errors(&case);
@@ -3747,9 +3759,9 @@ fn test_index_on_non_indexable_is_error() {
 
 #[test]
 fn test_index_wrong_index_type_is_error() {
-    // Memory32 requires u32 index; passing i64 should be a type mismatch.
+    // Memory<Size = u32> requires u32 index; passing i64 should be a type mismatch.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]i32, i: i64) -> i32 { a[i] }
         "}, &[]);
     has_error_matching(&case, "type mismatch");
@@ -3758,7 +3770,7 @@ fn test_index_wrong_index_type_is_error() {
 #[test]
 fn test_index_store_through_mutable_array() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]mut i32) { a[0] = 42 }
         "}, &[]);
     no_errors(&case);
@@ -3767,7 +3779,7 @@ fn test_index_store_through_mutable_array() {
 #[test]
 fn test_index_store_through_immutable_array_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]i32) { a[0] = 42 }
         "}, &[]);
     has_error_matching(&case, "immutable");
@@ -3776,7 +3788,7 @@ fn test_index_store_through_immutable_array_is_error() {
 #[test]
 fn test_index_arithmetic_assignment_through_mutable_array() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]mut i32) { a[0] += 1 }
         "}, &[]);
     no_errors(&case);
@@ -3785,7 +3797,7 @@ fn test_index_arithmetic_assignment_through_mutable_array() {
 #[test]
 fn test_index_arithmetic_assignment_through_immutable_array_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]i32) { a[0] += 1 }
         "}, &[]);
     has_error_matching(&case, "immutable");
@@ -3794,7 +3806,7 @@ fn test_index_arithmetic_assignment_through_immutable_array_is_error() {
 #[test]
 fn test_index_store_type_mismatch_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]mut i32) { a[0] = true }
         "}, &[]);
     has_error_matching(&case, "cannot assign");
@@ -3803,7 +3815,7 @@ fn test_index_store_type_mismatch_is_error() {
 #[test]
 fn test_index_memory64_requires_u64_index() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory64;
+            memory heap: Memory<Size = u64>;
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "}, &[]);
     no_errors(&case);
@@ -3814,8 +3826,8 @@ fn test_index_ambiguous_memory_is_error() {
     // Two memories and no tag on the array type — cannot resolve memory for
     // indexing.
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
-            memory stack: Memory32;
+            memory heap: Memory<Size = u32>;
+            memory stack: Memory<Size = u32>;
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "}, &[]);
     // The array type already carries heap's memory id, so indexing it should
@@ -3826,7 +3838,7 @@ fn test_index_ambiguous_memory_is_error() {
 #[test]
 fn test_array_literal_runtime_element_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(x: i32) {
                 local arr: heap::[2]i32 = [x, 1];
             }
@@ -3840,7 +3852,7 @@ fn test_array_literal_runtime_element_is_error() {
 #[test]
 fn test_array_repeat_runtime_value_is_error() {
     let case = TestCase::new_multi_file("main.wx", indoc! {"
-            memory heap: Memory32;
+            memory heap: Memory<Size = u32>;
             fn f(x: i32) {
                 local arr: heap::[4]i32 = [x; 4];
             }
@@ -3849,6 +3861,79 @@ fn test_array_repeat_runtime_value_is_error() {
         has_error_code(&case.tir, "E1045"),
         "expected E1045 (array element not const)"
     );
+}
+
+// ── abstract memory indexing ──────────────────────────────────────────────────
+
+#[test]
+fn test_index_concrete_memory32_typed_variable() {
+    // Typed u32 variable (not a literal) as index into a Memory32 array.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            fn f(a: heap::[4]i32, i: u32) -> i32 { a[i] }
+        "}, &[]);
+    no_errors(&case);
+}
+
+#[test]
+fn test_index_concrete_memory64_typed_variable() {
+    // Typed u64 variable as index into a Memory64 array.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u64>;
+            fn f(a: heap::[4]i32, i: u64) -> i32 { a[i] }
+        "}, &[]);
+    no_errors(&case);
+}
+
+#[test]
+fn test_index_memory32_with_u64_variable_is_error() {
+    // Typed u64 index on a Memory32 (u32-indexed) array must be rejected.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            fn f(a: heap::[4]i32, i: u64) -> i32 { a[i] }
+        "}, &[]);
+    has_error_matching(&case, "type mismatch");
+}
+
+#[test]
+fn test_index_generic_array_with_assoc_size_type() {
+    // Generic fn over M: Memory indexing M::[4]i32 with M::Size — the index
+    // type must accept M::Size rather than requiring a concrete integer type.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            fn read<M: Memory>(arr: M::[4]i32, i: M::Size) -> i32 {
+                arr[i]
+            }
+        "}, &[]);
+    no_errors(&case);
+}
+
+#[test]
+fn test_index_generic_slice_with_assoc_size_type() {
+    // Same as above but for a slice (runtime-length).
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            fn read<M: Memory>(s: M::[]i32, i: M::Size) -> i32 {
+                s[i]
+            }
+        "}, &[]);
+    no_errors(&case);
+}
+
+#[test]
+fn test_index_generic_array_call_with_concrete_memory() {
+    // The generic indexing fn must be callable with a concrete memory so
+    // M::Size is substituted to u32 at the call site.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            fn read<M: Memory>(arr: M::[4]i32, i: M::Size) -> i32 {
+                arr[i]
+            }
+            fn caller(arr: heap::[4]i32, i: u32) -> i32 {
+                read(arr, i)
+            }
+        "}, &[]);
+    no_errors(&case);
 }
 
 // ── generic trait bound checking

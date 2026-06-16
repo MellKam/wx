@@ -18,12 +18,8 @@ cargo test -p wx-compiler
 cargo test -p wx-compiler -- <test_name>  # single test by name
 
 # Update snapshots when output changes legitimately
-INSTA_UPDATE=always cargo test -p wx-compiler
-# Then strip assertion_line and remove .snap.new files:
-find crates/wx-compiler/src -name "*.snap.new" | while read f; do
-  grep -v "^assertion_line:" "$f" > "${f%.new}"
-  rm "$f"
-done
+cargo test -p wx-compiler
+cargo insta accept
 
 # Format
 cargo fmt

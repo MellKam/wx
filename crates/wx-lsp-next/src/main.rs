@@ -1151,6 +1151,7 @@ fn symbol_hover_text(
                     let si = *tir.struct_index_lookup.get(def_id)? as usize;
                     tir.structs[si].type_params.get(*param_index as usize)?
                 }
+                TypeParamOwner::Trait(_) => return Some("Self".to_string()),
             };
             Some(interner.resolve(tp.name).unwrap_or("?").to_string())
         }

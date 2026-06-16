@@ -14,7 +14,7 @@ pub trait Memory {
   type Size: PointerSize;
 
   const MEMORY_INDEX: u32;
-  // const DATA_END: Self::*mut u8;
+  const DATA_END: Self::*mut u8;
 
   #[inline]
   fn grow(self, delta: Self::Size) -> Self::Size {
@@ -26,11 +26,6 @@ pub trait Memory {
     @memory_size(self)
   }
 }
-
-#[lang = "memory32"]
-pub trait Memory32: Memory<Size = u32> {}
-#[lang = "memory64"]
-pub trait Memory64: Memory<Size = u64> {}
 
 impl char {
   #[inline]

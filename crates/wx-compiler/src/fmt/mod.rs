@@ -1429,13 +1429,6 @@ impl Builder {
                 items.push(Node::StaticText(")"));
                 Node::Group(Box::new(Node::Concat(items.into())))
             }
-            TypeExpression::ImplTrait { name } => Node::Concat(
-                vec![
-                    Node::StaticText("impl "),
-                    Self::symbol(interner, name.inner),
-                ]
-                .into(),
-            ),
             TypeExpression::MemoryTagged { memory, inner } => Node::Concat(
                 vec![
                     Self::build_path(interner, memory),

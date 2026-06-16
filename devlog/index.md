@@ -2,6 +2,7 @@
 
 ## 2026-06-16
 
+- [2026-06-16-abstract-memory-trait.md](2026-06-16-abstract-memory-trait.md) — Removed Memory32/Memory64 sugar traits, `impl Trait` syntax removal, `TypeParamOwner::Trait` for trait const Self, generic array indexing fix via `AssocTypeProjection`
 - [2026-06-16-lang-items-and-codegen-fixes.md](2026-06-16-lang-items-and-codegen-fixes.md) — Lang items map (`#[lang = "key"]`), MIR Slice lowering, codegen test suite fixes, `DefId` architecture discussion
 
 ## 2026-06-15

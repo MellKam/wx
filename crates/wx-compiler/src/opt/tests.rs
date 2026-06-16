@@ -27,8 +27,8 @@ const STD: &str = indoc! {"
         fn grow(self, delta: Self::Size) -> Self::Size;
         fn size(self) -> Self::Size;
     }
-    trait Memory32: Memory<Size = u32> {}
 "};
+
 
 // ── Test harness
 // ──────────────────────────────────────────────────────────────
@@ -984,7 +984,7 @@ fn test_struct_pointer_load_expands_to_per_field_loads() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         struct Point { x: i32, y: i32 }
         fn load_point(ptr: heap::*Point) -> Point { ptr.* }
         export { load_point, heap }
@@ -1038,7 +1038,7 @@ fn test_struct_pointer_load_field_access_folds() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         struct Point { x: i32, y: i32 }
         fn get_x(ptr: heap::*Point) -> i32 {
             local p: Point = ptr.*;
@@ -1090,7 +1090,7 @@ fn test_struct_pointer_store_expands_to_per_field_stores() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         struct Point { x: i32, y: i32 }
         fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
             ptr.* = Point::{ x: x, y: y }
@@ -1283,7 +1283,7 @@ fn test_sched_struct_pointer_store() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         struct Point { x: i32, y: i32 }
         fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
             ptr.* = Point::{ x: x, y: y }
@@ -1325,7 +1325,7 @@ fn test_sched_struct_pointer_load_field_access() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         struct Point { x: i32, y: i32 }
         fn get_x(ptr: heap::*Point) -> i32 {
             local p: Point = ptr.*;
@@ -1363,7 +1363,7 @@ fn test_sched_struct_pointer_load_full_aggregate_keeps_all_loads() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory32;
+        memory heap: Memory<Size = u32>;
         struct Point { x: i32, y: i32 }
         fn load_point(ptr: heap::*Point) -> Point { ptr.* }
         export { load_point, heap }

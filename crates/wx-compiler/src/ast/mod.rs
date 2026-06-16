@@ -1127,8 +1127,6 @@ pub enum TypeExpression {
     Tuple {
         elements: Box<[Spanned<TypeExpression>]>,
     },
-    /// `impl Trait`
-    ImplTrait { name: Spanned<SymbolU32> },
     /// `heap::*mut u8`, `heap::[]i32` — memory-tagged pointer/slice/array.
     /// The memory is always a single-segment path naming the memory
     /// declaration; the inner is a Pointer, Slice, or Array type.
@@ -2279,21 +2277,6 @@ impl<'ctx> Parser<'ctx> {
                 let (first_tok, first_sym) =
                     match Keyword::try_from(token.span.extract_str(self.source)) {
                         Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
-                        Ok(Keyword::Impl) => {
-                            let impl_span = self.lexer.next().span;
-                            let name_token = self.next_expect(Token::Identifier)?;
-                            let name_symbol = self.intern_identifier(name_token.span);
-                            let span = TextSpan::new(impl_span.start, name_token.span.end);
-                            return Ok(Spanned {
-                                inner: TypeExpression::ImplTrait {
-                                    name: Spanned {
-                                        inner: name_symbol,
-                                        span: name_token.span,
-                                    },
-                                },
-                                span,
-                            });
-                        }
                         Ok(Keyword::SelfType) => {
                             // `Self` is valid in type paths for `Self::AssocType`, etc.
                             let tok = self.lexer.next();
