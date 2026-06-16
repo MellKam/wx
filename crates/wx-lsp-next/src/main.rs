@@ -472,7 +472,7 @@ impl LanguageServer for Backend {
                 let pname = interner.resolve(param.name.inner).unwrap_or("_");
                 label.push_str(pname);
                 label.push_str(": ");
-                label.push_str(&fmt.display_type(param.ty.inner));
+                label.push_str(&fmt.display_type(param.ty.inner).unwrap());
                 let param_end = label.len() as u32;
                 param_infos.push(ParameterInformation {
                     label: ParameterLabel::LabelOffsets([param_start, param_end]),
@@ -481,8 +481,8 @@ impl LanguageServer for Backend {
             }
             label.push_str(") -> ");
             match &func.result {
-                Some(r) => label.push_str(&fmt.display_type(r.inner)),
-                None => label.push_str("unit"),
+                Some(r) => label.push_str(&fmt.display_type(r.inner).unwrap()),
+                None => label.push_str("()"),
             }
 
             Some(SignatureHelp {
@@ -1034,9 +1034,29 @@ fn symbol_hover_text(
         SymbolKind::Function(def_id) => {
             let fi = *tir.function_index_lookup.get(def_id)? as usize;
             let func = &tir.functions[fi];
+            let fmt = fmt.with_type_params(&func.type_params);
             let name = interner.resolve(func.name.inner).unwrap_or("?");
             let pub_prefix = if func.pub_span.is_some() { "pub " } else { "" };
-            let mut s = format!("{pub_prefix}fn {name}(");
+            let mut s = format!("{pub_prefix}fn {name}");
+            if !func.type_params.is_empty() {
+                s.push('<');
+                for (i, tp) in func.type_params.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    s.push_str(interner.resolve(tp.name).unwrap_or("?"));
+                    for (bi, &bound_idx) in tp.bounds.iter().enumerate() {
+                        s.push_str(if bi == 0 { ": " } else { " + " });
+                        s.push_str(
+                            interner
+                                .resolve(tir.traits[bound_idx as usize].name.inner)
+                                .unwrap_or("?"),
+                        );
+                    }
+                }
+                s.push('>');
+            }
+            s.push('(');
             for (i, param) in func.params.iter().enumerate() {
                 if i > 0 {
                     s.push_str(", ");
@@ -1044,12 +1064,12 @@ fn symbol_hover_text(
                 let pname = interner.resolve(param.name.inner).unwrap_or("_");
                 s.push_str(pname);
                 s.push_str(": ");
-                s.push_str(&fmt.display_type(param.ty.inner));
+                s.push_str(&fmt.display_type(param.ty.inner).unwrap());
             }
             s.push(')');
             s.push_str(" -> ");
             match &func.result {
-                Some(result) => s.push_str(&fmt.display_type(result.inner)),
+                Some(result) => s.push_str(&fmt.display_type(result.inner).unwrap()),
                 None => s.push_str("unit"),
             }
             Some(s)
@@ -1058,7 +1078,7 @@ fn symbol_hover_text(
             let gi = *tir.global_index_lookup.get(def_id)? as usize;
             let global = &tir.globals[gi];
             let name = interner.resolve(global.name.inner).unwrap_or("?");
-            let type_str = fmt.display_type(global.ty.inner);
+            let type_str = fmt.display_type(global.ty.inner).unwrap();
             let pub_prefix = if global.pub_span.is_some() {
                 "pub "
             } else {
@@ -1085,7 +1105,7 @@ fn symbol_hover_text(
             let enum_ = tir.enums.get(*enum_idx as usize)?;
             let name = interner.resolve(enum_.name.inner).unwrap_or("?");
             let pub_prefix = if enum_.pub_span.is_some() { "pub " } else { "" };
-            let repr = fmt.display_type(enum_.ty);
+            let repr = fmt.display_type(enum_.ty).unwrap();
             Some(format!("{pub_prefix}enum {name}: {repr} {{ ... }}"))
         }
         SymbolKind::Local {
@@ -1102,7 +1122,7 @@ fn symbol_hover_text(
                 .locals
                 .get(*local_idx as usize)?;
             let name = interner.resolve(local.name.inner).unwrap_or("_");
-            let type_str = fmt.display_type(local.ty);
+            let type_str = fmt.display_type(local.ty).unwrap();
             let mut_kw = if local.mut_span.is_some() { "mut " } else { "" };
             Some(format!("local {mut_kw}{name}: {type_str}"))
         }
@@ -1110,7 +1130,7 @@ fn symbol_hover_text(
             let fi = *tir.function_index_lookup.get(func_id)? as usize;
             let param = tir.functions[fi].params.get(*param_idx as usize)?;
             let name = interner.resolve(param.name.inner).unwrap_or("_");
-            let type_str = fmt.display_type(param.ty.inner);
+            let type_str = fmt.display_type(param.ty.inner).unwrap();
             let mut_kw = if param.mut_span.is_some() { "mut " } else { "" };
             Some(format!("{mut_kw}{name}: {type_str}"))
         }
@@ -1180,7 +1200,7 @@ fn symbol_hover_text(
             let ci = *tir.const_index_lookup.get(def_id)? as usize;
             let constant = &tir.constants[ci];
             let name = interner.resolve(constant.name.inner).unwrap_or("?");
-            let type_str = fmt.display_type(constant.ty.inner);
+            let type_str = fmt.display_type(constant.ty.inner).unwrap();
             let pub_prefix = if constant.pub_span.is_some() {
                 "pub "
             } else {

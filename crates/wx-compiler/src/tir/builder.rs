@@ -433,8 +433,8 @@ fn report_type_mistmatch(
         .with_message("type mismatch")
         .with_label(diagnostic.span.primary_label().with_message(format!(
             "expected `{}`, found `{}`",
-            fmt.display_type(diagnostic.expected_type),
-            fmt.display_type(diagnostic.actual_type)
+            fmt.display_type(diagnostic.expected_type).unwrap(),
+            fmt.display_type(diagnostic.actual_type).unwrap()
         )))
 }
 
@@ -492,7 +492,7 @@ fn report_integer_literal_out_of_range(
         .with_message(format!(
             "literal `{}` out of range for `{}`",
             diagnostic.value,
-            fmt.display_type(diagnostic.ty)
+            fmt.display_type(diagnostic.ty).unwrap()
         ))
         .with_label(diagnostic.span.primary_label())
 }
@@ -506,7 +506,7 @@ fn report_unable_to_coerce(
         .with_code(DiagnosticCode::UnableToCoerce.code())
         .with_message(format!(
             "unable to coerce to type `{}`",
-            fmt.display_type(target_type)
+            fmt.display_type(target_type).unwrap()
         ))
         .with_label(span.primary_label())
 }
@@ -574,7 +574,7 @@ fn report_binary_operator_cannot_be_applied(
         .with_message(format!(
             "operator `{}` cannot be applied to type `{}`",
             diagnostic.operator.inner,
-            fmt.display_type(diagnostic.operand.inner)
+            fmt.display_type(diagnostic.operand.inner).unwrap()
         ))
         .with_label(Label::primary(diagnostic.file_id, diagnostic.operand.span))
         .with_label(Label::secondary(
@@ -594,8 +594,8 @@ fn report_binary_expression_mistmatch(
     fmt: TypeFormatter,
     diagnostic: BinaryExpressionMistmatchDiagnostic,
 ) -> Diagnostic<FileId> {
-    let left_type_name = fmt.display_type(diagnostic.left_type.inner);
-    let right_type_name = fmt.display_type(diagnostic.right_type.inner);
+    let left_type_name = fmt.display_type(diagnostic.left_type.inner).unwrap();
+    let right_type_name = fmt.display_type(diagnostic.right_type.inner).unwrap();
 
     let message = match diagnostic.operator.inner {
         ast::BinaryOp::Add => format!("cannot add `{}` to `{}`", left_type_name, right_type_name),
@@ -829,7 +829,6 @@ fn report_expected_trait(span: SourceSpan, kind: SymbolKind, name: String) -> Di
     let found = match kind {
         SymbolKind::Struct { .. } => "struct",
         SymbolKind::Enum { .. } => "enum",
-
         SymbolKind::Memory { .. } => "memory",
         SymbolKind::Module { .. } => "module",
         SymbolKind::Function { .. } => "function",
@@ -891,7 +890,7 @@ fn report_argument_count_mismatch(
         let missing_count = details.params.len() - details.actual_count;
         let missing_types: Vec<String> = details.params[details.actual_count..]
             .iter()
-            .map(|ty| fmt.display_type(*ty))
+            .map(|ty| fmt.display_type(*ty).unwrap())
             .collect();
 
         if missing_count == 1 {
@@ -1021,8 +1020,8 @@ fn report_invalid_cast(
         .with_code(DiagnosticCode::InvalidCast.code())
         .with_message(format!(
             "cannot cast `{}` to `{}`",
-            fmt.display_type(from_type),
-            fmt.display_type(to_type),
+            fmt.display_type(from_type).unwrap(),
+            fmt.display_type(to_type).unwrap(),
         ))
         .with_label(span.primary_label())
 }
@@ -1826,11 +1825,9 @@ impl<'ast> Builder<'ast, '_> {
                             Diagnostic::error()
                                 .with_message(format!(
                                     "`{}` is not a memory declaration",
-                                    TypeFormatter {
-                                        interner: &self.interner,
-                                        tir: &self.tir,
-                                    }
-                                    .display_type(memory_ty)
+                                    TypeFormatter::new(&self.tir, &self.interner)
+                                        .display_type(memory_ty)
+                                        .unwrap()
                                 ))
                                 .with_label(Label::primary(resolve_context.file_id, memory.span)),
                         );
@@ -3009,33 +3006,38 @@ impl<'ast> Builder<'ast, '_> {
                     })
                     .collect();
 
-                // Extract assoc-type bindings from GenericApplication supertraits.
                 let mut bindings: HashMap<(TraitIndex, SymbolU32), TypeIndex> = HashMap::new();
-                for (bound, &st) in supertraits.iter().zip(resolved.iter()) {
-                    if let ast::TypeExpression::GenericApplication { args, .. } = &bound.inner {
-                        for sep in args.iter() {
-                            if let ast::GenericArg::Binding {
-                                name: key,
-                                ty: val_te,
-                            } = &sep.inner.inner
-                            {
-                                let val_ty = self.resolve_type(&resolve_context, val_te);
-                                bindings.insert((st, key.inner), val_ty);
-                                if let Some(at) =
-                                    self.tir.traits[st as usize].assoc_types.get_mut(&key.inner)
-                                {
-                                    at.accesses
-                                        .push(SourceSpan::new(resolve_context.file_id, key.span));
-                                }
-                                self.check_assoc_type_bounds(
-                                    resolve_context.file_id,
-                                    st,
-                                    key.inner,
-                                    val_ty,
-                                    val_te.span,
-                                );
-                            }
+                for (bound, &trait_idx) in supertraits.iter().zip(resolved.iter()) {
+                    let args = match &bound.inner {
+                        ast::TypeExpression::GenericApplication { args, .. }
+                            if !args.is_empty() =>
+                        {
+                            args
                         }
+                        _ => continue,
+                    };
+
+                    for arg in args.iter() {
+                        let (key, value) = match &arg.inner.inner {
+                            ast::GenericArg::Binding { name, ty } => (name, ty),
+                            _ => continue,
+                        };
+                        let val_ty = self.resolve_type(&resolve_context, value);
+                        bindings.insert((trait_idx, key.inner), val_ty);
+                        if let Some(at) = self.tir.traits[trait_idx as usize]
+                            .assoc_types
+                            .get_mut(&key.inner)
+                        {
+                            at.accesses
+                                .push(SourceSpan::new(resolve_context.file_id, key.span));
+                        }
+                        self.check_assoc_type_bounds(
+                            resolve_context.file_id,
+                            trait_idx,
+                            key.inner,
+                            val_ty,
+                            value.span,
+                        );
                     }
                 }
                 self.tir.traits[trait_index as usize].supertraits = resolved;
@@ -3251,46 +3253,6 @@ impl<'ast> Builder<'ast, '_> {
                     config,
                 } = item
                 {
-                    let size_symbol = self.interner.get_or_intern("Size");
-                    // `kind` must be `Memory<Size = u32>` or `Memory<Size = u64>`.
-                    // Extract the Size binding from the GenericApplication to
-                    // determine MemoryKind, then resolve the base trait normally.
-                    let size_binding_ty = match &kind.inner {
-                        ast::TypeExpression::GenericApplication { args, .. } => {
-                            args.iter().find_map(|sep| match &sep.inner.inner {
-                                ast::GenericArg::Binding { name, ty }
-                                    if name.inner == size_symbol =>
-                                {
-                                    Some(ty)
-                                }
-                                _ => None,
-                            })
-                        }
-                        _ => None,
-                    };
-                    let memory_kind =
-                        match size_binding_ty {
-                            Some(ty) => {
-                                let resolved = self.resolve_type(&resolve_context, ty);
-                                if resolved == TypeIndex::U32 {
-                                    MemoryKind::Memory32
-                                } else if resolved == TypeIndex::U64 {
-                                    MemoryKind::Memory64
-                                } else {
-                                    self.tir.diagnostics.push(report_invalid_memory_kind(
-                                        SourceSpan::new(resolve_context.file_id, kind.span),
-                                    ));
-                                    return;
-                                }
-                            }
-                            None => {
-                                self.tir.diagnostics.push(report_invalid_memory_kind(
-                                    SourceSpan::new(resolve_context.file_id, kind.span),
-                                ));
-                                return;
-                            }
-                        };
-                    // Resolve the base trait and ensure its functions are registered.
                     let type_idx = self.resolve_type(&resolve_context, kind);
                     let trait_index =
                         match self.tir.type_pool[type_idx.as_usize()] {
@@ -3302,6 +3264,51 @@ impl<'ast> Builder<'ast, '_> {
                                 return;
                             }
                         };
+
+                    let mut bindings: HashMap<SymbolU32, TypeIndex> = HashMap::new();
+                    match &kind.inner {
+                        ast::TypeExpression::GenericApplication { args, .. }
+                            if !args.is_empty() =>
+                        {
+                            for arg in args.iter() {
+                                let (key, value) = match &arg.inner.inner {
+                                    ast::GenericArg::Binding { name, ty } => (name, ty),
+                                    _ => continue,
+                                };
+                                let val_ty = self.resolve_type(&resolve_context, value);
+                                bindings.insert(key.inner, val_ty);
+                                if let Some(at) = self.tir.traits[trait_index as usize]
+                                    .assoc_types
+                                    .get_mut(&key.inner)
+                                {
+                                    at.accesses
+                                        .push(SourceSpan::new(resolve_context.file_id, key.span));
+                                }
+                                self.check_assoc_type_bounds(
+                                    resolve_context.file_id,
+                                    trait_index,
+                                    key.inner,
+                                    val_ty,
+                                    value.span,
+                                );
+                            }
+                        }
+                        _ => {}
+                    };
+
+                    let size_symbol = self.interner.get_or_intern("Size");
+                    let memory_kind =
+                        match bindings.get(&size_symbol).copied() {
+                            Some(ty) if ty == TypeIndex::U32 => MemoryKind::Memory32,
+                            Some(ty) if ty == TypeIndex::U64 => MemoryKind::Memory64,
+                            _ => {
+                                self.tir.diagnostics.push(report_invalid_memory_kind(
+                                    SourceSpan::new(resolve_context.file_id, kind.span),
+                                ));
+                                return;
+                            }
+                        };
+
                     let trait_fn_ids = self.tir.traits[trait_index as usize].member_def_ids.clone();
                     for tid in trait_fn_ids {
                         self.ensure_signature(tid);
@@ -3324,13 +3331,6 @@ impl<'ast> Builder<'ast, '_> {
                         kind: memory_kind,
                         id: *id,
                     });
-                    // Pass the `Size` binding from `Memory<Size = u32/u64>` so that
-                    // `Self::Size` resolves to the concrete type in impl_members.
-                    let size_ty = match memory_kind {
-                        MemoryKind::Memory32 => TypeIndex::U32,
-                        MemoryKind::Memory64 => TypeIndex::U64,
-                    };
-                    let bindings = HashMap::from([(size_symbol, size_ty)]);
                     self.seed_memory_trait_impl_with(trait_index, memory_type, &bindings);
                     self.insert_symbol(
                         resolve_context.namespace,
@@ -4429,11 +4429,13 @@ impl<'ast> Builder<'ast, '_> {
                     assoc_name,
                     trait_index,
                     param_index,
+                    ..
                 },
                 Type::AssocTypeProjection {
                     assoc_name: actual_assoc,
                     trait_index: actual_trait,
                     param_index: actual_param,
+                    ..
                 },
             ) if assoc_name == actual_assoc
                 && trait_index == actual_trait
@@ -5097,11 +5099,9 @@ impl<'ast> Builder<'ast, '_> {
                             .interner
                             .resolve(self.tir.traits[bound_trait_index as usize].name.inner)
                             .unwrap();
-                        let type_name = TypeFormatter {
-                            interner: &self.interner,
-                            tir: &self.tir,
-                        }
-                        .display_type(concrete_ty);
+                        let type_name = TypeFormatter::new(&self.tir, &self.interner)
+                            .display_type(concrete_ty)
+                            .unwrap();
                         self.tir.diagnostics.push(
                             Diagnostic::error()
                                 .with_code(DiagnosticCode::TypeMistmatch.code())
@@ -5672,6 +5672,16 @@ impl<'ast> Builder<'ast, '_> {
                     return Err(());
                 }
             };
+
+        let caller_id = self.tir.functions[func_ctx.func_index as usize].id;
+        self.tir.functions[func_index as usize]
+            .accesses
+            .push(FunctionAccess {
+                caller: Some(caller_id),
+                kind: FunctionAccessKind::DirectCall,
+                file_id: func_ctx.resolve_context.file_id,
+                span: name.span,
+            });
 
         let params: Vec<TypeIndex> = self.tir.functions[func_index as usize]
             .params
@@ -6574,7 +6584,9 @@ impl<'ast> Builder<'ast, '_> {
                     .with_code(DiagnosticCode::NotANamespace.code())
                     .with_message(format!(
                         "type `{}` is not a namespace",
-                        TypeFormatter::new(&self.tir, &self.interner,).display_type(namespace_ty),
+                        TypeFormatter::new(&self.tir, &self.interner,)
+                            .display_type(namespace_ty)
+                            .unwrap(),
                     ))
                     .with_label(
                         SourceSpan::new(func_ctx.resolve_context.file_id, namespace_span)
@@ -7155,7 +7167,7 @@ impl<'ast> Builder<'ast, '_> {
                         .with_message(format!(
                             "operator `{}` cannot be applied to type `{}`",
                             operator.inner,
-                            formatter.display_type(operand.ty)
+                            formatter.display_type(operand.ty).unwrap()
                         ))
                         .with_label(Label::primary(ctx.resolve_context.file_id, operand.span))
                         .with_label(Label::secondary(ctx.resolve_context.file_id, operator.span));
@@ -8804,7 +8816,7 @@ impl<'ast> Builder<'ast, '_> {
                             .primary_label()
                             .with_message(format!(
                                 "expected function, found `{}`",
-                                formatter.display_type(callee.ty)
+                                formatter.display_type(callee.ty).unwrap()
                             )),
                     );
                 self.tir.diagnostics.push(diagnostic);
@@ -9767,7 +9779,9 @@ impl<'ast> Builder<'ast, '_> {
             _ => {
                 self.tir.diagnostics.push(report_cannot_deref_non_pointer(
                     SourceSpan::new(func_ctx.resolve_context.file_id, pointer.span),
-                    TypeFormatter::new(&self.tir, &self.interner).display_type(pointer.ty),
+                    TypeFormatter::new(&self.tir, &self.interner)
+                        .display_type(pointer.ty)
+                        .unwrap(),
                 ));
                 return Err(());
             }
@@ -10121,7 +10135,9 @@ impl<'ast> Builder<'ast, '_> {
             _ => {
                 self.tir.diagnostics.push(report_index_on_non_indexable(
                     SourceSpan::new(func_ctx.resolve_context.file_id, object.span),
-                    TypeFormatter::new(&self.tir, &self.interner).display_type(object.ty),
+                    TypeFormatter::new(&self.tir, &self.interner)
+                        .display_type(object.ty)
+                        .unwrap(),
                 ));
                 return Err(());
             }

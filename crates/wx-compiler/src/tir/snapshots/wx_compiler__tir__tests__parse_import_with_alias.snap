@@ -171,7 +171,13 @@ functions:
       span:
         start: 134
         end: 141
-    accesses: []
+    accesses:
+      - caller: 10
+        kind: DirectCall
+        file_id: 0
+        span:
+          start: 491
+          end: 503
     attributes: []
     body: ~
   - id: 10
@@ -437,7 +443,13 @@ functions:
       span:
         start: 185
         end: 192
-    accesses: []
+    accesses:
+      - caller: 11
+        kind: DirectCall
+        file_id: 0
+        span:
+          start: 570
+          end: 582
     attributes: []
     body: ~
   - id: 13

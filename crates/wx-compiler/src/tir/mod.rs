@@ -982,57 +982,73 @@ pub struct Struct {
 pub struct TypeFormatter<'a> {
     tir: &'a TIR,
     interner: &'a ast::StringInterner,
+    type_params: &'a [TypeParamInfo],
 }
 
 impl<'a> TypeFormatter<'a> {
     pub fn new(tir: &'a TIR, interner: &'a ast::StringInterner) -> Self {
-        Self { tir, interner }
+        Self {
+            tir,
+            interner,
+            type_params: &[],
+        }
     }
 
-    pub fn display_type(&self, idx: TypeIndex) -> String {
-        let mut s = String::new();
-        self.write_type(&mut s, idx);
-        s
+    pub fn with_type_params(mut self, type_params: &'a [TypeParamInfo]) -> Self {
+        self.type_params = type_params;
+        self
     }
 
-    fn write_type(&self, f: &mut impl std::fmt::Write, idx: TypeIndex) {
+    pub fn display_type(&self, idx: TypeIndex) -> Result<String, std::fmt::Error> {
+        let mut buffer = String::new();
+        self.write_type(&mut buffer, idx)?;
+        Ok(buffer)
+    }
+
+    fn write_type(&self, f: &mut impl std::fmt::Write, idx: TypeIndex) -> std::fmt::Result {
         match &self.tir.type_pool[idx.as_usize()] {
-            Type::Integer => f.write_str("integer").unwrap(),
-            Type::Float => f.write_str("float").unwrap(),
-            Type::Error => f.write_str("error").unwrap(),
-            Type::Unit => f.write_str("unit").unwrap(),
-            Type::Bool => f.write_str("bool").unwrap(),
-            Type::Char => f.write_str("char").unwrap(),
-            Type::U8 => f.write_str("u8").unwrap(),
-            Type::I8 => f.write_str("i8").unwrap(),
-            Type::U16 => f.write_str("u16").unwrap(),
-            Type::I16 => f.write_str("i16").unwrap(),
-            Type::Never => f.write_str("never").unwrap(),
-            Type::I32 => f.write_str("i32").unwrap(),
-            Type::I64 => f.write_str("i64").unwrap(),
-            Type::F32 => f.write_str("f32").unwrap(),
-            Type::F64 => f.write_str("f64").unwrap(),
-            Type::U32 => f.write_str("u32").unwrap(),
-            Type::U64 => f.write_str("u64").unwrap(),
+            Type::Integer => f.write_str("{integer}"),
+            Type::Float => f.write_str("{float}"),
+            Type::Error => f.write_str("{unknown}"),
+            Type::Unit => f.write_str("()"),
+            Type::Bool => f.write_str("bool"),
+            Type::Char => f.write_str("char"),
+            Type::U8 => f.write_str("u8"),
+            Type::I8 => f.write_str("i8"),
+            Type::U16 => f.write_str("u16"),
+            Type::I16 => f.write_str("i16"),
+            Type::Never => f.write_str("never"),
+            Type::I32 => f.write_str("i32"),
+            Type::I64 => f.write_str("i64"),
+            Type::F32 => f.write_str("f32"),
+            Type::F64 => f.write_str("f64"),
+            Type::U32 => f.write_str("u32"),
+            Type::U64 => f.write_str("u64"),
             Type::Pointer {
                 to,
                 mutable,
                 memory,
             } => {
-                let (to, mutable, memory) = (*to, *mutable, *memory);
-                self.write_type(f, memory);
-                write!(f, "::*{}", if mutable { "mut " } else { "" }).unwrap();
-                self.write_type(f, to);
+                self.write_type(f, *memory)?;
+                f.write_str("::*")?;
+                if *mutable {
+                    f.write_str("mut ")?;
+                }
+                self.write_type(f, *to)?;
+                Ok(())
             }
             Type::Slice {
                 of,
                 mutable,
                 memory,
             } => {
-                let (of, mutable, memory) = (*of, *mutable, *memory);
-                self.write_type(f, memory);
-                write!(f, "::[]{}", if mutable { "mut " } else { "" }).unwrap();
-                self.write_type(f, of);
+                self.write_type(f, *memory)?;
+                f.write_str("::[]")?;
+                if *mutable {
+                    f.write_str("mut ")?;
+                }
+                self.write_type(f, *of)?;
+                Ok(())
             }
             Type::Array {
                 of,
@@ -1040,130 +1056,162 @@ impl<'a> TypeFormatter<'a> {
                 mutable,
                 memory,
             } => {
-                let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
-                self.write_type(f, memory);
-                write!(f, "::[{}]{}", size, if mutable { "mut " } else { "" }).unwrap();
-                self.write_type(f, of);
+                self.write_type(f, *memory)?;
+                write!(f, "::[{}]{}", size, if *mutable { "mut " } else { "" })?;
+                self.write_type(f, *of)?;
+                Ok(())
             }
             Type::Tuple { elements } => {
-                f.write_char('(').unwrap();
-                for (i, &e) in elements.iter().enumerate() {
+                f.write_char('(')?;
+                for (i, element) in elements.iter().copied().enumerate() {
                     if i > 0 {
-                        f.write_str(", ").unwrap();
+                        f.write_str(", ")?;
                     }
-                    self.write_type(f, e);
+                    self.write_type(f, element)?;
                 }
-                f.write_char(')').unwrap();
+                f.write_char(')')?;
+                Ok(())
             }
             Type::Struct { struct_index, args } => {
-                let name = self
-                    .interner
+                self.interner
                     .resolve(self.tir.structs[*struct_index as usize].name.inner)
-                    .unwrap();
-                f.write_str(name).unwrap();
+                    .ok_or(std::fmt::Error)
+                    .and_then(|name| f.write_str(name))?;
                 if !args.is_empty() {
-                    f.write_char('<').unwrap();
-                    for (i, &a) in args.iter().enumerate() {
+                    f.write_char('<')?;
+                    for (i, arg) in args.iter().copied().enumerate() {
                         if i > 0 {
-                            f.write_str(", ").unwrap();
+                            f.write_str(", ")?;
                         }
-                        self.write_type(f, a);
+                        self.write_type(f, arg)?;
                     }
-                    f.write_char('>').unwrap();
+                    f.write_char('>')?;
                 }
+                Ok(())
             }
-            Type::Enum { enum_index } => {
-                let name = self
-                    .interner
-                    .resolve(self.tir.enums[*enum_index as usize].name.inner)
-                    .unwrap();
-                f.write_str(name).unwrap();
-            }
+            Type::Enum { enum_index } => self
+                .interner
+                .resolve(self.tir.enums[*enum_index as usize].name.inner)
+                .ok_or(std::fmt::Error)
+                .and_then(|name| f.write_str(name)),
             Type::Memory { id, .. } => {
-                let mi = self.tir.memory_index_lookup[id] as usize;
-                let name = self
-                    .interner
-                    .resolve(self.tir.memories[mi].name.inner)
-                    .unwrap_or("?");
-                f.write_str(name).unwrap();
+                let memory_index = self.tir.memory_index_lookup[id];
+                self.interner
+                    .resolve(self.tir.memories[memory_index as usize].name.inner)
+                    .ok_or(std::fmt::Error)
+                    .and_then(|name| f.write_str(name))
             }
-            Type::Trait { trait_index } => {
-                let name = self
-                    .interner
-                    .resolve(self.tir.traits[*trait_index as usize].name.inner)
-                    .unwrap();
-                f.write_str(name).unwrap();
-            }
-            Type::Module { namespace_idx } => {
-                let name = self
-                    .interner
-                    .resolve(self.tir.namespaces[*namespace_idx as usize].name)
-                    .unwrap();
-                f.write_str(name).unwrap();
-            }
+            Type::Trait { trait_index } => self
+                .interner
+                .resolve(self.tir.traits[*trait_index as usize].name.inner)
+                .ok_or(std::fmt::Error)
+                .and_then(|name| f.write_str(name)),
+            Type::Module { namespace_idx } => self
+                .interner
+                .resolve(self.tir.namespaces[*namespace_idx as usize].name)
+                .ok_or(std::fmt::Error)
+                .and_then(|name| f.write_str(name)),
             Type::Function { signature } => {
-                let result = signature.result();
-                f.write_str("fn(").unwrap();
-                for (i, &p) in signature.params().iter().enumerate() {
+                f.write_str("fn(")?;
+                for (i, param) in signature.params().iter().copied().enumerate() {
                     if i > 0 {
-                        f.write_str(", ").unwrap();
+                        f.write_str(", ")?;
                     }
-                    self.write_type(f, p);
+                    self.write_type(f, param)?;
                 }
-                f.write_str(") -> ").unwrap();
-                self.write_type(f, result);
+                f.write_str(") -> ")?;
+                self.write_type(f, signature.result())?;
+                Ok(())
             }
             Type::FunctionItem { id, .. } => {
-                let fi = self.tir.function_index_lookup[id] as usize;
-                let func = &self.tir.functions[fi];
-                let name = self.interner.resolve(func.name.inner).unwrap_or("?");
-                write!(f, "fn {name}(").unwrap();
+                f.write_str("fn ")?;
+                let func = &self.tir.functions[self.tir.function_index_lookup[id] as usize];
+                self.interner
+                    .resolve(func.name.inner)
+                    .ok_or(std::fmt::Error)
+                    .and_then(|name| f.write_str(name))?;
+                if !func.type_params.is_empty() {
+                    f.write_char('<')?;
+                    for (i, param_info) in func.type_params.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(", ")?;
+                        }
+                        self.interner
+                            .resolve(param_info.name)
+                            .ok_or(std::fmt::Error)
+                            .and_then(|name| f.write_str(name))?;
+                    }
+                    f.write_char('>')?;
+                }
+                f.write_char('(')?;
                 for (i, param) in func.params.iter().enumerate() {
                     if i > 0 {
-                        f.write_str(", ").unwrap();
+                        f.write_str(", ")?;
                     }
-                    let param_name = self.interner.resolve(param.name.inner).unwrap_or("_");
-                    f.write_str(param_name).unwrap();
-                    f.write_str(": ").unwrap();
-                    self.write_type(f, param.ty.inner);
+                    self.write_type(f, param.ty.inner)?;
                 }
-                f.write_char(')').unwrap();
-                f.write_str(" -> ").unwrap();
+                f.write_str(") -> ")?;
                 match &func.result {
-                    Some(result) => self.write_type(f, result.inner),
-                    None => f.write_str("unit").unwrap(),
-                }
+                    Some(result) => self.write_type(f, result.inner)?,
+                    None => f.write_str("()")?,
+                };
+                Ok(())
             }
             Type::TypeParam { owner, param_index } => {
                 let name = match owner {
                     TypeParamOwner::Function(def_id) => {
-                        let fi = self.tir.function_index_lookup[def_id] as usize;
-                        let sym = self.tir.functions[fi].type_params[*param_index as usize].name;
-                        self.interner.resolve(sym).unwrap()
+                        let symbol = self.tir.functions
+                            [self.tir.function_index_lookup[def_id] as usize]
+                            .type_params[*param_index as usize]
+                            .name;
+                        self.interner.resolve(symbol).ok_or(std::fmt::Error)?
                     }
                     TypeParamOwner::Struct(def_id) => {
-                        let si = self.tir.struct_index_lookup[def_id] as usize;
-                        let sym = self.tir.structs[si].type_params[*param_index as usize].name;
-                        self.interner.resolve(sym).unwrap()
+                        let symbol = self.tir.structs
+                            [self.tir.struct_index_lookup[def_id] as usize]
+                            .type_params[*param_index as usize]
+                            .name;
+                        self.interner.resolve(symbol).ok_or(std::fmt::Error)?
                     }
                     TypeParamOwner::Trait(_) => "Self",
                 };
-                f.write_str(name).unwrap();
+                f.write_str(name)
             }
             Type::AssociatedType {
                 assoc_name,
                 trait_index,
+            } => {
+                self.interner
+                    .resolve(self.tir.traits[*trait_index as usize].name.inner)
+                    .ok_or(std::fmt::Error)
+                    .and_then(|trait_name| f.write_str(trait_name))?;
+                f.write_str("::")?;
+                self.interner
+                    .resolve(*assoc_name)
+                    .ok_or(std::fmt::Error)
+                    .and_then(|type_name| f.write_str(type_name))?;
+                Ok(())
             }
-            | Type::AssocTypeProjection {
+            Type::AssocTypeProjection {
                 assoc_name,
                 trait_index,
-                ..
+                param_index,
             } => {
-                let assoc_sym = *assoc_name;
-                let trait_name_sym = self.tir.traits[*trait_index as usize].name.inner;
-                let trait_name = self.interner.resolve(trait_name_sym).unwrap();
-                let assoc = self.interner.resolve(assoc_sym).unwrap();
-                write!(f, "{}::{}", trait_name, assoc).unwrap();
+                self.type_params
+                    .get(*param_index as usize)
+                    .and_then(|param_info| self.interner.resolve(param_info.name))
+                    .or_else(|| {
+                        self.interner
+                            .resolve(self.tir.traits[*trait_index as usize].name.inner)
+                    })
+                    .ok_or(std::fmt::Error)
+                    .and_then(|prefix| f.write_str(prefix))?;
+                f.write_str("::")?;
+                self.interner
+                    .resolve(*assoc_name)
+                    .ok_or(std::fmt::Error)
+                    .and_then(|type_name| f.write_str(type_name))?;
+                Ok(())
             }
         }
     }
