@@ -257,6 +257,23 @@ fn test_memory_index_lowers_to_int() {
     insta::assert_yaml_snapshot!(case.mir);
 }
 
+// ── slice_len intrinsic ───────────────────────────────────────────────────────
+
+#[test]
+fn test_slice_len_lowers_to_aggregate_get() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        pub fn f(s: heap::[]u8) -> u32 {
+            @slice_len(s)
+        }
+
+        export { f }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.mir);
+}
+
 // ── generic over Memory ───────────────────────────────────────────────────────
 
 #[test]
@@ -926,4 +943,25 @@ fn test_static_entry_alignment_matches_element_type() {
     assert!(aligns.contains(&4), "i32 array must have align 4");
     assert!(aligns.contains(&8), "f64 array must have align 8");
     assert!(aligns.contains(&1), "u8 array must have align 1");
+}
+
+#[test]
+fn test_generic_impl_slice_len_method_lowers_correctly() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        impl<M: Memory, T> M::[]T {
+            pub fn len(self) -> M::Size {
+                @slice_len(self)
+            }
+        }
+
+        pub fn get_len(s: heap::[]u8) -> u32 {
+            s.len()
+        }
+
+        export { get_len }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.mir);
 }

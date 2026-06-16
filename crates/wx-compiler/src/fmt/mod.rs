@@ -148,7 +148,7 @@ impl Builder {
                 variants,
                 ..
             } => Self::build_enum_definition(interner, source, *pub_span, repr, name, variants),
-            Item::Impl { target, items } => {
+            Item::Impl { target, items, .. } => {
                 Self::build_impl_definition(interner, source, target, items)
             }
             Item::ImplTrait {
@@ -1175,6 +1175,18 @@ impl Builder {
                 Self::build_expression(interner, source, index),
                 Node::StaticText("]"),
             ])),
+            Expression::SliceRange { object, start, end } => {
+                let mut parts = vec![Self::build_expression(interner, source, object), Node::StaticText("[")];
+                if let Some(s) = start {
+                    parts.push(Self::build_expression(interner, source, s));
+                }
+                parts.push(Node::StaticText(".."));
+                if let Some(e) = end {
+                    parts.push(Self::build_expression(interner, source, e));
+                }
+                parts.push(Node::StaticText("]"));
+                Node::Concat(parts.into_boxed_slice())
+            }
             Expression::Tuple { elements } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("("));

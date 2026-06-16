@@ -129,19 +129,22 @@ type_pool:
           - 16
           - 15
         params_count: 1
-  - TypeParam:
-      owner:
-        Struct: 28
-      param_index: 0
-  - Struct:
-      struct_index: 0
-      args:
-        - 10
+  - Memory:
+      id: 28
+      kind: Memory32
+  - Pointer:
+      to: 5
+      mutable: true
+      memory: 41
+  - Slice:
+      of: 5
+      mutable: false
+      memory: 41
   - Function:
       signature:
         items:
-          - 42
-          - 10
+          - 43
+          - 9
         params_count: 1
 diagnostics: []
 functions:
@@ -592,7 +595,13 @@ functions:
       span:
         start: 717
         end: 724
-    accesses: []
+    accesses:
+      - caller: 29
+        kind: DirectCall
+        file_id: 1
+        span:
+          start: 75
+          end: 78
     attributes:
       - Inline
     body:
@@ -3321,36 +3330,36 @@ functions:
     pub_span: ~
     kind: Free
     type_params: []
-    signature_index: 43
+    signature_index: 44
     name:
-      inner: 67
+      inner: 66
       span:
-        start: 34
-        end: 37
+        start: 37
+        end: 44
     params:
       - mut_span: ~
         name:
-          inner: 68
+          inner: 67
           span:
-            start: 38
-            end: 39
+            start: 45
+            end: 46
         ty:
-          inner: 42
+          inner: 43
           span:
-            start: 41
-            end: 53
+            start: 48
+            end: 58
     result:
-      inner: 10
+      inner: 9
       span:
-        start: 58
-        end: 61
+        start: 63
+        end: 66
     accesses:
       - caller: ~
         kind: Reference
         file_id: 1
         span:
-          start: 83
-          end: 86
+          start: 93
+          end: 100
     attributes: []
     body:
       stack:
@@ -3360,19 +3369,19 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 68
+                  inner: 67
                   span:
-                    start: 38
-                    end: 39
-                ty: 42
+                    start: 45
+                    end: 46
+                ty: 43
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 64
-                      end: 65
+                      start: 73
+                      end: 74
                     kind: Read
-            inferred_type: 10
-            expected_type: 10
+            inferred_type: 9
+            expected_type: 9
       block:
         kind:
           Block:
@@ -3380,80 +3389,56 @@ functions:
             expressions: []
             result:
               kind:
-                ObjectAccess:
+                GenericMethodCall:
+                  id: 14
+                  type_args:
+                    - 41
+                    - 5
                   object:
                     kind:
                       Local:
                         scope_index: 0
                         local_index: 0
-                    ty: 42
+                    ty: 43
                     span:
-                      start: 64
-                      end: 65
-                  member:
-                    inner: 66
-                    span:
-                      start: 66
-                      end: 71
-              ty: 10
+                      start: 73
+                      end: 74
+                  arguments: []
+              ty: 9
               span:
-                start: 64
-                end: 71
-        ty: 10
+                start: 73
+                end: 80
+        ty: 9
         span:
-          start: 62
-          end: 73
+          start: 67
+          end: 82
 globals: []
-memories: []
+memories:
+  - id: 28
+    file_id: 1
+    name:
+      inner: 65
+      span:
+        start: 7
+        end: 11
+    kind: Memory32
+    min_pages: ~
+    max_pages: ~
 namespaces: []
 module_decls: []
 import_decls: []
 enums: []
 exports:
-  67:
+  66:
     Function:
       internal_name:
-        inner: 67
+        inner: 66
         span:
-          start: 83
-          end: 86
+          start: 93
+          end: 100
       external_name: ~
       id: 29
-structs:
-  - id: 28
-    file_id: 1
-    namespace: ~
-    pub_span: ~
-    name:
-      inner: 65
-      span:
-        start: 7
-        end: 14
-    type_params:
-      - name: 13
-        name_span:
-          start: 15
-          end: 16
-        bounds: []
-        accesses: []
-    fields:
-      - name:
-          inner: 66
-          span:
-            start: 20
-            end: 25
-        ty:
-          inner: 41
-          span:
-            start: 27
-            end: 28
-    lookup:
-      66: 0
-    accesses:
-      - file_id: 1
-        span:
-          start: 41
-          end: 53
+structs: []
 impl_members:
   9: {}
   11: {}
@@ -3484,20 +3469,36 @@ impl_members:
       Method: 17
     64:
       Method: 18
-    76:
+    74:
       AssociatedConst:
         id: 30
         ty: 9
-    77:
+    75:
       AssociatedConst:
         id: 31
         ty: 9
-  42:
-    76:
+  41:
+    10:
+      AssociatedType:
+        ty: 9
+    20:
+      AssociatedConst:
+        id: 9
+        ty: 9
+    21:
+      AssociatedConst:
+        id: 10
+        ty: 42
+    24:
+      Method: 1
+    26:
+      Method: 2
+  43:
+    74:
       AssociatedConst:
         id: 32
         ty: 9
-    77:
+    75:
       AssociatedConst:
         id: 33
         ty: 9
@@ -3650,7 +3651,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 76
+      inner: 74
       span:
         start: 0
         end: 0
@@ -3666,7 +3667,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 77
+      inner: 75
       span:
         start: 0
         end: 0
@@ -3682,7 +3683,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 76
+      inner: 74
       span:
         start: 0
         end: 0
@@ -3698,7 +3699,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 77
+      inner: 75
       span:
         start: 0
         end: 0

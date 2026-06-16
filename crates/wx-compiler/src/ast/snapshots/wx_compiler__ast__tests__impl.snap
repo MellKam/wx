@@ -8,6 +8,7 @@ items:
   - inner:
       inner:
         Impl:
+          type_params: []
           target:
             inner:
               Path:

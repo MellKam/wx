@@ -46,3 +46,21 @@ fn test(cond: bool) {
   local unused_value = if cond { 1 } else { 2 };
   return 42;
 }
+
+impl<M: Memory, T> M::[]T {
+  #[inline]
+  pub fn len(self) -> M::Size {
+    @slice_len(self)
+  }
+}
+
+impl<M: Memory, T, const N: M::Size> M::[N]T {
+  #[inline]
+  pub fn len(self) -> M::Size { N }
+
+  const LEN: M::Size = N;
+}
+
+impl<T> T {
+  fn identity(t: T) -> T { t }
+}

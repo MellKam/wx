@@ -255,6 +255,13 @@ enum AstNodeRef<'ast> {
         impl_target: &'ast ast::Spanned<ast::TypeExpression>,
         item: &'ast ast::ImplItem,
     },
+    GenericImplMethod {
+        impl_type_params: &'ast [ast::TypeParam],
+        impl_target: &'ast ast::Spanned<ast::TypeExpression>,
+        item: &'ast ast::ImplItem,
+        /// Index into `tir.generic_impl_list` for this impl block.
+        block_index: usize,
+    },
     /// `trait` function with or without a default body.
     TraitFunction {
         trait_index: u32,
@@ -1072,6 +1079,8 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
         import_decls: Vec::new(),
         enums: Vec::new(),
         impl_members: HashMap::new(),
+        generic_impl_list: Vec::new(),
+        generic_impl_dispatch: HashMap::new(),
         structs: Vec::new(),
         memories: Vec::new(),
         traits: Vec::new(),
@@ -1801,6 +1810,9 @@ impl<'ast> Builder<'ast, '_> {
                 })
             }
             ast::TypeExpression::Tuple { elements } => {
+                if elements.is_empty() {
+                    return TypeIndex::UNIT;
+                }
                 let elems: Box<[TypeIndex]> = elements
                     .iter()
                     .map(|e| self.resolve_type(resolve_context, e))
@@ -2322,37 +2334,73 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 self.tir.traits[trait_index as usize].member_def_ids = ids;
             }
-            ast::Item::Impl { target, items } => {
-                for impl_item in items.iter() {
-                    match &impl_item.inner.inner {
-                        ast::ImplItem::Method { id, .. } => {
-                            self.ast_nodes.push(AstEntry {
-                                def_id: *id,
-                                file_id,
-                                namespace,
-                                node: AstNodeRef::ImplMethod {
-                                    impl_target: target,
-                                    item: &impl_item.inner.inner,
-                                },
-                            });
+            ast::Item::Impl {
+                type_params,
+                target,
+                items,
+            } => {
+                if type_params.is_empty() {
+                    // Concrete impl — existing path.
+                    for impl_item in items.iter() {
+                        match &impl_item.inner.inner {
+                            ast::ImplItem::Method { id, .. } => {
+                                self.ast_nodes.push(AstEntry {
+                                    def_id: *id,
+                                    file_id,
+                                    namespace,
+                                    node: AstNodeRef::ImplMethod {
+                                        impl_target: target,
+                                        item: &impl_item.inner.inner,
+                                    },
+                                });
+                            }
+                            ast::ImplItem::Const { id, .. } => {
+                                self.ast_nodes.push(AstEntry {
+                                    def_id: *id,
+                                    file_id,
+                                    namespace,
+                                    node: AstNodeRef::ImplConst {
+                                        impl_target: target,
+                                        item: &impl_item.inner.inner,
+                                    },
+                                });
+                            }
+                            ast::ImplItem::AssociatedType { name, .. } => {
+                                self.tir
+                                    .diagnostics
+                                    .push(report_associated_type_in_inherent_impl(
+                                        SourceSpan::new(file_id, name.span),
+                                    ));
+                            }
                         }
-                        ast::ImplItem::Const { id, .. } => {
-                            self.ast_nodes.push(AstEntry {
-                                def_id: *id,
-                                file_id,
-                                namespace,
-                                node: AstNodeRef::ImplConst {
-                                    impl_target: target,
-                                    item: &impl_item.inner.inner,
-                                },
-                            });
-                        }
-                        ast::ImplItem::AssociatedType { name, .. } => {
-                            self.tir
-                                .diagnostics
-                                .push(report_associated_type_in_inherent_impl(SourceSpan::new(
-                                    file_id, name.span,
-                                )));
+                    }
+                } else {
+                    // Generic impl — allocate a placeholder block, then register each method.
+                    let block_index = self.tir.generic_impl_list.len();
+                    self.tir.generic_impl_list.push(GenericImplBlock {
+                        type_params: Box::new([]),
+                        target: TypeIndex::ERROR,
+                        members: HashMap::new(),
+                    });
+                    for impl_item in items.iter() {
+                        match &impl_item.inner.inner {
+                            ast::ImplItem::Method { id, .. } => {
+                                self.ast_nodes.push(AstEntry {
+                                    def_id: *id,
+                                    file_id,
+                                    namespace,
+                                    node: AstNodeRef::GenericImplMethod {
+                                        impl_type_params: type_params,
+                                        impl_target: target,
+                                        item: &impl_item.inner.inner,
+                                        block_index,
+                                    },
+                                });
+                            }
+                            ast::ImplItem::Const { .. } | ast::ImplItem::AssociatedType { .. } => {
+                                // TODO: support consts / associated types in
+                                // generic impls
+                            }
                         }
                     }
                 }
@@ -2964,6 +3012,132 @@ impl<'ast> Builder<'ast, '_> {
                             ImplEntry::AssociatedFn(func_index)
                         },
                     );
+                }
+            }
+
+            // ── generic impl method ───────────────────────────────────────────
+            AstNodeRef::GenericImplMethod {
+                impl_type_params,
+                impl_target,
+                item,
+                block_index,
+            } => {
+                let ast::ImplItem::Method {
+                    id,
+                    pub_span,
+                    attributes,
+                    signature,
+                    ..
+                } = item
+                else {
+                    return;
+                };
+
+                // Each method in the impl block owns its own copy of the type
+                // params because TypeParam { owner: Function(id) } is keyed by
+                // the function's DefId.  The resolved names/bounds are the same
+                // for every method; only the owner differs.
+                let resolved_type_params =
+                    self.resolve_ast_type_params(&resolve_context, impl_type_params);
+                let type_param_scope = TypeParamScope {
+                    owner: TypeParamOwner::Function(*id),
+                    params: resolved_type_params.clone(),
+                };
+                let resolve_context = resolve_context.with_type_param_scope(type_param_scope);
+
+                let self_type = self.resolve_type(&resolve_context, impl_target);
+
+                // Reject `impl<T> T { ... }` — the outer type constructor must
+                // be concrete even if its inner types reference type params.
+                if matches!(
+                    self.tir.type_pool[self_type.as_usize()],
+                    Type::TypeParam { .. }
+                ) {
+                    self.tir.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::TypeMistmatch.code())
+                            .with_message("no nominal type found for inherent implementation")
+                            .with_label(Label::primary(resolve_context.file_id, impl_target.span))
+                            .with_note(
+                                "either implement a trait on it or create a newtype to wrap it instead",
+                            ),
+                    );
+                    return;
+                }
+
+                let resolve_context = resolve_context.with_self_type(Some(self_type));
+                let self_symbol = self.interner.get_or_intern("self");
+
+                let params: Box<_> = signature
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let is_self = p.inner.inner.name.inner == self_symbol;
+                        FunctionParam {
+                            mut_span: p.inner.inner.mut_span,
+                            name: p.inner.inner.name.clone(),
+                            ty: match &p.inner.inner.ty {
+                                Some(te) => Spanned {
+                                    inner: self.resolve_type(&resolve_context, te),
+                                    span: te.span,
+                                },
+                                None => Spanned {
+                                    inner: if is_self { self_type } else { TypeIndex::ERROR },
+                                    span: p.inner.inner.name.span,
+                                },
+                            },
+                        }
+                    })
+                    .collect();
+                let result = signature.result.as_ref().map(|r| Spanned {
+                    inner: self.resolve_type(&resolve_context, r),
+                    span: r.span,
+                });
+                let signature_index = self.intern_function(&params, result.clone());
+                let func_attrs = self.resolve_attributes(attributes);
+                self.register_lang_items(*id, &func_attrs);
+                let func_index = self.tir.functions.len() as u32;
+                let is_method = signature
+                    .params
+                    .first()
+                    .map(|p| p.inner.inner.name.inner == self_symbol)
+                    .unwrap_or(false);
+                self.tir.functions.push(Function {
+                    id: *id,
+                    file_id: resolve_context.file_id,
+                    namespace: resolve_context.namespace,
+                    body: None,
+                    type_params: resolved_type_params.clone(),
+                    pub_span: *pub_span,
+                    kind: FunctionKind::Impl,
+                    signature_index,
+                    name: signature.name.clone(),
+                    accesses: Vec::new(),
+                    params,
+                    result,
+                    attributes: func_attrs,
+                });
+                self.tir.function_index_lookup.insert(*id, func_index);
+
+                let entry = if is_method {
+                    ImplEntry::Method(func_index)
+                } else {
+                    ImplEntry::AssociatedFn(func_index)
+                };
+                let block = &mut self.tir.generic_impl_list[block_index];
+                if block.target == TypeIndex::ERROR {
+                    block.target = self_type;
+                    block.type_params = resolved_type_params;
+                }
+                block.members.insert(signature.name.inner, entry);
+
+                // Populate the O(1) dispatch index.
+                if let Some(kind) =
+                    GenericImplTargetKind::from_type(&self.tir.type_pool[self_type.as_usize()])
+                {
+                    self.tir
+                        .generic_impl_dispatch
+                        .insert((kind, signature.name.inner), block_index);
                 }
             }
 
@@ -3954,23 +4128,23 @@ impl<'ast> Builder<'ast, '_> {
                 }
                 _ => return,
             },
-            AstNodeRef::ImplMethod { item, .. } | AstNodeRef::ImplTraitMethod { item, .. } => {
-                match item {
-                    ast::ImplItem::Method {
-                        id,
-                        signature,
-                        block,
-                        ..
-                    } => {
-                        let fi = match self.tir.function_index_lookup.get(id) {
-                            Some(&fi) => fi,
-                            None => return,
-                        };
-                        (signature, block.as_ref(), fi)
-                    }
-                    _ => return,
+            AstNodeRef::ImplMethod { item, .. }
+            | AstNodeRef::ImplTraitMethod { item, .. }
+            | AstNodeRef::GenericImplMethod { item, .. } => match item {
+                ast::ImplItem::Method {
+                    id,
+                    signature,
+                    block,
+                    ..
+                } => {
+                    let fi = match self.tir.function_index_lookup.get(id) {
+                        Some(&fi) => fi,
+                        None => return,
+                    };
+                    (signature, block.as_ref(), fi)
                 }
-            }
+                _ => return,
+            },
             AstNodeRef::TraitFunction { item, .. } => match item {
                 ast::TraitItem::Function {
                     id,
@@ -5618,6 +5792,9 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::Index { object, index } => {
                 self.build_index_expression(func_ctx, expr.span, object, index)
             }
+            ast::Expression::SliceRange { object, start, end } => {
+                self.build_slice_range_expression(func_ctx, expr.span, object, start, end)
+            }
         }
     }
 
@@ -5720,6 +5897,29 @@ impl<'ast> Builder<'ast, '_> {
         })
     }
 
+    /// O(1) lookup in the `generic_impl_dispatch` index, then type-arg
+    /// extraction via the existing `infer_type_args_from_types`.  Returns the
+    /// block index and the concrete substitution for each type param.
+    fn find_generic_impl(
+        &mut self,
+        receiver_ty: TypeIndex,
+        member_name: SymbolU32,
+    ) -> Option<(usize, Vec<TypeIndex>)> {
+        let outer_kind =
+            GenericImplTargetKind::from_type(&self.tir.type_pool[receiver_ty.as_usize()])?;
+        let &block_idx = self
+            .tir
+            .generic_impl_dispatch
+            .get(&(outer_kind, member_name))?;
+        let (block_target, type_params_len) = {
+            let block = &self.tir.generic_impl_list[block_idx];
+            (block.target, block.type_params.len())
+        };
+        let mut type_args = vec![TypeIndex::ERROR; type_params_len];
+        self.infer_type_args_from_types(block_target, receiver_ty, &mut type_args);
+        Some((block_idx, type_args))
+    }
+
     fn build_object_access_expression(
         &mut self,
         func_ctx: &mut FunctionContext,
@@ -5809,6 +6009,34 @@ impl<'ast> Builder<'ast, '_> {
                         member: member.clone(),
                     },
                     ty: field_ty,
+                    span: expr_span,
+                });
+            }
+        }
+
+        // Fallback: check generic impl blocks.
+        if let Some((block_idx, _)) = self.find_generic_impl(object.ty, member.inner) {
+            if let Some(ImplEntry::Method(func_index)) = self.tir.generic_impl_list[block_idx]
+                .members
+                .get(&member.inner)
+                .cloned()
+            {
+                let caller_id = self.tir.functions[func_ctx.func_index as usize].id;
+                self.tir.functions[func_index as usize]
+                    .accesses
+                    .push(FunctionAccess {
+                        caller: Some(caller_id),
+                        kind: FunctionAccessKind::Reference,
+                        file_id: func_ctx.resolve_context.file_id,
+                        span: member.span,
+                    });
+                let ty = self.tir.functions[func_index as usize].signature_index;
+                return Ok(Expression {
+                    kind: ExprKind::ObjectAccess {
+                        object: Box::new(object),
+                        member: member.clone(),
+                    },
+                    ty,
                     span: expr_span,
                 });
             }
@@ -8920,9 +9148,57 @@ impl<'ast> Builder<'ast, '_> {
                             span: expr.span,
                         })
                     }
-                    _ => todo!(
-                        "report error for calling unknown member or associated function as method"
-                    ),
+                    _ => {
+                        if let Some((block_idx, type_args)) =
+                            self.find_generic_impl(object.ty, member.inner)
+                        {
+                            if let Some(ImplEntry::Method(func_index)) = self.tir.generic_impl_list
+                                [block_idx]
+                                .members
+                                .get(&member.inner)
+                                .cloned()
+                            {
+                                if let Some(access) =
+                                    self.tir.functions[func_index as usize].accesses.last_mut()
+                                {
+                                    access.kind = FunctionAccessKind::DirectCall;
+                                }
+                                let id = self.tir.functions[func_index as usize].id;
+                                let params = &signature.params()[1..];
+                                if arguments.len() != params.len() {
+                                    self.tir.diagnostics.push(report_argument_count_mismatch(
+                                        TypeFormatter::new(&self.tir, &self.interner),
+                                        ArgumentCountMismatchDiagnostic {
+                                            actual_count: arguments.len(),
+                                            params,
+                                            call_span: SourceSpan::new(
+                                                ctx.resolve_context.file_id,
+                                                callee.span,
+                                            ),
+                                            is_method: true,
+                                        },
+                                    ));
+                                }
+                                let arguments =
+                                    self.build_call_arguments(ctx, arguments, params, &type_args)?;
+                                let return_ty =
+                                    self.substitute_type(signature.result(), &type_args);
+                                return Ok(Expression {
+                                    kind: ExprKind::GenericMethodCall {
+                                        id,
+                                        type_args: type_args.into_boxed_slice(),
+                                        object,
+                                        arguments,
+                                    },
+                                    ty: return_ty,
+                                    span: expr.span,
+                                });
+                            }
+                        }
+                        todo!(
+                            "report error for calling unknown member or associated function as method"
+                        )
+                    }
                 }
             }
             _ => {
@@ -9695,6 +9971,16 @@ impl<'ast> Builder<'ast, '_> {
         ast_elements: &[ast::Spanned<ast::Expression>],
         access_ctx: AccessContext,
     ) -> Result<Expression, ()> {
+        if ast_elements.is_empty() {
+            return Ok(Expression {
+                kind: ExprKind::TupleInit {
+                    elements: Box::new([]),
+                },
+                ty: TypeIndex::UNIT,
+                span,
+            });
+        }
+
         // If the expected type is a tuple, use its element types as hints.
         let expected_elems: Option<Box<[TypeIndex]>> = access_ctx.expected_type.and_then(|ty| {
             if let Type::Tuple { elements } = &self.tir.type_pool[ty.as_usize()] {
@@ -10173,6 +10459,85 @@ impl<'ast> Builder<'ast, '_> {
                 memory,
             },
             ty: elem_type,
+            span,
+        })
+    }
+
+    fn build_slice_range_expression(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        span: ast::TextSpan,
+        object_expr: &ast::Spanned<ast::Expression>,
+        start_expr: &Option<Box<ast::Spanned<ast::Expression>>>,
+        end_expr: &Option<Box<ast::Spanned<ast::Expression>>>,
+    ) -> Result<Expression, ()> {
+        let object = self.build_expression(
+            func_ctx,
+            AccessContext { expected_type: None, access_kind: AccessKind::Read },
+            object_expr,
+        )?;
+
+        let (elem_type, memory, mutable) = match self.tir.type_pool[object.ty.as_usize()].clone() {
+            Type::Array { of, memory, mutable, .. } => (of, memory, mutable),
+            Type::Slice { of, memory, mutable } => (of, memory, mutable),
+            _ => {
+                self.tir.diagnostics.push(report_index_on_non_indexable(
+                    SourceSpan::new(func_ctx.resolve_context.file_id, object.span),
+                    TypeFormatter::new(&self.tir, &self.interner)
+                        .display_type(object.ty)
+                        .unwrap(),
+                ));
+                return Err(());
+            }
+        };
+
+        let index_type = self.pointer_type_for_memory(memory);
+
+        let mut build_bound = |builder: &mut Self,
+                               ast_expr: &ast::Spanned<ast::Expression>|
+         -> Result<Expression, ()> {
+            let mut bound = builder.build_expression(
+                func_ctx,
+                AccessContext { expected_type: Some(index_type), access_kind: AccessKind::Read },
+                ast_expr,
+            )?;
+            if bound.ty.is_comptime_number() {
+                builder.coerce_untyped_expr(
+                    func_ctx.resolve_context.file_id,
+                    &mut bound,
+                    index_type,
+                )?;
+            } else if bound.ty != index_type {
+                builder.tir.diagnostics.push(report_type_mistmatch(
+                    TypeFormatter::new(&builder.tir, &builder.interner),
+                    TypeMistmatchDiagnostic {
+                        expected_type: index_type,
+                        actual_type: bound.ty,
+                        span: SourceSpan::new(func_ctx.resolve_context.file_id, ast_expr.span),
+                    },
+                ));
+                return Err(());
+            }
+            Ok(bound)
+        };
+
+        let start = start_expr
+            .as_ref()
+            .map(|e| build_bound(self, e).map(Box::new))
+            .transpose()?;
+        let end = end_expr
+            .as_ref()
+            .map(|e| build_bound(self, e).map(Box::new))
+            .transpose()?;
+
+        let result_ty = self.intern_type(Type::Slice { of: elem_type, mutable, memory });
+        Ok(Expression {
+            kind: ExprKind::SliceRange {
+                object: Box::new(object),
+                start,
+                end,
+            },
+            ty: result_ty,
             span,
         })
     }

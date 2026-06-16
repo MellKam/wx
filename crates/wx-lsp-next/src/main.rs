@@ -1070,7 +1070,7 @@ fn symbol_hover_text(
             s.push_str(" -> ");
             match &func.result {
                 Some(result) => s.push_str(&fmt.display_type(result.inner).unwrap()),
-                None => s.push_str("unit"),
+                None => s.push_str("()"),
             }
             Some(s)
         }

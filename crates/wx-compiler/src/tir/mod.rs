@@ -246,7 +246,6 @@ impl TryFrom<&str> for Type {
             "i8" => Ok(Type::I8),
             "u16" => Ok(Type::U16),
             "i16" => Ok(Type::I16),
-            "unit" => Ok(Type::Unit),
             "never" => Ok(Type::Never),
             _ => Err(()),
         }
@@ -457,6 +456,14 @@ pub enum ExprKind {
         object: Box<Expression>,
         index: Box<Expression>,
         memory: TypeIndex,
+    },
+    /// `object[start..end]` — exclusive slice range.
+    /// `None` means the bound was omitted: `start = None` is `0`, `end = None`
+    /// is the object's length.  MIR fills these in during lowering.
+    SliceRange {
+        object: Box<Expression>,
+        start: Option<Box<Expression>>,
+        end: Option<Box<Expression>>,
     },
 }
 
@@ -774,6 +781,41 @@ pub enum ImplEntry {
     AssociatedType {
         ty: TypeIndex,
     },
+}
+
+/// One `impl<Params> Target { ... }` block, kept for generic method dispatch.
+/// `target` contains `TypeParam` refs; impl params are folded into each member
+/// function's own `type_params` as well.
+pub struct GenericImplBlock {
+    pub type_params: Box<[TypeParamInfo]>,
+    pub target: TypeIndex,
+    pub members: HashMap<SymbolU32, ImplEntry>,
+}
+
+/// Outer type constructor for generic impl target types.
+/// Used as part of the dispatch key so method lookup is O(1) rather than a
+/// linear scan over all generic impl blocks.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+pub enum GenericImplTargetKind {
+    Slice,
+    Pointer,
+    Array,
+    Struct(u32),
+}
+
+impl GenericImplTargetKind {
+    /// Extracts the outer type constructor from `ty`, returning `None` for bare
+    /// type params (rejected at registration) or other non-dispatchable types.
+    pub fn from_type(ty: &Type) -> Option<Self> {
+        match ty {
+            Type::Slice { .. } => Some(Self::Slice),
+            Type::Pointer { .. } => Some(Self::Pointer),
+            Type::Array { .. } => Some(Self::Array),
+            Type::Struct { struct_index, .. } => Some(Self::Struct(*struct_index)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -1244,6 +1286,12 @@ pub struct TIR {
         serde(serialize_with = "crate::testing::serialize_sorted_nested_map")
     )]
     pub impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
+    #[cfg_attr(test, serde(skip))]
+    pub generic_impl_list: Vec<GenericImplBlock>,
+    /// Dispatch index: `(outer type constructor, member name) → block index`.
+    /// Populated during `ensure_signature`; enables O(1) generic method lookup.
+    #[cfg_attr(test, serde(skip))]
+    pub generic_impl_dispatch: HashMap<(GenericImplTargetKind, SymbolU32), usize>,
     pub traits: Vec<Trait>,
     pub trait_impls: Vec<TraitImpl>,
     #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]

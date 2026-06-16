@@ -3,6 +3,7 @@ pub const PAGE_SIZE: u32 = 65536;
 
 pub fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
 pub fn @memory_size<M: Memory>(mem: M) -> M::Size;
+pub fn @slice_len<M: Memory, T>(slice: M::[]T) -> M::Size;
 
 #[lang = "pointer_size"]
 trait PointerSize {}
@@ -24,6 +25,13 @@ pub trait Memory {
   #[inline]
   fn size(self) -> Self::Size {
     @memory_size(self)
+  }
+}
+
+impl<M: Memory, T> M::[]T {
+  #[inline]
+  pub fn len(self) -> M::Size {
+    @slice_len(self)
   }
 }
 

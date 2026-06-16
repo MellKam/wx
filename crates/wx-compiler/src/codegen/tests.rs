@@ -594,10 +594,10 @@ fn test_imports() {
         memory heap: Memory<Size = u32>;
 
         import \"console\" {
-            fn log(value: []u8) -> unit;
+            fn log(value: []u8) -> ();
         }
 
-        fn main() -> unit {
+        fn main() {
             local y = \"Hello World!\";
             local x = \"Hello World!\";
             console::log(x);
@@ -1879,6 +1879,79 @@ fn test_array_index_wat() {
         }
 
         export { get }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_slice_range_wat() {
+    // WAT snapshot for all four exclusive-range forms on a slice operand.
+    // Slices lower to two WASM values: (ptr: i32, len: i32).
+    //
+    // s[..]      — structural copy: same ptr + same len, no arithmetic.
+    //              Potential optimization: could be a noop if result is used
+    //              in place (identical bit pattern); currently emits two
+    //              local.get instructions.
+    //
+    // s[..to]    — ptr unchanged, len = to (no subtraction needed).
+    //
+    // s[from..]  — ptr offset by from*sizeof(i32), len = slice_len − from.
+    //              `from` is spilled to a temp so it can be used for both
+    //              the add and the subtract.
+    //
+    // s[from..to] — ptr offset by from*sizeof(i32), len = to − from.
+    //
+    // Edge cases NOT yet handled:
+    //   • bounds checking (out-of-range access is UB at runtime)
+    //   • from > to produces a nonsensical negative length
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> {
+            min: 1,
+        };
+
+        fn full_copy(s: heap::[]i32) -> heap::[]i32 {
+            s[..]
+        }
+
+        fn to_limit(s: heap::[]i32, to: u32) -> heap::[]i32 {
+            s[..to]
+        }
+
+        fn from_start(s: heap::[]i32, from: u32) -> heap::[]i32 {
+            s[from..]
+        }
+
+        fn bounded(s: heap::[]i32, from: u32, to: u32) -> heap::[]i32 {
+            s[from..to]
+        }
+
+        export { full_copy, to_limit, from_start, bounded }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_slice_range_array_wat() {
+    // WAT snapshot for slicing an array (static size known at compile time).
+    // Unlike the slice case, `end` defaults to the compile-time array length
+    // when omitted, so no AggregateGet for len is emitted.
+    //
+    // arr[..]    — ptr = array base, len = const 4 (array size)
+    // arr[i..n]  — ptr = base + i*4, len = n − i
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> {
+            min: 1,
+        };
+
+        fn full_array(arr: heap::[4]i32) -> heap::[]i32 {
+            arr[..]
+        }
+
+        fn partial_array(arr: heap::[4]i32, i: u32, n: u32) -> heap::[]i32 {
+            arr[i..n]
+        }
+
+        export { full_array, partial_array }
     "});
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }

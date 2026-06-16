@@ -12,6 +12,10 @@ module x {
 
 memory heap: Memory<Size = u32>;
 
+fn testa() {
+  local m: heap::[]i32 = [1, 2, 3][..];
+}
+
 fn main() -> Point {
   local y = test::add(2, 3);
   

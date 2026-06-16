@@ -1716,6 +1716,48 @@ impl<'tir> Builder<'tir> {
                             ty: self.lower_type_index(expr.ty),
                         }
                     }
+                    "@slice_len" => {
+                        let result_ty = self.lower_type_index(expr.ty);
+                        let slice_arg = &arguments[0];
+                        match &slice_arg.kind {
+                            tir::ExprKind::Local {
+                                scope_index,
+                                local_index,
+                            } => Expression {
+                                kind: ExprKind::AggregateGet {
+                                    scope_index: *scope_index,
+                                    local_index: *local_index,
+                                    value_index: 1,
+                                },
+                                ty: result_ty,
+                            },
+                            _ => {
+                                let slice_ty = self.lower_type_index(slice_arg.ty);
+                                let lowered = self.lower_expression(func_ctx, slice_arg, sink);
+                                let temp_idx = func_ctx.frame[0].locals.len() as u32;
+                                func_ctx.frame[0].locals.push(Local {
+                                    ty: slice_ty,
+                                    mutability: Mutability::Immutable,
+                                });
+                                sink.push(Expression {
+                                    kind: ExprKind::LocalSet {
+                                        scope_index: 0,
+                                        local_index: temp_idx,
+                                        value: Box::new(lowered),
+                                    },
+                                    ty: Type::Unit,
+                                });
+                                Expression {
+                                    kind: ExprKind::AggregateGet {
+                                        scope_index: 0,
+                                        local_index: temp_idx,
+                                        value_index: 1,
+                                    },
+                                    ty: result_ty,
+                                }
+                            }
+                        }
+                    }
                     name => todo!("MIR lowering for intrinsic '{name}'"),
                 }
             }
@@ -2014,6 +2056,242 @@ impl<'tir> Builder<'tir> {
                         memory: self.resolve_memory_id(*memory),
                     },
                     ty: self.lower_type_index(expr.ty),
+                }
+            }
+            tir::ExprKind::SliceRange { object, start, end } => {
+                let (elem_tir_ty, mem_tir_ty, static_size) =
+                    match self.tir.type_pool[object.ty.as_usize()].clone() {
+                        tir::Type::Array { of, memory, size, .. } => (of, memory, Some(size)),
+                        tir::Type::Slice { of, memory, .. } => (of, memory, None),
+                        _ => unreachable!(),
+                    };
+
+                let elem_size = self.compute_layout(elem_tir_ty).size;
+                let memory_id = self.resolve_memory_id(mem_tir_ty);
+                let ptr_ty = Type::Pointer { memory: memory_id };
+                let tir_mem_idx = self.tir.memory_index_lookup[&memory_id] as usize;
+                let idx_ty = match self.tir.memories[tir_mem_idx].kind {
+                    tir::MemoryKind::Memory32 => Type::U32,
+                    tir::MemoryKind::Memory64 => Type::U64,
+                };
+
+                let lowered_obj = self.lower_expression(func_ctx, object, sink);
+
+                // For slices: extract base pointer and length from the aggregate.
+                // Spill to a temp when the object isn't already a local.
+                let (base_ptr, opt_slice_len) = match static_size {
+                    Some(_) => (lowered_obj, None),
+                    None => {
+                        let (si, li) = match &object.kind {
+                            tir::ExprKind::Local { scope_index, local_index } => {
+                                (*scope_index, *local_index)
+                            }
+                            _ => {
+                                let obj_ty = self.lower_type_index(object.ty);
+                                let temp = func_ctx.frame[0].locals.len() as u32;
+                                func_ctx.frame[0].locals.push(Local {
+                                    ty: obj_ty,
+                                    mutability: Mutability::Immutable,
+                                });
+                                sink.push(Expression {
+                                    kind: ExprKind::LocalSet {
+                                        scope_index: 0,
+                                        local_index: temp,
+                                        value: Box::new(lowered_obj),
+                                    },
+                                    ty: Type::Unit,
+                                });
+                                (0, temp)
+                            }
+                        };
+                        let ptr = Expression {
+                            kind: ExprKind::AggregateGet {
+                                scope_index: si,
+                                local_index: li,
+                                value_index: 0,
+                            },
+                            ty: ptr_ty,
+                        };
+                        let len = Expression {
+                            kind: ExprKind::AggregateGet {
+                                scope_index: si,
+                                local_index: li,
+                                value_index: 1,
+                            },
+                            ty: idx_ty,
+                        };
+                        (ptr, Some(len))
+                    }
+                };
+
+                // If start is Some, spill it to a temp so it can be used
+                // for both the pointer offset and the length subtraction.
+                let start_local: Option<u32> = if start.is_some() {
+                    let s_lowered =
+                        self.lower_expression(func_ctx, start.as_ref().unwrap(), sink);
+                    let temp = func_ctx.frame[0].locals.len() as u32;
+                    func_ctx.frame[0].locals.push(Local {
+                        ty: idx_ty,
+                        mutability: Mutability::Immutable,
+                    });
+                    sink.push(Expression {
+                        kind: ExprKind::LocalSet {
+                            scope_index: 0,
+                            local_index: temp,
+                            value: Box::new(s_lowered),
+                        },
+                        ty: Type::Unit,
+                    });
+                    Some(temp)
+                } else {
+                    None
+                };
+
+                // Compute the offset pointer: base + start * elem_size
+                let offset_ptr = match start_local {
+                    None => base_ptr,
+                    Some(li) => {
+                        let start_val = Expression {
+                            kind: ExprKind::LocalGet { scope_index: 0, local_index: li },
+                            ty: idx_ty,
+                        };
+                        let byte_offset = if elem_size == 1 {
+                            start_val
+                        } else {
+                            Expression {
+                                kind: ExprKind::Mul {
+                                    left: Box::new(start_val),
+                                    right: Box::new(Expression {
+                                        kind: ExprKind::Int { value: elem_size as i64 },
+                                        ty: idx_ty,
+                                    }),
+                                },
+                                ty: idx_ty,
+                            }
+                        };
+                        Expression {
+                            kind: ExprKind::Add {
+                                left: Box::new(base_ptr),
+                                right: Box::new(byte_offset),
+                            },
+                            ty: ptr_ty,
+                        }
+                    }
+                };
+
+                // Compute end: use provided expr, or array size, or slice len.
+                // When both explicit bounds are given, spill `end` to a local and
+                // emit a trap guard for the `from > to` case.
+                // TODO: once proper panic infrastructure exists, replace the
+                // `unreachable` trap with a formatted panic message and also add
+                // the `to <= slice_len` check that is currently skipped.
+                let end_val = match end {
+                    Some(e) => {
+                        let e_lowered = self.lower_expression(func_ctx, e, sink);
+                        if let Some(s_li) = start_local {
+                            // Spill `to` so it can be read by both the bounds
+                            // check and the length subtraction below.
+                            let e_temp = func_ctx.frame[0].locals.len() as u32;
+                            func_ctx.frame[0].locals.push(Local {
+                                ty: idx_ty,
+                                mutability: Mutability::Immutable,
+                            });
+                            sink.push(Expression {
+                                kind: ExprKind::LocalSet {
+                                    scope_index: 0,
+                                    local_index: e_temp,
+                                    value: Box::new(e_lowered),
+                                },
+                                ty: Type::Unit,
+                            });
+
+                            // Allocate a synthetic block scope for the trap branch.
+                            let trap_scope = func_ctx.frame.len() as u32;
+                            func_ctx.frame.push(BlockScope {
+                                kind: tir::BlockKind::Block,
+                                parent: Some(func_ctx.current_scope_index as u32),
+                                locals: vec![],
+                                result: Type::Never,
+                            });
+
+                            // if from > to { unreachable }
+                            sink.push(Expression {
+                                kind: ExprKind::IfElse {
+                                    condition: Box::new(Expression {
+                                        kind: ExprKind::Greater {
+                                            left: Box::new(Expression {
+                                                kind: ExprKind::LocalGet {
+                                                    scope_index: 0,
+                                                    local_index: s_li,
+                                                },
+                                                ty: idx_ty,
+                                            }),
+                                            right: Box::new(Expression {
+                                                kind: ExprKind::LocalGet {
+                                                    scope_index: 0,
+                                                    local_index: e_temp,
+                                                },
+                                                ty: idx_ty,
+                                            }),
+                                        },
+                                        ty: Type::Bool,
+                                    }),
+                                    then_block: Box::new(Expression {
+                                        kind: ExprKind::Block {
+                                            scope_index: trap_scope,
+                                            expressions: Box::new([Expression {
+                                                kind: ExprKind::Unreachable,
+                                                ty: Type::Never,
+                                            }]),
+                                        },
+                                        ty: Type::Never,
+                                    }),
+                                    else_block: None,
+                                },
+                                ty: Type::Unit,
+                            });
+
+                            Expression {
+                                kind: ExprKind::LocalGet {
+                                    scope_index: 0,
+                                    local_index: e_temp,
+                                },
+                                ty: idx_ty,
+                            }
+                        } else {
+                            e_lowered
+                        }
+                    }
+                    None => match static_size {
+                        Some(sz) => Expression {
+                            kind: ExprKind::Int { value: sz as i64 },
+                            ty: idx_ty,
+                        },
+                        None => opt_slice_len.unwrap(),
+                    },
+                };
+
+                // new_len = end - start (start is 0 when absent, skip sub)
+                let new_len = match start_local {
+                    None => end_val,
+                    Some(li) => Expression {
+                        kind: ExprKind::Sub {
+                            left: Box::new(end_val),
+                            right: Box::new(Expression {
+                                kind: ExprKind::LocalGet { scope_index: 0, local_index: li },
+                                ty: idx_ty,
+                            }),
+                        },
+                        ty: idx_ty,
+                    },
+                };
+
+                let result_ty = self.lower_type_index(expr.ty);
+                Expression {
+                    kind: ExprKind::Aggregate {
+                        values: Box::new([offset_ptr, new_len]),
+                    },
+                    ty: result_ty,
                 }
             }
         }

@@ -54,6 +54,7 @@ pub enum Token {
     SemiColon,
     Comma,
     Dot,
+    DotDot,
     // Grouping
     OpenParen,
     CloseParen,
@@ -111,6 +112,7 @@ impl std::fmt::Display for Token {
             SemiColon => ";",
             Comma => ",",
             Dot => ".",
+            DotDot => "..",
             OpenParen => "(",
             CloseParen => ")",
             OpenBrace => "{",
@@ -449,7 +451,7 @@ impl<'a> Lexer<'a> {
             '#' => Token::Hash,
             '[' => Token::OpenBracket,
             ']' => Token::CloseBracket,
-            '.' => Token::Dot,
+            '.' => self.consume_and_check('.', Token::DotDot, Token::Dot),
             ':' => self.consume_and_check(':', Token::ColonColon, Token::Colon),
             '/' => self.consume_slash(),
 
@@ -615,6 +617,11 @@ impl<'a> Lexer<'a> {
                     _ = self.chars.next();
                 }
                 '.' if !seen_dot => {
+                    // Don't consume if this is `..` (range operator).
+                    let mut after = lookahead.clone();
+                    if after.next() == Some('.') {
+                        break;
+                    }
                     seen_dot = true;
                     _ = self.chars.next();
                 }
@@ -915,7 +922,7 @@ pub enum Expression {
     Float {
         value: f64,
     },
-    /// `({expr})`
+    /// `({expr})` — transparent grouping, same type as inner
     Grouping {
         value: Box<Spanned<Expression>>,
     },
@@ -1029,6 +1036,16 @@ pub enum Expression {
     Index {
         object: Box<Spanned<Expression>>,
         index: Box<Spanned<Expression>>,
+    },
+    /// `expr[start..end]` — exclusive slice range; either bound may be absent.
+    /// `expr[..]` = `start:None, end:None`
+    /// `expr[i..]` = `start:Some(i), end:None`
+    /// `expr[..n]` = `start:None, end:Some(n)`
+    /// `expr[i..n]` = `start:Some(i), end:Some(n)`
+    SliceRange {
+        object: Box<Spanned<Expression>>,
+        start: Option<Box<Spanned<Expression>>>,
+        end: Option<Box<Spanned<Expression>>>,
     },
 }
 
@@ -1412,6 +1429,7 @@ pub enum Item {
         variants: Box<[Separated<Spanned<EnumVariant>>]>,
     },
     Impl {
+        type_params: Box<[TypeParam]>,
         target: Box<Spanned<TypeExpression>>,
         items: Box<[Separated<Spanned<ImplItem>>]>,
     },
@@ -2595,7 +2613,7 @@ impl<'ctx> Parser<'ctx> {
             Token::Int => Some((Parser::parse_int_expression, BindingPower::Primary)),
             Token::Float => Some((Parser::parse_float_expression, BindingPower::Primary)),
             Token::OpenBrace => Some((Parser::parse_block_expression, BindingPower::Primary)),
-            Token::OpenParen => Some((Parser::parse_grouping_expression, BindingPower::Default)),
+            Token::OpenParen => Some((Parser::parse_tuple_expression, BindingPower::Default)),
             Token::Minus | Token::Bang | Token::Caret => {
                 Some((Parser::parse_unary_expression, BindingPower::Unary))
             }
@@ -3081,7 +3099,7 @@ impl<'ctx> Parser<'ctx> {
         })
     }
 
-    fn parse_grouping_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
+    fn parse_tuple_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
         let grouped = SeparatedGroup {
             open_token: Token::OpenParen,
             close_token: Token::CloseParen,
@@ -3440,13 +3458,40 @@ impl<'ctx> Parser<'ctx> {
         _: BindingPower,
     ) -> Result<Spanned<Expression>, ()> {
         _ = parser.lexer.next(); // consume `[`
-        let index = parser.parse_expression(BindingPower::Default)?;
+
+        // Detect slice-range form: `[..]`, `[i..]`, `[..n]`, `[i..n]`
+        let start = if parser.lexer.peek().inner == Token::DotDot {
+            None
+        } else {
+            Some(Box::new(parser.parse_expression(BindingPower::Default)?))
+        };
+
+        if parser.lexer.next_if(Token::DotDot).is_some() {
+            let end = if parser.lexer.peek().inner == Token::CloseBracket {
+                None
+            } else {
+                Some(Box::new(parser.parse_expression(BindingPower::Default)?))
+            };
+            let close_span = parser.next_expect(Token::CloseBracket)?.span;
+            let span = TextSpan::new(object.span.start, close_span.end);
+            return Ok(Spanned {
+                inner: Expression::SliceRange {
+                    object: Box::new(object),
+                    start,
+                    end,
+                },
+                span,
+            });
+        }
+
+        // Plain index: `[expr]`
+        let index = start.expect("no DotDot consumed so start must be Some");
         let close_span = parser.next_expect(Token::CloseBracket)?.span;
         let span = TextSpan::new(object.span.start, close_span.end);
         Ok(Spanned {
             inner: Expression::Index {
                 object: Box::new(object),
-                index: Box::new(index),
+                index,
             },
             span,
         })
@@ -3949,6 +3994,13 @@ impl<'ctx> Parser<'ctx> {
 
     fn parse_impl_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let impl_span = parser.lexer.next().span;
+
+        let type_params = if parser.lexer.peek().inner == Token::LeftArrow {
+            parser.parse_type_params()?
+        } else {
+            Box::new([])
+        };
+
         let first_ty = Box::new(parser.parse_type_expression()?);
 
         let peeked = parser.lexer.peek();
@@ -3985,6 +4037,7 @@ impl<'ctx> Parser<'ctx> {
             }),
             None => Ok(Spanned {
                 inner: Item::Impl {
+                    type_params,
                     items: items.inner,
                     target: first_ty,
                 },

@@ -234,10 +234,10 @@ fn test_parse_simple_addition() {
 fn test_parse_import_with_alias() {
     let case = TestCase::new(indoc! {"
         import \"console\" as console {
-            fn log(ptr: u32, len: u32) -> unit;
+            fn log(ptr: u32, len: u32) -> ();
         }
 
-        fn main() -> unit {
+        fn main() {
             console::log(0, 0);
         }
 
@@ -4158,4 +4158,83 @@ fn test_lang_items_registered() {
     let fn_def_id = *case.tir.lang_items.get(&fn_key).expect("fn lang item not registered");
     assert!(case.tir.lang_items.contains_key(&trait_key), "trait lang item not registered");
     assert!(case.tir.function_index_lookup.contains_key(&fn_def_id));
+}
+
+#[test]
+fn test_generic_impl_block_registers_and_dispatches() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        fn get_len(s: heap::[]u8) -> u32 {
+            s.len()
+        }
+
+        export { get_len }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics
+    );
+    // std.wx contributes one generic impl block (impl<M: Memory, T> M::[]T)
+    assert_eq!(case.tir.generic_impl_list.len(), 1, "one generic impl block from std.wx");
+    insta::assert_yaml_snapshot!(case.tir);
+}
+
+#[test]
+fn test_generic_impl_bare_type_param_is_error() {
+    let case = TestCase::new(indoc! {"
+        impl<T> T {
+            pub fn nope(self) {}
+        }
+    "});
+    assert_eq!(case.tir.diagnostics.len(), 1, "should emit exactly one error");
+}
+
+#[test]
+fn test_slice_range_full_is_ok() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+        fn f(s: heap::[]u8) -> heap::[]u8 {
+            s[..]
+        }
+        export { f }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+}
+
+#[test]
+fn test_slice_range_with_bounds_is_ok() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+        fn f(s: heap::[]u8, i: u32, n: u32) -> heap::[]u8 {
+            s[i..n]
+        }
+        export { f }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+}
+
+#[test]
+fn test_slice_range_on_array_is_ok() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+        fn f(arr: heap::[4]u8) -> heap::[]u8 {
+            arr[1..3]
+        }
+        export { f }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+}
+
+#[test]
+fn test_slice_range_on_non_indexable_is_error() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+        fn f(x: i32) -> heap::[]i32 {
+            x[..]
+        }
+        export { f }
+    "});
+    assert_eq!(case.tir.diagnostics.len(), 1);
 }

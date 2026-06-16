@@ -8,32 +8,24 @@ functions:
     scopes:
       - kind: Block
         parent: ~
-        locals: []
-        result:
-          Aggregate:
-            aggregate_index: 0
+        locals:
+          - ty:
+              Aggregate:
+                aggregate_index: 0
+            mutability: Immutable
+        result: U32
     block:
       kind:
         Block:
           scope_index: 0
           expressions:
             - kind:
-                Aggregate:
-                  values:
-                    - kind:
-                        Int:
-                          value: 0
-                      ty: U32
-                    - kind:
-                        Int:
-                          value: 0
-                      ty: U32
-              ty:
-                Aggregate:
-                  aggregate_index: 0
-      ty:
-        Aggregate:
-          aggregate_index: 0
+                AggregateGet:
+                  scope_index: 0
+                  local_index: 0
+                  value_index: 1
+              ty: U32
+      ty: U32
     static_data: []
 signatures:
   - items:
@@ -47,17 +39,24 @@ signatures:
   - items:
       - Aggregate:
           aggregate_index: 0
-    params_count: 0
+      - U32
+    params_count: 1
 globals: []
 exports:
   - Function:
       id: 29
-      name: 68
+      name: 66
 imports: []
-memories: []
+memories:
+  - id: 28
+    source: Internal
+    kind: Memory32
+    min_pages: ~
+    max_pages: ~
 aggregates:
   - values:
-      - U32
+      - Pointer:
+          memory: 28
       - U32
     offsets:
       - 0

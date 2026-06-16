@@ -2,6 +2,7 @@
 
 ## 2026-06-16
 
+- [2026-06-16-slice-range-and-generic-impl.md](2026-06-16-slice-range-and-generic-impl.md) — Generic `impl<M, T> M::[]T` blocks, exclusive slice range `arr[i..n]`, lexer float/`..` bug fix, `from > to` trap
 - [2026-06-16-type-formatter-and-unit-cleanup.md](2026-06-16-type-formatter-and-unit-cleanup.md) — `TypeFormatter` context-aware generic display, intrinsic LSP fix, plan for `unit` → `()` unification and `Grouping` removal
 - [2026-06-16-abstract-memory-trait.md](2026-06-16-abstract-memory-trait.md) — Removed Memory32/Memory64 sugar traits, `impl Trait` syntax removal, `TypeParamOwner::Trait` for trait const Self, generic array indexing fix via `AssocTypeProjection`
 - [2026-06-16-lang-items-and-codegen-fixes.md](2026-06-16-lang-items-and-codegen-fixes.md) — Lang items map (`#[lang = "key"]`), MIR Slice lowering, codegen test suite fixes, `DefId` architecture discussion
