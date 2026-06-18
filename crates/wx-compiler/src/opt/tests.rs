@@ -1595,6 +1595,76 @@ fn test_sched_call_result_spilled() {
     );
 }
 
+// ── Narrow load/store instruction selection ───────────────────────────────────
+
+/// Sub-word loads must emit the appropriate narrow opcode, not a full-width
+/// `i32.load`. This is the per-instruction regression for the bug where
+/// `ScalarType` erased the width distinction before the scheduler ran.
+#[test]
+fn test_sched_narrow_loads_emit_correct_opcodes() {
+    let cases: &[(&str, &str, fn(&Instruction) -> bool)] = &[
+        ("*u8",  "u8",  |i| matches!(i, Instruction::I32Load8U(_))),
+        ("*i8",  "i8",  |i| matches!(i, Instruction::I32Load8S(_))),
+        ("*u16", "u16", |i| matches!(i, Instruction::I32Load16U(_))),
+        ("*i16", "i16", |i| matches!(i, Instruction::I32Load16S(_))),
+    ];
+
+    for (ptr_ty, ret_ty, is_expected) in cases {
+        let src = format!(
+            "{STD}
+memory heap: Memory<Size = u32>;
+fn read(ptr: heap::{ptr_ty}) -> {ret_ty} {{ ptr.* }}
+export {{ read, heap }}"
+        );
+        let case = TestCase::new(&src);
+        let body = case.schedule();
+
+        assert!(
+            body.iter().any(|i| is_expected(i)),
+            "expected narrow load opcode for {ptr_ty}; got {:#?}",
+            body
+        );
+        assert!(
+            !body.iter().any(|i| matches!(i, Instruction::I32Load(_))),
+            "must not emit full-width I32Load for {ptr_ty}; got {:#?}",
+            body
+        );
+    }
+}
+
+/// Sub-word stores must emit `i32.store8` or `i32.store16`, not `i32.store`.
+/// Sign is irrelevant for stores — they always truncate to the target width —
+/// so only one variant per byte-width needs covering.
+#[test]
+fn test_sched_narrow_stores_emit_correct_opcodes() {
+    let cases: &[(&str, &str, fn(&Instruction) -> bool)] = &[
+        ("*mut u8",  "u8",  |i| matches!(i, Instruction::I32Store8(_))),
+        ("*mut u16", "u16", |i| matches!(i, Instruction::I32Store16(_))),
+    ];
+
+    for (ptr_ty, val_ty, is_expected) in cases {
+        let src = format!(
+            "{STD}
+memory heap: Memory<Size = u32>;
+fn write(ptr: heap::{ptr_ty}, val: {val_ty}) {{ ptr.* = val }}
+export {{ write, heap }}"
+        );
+        let case = TestCase::new(&src);
+        let body = case.schedule();
+
+        assert!(
+            body.iter().any(|i| is_expected(i)),
+            "expected narrow store opcode for {ptr_ty}; got {:#?}",
+            body
+        );
+        assert!(
+            !body.iter().any(|i| matches!(i, Instruction::I32Store(_))),
+            "must not emit full-width I32Store for {ptr_ty}; got {:#?}",
+            body
+        );
+    }
+}
+
 /// Snapshot the full instruction sequence for a two-argument direct call.
 /// Pins the spill-then-read pattern: args → Call → LocalSet → LocalGet →
 /// Return.

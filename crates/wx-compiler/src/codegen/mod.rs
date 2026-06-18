@@ -359,15 +359,18 @@ impl TryFrom<mir::Type> for ValueType {
 
     fn try_from(value: mir::Type) -> Result<Self, Self::Error> {
         match value {
-            mir::Type::Bool => Ok(ValueType::I32),
-            mir::Type::I32 => Ok(ValueType::I32),
-            mir::Type::I64 => Ok(ValueType::I64),
+            mir::Type::Bool
+            | mir::Type::I8
+            | mir::Type::U8
+            | mir::Type::I16
+            | mir::Type::U16
+            | mir::Type::I32
+            | mir::Type::U32
+            | mir::Type::Pointer { .. }
+            | mir::Type::Function { .. } => Ok(ValueType::I32),
+            mir::Type::I64 | mir::Type::U64 => Ok(ValueType::I64),
             mir::Type::F32 => Ok(ValueType::F32),
             mir::Type::F64 => Ok(ValueType::F64),
-            mir::Type::U32 => Ok(ValueType::I32),
-            mir::Type::U64 => Ok(ValueType::I64),
-            mir::Type::Pointer { .. } => Ok(ValueType::I32),
-            mir::Type::Function { .. } => Ok(ValueType::I32),
             _ => unreachable!(),
         }
     }
@@ -856,6 +859,34 @@ impl Builder {
             // Pointer load/store.
             // Memory 0 uses the standard single-memory encoding.
             // Memory N>0 requires the multi-memory extension (memory index prefix).
+            SI::I32Load8S(m) => encode_load(
+                Instruction::I32Load8S,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::I32Load8U(m) => encode_load(
+                Instruction::I32Load8U,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::I32Load16S(m) => encode_load(
+                Instruction::I32Load16S,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::I32Load16U(m) => encode_load(
+                Instruction::I32Load16U,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
             SI::I32Load(m) => encode_load(
                 Instruction::I32Load,
                 m.align,
@@ -879,6 +910,20 @@ impl Builder {
             ),
             SI::F64Load(m) => encode_load(
                 Instruction::F64Load,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::I32Store8(m) => encode_store(
+                Instruction::I32Store8,
+                m.align,
+                m.offset,
+                self.memory_wasm_index[&m.memory],
+                sink,
+            ),
+            SI::I32Store16(m) => encode_store(
+                Instruction::I32Store16,
                 m.align,
                 m.offset,
                 self.memory_wasm_index[&m.memory],

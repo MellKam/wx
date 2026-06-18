@@ -1,7 +1,7 @@
 use crate::mir::{self, ExprKind};
 use crate::opt::{
-    Block, BlockIndex, ControlNode, DataNodeIndex, DataNodeKind, Function, NodeType, ScalarType,
-    StackResult,
+    Block, BlockIndex, ControlNode, DataNodeIndex, DataNodeKind, Function, MemAccess, NodeType,
+    ScalarType, StackResult,
 };
 
 pub struct Builder<'mir> {
@@ -526,47 +526,43 @@ impl<'mir> Builder<'mir> {
                 let address = self.build_expr(block_idx, bindings, pointer).unwrap_value();
                 match expr.ty {
                     mir::Type::Aggregate { aggregate_index } => {
-                        let agg = &self.mir.aggregates[aggregate_index as usize];
-                        let field_tys: Vec<(ScalarType, u32)> = agg
-                            .values
-                            .iter()
-                            .zip(agg.offsets.iter())
-                            .map(|(&ft, &off)| {
-                                (ScalarType::try_from(ft).expect("aggregate field must be scalar"), off)
-                            })
-                            .collect();
-                        let fields: Box<[DataNodeIndex]> = field_tys
-                            .iter()
-                            .map(|&(ty, field_offset)| {
-                                let result = self.func.ensure_node(DataNodeKind::PointerLoadResult {
+                        let n = self.mir.aggregates[aggregate_index as usize].values.len();
+                        let mut fields = Vec::with_capacity(n);
+                        for i in 0..n {
+                            let field_offset =
+                                self.mir.aggregates[aggregate_index as usize].offsets[i];
+                            let field_mir_ty =
+                                self.mir.aggregates[aggregate_index as usize].values[i];
+                            let access = MemAccess::from_mir(field_mir_ty);
+                            let result = self.func.ensure_node(DataNodeKind::PointerLoadResult {
+                                address,
+                                access,
+                            });
+                            self.push_stmt(
+                                block_idx,
+                                ControlNode::PointerLoad {
                                     address,
-                                    ty,
-                                });
-                                self.push_stmt(
-                                    block_idx,
-                                    ControlNode::PointerLoad {
-                                        address,
-                                        offset: base_offset + field_offset,
-                                        result,
-                                        memory: *memory,
-                                    },
-                                );
-                                result
-                            })
-                            .collect();
+                                    offset: base_offset + field_offset,
+                                    result,
+                                    memory: *memory,
+                                    access,
+                                },
+                            );
+                            fields.push(result);
+                        }
                         StackResult::Value(self.func.ensure_node(DataNodeKind::Aggregate {
-                            fields,
+                            fields: fields.into_boxed_slice(),
                             aggregate_index,
                         }))
                     }
                     _ => {
-                        let ty = ScalarType::try_from(expr.ty).expect("pointer load must be scalar");
+                        let access = MemAccess::from_mir(expr.ty);
                         let result = self
                             .func
-                            .ensure_node(DataNodeKind::PointerLoadResult { address, ty });
+                            .ensure_node(DataNodeKind::PointerLoadResult { address, access });
                         self.push_stmt(
                             block_idx,
-                            ControlNode::PointerLoad { address, offset: *base_offset, result, memory: *memory },
+                            ControlNode::PointerLoad { address, offset: *base_offset, result, memory: *memory, access },
                         );
                         StackResult::Value(result)
                     }
@@ -579,26 +575,30 @@ impl<'mir> Builder<'mir> {
                     mir::Type::Aggregate { .. } => {
                         let value_node = self.build_expr(block_idx, bindings, value).unwrap_value();
                         let (fields, aggregate_index) = self.extract_aggregate_fields(value_node);
-                        let offsets: Vec<u32> = self.mir.aggregates[aggregate_index as usize]
-                            .offsets
-                            .to_vec();
-                        for (&field_node, &field_offset) in fields.iter().zip(offsets.iter()) {
+                        for i in 0..fields.len() {
+                            let field_offset =
+                                self.mir.aggregates[aggregate_index as usize].offsets[i];
+                            let field_mir_ty =
+                                self.mir.aggregates[aggregate_index as usize].values[i];
+                            let access = MemAccess::from_mir(field_mir_ty);
                             self.push_stmt(
                                 block_idx,
                                 ControlNode::PointerStore {
                                     address,
                                     offset: base_offset + field_offset,
-                                    value: field_node,
+                                    value: fields[i],
                                     memory: *memory,
+                                    access,
                                 },
                             );
                         }
                     }
                     _ => {
                         let value_node = self.build_expr(block_idx, bindings, value).unwrap_value();
+                        let access = MemAccess::from_mir(value.ty);
                         self.push_stmt(
                             block_idx,
-                            ControlNode::PointerStore { address, offset: *base_offset, value: value_node, memory: *memory },
+                            ControlNode::PointerStore { address, offset: *base_offset, value: value_node, memory: *memory, access },
                         );
                     }
                 }

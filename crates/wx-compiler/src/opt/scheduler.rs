@@ -31,8 +31,8 @@ use crate::codegen::ValueType;
 use crate::mir;
 use crate::opt::liveness::DataLiveness;
 use crate::opt::{
-    BlockIndex, ControlNode, DataNode, DataNodeIndex, DataNodeKind, Function, ScalarType,
-    StackResult,
+    BlockIndex, ControlNode, DataNode, DataNodeIndex, DataNodeKind, Function, MemAccess,
+    ScalarType, StackResult,
 };
 
 // ── Output types
@@ -187,10 +187,16 @@ pub enum Instruction {
         memory: crate::ast::DefId,
     },
     // Pointer load/store
+    I32Load8S(MemArg),
+    I32Load8U(MemArg),
+    I32Load16S(MemArg),
+    I32Load16U(MemArg),
     I32Load(MemArg),
     I64Load(MemArg),
     F32Load(MemArg),
     F64Load(MemArg),
+    I32Store8(MemArg),
+    I32Store16(MemArg),
     I32Store(MemArg),
     I64Store(MemArg),
     F32Store(MemArg),
@@ -219,14 +225,6 @@ pub enum BlockType {
     Value(ValueType),
 }
 
-/// Returns the natural alignment of a scalar type as a log2 exponent,
-/// matching the WASM memarg encoding (0=1B, 1=2B, 2=4B, 3=8B).
-fn natural_align(ty: ScalarType) -> u32 {
-    match ty {
-        ScalarType::I32 | ScalarType::F32 => 2, // 4 bytes
-        ScalarType::I64 | ScalarType::F64 => 3, // 8 bytes
-    }
-}
 
 // ── Scheduler
 // ─────────────────────────────────────────────────────────────────
@@ -538,38 +536,27 @@ impl<'f> Scheduler<'f> {
                 offset,
                 result,
                 memory,
+                access,
             } => {
                 if !self.live_data.is_live(*result) {
                     return;
                 }
                 self.emit_value(*address);
-                let ty = self.func.data_nodes[*result as usize].kind.scalar_type();
-                let align = natural_align(ty);
-                let load_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Load(MemArg {
-                        align,
-                        offset: *offset,
-                        memory: *memory,
-                    }),
-                    ScalarType::I64 => Instruction::I64Load(MemArg {
-                        align,
-                        offset: *offset,
-                        memory: *memory,
-                    }),
-                    ScalarType::F32 => Instruction::F32Load(MemArg {
-                        align,
-                        offset: *offset,
-                        memory: *memory,
-                    }),
-                    ScalarType::F64 => Instruction::F64Load(MemArg {
-                        align,
-                        offset: *offset,
-                        memory: *memory,
-                    }),
+                let m = MemArg { align: access.align_log2(), offset: *offset, memory: *memory };
+                let load_instr = match access {
+                    MemAccess::I8S  => Instruction::I32Load8S(m),
+                    MemAccess::I8U  => Instruction::I32Load8U(m),
+                    MemAccess::I16S => Instruction::I32Load16S(m),
+                    MemAccess::I16U => Instruction::I32Load16U(m),
+                    MemAccess::I32  => Instruction::I32Load(m),
+                    MemAccess::I64  => Instruction::I64Load(m),
+                    MemAccess::F32  => Instruction::F32Load(m),
+                    MemAccess::F64  => Instruction::F64Load(m),
                 };
                 self.body.push(load_instr);
                 // PointerLoadResult always spills (no_cse + always_spill).
-                let local = self.alloc_local(ty);
+                let scalar_ty = access.scalar_type();
+                let local = self.alloc_local(scalar_ty);
                 self.node_to_local.insert(*result, local);
                 self.body.push(Instruction::LocalSet(local));
             }
@@ -579,32 +566,18 @@ impl<'f> Scheduler<'f> {
                 offset,
                 value,
                 memory,
+                access,
             } => {
                 self.emit_value(*address);
                 self.emit_value(*value);
-                let ty = self.func.data_nodes[*value as usize].kind.scalar_type();
-                let align = natural_align(ty);
-                let store_instr = match ty {
-                    ScalarType::I32 => Instruction::I32Store(MemArg {
-                        align,
-                        offset: *offset,
-                        memory: *memory,
-                    }),
-                    ScalarType::I64 => Instruction::I64Store(MemArg {
-                        align,
-                        offset: *offset,
-                        memory: *memory,
-                    }),
-                    ScalarType::F32 => Instruction::F32Store(MemArg {
-                        align,
-                        offset: *offset,
-                        memory: *memory,
-                    }),
-                    ScalarType::F64 => Instruction::F64Store(MemArg {
-                        align,
-                        offset: *offset,
-                        memory: *memory,
-                    }),
+                let m = MemArg { align: access.align_log2(), offset: *offset, memory: *memory };
+                let store_instr = match access {
+                    MemAccess::I8S | MemAccess::I8U   => Instruction::I32Store8(m),
+                    MemAccess::I16S | MemAccess::I16U => Instruction::I32Store16(m),
+                    MemAccess::I32  => Instruction::I32Store(m),
+                    MemAccess::I64  => Instruction::I64Store(m),
+                    MemAccess::F32  => Instruction::F32Store(m),
+                    MemAccess::F64  => Instruction::F64Store(m),
                 };
                 self.body.push(store_instr);
             }

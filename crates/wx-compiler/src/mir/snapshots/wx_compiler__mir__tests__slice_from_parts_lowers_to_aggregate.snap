@@ -3,65 +3,47 @@ source: crates/wx-compiler/src/mir/tests.rs
 expression: case.mir
 ---
 functions:
-  - id: 31
+  - id: 30
     signature_index: 2
     scopes:
       - kind: Block
         parent: ~
         locals:
           - ty:
-              Aggregate:
-                aggregate_index: 0
+              Pointer:
+                memory: 29
             mutability: Immutable
-        result: U32
+          - ty: U32
+            mutability: Immutable
+        result:
+          Aggregate:
+            aggregate_index: 0
     block:
       kind:
         Block:
           scope_index: 0
           expressions:
             - kind:
-                Call:
-                  callee:
-                    kind:
-                      Function:
-                        id: 32
-                    ty:
-                      Function:
-                        signature_index: 2
-                  arguments:
+                Aggregate:
+                  values:
                     - kind:
                         LocalGet:
                           scope_index: 0
                           local_index: 0
                       ty:
-                        Aggregate:
-                          aggregate_index: 0
-              ty: U32
-      ty: U32
-    static_data: []
-  - id: 32
-    signature_index: 2
-    scopes:
-      - kind: Block
-        parent: ~
-        locals:
-          - ty:
-              Aggregate:
-                aggregate_index: 0
-            mutability: Immutable
-        result: U32
-    block:
-      kind:
-        Block:
-          scope_index: 0
-          expressions:
-            - kind:
-                AggregateGet:
-                  scope_index: 0
-                  local_index: 0
-                  value_index: 1
-              ty: U32
-      ty: U32
+                        Pointer:
+                          memory: 29
+                    - kind:
+                        LocalGet:
+                          scope_index: 0
+                          local_index: 1
+                      ty: U32
+              ty:
+                Aggregate:
+                  aggregate_index: 0
+      ty:
+        Aggregate:
+          aggregate_index: 0
     static_data: []
 signatures:
   - items:
@@ -73,14 +55,16 @@ signatures:
       - U32
     params_count: 1
   - items:
+      - Pointer:
+          memory: 29
+      - U32
       - Aggregate:
           aggregate_index: 0
-      - U32
-    params_count: 1
+    params_count: 2
 globals: []
 exports:
   - Function:
-      id: 31
+      id: 30
       name: 68
 imports: []
 memories:

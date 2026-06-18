@@ -1758,6 +1758,17 @@ impl<'tir> Builder<'tir> {
                             }
                         }
                     }
+                    "@slice_from_parts" => {
+                        let data = self.lower_expression(func_ctx, &arguments[0], sink);
+                        let len = self.lower_expression(func_ctx, &arguments[1], sink);
+                        let result_ty = self.lower_type_index(expr.ty);
+                        Expression {
+                            kind: ExprKind::Aggregate {
+                                values: Box::new([data, len]),
+                            },
+                            ty: result_ty,
+                        }
+                    }
                     name => todo!("MIR lowering for intrinsic '{name}'"),
                 }
             }

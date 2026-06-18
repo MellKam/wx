@@ -1,5 +1,9 @@
 # Session Index
 
+## 2026-06-18
+
+- [2026-06-18-narrow-loads-slice-intrinsics-purity-design.md](2026-06-18-narrow-loads-slice-intrinsics-purity-design.md) — Narrow load/store bug fix (`MemAccess` enum), `@slice_from_parts` intrinsic, purity inference pass design (SCC-based, integrated into inlining pass)
+
 ## 2026-06-16
 
 - [2026-06-16-slice-range-and-generic-impl.md](2026-06-16-slice-range-and-generic-impl.md) — Generic `impl<M, T> M::[]T` blocks, exclusive slice range `arr[i..n]`, lexer float/`..` bug fix, `from > to` trap

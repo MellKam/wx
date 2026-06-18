@@ -274,6 +274,23 @@ fn test_slice_len_lowers_to_aggregate_get() {
     insta::assert_yaml_snapshot!(case.mir);
 }
 
+// ── slice_from_parts intrinsic ────────────────────────────────────────────────
+
+#[test]
+fn test_slice_from_parts_lowers_to_aggregate() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        pub fn f(ptr: heap::*u8, len: u32) -> heap::[]u8 {
+            @slice_from_parts(ptr, len)
+        }
+
+        export { f }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.mir);
+}
+
 // ── generic over Memory ───────────────────────────────────────────────────────
 
 #[test]

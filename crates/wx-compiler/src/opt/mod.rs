@@ -39,6 +39,60 @@ pub enum ScalarType {
     F64,
 }
 
+/// The width and sign of a pointer load or store, determining which WASM
+/// memory instruction and `memarg` alignment to emit.
+///
+/// Sign only matters for narrow (sub-word) loads: WASM has `i32.load8_s` vs
+/// `i32.load8_u` to choose between sign-extension and zero-extension when
+/// widening to 32 bits. Full-width loads (`i32.load`, `i64.load`) read all
+/// bits verbatim, and stores never sign-extend at any width.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(test, derive(Debug, serde::Serialize))]
+pub enum MemAccess {
+    I8S,
+    I8U,
+    I16S,
+    I16U,
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
+impl MemAccess {
+    pub fn from_mir(ty: mir::Type) -> Self {
+        match ty {
+            mir::Type::I8 => Self::I8S,
+            mir::Type::U8 => Self::I8U,
+            mir::Type::I16 => Self::I16S,
+            mir::Type::U16 => Self::I16U,
+            mir::Type::I64 | mir::Type::U64 => Self::I64,
+            mir::Type::F32 => Self::F32,
+            mir::Type::F64 => Self::F64,
+            _ => Self::I32,
+        }
+    }
+
+    pub fn scalar_type(self) -> ScalarType {
+        match self {
+            Self::I8S | Self::I8U | Self::I16S | Self::I16U | Self::I32 => ScalarType::I32,
+            Self::I64 => ScalarType::I64,
+            Self::F32 => ScalarType::F32,
+            Self::F64 => ScalarType::F64,
+        }
+    }
+
+    /// Log2 of the natural alignment in bytes (WASM memarg encoding).
+    pub fn align_log2(self) -> u32 {
+        match self {
+            Self::I8S | Self::I8U => 0,
+            Self::I16S | Self::I16U => 1,
+            Self::I32 | Self::F32 => 2,
+            Self::I64 | Self::F64 => 3,
+        }
+    }
+}
+
 impl TryFrom<mir::Type> for ScalarType {
     type Error = ();
     fn try_from(ty: mir::Type) -> Result<Self, ()> {
@@ -329,7 +383,7 @@ pub enum DataNodeKind {
     /// Value produced by a `ControlNode::PointerLoad`. Always spilled.
     PointerLoadResult {
         address: DataNodeIndex,
-        ty: ScalarType,
+        access: MemAccess,
     },
 }
 
@@ -376,7 +430,7 @@ impl DataNodeKind {
             | DataNodeKind::MemorySizeResult { .. }
             | DataNodeKind::MemoryGrowResult { .. } => NodeType::Scalar(ScalarType::I32),
 
-            DataNodeKind::PointerLoadResult { ty, .. } => NodeType::Scalar(*ty),
+            DataNodeKind::PointerLoadResult { access, .. } => NodeType::Scalar(access.scalar_type()),
 
             DataNodeKind::Aggregate {
                 aggregate_index, ..
@@ -481,6 +535,7 @@ pub enum ControlNode {
         /// The `PointerLoadResult` data node that carries the loaded value.
         result: DataNodeIndex,
         memory: ast::DefId,
+        access: MemAccess,
     },
     /// Store a scalar value to a raw pointer address.
     PointerStore {
@@ -489,6 +544,7 @@ pub enum ControlNode {
         offset: u32,
         value: DataNodeIndex,
         memory: ast::DefId,
+        access: MemAccess,
     },
 }
 

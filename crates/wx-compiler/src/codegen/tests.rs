@@ -1955,3 +1955,50 @@ fn test_slice_range_array_wat() {
     "});
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
+
+#[test]
+fn test_narrow_pointer_deref_sign_extension_and_byte_isolation() {
+    // Exercises the narrow load/store fix end-to-end:
+    //
+    // 1. Zero-extension: reading 0xFF through *u8 must yield 255, not -1.
+    // 2. Sign-extension: reading 0xFF through *i8 must yield -1.
+    // 3. Byte isolation: writing through *mut u8 must not touch adjacent bytes.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> {
+            min: 1,
+        };
+
+        fn read_u8(ptr: heap::*u8) -> u8 { ptr.* }
+        fn read_i8(ptr: heap::*i8) -> i8 { ptr.* }
+        fn write_u8(ptr: heap::*mut u8, val: u8) { ptr.* = val }
+
+        export { heap, read_u8, read_i8, write_u8 }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let mem = instance.get_memory(&mut store, "heap").expect("heap not exported");
+    let read_u8 = instance.get_typed_func::<i32, i32>(&mut store, "read_u8").expect("read_u8");
+    let read_i8 = instance.get_typed_func::<i32, i32>(&mut store, "read_i8").expect("read_i8");
+    let write_u8 = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_u8").expect("write_u8");
+
+    // Place 0xFF at address 0, 0x00 at address 1 via the host.
+    mem.write(&mut store, 0, &[0xFF, 0x00]).unwrap();
+
+    // Zero-extension: u8 load of 0xFF must be 255, not -1.
+    assert_eq!(read_u8.call(&mut store, 0).unwrap(), 255);
+
+    // Sign-extension: i8 load of 0xFF must be -1.
+    assert_eq!(read_i8.call(&mut store, 0).unwrap(), -1);
+
+    // Byte isolation: writing 0xAB at address 0 must not touch address 1.
+    mem.write(&mut store, 1, &[0x42]).unwrap();
+    write_u8.call(&mut store, (0, 0xAB)).unwrap();
+    let mut buf = [0u8; 2];
+    mem.read(&mut store, 0, &mut buf).unwrap();
+    assert_eq!(buf[0], 0xAB, "byte at address 0 should be 0xAB");
+    assert_eq!(buf[1], 0x42, "adjacent byte at address 1 must be untouched");
+}
