@@ -1541,9 +1541,7 @@ fn test_intrinsic_fn_declaration_is_valid() {
 // Minimal standard library preamble used by memory-related tests.
 
 const STD: &str = indoc! {"
-    trait PointerSize {}
-    impl PointerSize for u32 {}
-    impl PointerSize for u64 {}
+    typeset PointerSize { u32, u64 }
 
     trait Memory {
         type Size: PointerSize;
@@ -4251,4 +4249,119 @@ fn test_global_initialized_to_data_end_tir() {
     // Only warning expected: "never used" (no functions read bump in this test).
     assert!(case.tir.diagnostics.iter().all(|d| d.severity != codespan_reporting::diagnostic::Severity::Error));
     assert_eq!(case.tir.globals.len(), 1);
+}
+
+#[test]
+fn test_typeset_definition_registers_in_tir() {
+    let case = TestCase::new(indoc! {"
+        typeset Numbers { u8, i8, u16, i16, u32, i32, u64, i64 }
+        fn identity<N: Numbers>(x: N) -> N { x }
+        fn use_it() -> i32 { identity(42 as i32) }
+        export { use_it }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+    // At least stdlib Integer + user Numbers typesets are registered
+    assert!(!case.tir.typesets.is_empty());
+    // The generic function has one type param with one typeset bound
+    let identity = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| f.type_params.iter().any(|tp| tp.typeset_bound.is_some()))
+        .expect("no function with typeset bounds found");
+    assert_eq!(identity.type_params.len(), 1);
+    assert!(identity.type_params[0].typeset_bound.is_some());
+}
+
+#[test]
+fn test_typeset_bound_violation_reports_error() {
+    let case = TestCase::new(indoc! {"
+        typeset Numbers { u8, i8, u16, i16, u32, i32, u64, i64 }
+        fn identity<N: Numbers>(x: N) -> N { x }
+        fn main() -> f32 {
+            identity(1.0 as f32)
+        }
+        export { main }
+    "});
+    assert!(case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1047")));
+}
+
+#[test]
+fn test_typeset_member_not_integer_reports_error() {
+    let case = TestCase::new(indoc! {"
+        typeset BadSet { u32, f32 }
+        export { }
+    "});
+    assert!(case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1046")));
+}
+
+#[test]
+fn test_stdlib_integer_typeset_exists() {
+    let case = TestCase::new(indoc! {"
+        fn double<N: Integer>(x: N) -> N { x }
+        fn use_it() -> i32 { double(21 as i32) }
+        export { use_it }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+}
+
+#[test]
+fn test_typeset_intersection_range_in_bounds() {
+    // Integer intersection is [0, 127]; literals within that range are accepted
+    let case = TestCase::new(indoc! {"
+        fn make<N: Integer>(x: N) -> N { x }
+        fn use_zero() -> i32 { make(0 as i32) }
+        fn use_mid() -> u8 { make(100 as u8) }
+        fn use_max() -> i8 { make(127 as i8) }
+        export { use_zero, use_mid, use_max }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+}
+
+#[test]
+fn test_typeset_intersection_range_literal_in_local() {
+    // 0 and 100 are within Integer intersection [0, 127]; locals typed as TypeParam should be fine
+    let case = TestCase::new(indoc! {"
+        fn with_bounds<N: Integer>(x: N) -> N {
+            local _lo: N = 0;
+            local _hi: N = 100;
+            x
+        }
+        fn use_it() -> i32 { with_bounds(50 as i32) }
+        export { use_it }
+    "});
+    let errors: Vec<_> = case.tir.diagnostics.iter().filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error).collect();
+    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+}
+
+#[test]
+fn test_typeset_intersection_range_out_of_bounds_reports_error() {
+    // Integer intersection max is 127; 200 is outside the safe range
+    // This fires when assigning an untyped literal to a local of TypeParam type
+    let case = TestCase::new(indoc! {"
+        fn test<N: Integer>() {
+            local x: N = 200;
+        }
+        fn use_it() { test() }
+        export { use_it }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1047")),
+        "expected E1047, got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_generic_slice_first_with_pointer_size_index() {
+    // `self[0]` inside `impl<M: Memory, T> M::[]T` — the literal `0` must be
+    // coerced to `M::Size`, whose typeset bound is `PointerSize { u32, u64 }`.
+    // The intersection range for PointerSize is [0, u32::MAX], so `0` is valid.
+    let case = TestCase::new(indoc! {"
+        impl<M: Memory, T> M::[]T {
+            pub fn first(self) -> T { self[0] }
+        }
+        export { }
+    "});
+    assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
 }

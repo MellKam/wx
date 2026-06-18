@@ -25,7 +25,7 @@
 			"patterns": [
 				{
 					"name": "keyword.control.wx",
-					"match": "\\b(fn|local|mut|if|else|loop|break|continue|return|export|import|global|enum|unreachable|as|impl|self|struct|pub|memory|const|module|trait|for|Self|type)\\b"
+					"match": "\\b(fn|local|mut|if|else|loop|break|continue|return|export|import|global|enum|unreachable|as|impl|self|struct|pub|memory|const|module|trait|for|Self|type|typeset)\\b"
 				},
 				{
 					"name": "constant.language.wx",

@@ -1,0 +1,116 @@
+// Bump allocator — the simplest possible dynamic memory allocator.
+//
+// Strategy: maintain a `bump` pointer that starts right after static data
+// (heap::DATA_END) and advances with every allocation.  There is no free —
+// only reset.  Pages are grown on demand.
+//
+// Allocation layout (example — no free, sequential):
+//
+//   ┌──────────────┬──────────┬──────────┬──────────┬────── ·· ─┐
+//   │  static data │  alloc 0 │  alloc 1 │  alloc 2 │  (free)   │
+//   └──────────────┴──────────┴──────────┴──────────┴────── ·· ─┘
+//   0          DATA_END                            bump      heap end
+
+memory heap: Memory<Size = u32> {
+    min: 1,   // start with one 64 KiB page
+};
+
+// ── allocator state ───────────────────────────────────────────────────────────
+
+global mut bump: heap::*mut u8 = heap::DATA_END;
+
+// ── core allocator ────────────────────────────────────────────────────────────
+
+pub fn alloc(size: u32) -> heap::*mut u8 {
+    local ptr: u32 = bump as u32;
+    local new_end: u32 = ptr + size;
+    local cur_end: u32 = heap.size() * PAGE_SIZE;
+    if new_end > cur_end {
+        local needed: u32 = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        local _grew: u32 = heap.grow(needed);
+    }
+    bump = new_end as heap::*mut u8;
+    ptr as heap::*mut u8
+}
+
+pub fn reset() {
+    bump = heap::DATA_END
+}
+
+pub fn bytes_used() -> u32 {
+    bump as u32
+}
+
+// ── typed allocation helpers ──────────────────────────────────────────────────
+
+pub fn alloc_i32() -> heap::*mut i32 {
+    alloc(4) as heap::*mut i32
+}
+
+pub fn alloc_u64() -> heap::*mut u64 {
+    alloc(8) as heap::*mut u64
+}
+
+// ── demo types ────────────────────────────────────────────────────────────────
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+pub fn alloc_point() -> heap::*mut Point {
+    alloc(8) as heap::*mut Point
+}
+
+// ── linked list ───────────────────────────────────────────────────────────────
+
+struct Node {
+    value: i32,
+    next: heap::*Node,   // null() when there is no next node
+}
+
+pub fn alloc_node() -> heap::*mut Node {
+    alloc(8) as heap::*mut Node
+}
+
+pub fn node_new(value: i32, next: heap::*Node) -> heap::*mut Node {
+    local n: heap::*mut Node = alloc_node();
+    n.* = Node::{ value: value, next: next };
+    n
+}
+
+pub fn node_value(n: heap::*Node) -> i32 {
+    n.*.value
+}
+
+pub fn node_next(n: heap::*Node) -> heap::*Node {
+    n.*.next
+}
+
+// ── demo entry point ──────────────────────────────────────────────────────────
+
+// Builds the list  3 → 2 → 1  and returns the sum of all node values.
+pub fn demo() -> i32 {
+    local n1: heap::*mut Node = node_new(1, null());
+    local n2: heap::*mut Node = node_new(2, n1);
+    local n3: heap::*mut Node = node_new(3, n2);
+
+    local mut sum: i32 = 0;
+    local mut cur: heap::*Node = n3;
+    loop {
+        if cur == null() { break sum };
+        local node: Node = cur.*;
+        sum += node.value;
+        cur = node.next;
+    }
+}
+
+export {
+    heap as "memory",
+    alloc,
+    reset,
+    bytes_used,
+    alloc_i32,
+    alloc_point,
+    demo,
+}

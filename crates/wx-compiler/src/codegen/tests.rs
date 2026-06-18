@@ -9,10 +9,11 @@ use super::*;
 const STD: &str = indoc! {"
     fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
     fn @memory_size<M: Memory>(mem: M) -> M::Size;
+    fn @pointer_from<M: Memory, T>(ptr: M::Size) -> M::*T;
 
-    trait PointerSize {}
-    impl PointerSize for u32 {}
-    impl PointerSize for u64 {}
+    typeset PointerSize { u32, u64 }
+
+    pub fn null<M: Memory, T>() -> M::*T { @pointer_from(0) }
 
     trait Memory {
         type Size: PointerSize;
@@ -2005,6 +2006,43 @@ fn test_narrow_pointer_deref_sign_extension_and_byte_isolation() {
 }
 
 #[test]
+fn test_global_read_before_write_returns_old_value() {
+    // alloc() must return the *pre-advance* bump pointer, not the updated one.
+    // This exercises the GlobalGet-always-spill fix: without it the return
+    // re-emits `global.get` after the `global.set`, yielding new_end instead
+    // of the original ptr.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> {
+            min: 1,
+        };
+
+        global mut bump: heap::*mut u8 = heap::DATA_END;
+
+        fn alloc(size: u32) -> heap::*mut u8 {
+            local ptr: u32 = bump as u32;
+            bump = (ptr + size) as heap::*mut u8;
+            ptr as heap::*mut u8
+        }
+
+        export { heap, alloc }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let alloc = instance.get_typed_func::<i32, i32>(&mut store, "alloc").expect("alloc");
+
+    let p0 = alloc.call(&mut store, 8).unwrap() as u32;
+    let p1 = alloc.call(&mut store, 8).unwrap() as u32;
+    let p2 = alloc.call(&mut store, 16).unwrap() as u32;
+
+    assert_eq!(p1, p0 + 8,  "second alloc must start right after first");
+    assert_eq!(p2, p0 + 16, "third alloc must start right after second");
+}
+
+#[test]
 fn test_global_initialized_to_data_end() {
     // A mutable global initialized to `heap::DATA_END` must receive the
     // compile-time static-segment-end offset as its WASM init expression,
@@ -2036,4 +2074,44 @@ fn test_global_initialized_to_data_end() {
     advance.call(&mut store, 16).unwrap();
     let after = get_bump.call(&mut store, ()).unwrap() as u32;
     assert_eq!(after, initial + 16, "advance must shift bump by exactly 16 bytes");
+}
+
+#[test]
+fn test_null_pointer_comparison() {
+    // null<M, T>() returns a zero pointer. Verify that:
+    //  1. null() compares equal to another null() (the `node.next == null()` pattern)
+    //  2. a non-zero pointer does NOT compare equal to null()
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> {
+            min: 1,
+        };
+
+        struct Node { value: i32, next: *Node }
+
+        fn make_null() -> *Node { null() }
+        fn is_null_ptr(p: *Node) -> bool { p == null() }
+        fn ptr_from_addr() -> *Node { @pointer_from(4) }
+
+        export { heap, make_null, is_null_ptr, ptr_from_addr }
+    "});
+
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics
+    );
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation");
+
+    let make_null = instance.get_typed_func::<(), i32>(&mut store, "make_null").expect("make_null");
+    let is_null_ptr = instance.get_typed_func::<i32, i32>(&mut store, "is_null_ptr").expect("is_null_ptr");
+    let ptr_from_addr = instance.get_typed_func::<(), i32>(&mut store, "ptr_from_addr").expect("ptr_from_addr");
+
+    assert_eq!(make_null.call(&mut store, ()).unwrap(), 0, "null() must be 0");
+    assert_eq!(is_null_ptr.call(&mut store, 0).unwrap(), 1, "null ptr is null");
+    assert_eq!(is_null_ptr.call(&mut store, 4).unwrap(), 0, "non-null ptr is not null");
+    assert_eq!(ptr_from_addr.call(&mut store, ()).unwrap(), 4, "@pointer_from(4) must be 4");
 }

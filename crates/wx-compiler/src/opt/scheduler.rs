@@ -975,6 +975,18 @@ impl<'f> Scheduler<'f> {
             | DataNodeKind::MemoryGrowResult { .. }
             | DataNodeKind::PointerLoadResult { .. } => true,
 
+            // GlobalGet reads mutable state. Control nodes (Return, Break,
+            // GlobalSet) use data-node values but never call register_uses, so
+            // a GlobalGet whose only non-control use is a single data node still
+            // has uses.len()==1 and would not be spilled by the catch-all below.
+            // If a GlobalSet to the same global is emitted between the read and
+            // a late emit_value_inline call, the inline re-read returns the
+            // post-write value instead of the original. Always spilling ensures
+            // the value is captured in a local on the first use (which is always
+            // scheduled before any write to the same global that depends on the
+            // read's descendants), and subsequent uses read the saved local.
+            DataNodeKind::GlobalGet { .. } => true,
+
             // Aggregates live in per-field locals, not on the stack.
             DataNodeKind::Aggregate { .. } => true,
 

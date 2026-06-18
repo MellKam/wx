@@ -188,6 +188,23 @@ impl Builder {
                 pub_span,
                 ..
             } => Self::build_struct_declaration(interner, name, fields, *pub_span),
+            Item::TypeSet { pub_span, name, members, .. } => {
+                let mut items = Vec::new();
+                if pub_span.is_some() {
+                    items.push(Node::StaticText("pub "));
+                }
+                items.push(Node::StaticText("typeset "));
+                items.push(Self::symbol(interner, name.inner));
+                items.push(Node::StaticText(" { "));
+                for (i, m) in members.iter().enumerate() {
+                    if i > 0 {
+                        items.push(Node::StaticText(", "));
+                    }
+                    items.push(Self::build_type_expression(interner, &m.inner.inner));
+                }
+                items.push(Node::StaticText(" }"));
+                Node::Group(Box::new(Node::Concat(items.into())))
+            }
         }
     }
 

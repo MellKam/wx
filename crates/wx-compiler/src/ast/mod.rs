@@ -1478,6 +1478,13 @@ pub enum Item {
         supertraits: Box<[Spanned<TypeExpression>]>,
         items: Box<[Separated<Spanned<TraitItem>>]>,
     },
+    /// `typeset Name { T1, T2, ... }` — a closed compile-time set of concrete types.
+    TypeSet {
+        id: DefId,
+        pub_span: Option<TextSpan>,
+        name: Spanned<SymbolU32>,
+        members: Box<[Separated<Spanned<TypeExpression>>]>,
+    },
     /// `fn @name<T>(params) -> Ret;` — compiler-provided intrinsic, no body.
     IntrinsicFunction {
         id: DefId,
@@ -1509,7 +1516,8 @@ impl Item {
             | Item::ImplTrait { .. }
             | Item::Struct { .. }
             | Item::Module { .. }
-            | Item::Trait { .. } => true,
+            | Item::Trait { .. }
+            | Item::TypeSet { .. } => true,
         }
     }
 }
@@ -1606,6 +1614,7 @@ pub enum Keyword {
     For,
     SelfType,
     Type,
+    Typeset,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1639,6 +1648,7 @@ impl TryFrom<&str> for Keyword {
             "for" => Ok(Keyword::For),
             "Self" => Ok(Keyword::SelfType),
             "type" => Ok(Keyword::Type),
+            "typeset" => Ok(Keyword::Typeset),
             _ => Err(()),
         }
     }
@@ -1915,6 +1925,7 @@ impl<'ctx> Parser<'ctx> {
             Some(Keyword::Module) => Ok(Parser::parse_module_item),
             Some(Keyword::Pub) => Ok(Parser::parse_pub_item),
             Some(Keyword::Trait) => Ok(Parser::parse_trait_item),
+            Some(Keyword::Typeset) => Ok(Parser::parse_typeset_item),
             _ => return Err(()),
         }
     }
@@ -4206,6 +4217,36 @@ impl<'ctx> Parser<'ctx> {
         })
     }
 
+    fn parse_typeset_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+        let typeset_span = parser.lexer.next().span; // consume `typeset`
+
+        let name_span = parser.next_expect(Token::Identifier)?.span;
+        let name = Spanned {
+            inner: parser.intern_identifier(name_span),
+            span: name_span,
+        };
+
+        let members = SeparatedGroup {
+            open_token: Token::OpenBrace,
+            close_token: Token::CloseBrace,
+            separator_token: Token::Comma,
+            item_handler: |parser: &mut Parser| parser.parse_type_expression(),
+            should_warn_missing_separator: None,
+        }
+        .parse(parser)?;
+
+        let span = TextSpan::new(typeset_span.start, members.span.end);
+        Ok(Spanned {
+            inner: Item::TypeSet {
+                id: parser.id_generator.generate(),
+                pub_span: None,
+                name,
+                members: members.inner,
+            },
+            span,
+        })
+    }
+
     fn parse_struct_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let struct_span = parser.lexer.next().span;
 
@@ -4313,6 +4354,17 @@ impl<'ctx> Parser<'ctx> {
             Some(Keyword::Trait) => {
                 let mut item = Parser::parse_trait_item(parser)?;
                 if let Item::Trait {
+                    pub_span: ref mut ps,
+                    ..
+                } = item.inner
+                {
+                    *ps = Some(pub_span);
+                }
+                Ok(item)
+            }
+            Some(Keyword::Typeset) => {
+                let mut item = Parser::parse_typeset_item(parser)?;
+                if let Item::TypeSet {
                     pub_span: ref mut ps,
                     ..
                 } = item.inner

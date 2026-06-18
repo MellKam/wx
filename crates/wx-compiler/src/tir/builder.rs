@@ -316,6 +316,10 @@ enum AstNodeRef<'ast> {
         trait_index: TraitIndex,
         item: &'ast ast::Item,
     },
+    TypeSet {
+        typeset_index: TypesetIndex,
+        item: &'ast ast::Item,
+    },
     ImportedFunction {
         import_module_index: u32,
         decl: &'ast ast::ImportDeclaration,
@@ -516,6 +520,24 @@ fn report_unable_to_coerce(
             fmt.display_type(target_type).unwrap()
         ))
         .with_label(span.primary_label())
+}
+
+fn report_integer_literal_out_of_typeset_range(
+    value: i64,
+    typeset_name: &str,
+    range: &IntegerRange,
+    span: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::TypesetBoundViolation.code())
+        .with_message(format!(
+            "integer literal `{value}` is out of the safe range for typeset `{typeset_name}`"
+        ))
+        .with_label(span.primary_label().with_message(format!(
+            "safe range for `{typeset_name}` is `{}..={}`",
+            range.min_i64(),
+            range.max_u64(),
+        )))
 }
 
 fn report_integer_literal_for_float_type(span: SourceSpan) -> Diagnostic<FileId> {
@@ -858,6 +880,23 @@ fn report_cyclic_type_dependency(span: SourceSpan) -> Diagnostic<FileId> {
         .with_note("types cannot have infinite size; consider using a pointer to break the cycle")
 }
 
+fn report_recursive_type(
+    name: &str,
+    struct_span: SourceSpan,
+    field_span: SourceSpan,
+) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::CyclicTypeDependency.code())
+        .with_message(format!("recursive type `{name}` has infinite size"))
+        .with_label(struct_span.primary_label())
+        .with_label(
+            field_span
+                .secondary_label()
+                .with_message("recursive without indirection"),
+        )
+        .with_note("insert some indirection (e.g. a pointer) to break the cycle")
+}
+
 struct ArgumentCountMismatchDiagnostic<'a> {
     actual_count: usize,
     params: &'a [TypeIndex],
@@ -1094,6 +1133,8 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
         constants: Vec::new(),
         const_index_lookup: HashMap::new(),
         lang_items: HashMap::new(),
+        typesets: Vec::new(),
+        typeset_index_lookup: HashMap::new(),
     };
     let type_index_lookup = HashMap::from_iter(
         tir.type_pool
@@ -1223,6 +1264,18 @@ impl<'ast> Builder<'ast, '_> {
     pub fn coercible_to(&mut self, a: TypeIndex, b: TypeIndex) -> bool {
         if a == b || a == TypeIndex::NEVER || a == TypeIndex::ERROR || b == TypeIndex::ERROR {
             return true;
+        }
+        // *mut T coerces implicitly to *T when memory and pointee match.
+        if let (
+            &Type::Pointer { to: a_to, mutable: true, memory: a_mem },
+            &Type::Pointer { to: b_to, mutable: false, memory: b_mem },
+        ) = (
+            &self.tir.type_pool[a.as_usize()],
+            &self.tir.type_pool[b.as_usize()],
+        ) {
+            if a_to == b_to && a_mem == b_mem {
+                return true;
+            }
         }
         // FunctionItem coerces implicitly to its matching Function type.
         let (id, type_args) = match &self.tir.type_pool[a.as_usize()] {
@@ -1371,6 +1424,81 @@ impl<'ast> Builder<'ast, '_> {
         namespace
     }
 
+    /// Walk `ty` without crossing pointer/slice boundaries and return the span
+    /// of the first field whose type directly contains `root_struct_index`.
+    /// `visited` prevents re-entering structs already on the walk path.
+    fn find_direct_struct_recursion(
+        &self,
+        ty: TypeIndex,
+        root_struct_index: u32,
+        visited: &mut Vec<u32>,
+    ) -> bool {
+        match &self.tir.type_pool[ty.as_usize()] {
+            Type::Struct { struct_index, .. } => {
+                if *struct_index == root_struct_index {
+                    return true;
+                }
+                if visited.contains(struct_index) {
+                    return false;
+                }
+                visited.push(*struct_index);
+                let found = self.tir.structs[*struct_index as usize]
+                    .fields
+                    .iter()
+                    .map(|field| field.ty.inner)
+                    .any(|field_type| {
+                        self.find_direct_struct_recursion(field_type, root_struct_index, visited)
+                    });
+                visited.pop();
+                found
+            }
+            Type::Tuple { elements } => elements.iter().copied().any(|element| {
+                self.find_direct_struct_recursion(element, root_struct_index, visited)
+            }),
+            // Pointer and slice are indirection — stop here.
+            Type::Pointer { .. } | Type::Slice { .. } | Type::Array { .. } => false,
+            _ => false,
+        }
+    }
+
+    /// Report an error if any field of the struct at `struct_index` directly
+    /// (without pointer/slice indirection) contains the struct itself.
+    /// Cycles through generic struct instantiation are not detected here; see
+    /// the TODO in `mir::Builder::ensure_aggregate_for_struct`.
+    fn check_struct_fields_for_direct_recursion(
+        &mut self,
+        struct_index: u32,
+        struct_span: SourceSpan,
+    ) {
+        let mut visited = vec![struct_index];
+        for (field_ty, field_span) in
+            self.tir.structs[struct_index as usize]
+                .fields
+                .iter()
+                .map(|field| {
+                    (
+                        field.ty.inner,
+                        SourceSpan::new(
+                            self.tir.structs[struct_index as usize].file_id,
+                            field.ty.span,
+                        ),
+                    )
+                })
+        {
+            if self.find_direct_struct_recursion(field_ty, struct_index, &mut visited) {
+                let name = self
+                    .interner
+                    .resolve(self.tir.structs[struct_index as usize].name.inner)
+                    .unwrap();
+                self.tir
+                    .diagnostics
+                    .push(report_recursive_type(name, struct_span, field_span));
+                return;
+            }
+            visited.truncate(1);
+        }
+    }
+
     fn insert_symbol(
         &mut self,
         namespace: Option<NamespaceIndex>,
@@ -1407,6 +1535,9 @@ impl<'ast> Builder<'ast, '_> {
             }
             SymbolKind::Trait { trait_index } => {
                 Some(self.intern_type(Type::Trait { trait_index }))
+            }
+            SymbolKind::TypeSet { typeset_index } => {
+                Some(self.intern_type(Type::TypeSet { typeset_index }))
             }
             SymbolKind::Module { namespace_idx } => {
                 Some(self.intern_type(Type::Module { namespace_idx }))
@@ -2109,6 +2240,10 @@ impl<'ast> Builder<'ast, '_> {
                 let trait_ = &self.tir.traits[trait_index as usize];
                 SourceSpan::new(trait_.file_id, trait_.name.span)
             }
+            SymbolKind::TypeSet { typeset_index } => {
+                let ts = &self.tir.typesets[typeset_index as usize];
+                SourceSpan::new(ts.file_id, ts.name.span)
+            }
             SymbolKind::Memory { memory_index, .. } => {
                 let memory = &self.tir.memories[memory_index as usize];
                 SourceSpan::new(memory.file_id, memory.name.span)
@@ -2497,6 +2632,34 @@ impl<'ast> Builder<'ast, '_> {
                 });
             }
             ast::Item::Export { .. } => {} // handled during build pass
+            ast::Item::TypeSet {
+                id, name, pub_span, ..
+            } => {
+                let typeset_index = self.tir.typesets.len() as TypesetIndex;
+                self.tir.typesets.push(TypeSet {
+                    id: *id,
+                    file_id,
+                    name: name.clone(),
+                    pub_span: *pub_span,
+                    members: Box::new([]),
+                    intersection_range: IntegerRange::widest(),
+                });
+                self.tir.typeset_index_lookup.insert(*id, typeset_index);
+                self.insert_symbol(
+                    namespace,
+                    (SymbolNamespace::Type, name.inner),
+                    SymbolKind::TypeSet { typeset_index },
+                );
+                self.ast_nodes.push(AstEntry {
+                    def_id: *id,
+                    file_id,
+                    namespace,
+                    node: AstNodeRef::TypeSet {
+                        typeset_index,
+                        item,
+                    },
+                });
+            }
             ast::Item::ImplTrait { id, items, .. } => {
                 self.ast_nodes.push(AstEntry {
                     def_id: *id,
@@ -2621,8 +2784,32 @@ impl<'ast> Builder<'ast, '_> {
                     })
                 };
 
-                // Resolve all field types (may recursively call ensure_signature for
-                // referenced structs; cycles are detected via InProgress state).
+                // Pre-register the struct with a placeholder before resolving its
+                // fields. This allows field types to reference the struct itself
+                // through indirection (e.g. `*Node`) without triggering a false
+                // cycle error. Direct self-reference is caught by
+                // `check_struct_fields_for_direct_recursion` below.
+                let struct_index = self.tir.structs.len() as u32;
+                self.tir.struct_index_lookup.insert(*id, struct_index);
+                self.tir.structs.push(Struct {
+                    id: *id,
+                    file_id: resolve_context.file_id,
+                    namespace: resolve_context.namespace,
+                    pub_span: *pub_span,
+                    name: name.clone(),
+                    type_params,
+                    fields: Box::new([]),
+                    lookup: HashMap::new(),
+                    accesses: Vec::new(),
+                });
+                self.insert_symbol(
+                    resolve_context.namespace,
+                    (SymbolNamespace::Type, name.inner),
+                    SymbolKind::Struct { struct_index },
+                );
+
+                // Resolve all field types. Referenced structs that haven't been
+                // seen yet are pulled in demand-driven via ensure_signature.
                 let field_count = fields.len();
                 let mut seen_fields: HashMap<SymbolU32, ast::TextSpan> =
                     HashMap::with_capacity(field_count);
@@ -2655,24 +2842,18 @@ impl<'ast> Builder<'ast, '_> {
                     });
                 }
 
-                let struct_index = self.tir.structs.len() as u32;
-                self.tir.struct_index_lookup.insert(*id, struct_index);
-                self.tir.structs.push(Struct {
-                    id: *id,
-                    file_id: resolve_context.file_id,
-                    namespace: resolve_context.namespace,
-                    pub_span: *pub_span,
-                    name: name.clone(),
-                    type_params,
-                    fields: tir_fields.into_boxed_slice(),
-                    lookup: field_lookup,
-                    accesses: Vec::new(),
-                });
-                self.insert_symbol(
-                    resolve_context.namespace,
-                    (SymbolNamespace::Type, name.inner),
-                    SymbolKind::Struct { struct_index },
+                // Fill in the placeholder now that all field types are resolved.
+                self.tir.structs[struct_index as usize].fields = tir_fields.into_boxed_slice();
+                self.tir.structs[struct_index as usize].lookup = field_lookup;
+
+                // Check for direct (non-pointer) self-recursion. Cycles through
+                // generic struct instantiation are not caught here — see TODO in
+                // mir::Builder::ensure_aggregate_for_struct.
+                self.check_struct_fields_for_direct_recursion(
+                    struct_index,
+                    SourceSpan::new(resolve_context.file_id, name.span),
                 );
+
                 let _ = pub_span;
             }
 
@@ -3218,6 +3399,51 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir.traits[trait_index as usize].supertrait_bindings = bindings;
             }
 
+            // ── typeset ───────────────────────────────────────────────────────
+            AstNodeRef::TypeSet {
+                typeset_index,
+                item,
+                ..
+            } => {
+                let members = match item {
+                    ast::Item::TypeSet { members, .. } => members,
+                    _ => unreachable!(),
+                };
+
+                let resolved_members: Box<[TypeIndex]> = members
+                    .iter()
+                    .filter_map(|m| {
+                        let ty = self.resolve_type(&resolve_context, &m.inner);
+                        if !ty.is_integer() {
+                            self.tir.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_code(DiagnosticCode::TypesetMemberNotInteger.code())
+                                    .with_message("typeset member must be an integer type")
+                                    .with_label(
+                                        Label::primary(resolve_context.file_id, m.inner.span)
+                                            .with_message(format!(
+                                                "`{}` is not an integer type",
+                                                TypeFormatter::new(&self.tir, &self.interner)
+                                                    .display_type(ty)
+                                                    .unwrap_or_default()
+                                            )),
+                                    ),
+                            );
+                            None
+                        } else {
+                            Some(ty)
+                        }
+                    })
+                    .collect();
+
+                let intersection_range = resolved_members
+                    .iter()
+                    .filter_map(|&ty| IntegerRange::for_integer_type(ty))
+                    .fold(IntegerRange::widest(), IntegerRange::intersect);
+                self.tir.typesets[typeset_index as usize].members = resolved_members;
+                self.tir.typesets[typeset_index as usize].intersection_range = intersection_range;
+            }
+
             // ── trait function ────────────────────────────────────────────────
             AstNodeRef::TraitFunction {
                 trait_index, item, ..
@@ -3246,6 +3472,7 @@ impl<'ast> Builder<'ast, '_> {
                         name: self_name_sym,
                         name_span: self.tir.traits[trait_index as usize].name.span,
                         bounds: Box::new([trait_index]),
+                        typeset_bound: None,
                         accesses: Vec::new(),
                     };
                     let explicit_type_params =
@@ -3974,29 +4201,45 @@ impl<'ast> Builder<'ast, '_> {
                     id, name, bounds, ..
                 } = item
                 {
-                    // Resolve each bound TypeExpression to a TraitIndex.
-                    let resolved_bounds: Box<[TraitIndex]> = bounds
-                        .iter()
-                        .filter_map(|b| {
-                            let ty = self.resolve_type(&resolve_context, b);
-                            match self.tir.type_pool[ty.as_usize()] {
-                                Type::Trait { trait_index } => Some(trait_index),
-                                _ => {
-                                    // Non-trait bound — emit error and skip.
+                    // Resolve each bound TypeExpression to either a TraitIndex or TypesetIndex.
+                    let mut trait_bounds: Vec<TraitIndex> = Vec::new();
+                    let mut typeset_bound: Option<TypesetIndex> = None;
+                    for b in bounds.iter() {
+                        let ty = self.resolve_type(&resolve_context, b);
+                        match self.tir.type_pool[ty.as_usize()].clone() {
+                            Type::Trait { trait_index } => trait_bounds.push(trait_index),
+                            Type::TypeSet { typeset_index } => {
+                                if typeset_bound.is_some() {
                                     self.tir.diagnostics.push(
                                         Diagnostic::error()
-                                            .with_code(DiagnosticCode::ExpectedTrait.code())
-                                            .with_message("associated type bound must be a trait")
+                                            .with_code(DiagnosticCode::MultipleTypesetBounds.code())
+                                            .with_message(
+                                                "associated type may have at most one typeset bound",
+                                            )
                                             .with_label(Label::primary(
                                                 resolve_context.file_id,
                                                 b.span,
                                             )),
                                     );
-                                    None
+                                } else {
+                                    typeset_bound = Some(typeset_index);
                                 }
                             }
-                        })
-                        .collect();
+                            _ => {
+                                self.tir.diagnostics.push(
+                                    Diagnostic::error()
+                                        .with_code(DiagnosticCode::ExpectedTrait.code())
+                                        .with_message(
+                                            "associated type bound must be a trait or typeset",
+                                        )
+                                        .with_label(Label::primary(
+                                            resolve_context.file_id,
+                                            b.span,
+                                        )),
+                                );
+                            }
+                        }
+                    }
 
                     let placeholder = self.intern_type(Type::AssociatedType {
                         assoc_name: name.inner,
@@ -4008,7 +4251,8 @@ impl<'ast> Builder<'ast, '_> {
                         TraitAssocType {
                             id: *id,
                             name_span: name.span,
-                            bounds: resolved_bounds,
+                            bounds: trait_bounds.into_boxed_slice(),
+                            typeset_bound,
                             accesses: Vec::new(),
                         },
                     );
@@ -4250,32 +4494,49 @@ impl<'ast> Builder<'ast, '_> {
         ast_params
             .iter()
             .map(|tp| {
-                let bounds: Box<[TraitIndex]> = tp
-                    .bounds
-                    .iter()
-                    .filter_map(|bound| {
-                        let ty = self.resolve_type(&resolve_context, bound);
-                        match &self.tir.type_pool[ty.as_usize()] {
-                            Type::Trait { trait_index } => Some(*trait_index),
-                            _ => {
+                let mut bounds: Vec<TraitIndex> = Vec::new();
+                let mut typeset_bound: Option<TypesetIndex> = None;
+
+                for bound in tp.bounds.iter() {
+                    let ty = self.resolve_type(resolve_context, bound);
+                    match &self.tir.type_pool[ty.as_usize()] {
+                        Type::Trait { trait_index } => bounds.push(*trait_index),
+                        Type::TypeSet { typeset_index } => {
+                            if typeset_bound.is_some() {
                                 self.tir.diagnostics.push(
                                     Diagnostic::error()
-                                        .with_code(DiagnosticCode::ExpectedTrait.code())
-                                        .with_message("expected a trait name as a bound")
+                                        .with_code(DiagnosticCode::MultipleTypesetBounds.code())
+                                        .with_message(
+                                            "a type parameter can have at most one typeset bound",
+                                        )
                                         .with_label(Label::primary(
                                             resolve_context.file_id,
                                             bound.span,
                                         )),
                                 );
-                                None
+                            } else {
+                                typeset_bound = Some(*typeset_index);
                             }
                         }
-                    })
-                    .collect();
+                        _ => {
+                            self.tir.diagnostics.push(
+                                Diagnostic::error()
+                                    .with_code(DiagnosticCode::ExpectedTrait.code())
+                                    .with_message("expected a trait or typeset name as a bound")
+                                    .with_label(Label::primary(
+                                        resolve_context.file_id,
+                                        bound.span,
+                                    )),
+                            );
+                        }
+                    }
+                }
+
                 TypeParamInfo {
                     name: tp.name.inner,
                     name_span: tp.name.span,
-                    bounds,
+                    bounds: bounds.into_boxed_slice(),
+                    typeset_bound,
                     accesses: Vec::new(),
                 }
             })
@@ -5015,8 +5276,7 @@ impl<'ast> Builder<'ast, '_> {
                         self.tir
                             .diagnostics
                             .push(report_non_constant_global_initializer(SourceSpan::new(
-                                file_id,
-                                expr.span,
+                                file_id, expr.span,
                             )));
                         Err(())
                     }
@@ -5313,43 +5573,63 @@ impl<'ast> Builder<'ast, '_> {
         concrete_ty: TypeIndex,
         error_span: TextSpan,
     ) {
-        match self.tir.traits[trait_index as usize]
+        let Some(at) = self.tir.traits[trait_index as usize]
             .assoc_types
             .get(&assoc_name)
-            .map(|at| &at.bounds)
-        {
-            Some(bounds) => {
-                for bound_trait_index in bounds.iter().copied() {
-                    if !self
-                        .tir
-                        .trait_impl_lookup
-                        .contains_key(&(concrete_ty, bound_trait_index))
-                    {
-                        let bound_name = self
-                            .interner
-                            .resolve(self.tir.traits[bound_trait_index as usize].name.inner)
-                            .unwrap();
-                        let type_name = TypeFormatter::new(&self.tir, &self.interner)
-                            .display_type(concrete_ty)
-                            .unwrap();
-                        self.tir.diagnostics.push(
-                            Diagnostic::error()
-                                .with_code(DiagnosticCode::TypeMistmatch.code())
-                                .with_message(format!(
-                                    "associated type `{}` must implement `{}`",
-                                    self.interner.resolve(assoc_name).unwrap_or("?"),
-                                    bound_name,
-                                ))
-                                .with_label(Label::primary(file_id, error_span))
-                                .with_note(format!(
-                                    "`{}` does not implement `{}`",
-                                    type_name, bound_name
-                                )),
-                        );
-                    }
-                }
+        else {
+            return;
+        };
+        let trait_bounds: Vec<TraitIndex> = at.bounds.to_vec();
+        let typeset_bound: Option<TypesetIndex> = at.typeset_bound;
+
+        let assoc_name_str = self.interner.resolve(assoc_name).unwrap_or("?").to_string();
+
+        for bound_trait_index in trait_bounds {
+            if !self
+                .tir
+                .trait_impl_lookup
+                .contains_key(&(concrete_ty, bound_trait_index))
+            {
+                let bound_name = self
+                    .interner
+                    .resolve(self.tir.traits[bound_trait_index as usize].name.inner)
+                    .unwrap()
+                    .to_string();
+                let type_name = TypeFormatter::new(&self.tir, &self.interner)
+                    .display_type(concrete_ty)
+                    .unwrap();
+                self.tir.diagnostics.push(
+                    Diagnostic::error()
+                        .with_code(DiagnosticCode::TypeMistmatch.code())
+                        .with_message(format!(
+                            "associated type `{assoc_name_str}` must implement `{bound_name}`",
+                        ))
+                        .with_label(Label::primary(file_id, error_span))
+                        .with_note(format!("`{type_name}` does not implement `{bound_name}`")),
+                );
             }
-            None => {}
+        }
+
+        if let Some(typeset_index) = typeset_bound {
+            if !self.concrete_type_in_typeset(concrete_ty, typeset_index) {
+                let ts_name = self
+                    .interner
+                    .resolve(self.tir.typesets[typeset_index as usize].name.inner)
+                    .unwrap_or("?")
+                    .to_string();
+                let type_name = TypeFormatter::new(&self.tir, &self.interner)
+                    .display_type(concrete_ty)
+                    .unwrap();
+                self.tir.diagnostics.push(
+                    Diagnostic::error()
+                        .with_code(DiagnosticCode::TypesetBoundViolation.code())
+                        .with_message(format!(
+                            "associated type `{assoc_name_str}` must be a member of typeset `{ts_name}`",
+                        ))
+                        .with_label(Label::primary(file_id, error_span))
+                        .with_note(format!("`{type_name}` is not a member of typeset `{ts_name}`")),
+                );
+            }
         }
     }
 
@@ -6316,7 +6596,8 @@ impl<'ast> Builder<'ast, '_> {
                     SymbolKind::Enum { .. }
                     | SymbolKind::Module { .. }
                     | SymbolKind::Struct { .. }
-                    | SymbolKind::Trait { .. },
+                    | SymbolKind::Trait { .. }
+                    | SymbolKind::TypeSet { .. },
                 ) => {
                     self.tir
                         .diagnostics
@@ -7863,6 +8144,29 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 })
             }
+            (left_type, right_type)
+                if matches!(operator.inner, ast::BinaryOp::Eq | ast::BinaryOp::NotEq)
+                    && matches!(
+                        (
+                            &self.tir.type_pool[left_type.as_usize()],
+                            &self.tir.type_pool[right_type.as_usize()],
+                        ),
+                        (
+                            Type::Pointer { to: lt, memory: lm, .. },
+                            Type::Pointer { to: rt, memory: rm, .. },
+                        ) if lt == rt && lm == rm
+                    ) =>
+            {
+                Ok(Expression {
+                    kind: ExprKind::Binary {
+                        operator,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                    ty: TypeIndex::BOOL,
+                    span: expr.span,
+                })
+            }
             (left_type, right_type) => {
                 self.tir
                     .diagnostics
@@ -8893,6 +9197,132 @@ impl<'ast> Builder<'ast, '_> {
             .any(|&b| b == expected_trait)
     }
 
+    fn type_param_typeset_bound_by_owner(
+        &self,
+        owner: TypeParamOwner,
+        param_index: u32,
+    ) -> Option<TypesetIndex> {
+        match owner {
+            TypeParamOwner::Function(def_id) => self
+                .tir
+                .function_index_lookup
+                .get(&def_id)
+                .and_then(|&fi| {
+                    self.tir.functions[fi as usize]
+                        .type_params
+                        .get(param_index as usize)
+                })
+                .and_then(|tp| tp.typeset_bound),
+            TypeParamOwner::Struct(def_id) => self
+                .tir
+                .struct_index_lookup
+                .get(&def_id)
+                .and_then(|&si| {
+                    self.tir.structs[si as usize]
+                        .type_params
+                        .get(param_index as usize)
+                })
+                .and_then(|tp| tp.typeset_bound),
+            TypeParamOwner::Trait(_) => None,
+        }
+    }
+
+    fn type_param_typeset_bound(&self, ty: TypeIndex) -> Option<TypesetIndex> {
+        let Type::TypeParam {
+            ref owner,
+            param_index,
+        } = self.tir.type_pool[ty.as_usize()]
+        else {
+            return None;
+        };
+        self.type_param_typeset_bound_by_owner(owner.clone(), param_index)
+    }
+
+    /// Returns the typeset bound for any type that can carry one:
+    /// `TypeParam` (via its `typeset_bound` field) or `AssocTypeProjection`
+    /// (via the trait's associated-type `typeset_bound`).
+    fn typeset_bound_for(&self, ty: TypeIndex) -> Option<TypesetIndex> {
+        match &self.tir.type_pool[ty.as_usize()] {
+            Type::TypeParam { .. } => self.type_param_typeset_bound(ty),
+            Type::AssocTypeProjection {
+                trait_index,
+                assoc_name,
+                ..
+            } => self.tir.traits[*trait_index as usize]
+                .assoc_types
+                .get(assoc_name)
+                .and_then(|at| at.typeset_bound),
+            _ => None,
+        }
+    }
+
+    /// True when concrete `ty` is a member of the given typeset.
+    fn concrete_type_in_typeset(&self, ty: TypeIndex, typeset_index: TypesetIndex) -> bool {
+        self.tir.typesets[typeset_index as usize]
+            .members
+            .iter()
+            .any(|&m| m == ty)
+    }
+
+    /// After type_args are finalized for a generic call, check that each
+    /// type arg satisfies the typeset bounds of its type parameter.
+    /// If the type arg is itself a TypeParam (nested generic context), check
+    /// that it has the required typeset bound rather than requiring membership.
+    fn check_typeset_bounds_on_type_args(
+        &mut self,
+        func_index: FunctionIndex,
+        type_args: &[TypeIndex],
+        file_id: FileId,
+        call_span: TextSpan,
+    ) {
+        let type_params: Vec<_> = self.tir.functions[func_index as usize]
+            .type_params
+            .iter()
+            .map(|tp| (tp.name, tp.typeset_bound))
+            .collect();
+
+        for (i, (param_name, typeset_bound)) in type_params.into_iter().enumerate() {
+            let Some(ts_index) = typeset_bound else {
+                continue;
+            };
+            let Some(&arg_ty) = type_args.get(i) else {
+                continue;
+            };
+            if arg_ty == TypeIndex::ERROR {
+                continue;
+            }
+            let satisfied = match &self.tir.type_pool[arg_ty.as_usize()] {
+                // Nested generic: the caller's TypeParam forwards here — check its typeset bound.
+                Type::TypeParam { .. } => self
+                    .type_param_typeset_bound(arg_ty)
+                    .map_or(false, |b| b == ts_index),
+                // Concrete type: must be a member of the typeset.
+                _ => self.concrete_type_in_typeset(arg_ty, ts_index),
+            };
+            if !satisfied {
+                let type_name = TypeFormatter::new(&self.tir, &self.interner)
+                    .display_type(arg_ty)
+                    .unwrap_or_default();
+                let set_name = self
+                    .interner
+                    .resolve(self.tir.typesets[ts_index as usize].name.inner)
+                    .unwrap_or("?")
+                    .to_owned();
+                let param_name_str = self.interner.resolve(param_name).unwrap_or("?").to_owned();
+                self.tir.diagnostics.push(
+                    Diagnostic::error()
+                        .with_code(DiagnosticCode::TypesetBoundViolation.code())
+                        .with_message(format!(
+                            "type `{type_name}` is not a member of typeset `{set_name}`"
+                        ))
+                        .with_label(Label::primary(file_id, call_span).with_message(format!(
+                            "`{param_name_str}` requires a type from `{set_name}`"
+                        ))),
+                );
+            }
+        }
+    }
+
     /// Builds, infers type args, and checks arguments for a generic call.
     /// `self_ty` always wins for slot 0; return-type expectation seeds type
     /// args first.
@@ -9178,6 +9608,12 @@ impl<'ast> Builder<'ast, '_> {
                                 access_ctx.expected_type,
                                 Some(object.ty),
                             )?;
+                            self.check_typeset_bounds_on_type_args(
+                                func_index,
+                                &type_args,
+                                ctx.resolve_context.file_id,
+                                expr.span,
+                            );
                             let return_ty = self.substitute_type(signature.result(), &type_args);
 
                             return Ok(Expression {
@@ -9301,6 +9737,12 @@ impl<'ast> Builder<'ast, '_> {
                             access_ctx.expected_type,
                             None,
                         )?;
+                        self.check_typeset_bounds_on_type_args(
+                            func_index,
+                            &type_args,
+                            ctx.resolve_context.file_id,
+                            expr.span,
+                        );
                         let return_ty = self.substitute_type(signature.result(), &type_args);
 
                         return Ok(Expression {
@@ -9600,6 +10042,27 @@ impl<'ast> Builder<'ast, '_> {
                     file_id, expr.span,
                 )));
             Err(())
+        } else if let Some(typeset_index) = self.typeset_bound_for(target_idx) {
+            let ts = &self.tir.typesets[typeset_index as usize];
+            let range = &ts.intersection_range;
+            let ts_name = self
+                .interner
+                .resolve(ts.name.inner)
+                .unwrap_or("?")
+                .to_string();
+            if !range.contains(value) {
+                self.tir
+                    .diagnostics
+                    .push(report_integer_literal_out_of_typeset_range(
+                        value,
+                        &ts_name,
+                        range,
+                        SourceSpan::new(file_id, expr.span),
+                    ));
+                return Err(());
+            }
+            expr.ty = target_idx;
+            Ok(())
         } else {
             self.tir.diagnostics.push(report_unable_to_coerce(
                 formatter,
@@ -10529,13 +10992,25 @@ impl<'ast> Builder<'ast, '_> {
     ) -> Result<Expression, ()> {
         let object = self.build_expression(
             func_ctx,
-            AccessContext { expected_type: None, access_kind: AccessKind::Read },
+            AccessContext {
+                expected_type: None,
+                access_kind: AccessKind::Read,
+            },
             object_expr,
         )?;
 
         let (elem_type, memory, mutable) = match self.tir.type_pool[object.ty.as_usize()].clone() {
-            Type::Array { of, memory, mutable, .. } => (of, memory, mutable),
-            Type::Slice { of, memory, mutable } => (of, memory, mutable),
+            Type::Array {
+                of,
+                memory,
+                mutable,
+                ..
+            } => (of, memory, mutable),
+            Type::Slice {
+                of,
+                memory,
+                mutable,
+            } => (of, memory, mutable),
             _ => {
                 self.tir.diagnostics.push(report_index_on_non_indexable(
                     SourceSpan::new(func_ctx.resolve_context.file_id, object.span),
@@ -10554,7 +11029,10 @@ impl<'ast> Builder<'ast, '_> {
          -> Result<Expression, ()> {
             let mut bound = builder.build_expression(
                 func_ctx,
-                AccessContext { expected_type: Some(index_type), access_kind: AccessKind::Read },
+                AccessContext {
+                    expected_type: Some(index_type),
+                    access_kind: AccessKind::Read,
+                },
                 ast_expr,
             )?;
             if bound.ty.is_comptime_number() {
@@ -10586,7 +11064,11 @@ impl<'ast> Builder<'ast, '_> {
             .map(|e| build_bound(self, e).map(Box::new))
             .transpose()?;
 
-        let result_ty = self.intern_type(Type::Slice { of: elem_type, mutable, memory });
+        let result_ty = self.intern_type(Type::Slice {
+            of: elem_type,
+            mutable,
+            memory,
+        });
         Ok(Expression {
             kind: ExprKind::SliceRange {
                 object: Box::new(object),

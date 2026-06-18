@@ -301,8 +301,8 @@ impl CrateGraph {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(Clone, PartialEq)]
+#[derive(Debug)]
 pub enum LoadError {
     ReadFailed {
         path: String,

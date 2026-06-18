@@ -3,7 +3,7 @@ source: crates/wx-compiler/src/mir/tests.rs
 expression: case.mir
 ---
 functions:
-  - id: 30
+  - id: 31
     signature_index: 1
     scopes:
       - kind: Block
@@ -19,7 +19,7 @@ functions:
           expressions:
             - kind:
                 MemoryGrow:
-                  memory: 29
+                  memory: 30
                   delta:
                     kind:
                       LocalGet:
@@ -41,11 +41,11 @@ signatures:
 globals: []
 exports:
   - Function:
-      id: 30
-      name: 68
+      id: 31
+      name: 76
 imports: []
 memories:
-  - id: 29
+  - id: 30
     source: Internal
     kind: Memory32
     min_pages: ~

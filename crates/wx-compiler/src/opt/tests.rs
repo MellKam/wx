@@ -19,8 +19,7 @@ use crate::{tir, vfs};
 
 /// Minimal stdlib definitions required for memory / pointer tests.
 const STD: &str = indoc! {"
-    trait PointerSize {}
-    impl PointerSize for u32 {}
+    typeset PointerSize { u32, u64 }
     trait Memory {
         type Size: PointerSize;
         const MEMORY_INDEX: u32;

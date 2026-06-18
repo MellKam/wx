@@ -5,11 +5,13 @@ pub fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
 pub fn @memory_size<M: Memory>(mem: M) -> M::Size;
 pub fn @slice_len<M: Memory, T>(slice: M::[]T) -> M::Size;
 pub fn @slice_from_parts<M: Memory, T>(data: M::*T, len: M::Size) -> M::[]T;
+pub fn @pointer_from<M: Memory, T>(ptr: M::Size) -> M::*T; 
 
-#[lang = "pointer_size"]
-trait PointerSize {}
-impl PointerSize for u32 {}
-impl PointerSize for u64 {}
+#[inline]
+pub fn null<M: Memory, T>() -> M::*T { @pointer_from(0) }
+
+pub typeset Integer { u8, i8, u16, i16, u32, i32, u64, i64 }
+pub typeset PointerSize { u32, u64 }
 
 #[lang = "memory"]
 pub trait Memory {

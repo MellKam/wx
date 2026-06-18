@@ -135,6 +135,10 @@ pub enum Type {
         owner: TypeParamOwner,
         param_index: u32,
     },
+    /// A closed compile-time set of concrete types used as a bound.
+    TypeSet {
+        typeset_index: TypesetIndex,
+    },
     /// `M::Size` — opaque until monomorphisation substitutes `M`.
     AssociatedType {
         trait_index: TraitIndex,
@@ -262,6 +266,7 @@ pub type MemoryIndex = u32;
 pub type EnumVariantIndex = u32;
 pub type TraitIndex = u32;
 pub type TraitImplIndex = u32;
+pub type TypesetIndex = u32;
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Constant {
@@ -279,6 +284,7 @@ pub struct TraitAssocType {
     pub id: ast::DefId,
     pub name_span: ast::TextSpan,
     pub bounds: Box<[TraitIndex]>,
+    pub typeset_bound: Option<TypesetIndex>,
     pub accesses: Vec<SourceSpan>,
 }
 
@@ -311,6 +317,88 @@ pub struct TraitImpl {
     #[cfg_attr(test, serde(skip))]
     pub span: TextSpan,
     pub file_id: FileId,
+}
+
+/// The intersection of representable value ranges across a set of integer types.
+///
+/// `min` is stored as the two's-complement bit pattern of an `i64` (reinterpret with `as i64`).
+/// `max` is stored as a plain `u64` upper bound.
+///
+/// Use [`IntegerRange::contains`] to test whether a literal fits; use
+/// [`IntegerRange::intersect`] to narrow two ranges to their overlap.
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct IntegerRange {
+    min: u64,
+    max: u64,
+}
+
+impl IntegerRange {
+    /// Returns the range for a single integer primitive type, or `None` if `ty` is not one.
+    pub fn for_integer_type(ty: TypeIndex) -> Option<Self> {
+        if ty == TypeIndex::I8 {
+            Some(Self { min: i8::MIN as i64 as u64, max: i8::MAX as u64 })
+        } else if ty == TypeIndex::U8 {
+            Some(Self { min: 0, max: u8::MAX as u64 })
+        } else if ty == TypeIndex::I16 {
+            Some(Self { min: i16::MIN as i64 as u64, max: i16::MAX as u64 })
+        } else if ty == TypeIndex::U16 {
+            Some(Self { min: 0, max: u16::MAX as u64 })
+        } else if ty == TypeIndex::I32 {
+            Some(Self { min: i32::MIN as i64 as u64, max: i32::MAX as u64 })
+        } else if ty == TypeIndex::U32 {
+            Some(Self { min: 0, max: u32::MAX as u64 })
+        } else if ty == TypeIndex::I64 {
+            Some(Self { min: i64::MIN as u64, max: i64::MAX as u64 })
+        } else if ty == TypeIndex::U64 {
+            Some(Self { min: 0, max: u64::MAX })
+        } else {
+            None
+        }
+    }
+
+    /// The widest possible range — the identity element for [`intersect`](Self::intersect).
+    pub fn widest() -> Self {
+        Self { min: i64::MIN as u64, max: u64::MAX }
+    }
+
+    /// Narrows this range to the overlap with `other` (greatest lower bound, least upper bound).
+    pub fn intersect(self, other: Self) -> Self {
+        let min = if (self.min as i64) >= (other.min as i64) { self.min } else { other.min };
+        let max = self.max.min(other.max);
+        Self { min, max }
+    }
+
+    /// Returns `true` if the i64 `value` falls within this range.
+    pub fn contains(&self, value: i64) -> bool {
+        if value < 0 {
+            value >= (self.min as i64)
+        } else {
+            (value as u64) <= self.max
+        }
+    }
+
+    pub fn min_i64(&self) -> i64 {
+        self.min as i64
+    }
+
+    pub fn max_u64(&self) -> u64 {
+        self.max
+    }
+}
+
+/// A closed compile-time set of concrete types, used as a type param bound.
+/// `typeset Integer { u8, i8, u16, i16, u32, i32, u64, i64 }`
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct TypeSet {
+    pub id: ast::DefId,
+    pub file_id: FileId,
+    pub name: ast::Spanned<SymbolU32>,
+    pub pub_span: Option<ast::TextSpan>,
+    pub members: Box<[TypeIndex]>,
+    /// Intersection of the representable ranges of all member types.
+    /// Integer literals inside generic bodies bounded by this typeset are
+    /// validated against this range at TIR time (before monomorphization).
+    pub intersection_range: IntegerRange,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -639,6 +727,9 @@ pub enum SymbolKind {
     Trait {
         trait_index: u32,
     },
+    TypeSet {
+        typeset_index: TypesetIndex,
+    },
     Global {
         global_index: GlobalIndex,
     },
@@ -860,6 +951,7 @@ pub struct TypeParamInfo {
     pub name: SymbolU32,
     pub name_span: ast::TextSpan,
     pub bounds: Box<[TraitIndex]>,
+    pub typeset_bound: Option<TypesetIndex>,
     pub accesses: Vec<SourceSpan>,
 }
 
@@ -982,6 +1074,9 @@ define_diagnostic_codes! {
         ArraySizeMismatch => "E1043",
         ArrayRepeatCountNotConst => "E1044",
         ArrayElementNotConst => "E1045",
+        TypesetMemberNotInteger => "E1046",
+        TypesetBoundViolation => "E1047",
+        MultipleTypesetBounds => "E1048",
     }
 }
 
@@ -1148,6 +1243,11 @@ impl<'a> TypeFormatter<'a> {
                 .resolve(self.tir.traits[*trait_index as usize].name.inner)
                 .ok_or(std::fmt::Error)
                 .and_then(|name| f.write_str(name)),
+            Type::TypeSet { typeset_index } => self
+                .interner
+                .resolve(self.tir.typesets[*typeset_index as usize].name.inner)
+                .ok_or(std::fmt::Error)
+                .and_then(|name| f.write_str(name)),
             Type::Module { namespace_idx } => self
                 .interner
                 .resolve(self.tir.namespaces[*namespace_idx as usize].name)
@@ -1303,6 +1403,9 @@ pub struct TIR {
     pub const_index_lookup: HashMap<ast::DefId, ConstIndex>,
     #[cfg_attr(test, serde(skip))]
     pub lang_items: HashMap<SymbolU32, ast::DefId>,
+    pub typesets: Vec<TypeSet>,
+    #[cfg_attr(test, serde(skip))]
+    pub typeset_index_lookup: HashMap<ast::DefId, TypesetIndex>,
 }
 
 #[derive(PartialEq)]
@@ -1372,6 +1475,7 @@ impl TIR {
             | Type::Module { .. }
             | Type::Memory { .. }
             | Type::Trait { .. }
+            | Type::TypeSet { .. }
             | Type::TypeParam { .. }
             | Type::Error
             | Type::Never

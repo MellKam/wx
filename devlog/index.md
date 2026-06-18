@@ -1,5 +1,9 @@
 # Session Index
 
+## 2026-06-19
+
+- [2026-06-19-null-pointers-mut-coercion-sized-design.md](2026-06-19-null-pointers-mut-coercion-sized-design.md) — `null()` intrinsic, `*mut T → *T` implicit coercion, mixed-mutability pointer comparison, bump allocator linked list rewrite, `Sized` trait and typeset-bounded const design discussion
+
 ## 2026-06-18
 
 - [2026-06-18-narrow-loads-slice-intrinsics-purity-design.md](2026-06-18-narrow-loads-slice-intrinsics-purity-design.md) — Narrow load/store bug fix (`MemAccess` enum), `@slice_from_parts` intrinsic, purity inference pass design (SCC-based, integrated into inlining pass)

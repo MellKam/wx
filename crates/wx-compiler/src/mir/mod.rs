@@ -813,6 +813,15 @@ impl<'tir> Builder<'tir> {
         struct_index: u32,
         args: &[tir::TypeIndex],
     ) -> AggregateIndex {
+        // TODO: detect infinite-size cycles caused by generic struct instantiation
+        // (e.g. `struct Node { inner: DirectIdentity<Node> }` where
+        // `DirectIdentity<T> { value: T }`). TIR only catches concrete cycles;
+        // generic ones require substitution, which only happens here during
+        // monomorphization. When this is implemented, extend the DFS in
+        // `tir::Builder::find_direct_struct_recursion` with a substitution map
+        // and promote the error to TIR. For now, this will stack-overflow on
+        // truly recursive generic instantiations.
+
         // For generic structs, resolve TypeParam entries in args and temporarily
         // install them as current_substitutions so lower_type_index resolves fields.
         let saved = if !args.is_empty() {
@@ -937,7 +946,7 @@ impl<'tir> Builder<'tir> {
                 ]));
                 Type::Aggregate { aggregate_index }
             }
-            tir::Type::Memory { .. } | tir::Type::Trait { .. } => Type::Unit,
+            tir::Type::Memory { .. } | tir::Type::Trait { .. } | tir::Type::TypeSet { .. } => Type::Unit,
             tir::Type::Struct { struct_index, args } => {
                 let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
                 Type::Aggregate { aggregate_index }
@@ -1767,6 +1776,13 @@ impl<'tir> Builder<'tir> {
                                 values: Box::new([data, len]),
                             },
                             ty: result_ty,
+                        }
+                    }
+                    "@pointer_from" => {
+                        let addr = self.lower_expression(func_ctx, &arguments[0], sink);
+                        Expression {
+                            kind: addr.kind,
+                            ty: self.lower_type_index(expr.ty),
                         }
                     }
                     name => todo!("MIR lowering for intrinsic '{name}'"),
