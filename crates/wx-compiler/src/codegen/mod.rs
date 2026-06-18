@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use leb128fmt;
 
-use crate::{ast, mir};
+use crate::{ast, mir, tir};
 
 #[derive(Clone, Copy, PartialEq, Hash, Eq)]
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -331,6 +331,11 @@ pub struct WasmModule {
     data: DataSection,
 }
 
+struct MemoryEntry {
+    wasm_index: u32,
+    kind: tir::MemoryKind,
+}
+
 pub struct Builder {
     table: Vec<FuncIndex>,
     /// Byte offset of each live static entry in the assembled data segment.
@@ -346,9 +351,9 @@ pub struct Builder {
     /// Imported globals occupy indices 0..import_global_count; defined globals
     /// follow.
     global_wasm_index: HashMap<ast::DefId, u32>,
-    /// Maps every memory DefId (imported or defined) to its wasm memory index.
+    /// Maps every memory DefId (imported or defined) to its wasm index and kind.
     /// Imported memories occupy indices 0..import_memory_count; defined follow.
-    memory_wasm_index: HashMap<ast::DefId, u32>,
+    memories: HashMap<ast::DefId, MemoryEntry>,
     /// Deduplicated function-type entries for the wasm type section.
     /// Shared between function signatures and multi-value block types.
     signatures: HashMap<FunctionSignature, SignatureIndex>,
@@ -448,17 +453,17 @@ impl Builder {
             static_segment_size,
             func_wasm_index: HashMap::new(),
             global_wasm_index: HashMap::new(),
-            memory_wasm_index: HashMap::new(),
+            memories: HashMap::new(),
             signatures: HashMap::new(),
         };
 
         // Assign wasm memory indices: imported memories first, then defined.
         // tir::ItemSource::External < Internal so a stable sort puts imports first.
         {
-            let mut memories: Vec<&mir::MemoryInfo> = mir.memories.iter().collect();
-            memories.sort_by_key(|m| m.source);
-            for (idx, m) in memories.iter().enumerate() {
-                builder.memory_wasm_index.insert(m.id, idx as u32);
+            let mut mems: Vec<&mir::MemoryInfo> = mir.memories.iter().collect();
+            mems.sort_by_key(|m| m.source);
+            for (idx, m) in mems.iter().enumerate() {
+                builder.memories.insert(m.id, MemoryEntry { wasm_index: idx as u32, kind: m.kind });
             }
         }
 
@@ -539,7 +544,7 @@ impl Builder {
                     func_index: FuncIndex(builder.func_wasm_index[id]),
                 },
                 mir::ExportItem::Memory { id, name } => ExportItem::Memory {
-                    memory_index: builder.memory_wasm_index[id],
+                    memory_index: builder.memories[id].wasm_index,
                     name: interner.resolve(*name).unwrap().to_string(),
                 },
             })
@@ -842,17 +847,17 @@ impl Builder {
                 0u32.encode(sink); // table index 0 (single function table)
             }
             SI::MemorySize(id) => {
-                let mi = self.memory_wasm_index[&id];
+                let mi = self.memories[&id].wasm_index;
                 sink.push(Instruction::MemorySize as u8);
                 mi.encode(sink);
             }
             SI::MemoryGrow(id) => {
-                let mi = self.memory_wasm_index[&id];
+                let mi = self.memories[&id].wasm_index;
                 sink.push(Instruction::MemoryGrow as u8);
                 mi.encode(sink);
             }
             SI::MemoryIndex { memory } => {
-                let mi = self.memory_wasm_index[&memory] as i32;
+                let mi = self.memories[&memory].wasm_index as i32;
                 sink.push(Instruction::I32Const as u8);
                 mi.encode(sink);
             }
@@ -863,98 +868,98 @@ impl Builder {
                 Instruction::I32Load8S,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I32Load8U(m) => encode_load(
                 Instruction::I32Load8U,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I32Load16S(m) => encode_load(
                 Instruction::I32Load16S,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I32Load16U(m) => encode_load(
                 Instruction::I32Load16U,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I32Load(m) => encode_load(
                 Instruction::I32Load,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I64Load(m) => encode_load(
                 Instruction::I64Load,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::F32Load(m) => encode_load(
                 Instruction::F32Load,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::F64Load(m) => encode_load(
                 Instruction::F64Load,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I32Store8(m) => encode_store(
                 Instruction::I32Store8,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I32Store16(m) => encode_store(
                 Instruction::I32Store16,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I32Store(m) => encode_store(
                 Instruction::I32Store,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::I64Store(m) => encode_store(
                 Instruction::I64Store,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::F32Store(m) => encode_store(
                 Instruction::F32Store,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::F64Store(m) => encode_store(
                 Instruction::F64Store,
                 m.align,
                 m.offset,
-                self.memory_wasm_index[&m.memory],
+                self.memories[&m.memory].wasm_index,
                 sink,
             ),
             SI::Nop => sink.push(Instruction::Nop as u8),
@@ -971,9 +976,16 @@ impl Builder {
                 (offset as i32).encode(sink);
             }
             SI::DataSectionEnd { memory } => {
-                let _ = self.memory_wasm_index[&memory]; // assert memory is known
-                sink.push(Instruction::I32Const as u8);
-                (self.static_segment_size as i32).encode(sink);
+                match self.memories[&memory].kind {
+                    tir::MemoryKind::Memory32 => {
+                        sink.push(Instruction::I32Const as u8);
+                        (self.static_segment_size as i32).encode(sink);
+                    }
+                    tir::MemoryKind::Memory64 => {
+                        sink.push(Instruction::I64Const as u8);
+                        (self.static_segment_size as i64).encode(sink);
+                    }
+                }
             }
         }
     }
@@ -1002,6 +1014,16 @@ impl Builder {
                 mir::Type::F64 => Expression::F64Const { value },
                 _ => unreachable!(),
             },
+            mir::ExprKind::MemoryOffset { memory } => {
+                match self.memories[&memory].kind {
+                    tir::MemoryKind::Memory32 => Expression::I32Const {
+                        value: self.static_segment_size as i32,
+                    },
+                    tir::MemoryKind::Memory64 => Expression::I64Const {
+                        value: self.static_segment_size as i64,
+                    },
+                }
+            }
             _ => unreachable!(),
         }
     }

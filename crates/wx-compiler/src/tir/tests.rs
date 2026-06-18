@@ -4238,3 +4238,17 @@ fn test_slice_range_on_non_indexable_is_error() {
     "});
     assert_eq!(case.tir.diagnostics.len(), 1);
 }
+
+#[test]
+fn test_global_initialized_to_data_end_tir() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> {
+            min: 1,
+        };
+        global mut bump: heap::*mut u8 = heap::DATA_END;
+        export { heap }
+    "});
+    // Only warning expected: "never used" (no functions read bump in this test).
+    assert!(case.tir.diagnostics.iter().all(|d| d.severity != codespan_reporting::diagnostic::Severity::Error));
+    assert_eq!(case.tir.globals.len(), 1);
+}

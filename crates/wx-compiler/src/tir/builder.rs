@@ -4923,9 +4923,8 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 })
             }
-            ast::Expression::Path(path) => {
-                // In const context only single-segment, no-type-args paths are valid
-                // (references to named constants).  Complex paths are not supported.
+            ast::Expression::Path(path) if path.segments.len() == 1 => {
+                // Single-segment path: bool literal, named const, or error.
                 let seg = path.segments.last().expect("path non-empty");
                 let symbol = seg.ident.inner;
                 match self
@@ -4960,6 +4959,63 @@ impl<'ast> Builder<'ast, '_> {
                             .diagnostics
                             .push(report_non_constant_global_initializer(SourceSpan::new(
                                 resolve_context.file_id,
+                                expr.span,
+                            )));
+                        Err(())
+                    }
+                }
+            }
+            ast::Expression::Path(path) if path.segments.len() == 2 => {
+                // Two-segment path: `Namespace::ASSOCIATED_CONST` in const context.
+                // Only associated consts are valid here (methods, types, etc. are not).
+                let first = &path.segments[0];
+                let last = &path.segments[1];
+                let file_id = resolve_context.file_id;
+                let namespace_span = first.ident.span;
+                let member_span = last.ident.span;
+
+                let namespace_ty = self.resolve_type_identifier(
+                    resolve_context,
+                    first.ident.inner,
+                    first.ident.span,
+                );
+                if namespace_ty == TypeIndex::ERROR {
+                    return Err(());
+                }
+
+                let member_sym = last.ident.inner;
+                let entry = self
+                    .ensure_impl_members(file_id, namespace_ty)
+                    .get(&member_sym)
+                    .cloned();
+                match entry {
+                    Some(ImplEntry::AssociatedConst { id, ty }) => {
+                        if let Some(ci) = self.tir.const_index_lookup.get(&id).copied() {
+                            self.tir.constants[ci as usize]
+                                .accesses
+                                .push(SourceSpan::new(file_id, member_span));
+                        }
+                        Ok(Expression {
+                            kind: ExprKind::NamespaceAccess {
+                                namespace: ast::Spanned {
+                                    inner: namespace_ty,
+                                    span: namespace_span,
+                                },
+                                member: Box::new(Expression {
+                                    kind: ExprKind::Const { id },
+                                    ty,
+                                    span: member_span,
+                                }),
+                            },
+                            ty,
+                            span: expr.span,
+                        })
+                    }
+                    _ => {
+                        self.tir
+                            .diagnostics
+                            .push(report_non_constant_global_initializer(SourceSpan::new(
+                                file_id,
                                 expr.span,
                             )));
                         Err(())

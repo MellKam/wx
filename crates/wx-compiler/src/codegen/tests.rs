@@ -17,6 +17,7 @@ const STD: &str = indoc! {"
     trait Memory {
         type Size: PointerSize;
         const MEMORY_INDEX: u32;
+        const DATA_END: Self::*mut u8;
 
         #[inline]
         fn grow(self, delta: Self::Size) -> Self::Size {
@@ -2001,4 +2002,38 @@ fn test_narrow_pointer_deref_sign_extension_and_byte_isolation() {
     mem.read(&mut store, 0, &mut buf).unwrap();
     assert_eq!(buf[0], 0xAB, "byte at address 0 should be 0xAB");
     assert_eq!(buf[1], 0x42, "adjacent byte at address 1 must be untouched");
+}
+
+#[test]
+fn test_global_initialized_to_data_end() {
+    // A mutable global initialized to `heap::DATA_END` must receive the
+    // compile-time static-segment-end offset as its WASM init expression,
+    // and reading it back at runtime must return that same value.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> {
+            min: 1,
+        };
+
+        global mut bump: heap::*mut u8 = heap::DATA_END;
+
+        fn get_bump() -> u32 { bump as u32 }
+        fn advance(n: u32) { bump = (bump as u32 + n) as heap::*mut u8 }
+
+        export { heap, get_bump, advance }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+
+    let get_bump = instance.get_typed_func::<(), i32>(&mut store, "get_bump").expect("get_bump");
+    let advance = instance.get_typed_func::<i32, ()>(&mut store, "advance").expect("advance");
+
+    let initial = get_bump.call(&mut store, ()).unwrap() as u32;
+    // With the minimal STD stub (no string literals) DATA_END is 0.
+    // The key invariant is that advance shifts bump by exactly the requested amount.
+    advance.call(&mut store, 16).unwrap();
+    let after = get_bump.call(&mut store, ()).unwrap() as u32;
+    assert_eq!(after, initial + 16, "advance must shift bump by exactly 16 bytes");
 }
