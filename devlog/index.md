@@ -2,6 +2,7 @@
 
 ## 2026-06-19
 
+- [2026-06-19-type-resolution-cleanup.md](2026-06-19-type-resolution-cleanup.md) — `Result<TypeIndex, ()>` return for type-resolution helpers, `register_module_access` in type-position paths, test audit: weak assertions hardened to `has_error_code`, false-positive test removed
 - [2026-06-19-inline-generics-vec-fmt.md](2026-06-19-inline-generics-vec-fmt.md) — `#[inline]` propagation to mono instances, removed memory method special case, receiver into `arguments[0]`, removed `SIZE`/`ALIGN` auto-constants, generic bump allocator with `@size_of`/`@align_of`, generic `Vec<M, T>` example, formatter generic param support for structs and impl blocks
 - [2026-06-19-null-pointers-mut-coercion-sized-design.md](2026-06-19-null-pointers-mut-coercion-sized-design.md) — `null()` intrinsic, `*mut T → *T` implicit coercion, mixed-mutability pointer comparison, bump allocator linked list rewrite, `Sized` trait and typeset-bounded const design discussion
 

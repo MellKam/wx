@@ -284,8 +284,7 @@ functions:
         start: 134
         end: 141
     accesses:
-      - caller: 15
-        kind: DirectCall
+      - kind: DirectCall
         file_id: 0
         span:
           start: 840
@@ -559,8 +558,7 @@ functions:
         start: 185
         end: 192
     accesses:
-      - caller: 16
-        kind: DirectCall
+      - kind: DirectCall
         file_id: 0
         span:
           start: 919
@@ -624,8 +622,7 @@ functions:
         start: 244
         end: 251
     accesses:
-      - caller: 18
-        kind: DirectCall
+      - kind: DirectCall
         file_id: 0
         span:
           start: 1021
@@ -767,8 +764,7 @@ functions:
         start: 382
         end: 387
     accesses:
-      - caller: 9
-        kind: DirectCall
+      - kind: DirectCall
         file_id: 0
         span:
           start: 528
@@ -985,8 +981,7 @@ functions:
         start: 1007
         end: 1014
     accesses:
-      - caller: 33
-        kind: DirectCall
+      - kind: DirectCall
         file_id: 1
         span:
           start: 75
@@ -1496,8 +1491,7 @@ functions:
         start: 1529
         end: 1533
     accesses:
-      - caller: 20
-        kind: DirectCall
+      - kind: DirectCall
         file_id: 0
         span:
           start: 1298
@@ -1640,8 +1634,7 @@ functions:
         start: 1621
         end: 1625
     accesses:
-      - caller: 19
-        kind: DirectCall
+      - kind: DirectCall
         file_id: 0
         span:
           start: 1125
@@ -3741,8 +3734,7 @@ functions:
         start: 63
         end: 66
     accesses:
-      - caller: ~
-        kind: Reference
+      - kind: Reference
         file_id: 1
         span:
           start: 93

@@ -784,6 +784,25 @@ pub enum SymbolKind {
     Pending(ast::DefId),
 }
 
+/// Result of resolving a single-segment name. Separates the two categories
+/// of symbols: global items (registered in the symbol table) and local
+/// variables (stack-scoped within a function body).
+#[derive(Clone, Copy)]
+pub enum ResolvedSymbol {
+    Local { scope_index: ScopeIndex, local_index: LocalIndex },
+    Global(SymbolKind),
+}
+
+/// The kind of item found when resolving a member within a type namespace.
+/// All variants are `Copy` — no heap allocation.
+#[derive(Clone, Copy)]
+pub enum ResolvedMember {
+    Function { func_index: u32 },
+    Const { id: ast::DefId, ty: TypeIndex },
+    Global { global_index: u32 },
+    EnumVariant { enum_index: u32, variant_index: u32 },
+}
+
 #[derive(Clone, Copy)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImportValue {
@@ -956,7 +975,6 @@ pub enum FunctionAccessKind {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct FunctionAccess {
-    pub caller: Option<DefId>,
     pub kind: FunctionAccessKind,
     pub file_id: FileId,
     pub span: ast::TextSpan,

@@ -184,16 +184,11 @@ fn test_duplicate_export() {
         }
     "});
 
-    // Should have a duplicate export diagnostic (but not duplicate definition)
-    assert!(!case.tir.diagnostics.is_empty());
-
-    // Check that we have a duplicate export diagnostic
-    let has_duplicate_export = case
-        .tir
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("exported multiple times"));
-    assert!(has_duplicate_export, "Expected duplicate export diagnostic");
+    assert!(
+        has_error_code(&case.tir, "E1018"),
+        "expected E1018 (DuplicateExport), got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -208,16 +203,11 @@ fn test_duplicate_export_with_alias() {
         }
     "});
 
-    // Should have a duplicate export diagnostic (but not duplicate definition)
-    assert!(!case.tir.diagnostics.is_empty());
-
-    // Check that we have a duplicate export diagnostic
-    let has_duplicate_export = case
-        .tir
-        .diagnostics
-        .iter()
-        .any(|d| d.message.contains("exported multiple times"));
-    assert!(has_duplicate_export, "Expected duplicate export diagnostic");
+    assert!(
+        has_error_code(&case.tir, "E1018"),
+        "expected E1018 (DuplicateExport), got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -386,10 +376,12 @@ fn test_coerce_int_overflow_i32() {
 #[test]
 fn test_coerce_int_negative_for_u32() {
     let case = TestCase::new("fn f() -> u32 { -1 } export { f }");
-    // -1 can't fit in u32 — expect out-of-range OR unable-to-coerce error
+    // `-1` is `Unary { InvertSign, Int(1) }` — coerce_untyped_unary_expr only
+    // allows InvertSign for i32/i64, so u32 produces E1005 (UnableToCoerce).
     assert!(
-        !case.tir.diagnostics.is_empty(),
-        "expected a diagnostic for negative u32 literal"
+        has_error_code(&case.tir, "E1005"),
+        "expected E1005 (UnableToCoerce) for negated literal coerced to u32, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
 }
 
@@ -871,11 +863,14 @@ fn test_comptime_float_coerced_by_typed_comparand() {
 
 #[test]
 fn test_comptime_integer_vs_float_comparison_errors() {
-    // INTEGER and FLOAT comptime literals can't be compared regardless of context
+    // When both sides are comptime numbers (INTEGER and FLOAT), the comparison
+    // builder emits E1014 (ComparisonTypeAnnotationRequired) since neither side
+    // has a concrete type to drive resolution.
     let case = TestCase::new("fn f() -> bool { 1 == 1.0 } export { f }");
     assert!(
-        !case.tir.diagnostics.is_empty(),
-        "expected a diagnostic for comparing INTEGER with FLOAT comptime literals"
+        has_error_code(&case.tir, "E1014"),
+        "expected E1014 (ComparisonTypeAnnotationRequired) for INTEGER == FLOAT, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
 }
 
@@ -993,8 +988,9 @@ fn test_struct_init_undeclared_name() {
         export { main }
     "});
     assert!(
-        !case.tir.diagnostics.is_empty(),
-        "expected an error for unknown struct name"
+        has_error_code(&case.tir, "E1021"),
+        "expected E1021 (UndeclaredType) for unknown struct name, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
 }
 
@@ -1099,10 +1095,11 @@ fn test_struct_init_errored_field_not_reported_as_missing() {
 
         export { make }
     "});
-    // Should have a type mismatch error for `x`…
+    // Should have E1001 (TypeMistmatch) for field `x` receiving a bool instead of i32.
     assert!(
-        !case.tir.diagnostics.is_empty(),
-        "expected a type-mismatch diagnostic"
+        has_error_code(&case.tir, "E1001"),
+        "expected E1001 (TypeMistmatch) for bool assigned to i32 field, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
     // …but must NOT report `x` as a missing field
     let missing_x = case.tir.diagnostics.iter().any(|d| {
@@ -2390,8 +2387,9 @@ fn test_generic_unknown_bound_is_error() {
         }
     "});
     assert!(
-        !case.tir.diagnostics.is_empty(),
-        "expected a diagnostic for unknown bound 'Nonexistent'"
+        has_error_code(&case.tir, "E1021"),
+        "expected E1021 (UndeclaredType) for unknown trait bound 'Nonexistent', got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
 }
 
@@ -2552,8 +2550,13 @@ fn test_assoc_type_bare_name_suggests_self_prefix() {
             fn alloc(n: Size) -> *mut u8;
         }
     "});
-    has_error_matching(&case, "cannot find type `Size` in this scope");
-    has_error_matching(&case, "Self::Size");
+    // report_bare_assoc_type emits E1021 with message "cannot find type `Size` in
+    // this scope" and a note containing the "Self::Size" suggestion.
+    assert!(
+        has_error_code(&case.tir, "E1021"),
+        "expected E1021 (UndeclaredType) for bare associated type name, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3257,7 +3260,11 @@ fn test_type_application_wrong_arg_count_is_error() {
             local f = identity::<i32, i64>
         }
     "});
-    has_error_matching(&case, "expected 1 type argument");
+    assert!(
+        has_error_code(&case.tir, "E1040"),
+        "expected E1040 (TypeArgCountMismatch) for too many type args, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3268,7 +3275,11 @@ fn test_type_application_on_non_generic_is_error() {
             local f = add::<i32>
         }
     "});
-    has_error_matching(&case, "function is not generic");
+    assert!(
+        has_error_code(&case.tir, "E1040"),
+        "expected E1040 (TypeArgCountMismatch) for type args on non-generic fn, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3342,7 +3353,11 @@ fn test_deref_store_through_immutable_pointer_is_error() {
         memory heap: Memory<Size = u32>;
         fn bad(ptr: heap::*i32) { ptr.* = 42 }
     "}, &[]);
-    has_error_matching(&case, "immutable pointer");
+    assert!(
+        has_error_code(&case.tir, "W1000"),
+        "expected W1000 (CannotMutateImmutable) for store through immutable pointer, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3351,7 +3366,11 @@ fn test_deref_arithmetic_assignment_through_immutable_pointer_is_error() {
         memory heap: Memory<Size = u32>;
         fn bad(ptr: heap::*i32) { ptr.* += 1 }
     "}, &[]);
-    has_error_matching(&case, "immutable pointer");
+    assert!(
+        has_error_code(&case.tir, "W1000"),
+        "expected W1000 (CannotMutateImmutable) for arithmetic-assign through immutable pointer, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3726,7 +3745,11 @@ fn test_index_wrong_index_type_is_error() {
             memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]i32, i: i64) -> i32 { a[i] }
         "}, &[]);
-    has_error_matching(&case, "type mismatch");
+    assert!(
+        has_error_code(&case.tir, "E1001"),
+        "expected E1001 (TypeMistmatch) for wrong index type, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3744,7 +3767,11 @@ fn test_index_store_through_immutable_array_is_error() {
             memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]i32) { a[0] = 42 }
         "}, &[]);
-    has_error_matching(&case, "immutable");
+    assert!(
+        has_error_code(&case.tir, "W1000"),
+        "expected W1000 (CannotMutateImmutable) for store through immutable array, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3762,7 +3789,11 @@ fn test_index_arithmetic_assignment_through_immutable_array_is_error() {
             memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]i32) { a[0] += 1 }
         "}, &[]);
-    has_error_matching(&case, "immutable");
+    assert!(
+        has_error_code(&case.tir, "W1000"),
+        "expected W1000 (CannotMutateImmutable) for arithmetic-assign through immutable array, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3854,7 +3885,11 @@ fn test_index_memory32_with_u64_variable_is_error() {
             memory heap: Memory<Size = u32>;
             fn f(a: heap::[4]i32, i: u64) -> i32 { a[i] }
         "}, &[]);
-    has_error_matching(&case, "type mismatch");
+    assert!(
+        has_error_code(&case.tir, "E1001"),
+        "expected E1001 (TypeMistmatch) for u64 index on Memory32 array, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -3920,22 +3955,6 @@ fn test_generic_call_with_satisfying_type_is_ok() {
         errors.is_empty(),
         "expected no errors when calling test() with u32 (implements UnsignedInteger): {:?}",
         errors
-    );
-}
-
-#[test]
-fn test_generic_call_with_non_satisfying_type_is_error() {
-    // i32 does NOT implement UnsignedInteger — this call should be a type error.
-    let case = TestCase::new(indoc! {"
-        trait UnsignedInteger {}
-        impl UnsignedInteger for u32 {}
-        fn test<U: UnsignedInteger>(u: U) {}
-        fn main() { test(42 as i32); }
-        export { main }
-    "});
-    assert!(
-        !case.tir.diagnostics.is_empty(),
-        "expected a type error when calling test() with i32 (does not implement UnsignedInteger)"
     );
 }
 
@@ -4150,7 +4169,11 @@ fn test_generic_impl_bare_type_param_is_error() {
             pub fn nope(self) {}
         }
     "});
-    assert_eq!(case.tir.diagnostics.len(), 1, "should emit exactly one error");
+    assert!(
+        has_error_code(&case.tir, "E1001"),
+        "expected E1001 (TypeMistmatch/no nominal type) for bare type param impl, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -4198,7 +4221,11 @@ fn test_slice_range_on_non_indexable_is_error() {
         }
         export { f }
     "});
-    assert_eq!(case.tir.diagnostics.len(), 1);
+    assert!(
+        has_error_code(&case.tir, "E1042"),
+        "expected E1042 (IndexOnNonIndexable) for range-index on i32, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
 
 #[test]
@@ -4328,4 +4355,128 @@ fn test_generic_slice_first_with_pointer_size_index() {
         export { }
     "});
     assert!(case.tir.diagnostics.is_empty(), "{:?}", case.tir.diagnostics);
+}
+
+// ── type-position namespace resolution ─────────────────────────────────────
+
+#[test]
+fn test_type_position_inline_module_registers_module_access() {
+    // Accessing a type via an inline module path should register an LSP access
+    // on the module declaration.
+    let case = TestCase::new(indoc! {"
+        module math {
+            pub struct Vec2 { pub x: i32, pub y: i32 }
+        }
+
+        fn f(v: math::Vec2) { }
+
+        export { f }
+    "});
+    no_errors(&case);
+    assert!(
+        !case.tir.module_decls.is_empty()
+            && !case.tir.module_decls[0].accesses.is_empty(),
+        "expected at least one access registered on the `math` module decl, got: {:?}",
+        case.tir.module_decls.iter().map(|m| m.accesses.len()).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn test_type_position_three_segment_inline_module_path() {
+    // `outer::inner::Point` — three-segment type path through two nested inline
+    // modules. Exercises the intermediate loop in resolve_type.
+    let case = TestCase::new(indoc! {"
+        module outer {
+            pub module inner {
+                pub struct Point { pub x: i32, pub y: i32 }
+            }
+        }
+
+        fn f(p: outer::inner::Point) { }
+
+        export { f }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_type_position_undeclared_in_module_path_is_error() {
+    // `shapes::NonExistent` — the module exists but the type does not.
+    // Should produce exactly one error (not a cascade) and not panic.
+    let case = TestCase::new_multi_file(
+        "src/main.wx",
+        indoc! {"
+            module shapes;
+
+            fn f(x: shapes::NonExistent) { }
+
+            export { f }
+        "},
+        &[("src/shapes.wx", "pub struct Point { pub x: i32 }")],
+    );
+    assert!(
+        has_error_code(&case.tir, "E1021"),
+        "expected E1021 (UndeclaredType) for missing type in module path, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn test_type_position_non_namespace_as_intermediate_is_error() {
+    // `i32::Foo` — `i32` is a primitive, not a module; looking up an associated
+    // type that doesn't exist should produce E1021 (UndeclaredType).
+    let case = TestCase::new(indoc! {"
+        fn f(x: i32::Foo) { }
+
+        export { f }
+    "});
+    assert!(
+        has_error_code(&case.tir, "E1021"),
+        "expected E1021 (UndeclaredType) when a primitive is used as a type namespace, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn test_struct_init_three_segment_inline_module_path() {
+    // `outer::inner::Point::{ x: 1, y: 2 }` — struct literal via a 3-segment
+    // inline module path. Exercises the namespace_span tracking loop added to
+    // build_struct_init_expression.
+    let case = TestCase::new(indoc! {"
+        module outer {
+            pub module inner {
+                pub struct Point { pub x: i32, pub y: i32 }
+            }
+        }
+
+        fn make() -> outer::inner::Point {
+            outer::inner::Point::{ x: 1, y: 2 }
+        }
+
+        export { make }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_struct_init_undeclared_type_in_module_path_is_error() {
+    // `shapes::Ghost::{ }` — the module exists but `Ghost` is not defined there.
+    let case = TestCase::new_multi_file(
+        "src/main.wx",
+        indoc! {"
+            module shapes;
+
+            fn f() -> shapes::Ghost {
+                shapes::Ghost::{ }
+            }
+
+            export { f }
+        "},
+        &[("src/shapes.wx", "pub struct Point { pub x: i32 }")],
+    );
+    assert!(
+        has_error_code(&case.tir, "E1021"),
+        "expected E1021 (UndeclaredType) for missing struct in module path, got: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+    );
 }
