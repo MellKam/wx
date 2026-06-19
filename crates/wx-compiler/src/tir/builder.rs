@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::tir::*;
+use crate::{ast::MethodCallExpr, tir::*};
 
 struct FunctionContext {
     lookup: HashMap<(ScopeIndex, SymbolU32), LocalIndex>,
@@ -554,6 +554,39 @@ fn report_float_literal_for_integer_type(span: SourceSpan) -> Diagnostic<FileId>
         .with_message("cannot use a float literal for an integer type")
         .with_label(span.primary_label())
         .with_note("remove the decimal point, e.g. `1` instead of `1.0`")
+}
+
+fn report_method_not_found(
+    span: SourceSpan,
+    formatter: TypeFormatter<'_>,
+    method: SymbolU32,
+    ty: TypeIndex,
+) -> Diagnostic<FileId> {
+    let method_name = formatter.interner.resolve(method).unwrap_or("?");
+    let type_name = formatter.display_type(ty).unwrap();
+    Diagnostic::error()
+        .with_code(DiagnosticCode::MethodNotFound.code())
+        .with_message(format!(
+            "no method `{method_name}` found for type `{type_name}`"
+        ))
+        .with_label(span.primary_label())
+}
+
+fn report_not_a_method(
+    span: SourceSpan,
+    formatter: TypeFormatter<'_>,
+    method: SymbolU32,
+    ty: TypeIndex,
+) -> Diagnostic<FileId> {
+    let member_name = formatter.interner.resolve(method).unwrap_or("?");
+    let type_name = formatter.display_type(ty).unwrap();
+    Diagnostic::error()
+        .with_code(DiagnosticCode::NotAMethod.code())
+        .with_message(format!(
+            "`{member_name}` is not a method on type `{type_name}`"
+        ))
+        .with_label(span.primary_label())
+        .with_note("use `::` to access associated items")
 }
 
 fn report_undeclared_identifier(span: SourceSpan) -> Diagnostic<FileId> {
@@ -2107,7 +2140,7 @@ impl<'ast> Builder<'ast, '_> {
                         }
                         self.tir.structs[struct_index as usize]
                             .accesses
-                            .push(SourceSpan::new(resolve_context.file_id, type_expr.span));
+                            .push(SourceSpan::new(resolve_context.file_id, name.span));
                         self.intern_type(Type::Struct {
                             struct_index,
                             args: positional_args,
@@ -6079,6 +6112,9 @@ impl<'ast> Builder<'ast, '_> {
                 self.build_unary_expression(func_ctx, access_ctx, expr)
             }
             ast::Expression::Call { .. } => self.build_call_expression(func_ctx, access_ctx, expr),
+            ast::Expression::MethodCall(_) => {
+                self.build_method_call_expression(func_ctx, access_ctx, expr)
+            }
             ast::Expression::ObjectAccess { object, member } => self
                 .build_object_access_expression(
                     func_ctx,
@@ -6411,7 +6447,6 @@ impl<'ast> Builder<'ast, '_> {
             )));
         Err(())
     }
-
 
     /// Build a TIR expression from a parsed `Path`.
     ///
@@ -7547,10 +7582,11 @@ impl<'ast> Builder<'ast, '_> {
         _args: &[Spanned<ast::TypeExpression>],
         expr_span: ast::TextSpan,
     ) -> Result<Expression, ()> {
-        // TypeApplication on a non-identifier callee (e.g. `obj.method::<T>()`).
-        // Identifier-started turbofish (`fn_name::<T>()`) is fully handled by
-        // build_path_expression via the Path variant and never reaches here.
-        // Type args on method calls are not yet semantically resolved; build
+        // TypeApplication on a non-path callee, e.g. a bare `obj.field::<T>`
+        // without a following call.  Method turbofish calls (`obj.m::<T>(args)`)
+        // are handled by MethodCall.  Identifier-started turbofish (`f::<T>()`)
+        // is fully handled by build_path_expression and never reaches here.
+        // Type args are not semantically resolved for these forms; just build
         // the callee and carry its type through.
         let mut result = self.build_expression(
             func_ctx,
@@ -9473,262 +9509,309 @@ impl<'ast> Builder<'ast, '_> {
             Type::Function { signature } => signature.clone(),
             _ => unreachable!(),
         };
-        match callee.kind {
-            ExprKind::ObjectAccess { member, object } => {
-                let method_entry = match &self.tir.type_pool[object.ty.as_usize()] {
-                    Type::Trait { trait_index } => self.tir.traits[*trait_index as usize]
-                        .members
-                        .get(&member.inner)
-                        .cloned(),
-                    Type::TypeParam { .. } => {
-                        self.type_param_bounds(object.ty).iter().find_map(|&ti| {
-                            self.tir.traits[ti as usize]
-                                .members
-                                .get(&member.inner)
-                                .cloned()
-                        })
-                    }
-                    _ => self
-                        .tir
-                        .impl_members
-                        .get(&object.ty)
-                        .and_then(|m| m.get(&member.inner))
-                        .cloned(),
-                };
-                match method_entry {
-                    Some(ImplEntry::Method(func_index)) => {
-                        if let Some(access) =
-                            self.tir.functions[func_index as usize].accesses.last_mut()
-                        {
-                            access.kind = FunctionAccessKind::DirectCall;
-                        }
-                        let id = self.tir.functions[func_index as usize].id;
-                        let non_self_params = &signature.params()[1..];
-                        if arguments.len() != non_self_params.len() {
-                            self.tir.diagnostics.push(report_argument_count_mismatch(
-                                TypeFormatter::new(&self.tir, &self.interner),
-                                ArgumentCountMismatchDiagnostic {
-                                    actual_count: arguments.len(),
-                                    params: non_self_params,
-                                    call_span: SourceSpan::new(
-                                        ctx.resolve_context.file_id,
-                                        callee.span,
-                                    ),
-                                    is_method: true,
-                                },
-                            ));
-                        }
+        let params = signature.params();
+        if arguments.len() != params.len() {
+            self.tir.diagnostics.push(report_argument_count_mismatch(
+                TypeFormatter::new(&self.tir, &self.interner),
+                ArgumentCountMismatchDiagnostic {
+                    actual_count: arguments.len(),
+                    params,
+                    call_span: SourceSpan::new(ctx.resolve_context.file_id, callee.span),
+                    is_method: false,
+                },
+            ));
+        }
 
-                        let type_params_len =
-                            self.tir.functions[func_index as usize].type_params.len();
-                        if type_params_len > 0 {
-                            let mut arguments = std::iter::once(Ok(*object))
-                                .chain(arguments.iter().map(|arg| {
-                                    self.build_expression(
-                                        ctx,
-                                        AccessContext {
-                                            expected_type: None,
-                                            access_kind: AccessKind::Read,
-                                        },
-                                        &arg.inner,
-                                    )
-                                }))
-                                .collect::<Result<Box<_>, _>>()?;
-                            let type_args = self.build_generic_call_arguments(
-                                ctx.resolve_context.file_id,
-                                func_index,
-                                &mut arguments,
-                                None,
-                                access_ctx.expected_type,
-                            )?;
-                            self.check_typeset_bounds_on_type_args(
-                                func_index,
-                                &type_args,
-                                ctx.resolve_context.file_id,
-                                expr.span,
-                            );
-                            let return_ty = self.substitute_type(signature.result(), &type_args);
-
-                            return Ok(Expression {
-                                kind: ExprKind::GenericMethodCall {
-                                    id,
-                                    type_args,
-                                    arguments,
-                                },
-                                ty: return_ty,
-                                span: expr.span,
-                            });
-                        }
-
-                        let arguments =
-                            self.build_call_arguments(ctx, arguments, non_self_params, &[])?;
-                        Ok(Expression {
-                            kind: ExprKind::MethodCall {
-                                arguments: std::iter::once(*object).chain(arguments).collect(),
-                                id,
-                            },
-                            ty: signature.result(),
-                            span: expr.span,
-                        })
-                    }
-                    _ => {
-                        if let Some((block_idx, type_args)) =
-                            self.find_generic_impl(object.ty, member.inner)
-                        {
-                            if let Some(ImplEntry::Method(func_index)) = self.tir.generic_impl_list
-                                [block_idx]
-                                .members
-                                .get(&member.inner)
-                                .cloned()
-                            {
-                                if let Some(access) =
-                                    self.tir.functions[func_index as usize].accesses.last_mut()
-                                {
-                                    access.kind = FunctionAccessKind::DirectCall;
-                                }
-                                let id = self.tir.functions[func_index as usize].id;
-                                let params = &signature.params()[1..];
-                                if arguments.len() != params.len() {
-                                    self.tir.diagnostics.push(report_argument_count_mismatch(
-                                        TypeFormatter::new(&self.tir, &self.interner),
-                                        ArgumentCountMismatchDiagnostic {
-                                            actual_count: arguments.len(),
-                                            params,
-                                            call_span: SourceSpan::new(
-                                                ctx.resolve_context.file_id,
-                                                callee.span,
-                                            ),
-                                            is_method: true,
-                                        },
-                                    ));
-                                }
-                                let arguments =
-                                    self.build_call_arguments(ctx, arguments, params, &type_args)?;
-                                let return_ty =
-                                    self.substitute_type(signature.result(), &type_args);
-
-                                return Ok(Expression {
-                                    kind: ExprKind::GenericMethodCall {
-                                        id,
-                                        type_args,
-                                        arguments: std::iter::once(*object)
-                                            .chain(arguments)
-                                            .collect(),
-                                    },
-                                    ty: return_ty,
-                                    span: expr.span,
-                                });
-                            }
-                        }
-                        todo!(
-                            "report error for calling unknown member or associated function as method"
-                        )
-                    }
+        let direct_id = match &callee.kind {
+            ExprKind::Function { id } => Some(*id),
+            ExprKind::NamespaceAccess { member, .. } => {
+                if let ExprKind::Function { id } = &member.kind {
+                    Some(*id)
+                } else {
+                    None
                 }
             }
-            _ => {
-                let params = signature.params();
-                if arguments.len() != params.len() {
+            _ => None,
+        };
+        if let Some(id) = direct_id {
+            let func_index = self.tir.function_index_lookup[&id];
+            if let Some(access) = self.tir.functions[func_index as usize].accesses.last_mut() {
+                access.kind = FunctionAccessKind::DirectCall;
+            }
+
+            let type_params_len = self.tir.functions[func_index as usize].type_params.len();
+            if type_params_len > 0 {
+                // Turbofish type args are stored inside the FunctionItem type
+                // by build_path_expression. Seed them before inference so
+                // explicit args take priority over argument-inferred ones.
+                let callee_ty = callee.ty;
+                let turbofish: Vec<TypeIndex> = match &self.tir.type_pool[callee_ty.as_usize()] {
+                    Type::FunctionItem { type_args, .. } if !type_args.is_empty() => {
+                        type_args.to_vec()
+                    }
+                    _ => vec![],
+                };
+                let turbofish_seed: Option<&[TypeIndex]> = if turbofish.is_empty() {
+                    None
+                } else {
+                    Some(&turbofish)
+                };
+
+                let mut built_args = Vec::with_capacity(arguments.len());
+                for arg in arguments.iter() {
+                    built_args.push(self.build_expression(
+                        ctx,
+                        AccessContext {
+                            expected_type: None,
+                            access_kind: AccessKind::Read,
+                        },
+                        &arg.inner,
+                    )?);
+                }
+
+                let type_args = self.build_generic_call_arguments(
+                    ctx.resolve_context.file_id,
+                    func_index,
+                    &mut built_args,
+                    turbofish_seed,
+                    access_ctx.expected_type,
+                )?;
+                self.check_typeset_bounds_on_type_args(
+                    func_index,
+                    &type_args,
+                    ctx.resolve_context.file_id,
+                    expr.span,
+                );
+                let return_ty = self.substitute_type(signature.result(), &type_args);
+
+                return Ok(Expression {
+                    kind: ExprKind::GenericCall {
+                        id,
+                        type_args,
+                        arguments: built_args.into_boxed_slice(),
+                    },
+                    ty: return_ty,
+                    span: expr.span,
+                });
+            }
+        }
+
+        // Non-generic call (direct or indirect).
+        let arguments = self.build_call_arguments(ctx, arguments, params, &[])?;
+        Ok(Expression {
+            kind: ExprKind::Call {
+                callee: Box::new(callee),
+                arguments,
+            },
+            ty: signature.result(),
+            span: expr.span,
+        })
+    }
+
+    fn build_method_call_expression(
+        &mut self,
+        ctx: &mut FunctionContext,
+        access_ctx: AccessContext,
+        expr: &Spanned<ast::Expression>,
+    ) -> Result<Expression, ()> {
+        let MethodCallExpr {
+            arguments,
+            method,
+            object,
+            type_args,
+        } = match &expr.inner {
+            ast::Expression::MethodCall(method_call) => method_call.as_ref(),
+            _ => unreachable!(),
+        };
+
+        let object = self.build_expression(
+            ctx,
+            AccessContext {
+                expected_type: None,
+                access_kind: AccessKind::Read,
+            },
+            &object,
+        )?;
+
+        let method_entry = match &self.tir.type_pool[object.ty.as_usize()] {
+            Type::Trait { trait_index } => self.tir.traits[*trait_index as usize]
+                .members
+                .get(&method.inner)
+                .cloned(),
+            Type::TypeParam { .. } => self.type_param_bounds(object.ty).iter().find_map(|&ti| {
+                self.tir.traits[ti as usize]
+                    .members
+                    .get(&method.inner)
+                    .cloned()
+            }),
+            _ => self
+                .tir
+                .impl_members
+                .get(&object.ty)
+                .and_then(|m| m.get(&method.inner))
+                .cloned(),
+        };
+
+        match method_entry {
+            Some(ImplEntry::Method(func_index)) => {
+                let caller_id = self.tir.functions[ctx.func_index as usize].id;
+                self.tir.functions[func_index as usize]
+                    .accesses
+                    .push(FunctionAccess {
+                        caller: Some(caller_id),
+                        kind: FunctionAccessKind::DirectCall,
+                        file_id: ctx.resolve_context.file_id,
+                        span: method.span,
+                    });
+                let id = self.tir.functions[func_index as usize].id;
+                let signature_index = self.tir.functions[func_index as usize].signature_index;
+                let signature = match &self.tir.type_pool[signature_index.as_usize()] {
+                    Type::Function { signature } => signature.clone(),
+                    _ => unreachable!(),
+                };
+                let non_self_params = &signature.params()[1..];
+                if arguments.len() != non_self_params.len() {
                     self.tir.diagnostics.push(report_argument_count_mismatch(
                         TypeFormatter::new(&self.tir, &self.interner),
                         ArgumentCountMismatchDiagnostic {
                             actual_count: arguments.len(),
-                            params,
-                            call_span: SourceSpan::new(ctx.resolve_context.file_id, callee.span),
-                            is_method: false,
+                            params: non_self_params,
+                            call_span: SourceSpan::new(ctx.resolve_context.file_id, object.span),
+                            is_method: true,
                         },
                     ));
                 }
 
-                let direct_id = match &callee.kind {
-                    ExprKind::Function { id } => Some(*id),
-                    ExprKind::NamespaceAccess { member, .. } => {
-                        if let ExprKind::Function { id } = &member.kind {
-                            Some(*id)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-                if let Some(id) = direct_id {
-                    let func_index = self.tir.function_index_lookup[&id];
-                    if let Some(access) =
-                        self.tir.functions[func_index as usize].accesses.last_mut()
-                    {
-                        access.kind = FunctionAccessKind::DirectCall;
-                    }
-
-                    let type_params_len = self.tir.functions[func_index as usize].type_params.len();
-                    if type_params_len > 0 {
-                        // Turbofish type args are stored inside the FunctionItem type
-                        // by build_path_expression. Seed them before inference so
-                        // explicit args take priority over argument-inferred ones.
-                        let callee_ty = callee.ty;
-                        let turbofish: Vec<TypeIndex> =
-                            match &self.tir.type_pool[callee_ty.as_usize()] {
-                                Type::FunctionItem { type_args, .. } if !type_args.is_empty() => {
-                                    type_args.to_vec()
-                                }
-                                _ => vec![],
-                            };
-                        let turbofish_seed: Option<&[TypeIndex]> = if turbofish.is_empty() {
-                            None
-                        } else {
-                            Some(&turbofish)
-                        };
-
-                        let mut built_args = Vec::with_capacity(arguments.len());
-                        for arg in arguments.iter() {
-                            built_args.push(self.build_expression(
+                let type_params_len = self.tir.functions[func_index as usize].type_params.len();
+                if type_params_len > 0 {
+                    let mut built_arguments = std::iter::once(Ok(object))
+                        .chain(arguments.iter().map(|arg| {
+                            self.build_expression(
                                 ctx,
                                 AccessContext {
                                     expected_type: None,
                                     access_kind: AccessKind::Read,
                                 },
                                 &arg.inner,
-                            )?);
-                        }
-
-                        let type_args = self.build_generic_call_arguments(
-                            ctx.resolve_context.file_id,
-                            func_index,
-                            &mut built_args,
-                            turbofish_seed,
-                            access_ctx.expected_type,
-                        )?;
-                        self.check_typeset_bounds_on_type_args(
-                            func_index,
-                            &type_args,
-                            ctx.resolve_context.file_id,
-                            expr.span,
-                        );
-                        let return_ty = self.substitute_type(signature.result(), &type_args);
-
-                        return Ok(Expression {
-                            kind: ExprKind::GenericCall {
-                                id,
-                                type_args,
-                                arguments: built_args.into_boxed_slice(),
-                            },
-                            ty: return_ty,
-                            span: expr.span,
-                        });
-                    }
+                            )
+                        }))
+                        .collect::<Result<Box<_>, _>>()?;
+                    let type_args = self.build_generic_call_arguments(
+                        ctx.resolve_context.file_id,
+                        func_index,
+                        &mut built_arguments,
+                        None,
+                        access_ctx.expected_type,
+                    )?;
+                    self.check_typeset_bounds_on_type_args(
+                        func_index,
+                        &type_args,
+                        ctx.resolve_context.file_id,
+                        expr.span,
+                    );
+                    let return_ty = self.substitute_type(signature.result(), &type_args);
+                    return Ok(Expression {
+                        kind: ExprKind::GenericMethodCall {
+                            id,
+                            type_args,
+                            arguments: built_arguments,
+                        },
+                        ty: return_ty,
+                        span: expr.span,
+                    });
                 }
 
-                // Non-generic call (direct or indirect).
-                let arguments = self.build_call_arguments(ctx, arguments, params, &[])?;
-                Ok(Expression {
-                    kind: ExprKind::Call {
-                        callee: Box::new(callee),
-                        arguments,
+                let args = self.build_call_arguments(ctx, &arguments, non_self_params, &[])?;
+                return Ok(Expression {
+                    kind: ExprKind::MethodCall {
+                        arguments: std::iter::once(object).chain(args).collect(),
+                        id,
                     },
                     ty: signature.result(),
                     span: expr.span,
-                })
+                });
+            }
+            Some(_) => {
+                self.tir.diagnostics.push(report_not_a_method(
+                    SourceSpan::new(ctx.resolve_context.file_id, method.span),
+                    TypeFormatter::new(&self.tir, &self.interner),
+                    method.inner,
+                    object.ty,
+                ));
+                return Err(());
+            }
+            None => { /* gonna try to look for generic impl entries */ }
+        }
+
+        if let Some((block_idx, type_args)) = self.find_generic_impl(object.ty, method.inner) {
+            match self.tir.generic_impl_list[block_idx]
+                .members
+                .get(&method.inner)
+                .cloned()
+            {
+                Some(ImplEntry::Method(func_index)) => {
+                    let caller_id = self.tir.functions[ctx.func_index as usize].id;
+                    self.tir.functions[func_index as usize]
+                        .accesses
+                        .push(FunctionAccess {
+                            caller: Some(caller_id),
+                            kind: FunctionAccessKind::DirectCall,
+                            file_id: ctx.resolve_context.file_id,
+                            span: method.span,
+                        });
+                    let id = self.tir.functions[func_index as usize].id;
+                    let signature_index = self.tir.functions[func_index as usize].signature_index;
+                    let signature = match &self.tir.type_pool[signature_index.as_usize()] {
+                        Type::Function { signature } => signature.clone(),
+                        _ => unreachable!(),
+                    };
+                    let params = &signature.params()[1..];
+                    if arguments.len() != params.len() {
+                        self.tir.diagnostics.push(report_argument_count_mismatch(
+                            TypeFormatter::new(&self.tir, &self.interner),
+                            ArgumentCountMismatchDiagnostic {
+                                actual_count: arguments.len(),
+                                params,
+                                call_span: SourceSpan::new(
+                                    ctx.resolve_context.file_id,
+                                    object.span,
+                                ),
+                                is_method: true,
+                            },
+                        ));
+                    }
+                    let args = self.build_call_arguments(ctx, &arguments, params, &type_args)?;
+                    let return_ty = self.substitute_type(signature.result(), &type_args);
+                    return Ok(Expression {
+                        kind: ExprKind::GenericMethodCall {
+                            id,
+                            type_args,
+                            arguments: std::iter::once(object).chain(args).collect(),
+                        },
+                        ty: return_ty,
+                        span: expr.span,
+                    });
+                }
+                Some(_) => {
+                    self.tir.diagnostics.push(report_not_a_method(
+                        SourceSpan::new(ctx.resolve_context.file_id, method.span),
+                        TypeFormatter::new(&self.tir, &self.interner),
+                        method.inner,
+                        object.ty,
+                    ));
+                    return Err(());
+                }
+                None => { /* didn't found neither direct or generic impl entry */ }
             }
         }
+
+        self.tir.diagnostics.push(report_method_not_found(
+            SourceSpan::new(ctx.resolve_context.file_id, method.span),
+            TypeFormatter::new(&self.tir, &self.interner),
+            method.inner,
+            object.ty,
+        ));
+        Err(())
     }
 
     fn build_local_definition_statement(

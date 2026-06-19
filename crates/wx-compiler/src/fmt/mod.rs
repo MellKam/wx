@@ -1051,6 +1051,33 @@ impl Builder {
                 items.push(Node::StaticText(")"));
                 Node::Concat(items.into())
             }
+            Expression::MethodCall(mc) => {
+                let (object, method, type_args, arguments) =
+                    (&mc.object, &mc.method, &mc.type_args, &mc.arguments);
+                let mut items = Vec::new();
+                items.push(Self::build_expression(interner, source, object));
+                items.push(Node::StaticText("."));
+                items.push(Self::symbol(interner, method.inner));
+                if !type_args.is_empty() {
+                    items.push(Node::StaticText("::<"));
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            items.push(Node::StaticText(", "));
+                        }
+                        items.push(Self::build_type_expression(interner, &arg.inner));
+                    }
+                    items.push(Node::StaticText(">"));
+                }
+                items.push(Node::StaticText("("));
+                for (index, arg) in arguments.iter().enumerate() {
+                    items.push(Self::build_expression(interner, source, &arg.inner));
+                    if index + 1 < arguments.len() {
+                        items.push(Node::StaticText(", "));
+                    }
+                }
+                items.push(Node::StaticText(")"));
+                Node::Concat(items.into())
+            }
             Expression::Label { label, block } => {
                 let mut items = Vec::new();
                 items.push(Self::symbol(interner, label.inner));

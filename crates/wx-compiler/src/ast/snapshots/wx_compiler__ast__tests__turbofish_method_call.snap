@@ -56,56 +56,44 @@ items:
                       inner:
                         Expression:
                           inner:
-                            Call:
-                              callee:
+                            MethodCall:
+                              object:
                                 inner:
-                                  TypeApplication:
-                                    callee:
-                                      inner:
-                                        ObjectAccess:
-                                          object:
-                                            inner:
-                                              Path:
-                                                segments:
-                                                  - ident:
-                                                      inner: 2
-                                                      span:
-                                                        start: 24
-                                                        end: 27
-                                                    type_args: []
-                                                span:
-                                                  start: 24
-                                                  end: 27
-                                            span:
-                                              start: 24
-                                              end: 27
-                                          member:
-                                            inner: 4
-                                            span:
-                                              start: 28
-                                              end: 37
-                                      span:
-                                        start: 24
-                                        end: 37
-                                    args:
-                                      - inner:
-                                          Path:
-                                            segments:
-                                              - ident:
-                                                  inner: 5
-                                                  span:
-                                                    start: 40
-                                                    end: 43
-                                                type_args: []
+                                  Path:
+                                    segments:
+                                      - ident:
+                                          inner: 2
+                                          span:
+                                            start: 24
+                                            end: 27
+                                        type_args: []
+                                    span:
+                                      start: 24
+                                      end: 27
+                                span:
+                                  start: 24
+                                  end: 27
+                              method:
+                                inner: 4
+                                span:
+                                  start: 28
+                                  end: 37
+                              type_args:
+                                - inner:
+                                    Path:
+                                      segments:
+                                        - ident:
+                                            inner: 5
                                             span:
                                               start: 40
                                               end: 43
-                                        span:
-                                          start: 40
-                                          end: 43
-                                span:
-                                  start: 24
-                                  end: 44
+                                          type_args: []
+                                      span:
+                                        start: 40
+                                        end: 43
+                                  span:
+                                    start: 40
+                                    end: 43
                               arguments: []
                           span:
                             start: 24

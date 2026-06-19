@@ -67,23 +67,13 @@ impl <M: Memory, T> Vec<M, T> {
         ((self.buf as u32 + i * @size_of<T, heap>()) as heap::*T).*
     }
 
-    fn length(self) -> M::Size {
+    fn len(self) -> M::Size {
         self.len
     }
 }
 
 pub fn vec_new<T>() -> Vec<heap, T> {
     Vec::<heap, T>::{ buf: null(), len: 0, cap: 0 }
-}
-
-pub fn vec_push<T>(v: Vec<heap, T>, value: T) -> Vec<heap, T> {}
-
-pub fn vec_get<T>(v: Vec<heap, T>, i: u32) -> T {
-    ((v.buf as u32 + i * @size_of<T, heap>()) as heap::*T).*
-}
-
-pub fn vec_len<T>(v: Vec<heap, T>) -> u32 {
-    v.len
 }
 
 pub fn demo() -> i32 {
@@ -93,11 +83,13 @@ pub fn demo() -> i32 {
     v.push(30);
     v.push(40);
     v.push(50);
+
+    foo();
     
     local mut sum: i32 = 0;
     local mut i: u32 = 0;
     loop {
-        if i == v.length() {
+        if i == v.len() {
             break sum
         }
         sum += v.get(i);

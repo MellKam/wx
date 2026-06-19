@@ -3838,7 +3838,7 @@ structs:
       - file_id: 1
         span:
           start: 52
-          end: 61
+          end: 56
       - file_id: 1
         span:
           start: 68

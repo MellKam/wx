@@ -336,21 +336,45 @@ impl IntegerRange {
     /// Returns the range for a single integer primitive type, or `None` if `ty` is not one.
     pub fn for_integer_type(ty: TypeIndex) -> Option<Self> {
         if ty == TypeIndex::I8 {
-            Some(Self { min: i8::MIN as i64 as u64, max: i8::MAX as u64 })
+            Some(Self {
+                min: i8::MIN as i64 as u64,
+                max: i8::MAX as u64,
+            })
         } else if ty == TypeIndex::U8 {
-            Some(Self { min: 0, max: u8::MAX as u64 })
+            Some(Self {
+                min: 0,
+                max: u8::MAX as u64,
+            })
         } else if ty == TypeIndex::I16 {
-            Some(Self { min: i16::MIN as i64 as u64, max: i16::MAX as u64 })
+            Some(Self {
+                min: i16::MIN as i64 as u64,
+                max: i16::MAX as u64,
+            })
         } else if ty == TypeIndex::U16 {
-            Some(Self { min: 0, max: u16::MAX as u64 })
+            Some(Self {
+                min: 0,
+                max: u16::MAX as u64,
+            })
         } else if ty == TypeIndex::I32 {
-            Some(Self { min: i32::MIN as i64 as u64, max: i32::MAX as u64 })
+            Some(Self {
+                min: i32::MIN as i64 as u64,
+                max: i32::MAX as u64,
+            })
         } else if ty == TypeIndex::U32 {
-            Some(Self { min: 0, max: u32::MAX as u64 })
+            Some(Self {
+                min: 0,
+                max: u32::MAX as u64,
+            })
         } else if ty == TypeIndex::I64 {
-            Some(Self { min: i64::MIN as u64, max: i64::MAX as u64 })
+            Some(Self {
+                min: i64::MIN as u64,
+                max: i64::MAX as u64,
+            })
         } else if ty == TypeIndex::U64 {
-            Some(Self { min: 0, max: u64::MAX })
+            Some(Self {
+                min: 0,
+                max: u64::MAX,
+            })
         } else {
             None
         }
@@ -358,12 +382,19 @@ impl IntegerRange {
 
     /// The widest possible range — the identity element for [`intersect`](Self::intersect).
     pub fn widest() -> Self {
-        Self { min: i64::MIN as u64, max: u64::MAX }
+        Self {
+            min: i64::MIN as u64,
+            max: u64::MAX,
+        }
     }
 
     /// Narrows this range to the overlap with `other` (greatest lower bound, least upper bound).
     pub fn intersect(self, other: Self) -> Self {
-        let min = if (self.min as i64) >= (other.min as i64) { self.min } else { other.min };
+        let min = if (self.min as i64) >= (other.min as i64) {
+            self.min
+        } else {
+            other.min
+        };
         let max = self.max.min(other.max);
         Self { min, max }
     }
@@ -1075,6 +1106,8 @@ define_diagnostic_codes! {
         TypesetMemberNotInteger => "E1046",
         TypesetBoundViolation => "E1047",
         MultipleTypesetBounds => "E1048",
+        MethodNotFound => "E1049",
+        NotAMethod => "E1050",
     }
 }
 
@@ -1116,7 +1149,7 @@ pub struct Struct {
 
 pub struct TypeFormatter<'a> {
     tir: &'a TIR,
-    interner: &'a ast::StringInterner,
+    pub interner: &'a ast::StringInterner,
     type_params: &'a [TypeParamInfo],
 }
 
@@ -1132,6 +1165,39 @@ impl<'a> TypeFormatter<'a> {
     pub fn with_type_params(mut self, type_params: &'a [TypeParamInfo]) -> Self {
         self.type_params = type_params;
         self
+    }
+
+    pub fn display_kind(&self, idx: TypeIndex) -> &'static str {
+        match &self.tir.type_pool[idx.as_usize()] {
+            Type::Struct { .. } => "struct",
+            Type::Function { .. } | Type::FunctionItem { .. } => "function",
+            Type::Enum { .. } => "enum",
+            Type::Trait { .. } => "trait",
+            Type::F32 | Type::F64 | Type::Float => "float",
+            Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Integer => "integer",
+            Type::Bool => "bool",
+            Type::Char => "char",
+            Type::Module { .. } => "module",
+            Type::Memory { .. } => "memory",
+            Type::Unit { .. } => "unit",
+            Type::TypeSet { .. } => "typeset",
+            Type::Array { .. } => "array",
+            Type::Slice { .. } => "slice",
+            Type::Pointer { .. } => "pointer",
+            Type::Tuple { .. } => "tuple",
+            Type::Error { .. } => "{unknown}",
+            Type::Never { .. } => "never",
+            Type::AssocTypeProjection { .. } | Type::AssociatedType { .. } => "type",
+            Type::TypeParam { .. } => "generic",
+        }
     }
 
     pub fn display_type(&self, idx: TypeIndex) -> Result<String, std::fmt::Error> {

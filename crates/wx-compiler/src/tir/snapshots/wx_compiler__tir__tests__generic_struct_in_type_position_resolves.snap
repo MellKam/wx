@@ -3845,7 +3845,7 @@ structs:
       - file_id: 1
         span:
           start: 41
-          end: 53
+          end: 48
 impl_members:
   16:
     41:

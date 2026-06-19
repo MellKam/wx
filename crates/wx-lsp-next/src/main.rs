@@ -25,7 +25,7 @@ use tower_lsp_server::ls_types::{
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use wx_compiler::ast;
 use wx_compiler::ast::TextSpan;
-use wx_compiler::tir::{SourceSpan, TIR, TypeParamOwner};
+use wx_compiler::tir::{SourceSpan, TIR, TypeParamInfo, TypeParamOwner};
 use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
 
 mod symbol_index;
@@ -1024,6 +1024,33 @@ fn diagnostic_related_information(
     (!infos.is_empty()).then_some(infos)
 }
 
+fn push_type_params(
+    s: &mut String,
+    tir: &TIR,
+    interner: &ast::StringInterner,
+    type_params: &[TypeParamInfo],
+) {
+    if type_params.is_empty() {
+        return;
+    }
+    s.push('<');
+    for (i, tp) in type_params.iter().enumerate() {
+        if i > 0 {
+            s.push_str(", ");
+        }
+        s.push_str(interner.resolve(tp.name).unwrap_or("?"));
+        for (bi, &bound_idx) in tp.bounds.iter().enumerate() {
+            s.push_str(if bi == 0 { ": " } else { " + " });
+            s.push_str(
+                interner
+                    .resolve(tir.traits[bound_idx as usize].name.inner)
+                    .unwrap_or("?"),
+            );
+        }
+    }
+    s.push('>');
+}
+
 fn symbol_hover_text(
     tir: &TIR,
     interner: &ast::StringInterner,
@@ -1038,24 +1065,7 @@ fn symbol_hover_text(
             let name = interner.resolve(func.name.inner).unwrap_or("?");
             let pub_prefix = if func.pub_span.is_some() { "pub " } else { "" };
             let mut s = format!("{pub_prefix}fn {name}");
-            if !func.type_params.is_empty() {
-                s.push('<');
-                for (i, tp) in func.type_params.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    s.push_str(interner.resolve(tp.name).unwrap_or("?"));
-                    for (bi, &bound_idx) in tp.bounds.iter().enumerate() {
-                        s.push_str(if bi == 0 { ": " } else { " + " });
-                        s.push_str(
-                            interner
-                                .resolve(tir.traits[bound_idx as usize].name.inner)
-                                .unwrap_or("?"),
-                        );
-                    }
-                }
-                s.push('>');
-            }
+            push_type_params(&mut s, tir, interner, &func.type_params);
             s.push('(');
             for (i, param) in func.params.iter().enumerate() {
                 if i > 0 {
@@ -1099,7 +1109,9 @@ fn symbol_hover_text(
             } else {
                 ""
             };
-            Some(format!("{pub_prefix}struct {name}"))
+            let mut s = format!("{pub_prefix}struct {name}");
+            push_type_params(&mut s, tir, interner, &struct_.type_params);
+            Some(s)
         }
         SymbolKind::Enum(enum_idx) => {
             let enum_ = tir.enums.get(*enum_idx as usize)?;
@@ -1173,7 +1185,19 @@ fn symbol_hover_text(
                 }
                 TypeParamOwner::Trait(_) => return Some("Self".to_string()),
             };
-            Some(interner.resolve(tp.name).unwrap_or("?").to_string())
+            let name = interner.resolve(tp.name).unwrap_or("?");
+            if tp.bounds.is_empty() {
+                Some(name.to_string())
+            } else {
+                let bounds = tp
+                    .bounds
+                    .iter()
+                    .filter_map(|&ti| tir.traits.get(ti as usize))
+                    .map(|t| interner.resolve(t.name.inner).unwrap_or("?"))
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                Some(format!("{name}: {bounds}"))
+            }
         }
         SymbolKind::Label { .. } => None,
         SymbolKind::Trait(trait_idx) => {

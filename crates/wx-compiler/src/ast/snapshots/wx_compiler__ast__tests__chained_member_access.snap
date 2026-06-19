@@ -133,34 +133,29 @@ items:
                               ObjectAccess:
                                 object:
                                   inner:
-                                    Call:
-                                      callee:
+                                    MethodCall:
+                                      object:
                                         inner:
-                                          ObjectAccess:
-                                            object:
-                                              inner:
-                                                Path:
-                                                  segments:
-                                                    - ident:
-                                                        inner: 2
-                                                        span:
-                                                          start: 52
-                                                          end: 53
-                                                      type_args: []
+                                          Path:
+                                            segments:
+                                              - ident:
+                                                  inner: 2
                                                   span:
                                                     start: 52
                                                     end: 53
-                                              span:
-                                                start: 52
-                                                end: 53
-                                            member:
-                                              inner: 8
-                                              span:
-                                                start: 54
-                                                end: 57
+                                                type_args: []
+                                            span:
+                                              start: 52
+                                              end: 53
                                         span:
                                           start: 52
+                                          end: 53
+                                      method:
+                                        inner: 8
+                                        span:
+                                          start: 54
                                           end: 57
+                                      type_args: []
                                       arguments: []
                                   span:
                                     start: 52

@@ -947,8 +947,10 @@ pub enum Expression {
         callee: Box<Spanned<Expression>>,
         arguments: Box<[Separated<Spanned<Expression>>]>,
     },
-    /// `{expr}::<Type1, Type2>` — turbofish type application. Always the callee
-    /// of a `Call`.
+    /// `{expr}.{method}::<...>(...)`
+    MethodCall(Box<MethodCallExpr>),
+    /// `{expr}::<Type1, Type2>` — turbofish type application on a non-path
+    /// expression. Method turbofish calls are represented as `MethodCall`.
     TypeApplication {
         callee: Box<Spanned<Expression>>,
         args: Box<[Spanned<TypeExpression>]>,
@@ -1047,6 +1049,14 @@ pub enum Expression {
         start: Option<Box<Spanned<Expression>>>,
         end: Option<Box<Spanned<Expression>>>,
     },
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct MethodCallExpr {
+    pub object: Box<Spanned<Expression>>,
+    pub method: Spanned<SymbolU32>,
+    pub type_args: Box<[Spanned<TypeExpression>]>,
+    pub arguments: Box<[Separated<Spanned<Expression>>]>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -3218,7 +3228,7 @@ impl<'ctx> Parser<'ctx> {
                     .with_message("expected a block-like expression after a label")
                     .with_label(Label::primary(parser.ast.file_id, block.span));
                 match &block.inner {
-                    Expression::Path(_) | Expression::Call { .. } => {
+                    Expression::Path(_) | Expression::Call { .. } | Expression::MethodCall(_) => {
                         diag = diag.with_label(
                             Label::secondary(parser.ast.file_id, colon_token.span)
                                 .with_message("use `::` here for namespace access"),
@@ -3408,13 +3418,45 @@ impl<'ctx> Parser<'ctx> {
         .parse(parser)?;
 
         let span = TextSpan::new(callee.span.start, arguments.span.end);
-        Ok(Spanned {
-            inner: Expression::Call {
-                callee: Box::new(callee),
-                arguments: arguments.inner,
-            },
-            span,
-        })
+        let callee_span = callee.span;
+        match callee.inner {
+            Expression::ObjectAccess { object, member } => Ok(Spanned {
+                inner: Expression::MethodCall(Box::new(MethodCallExpr {
+                    object,
+                    method: member,
+                    type_args: Box::new([]),
+                    arguments: arguments.inner,
+                })),
+                span,
+            }),
+            Expression::TypeApplication { callee: inner, args }
+                if matches!(inner.inner, Expression::ObjectAccess { .. }) =>
+            {
+                let (object, member) = match inner.inner {
+                    Expression::ObjectAccess { object, member } => (object, member),
+                    _ => unreachable!(),
+                };
+                Ok(Spanned {
+                    inner: Expression::MethodCall(Box::new(MethodCallExpr {
+                        object,
+                        method: member,
+                        type_args: args,
+                        arguments: arguments.inner,
+                    })),
+                    span,
+                })
+            }
+            other => Ok(Spanned {
+                inner: Expression::Call {
+                    callee: Box::new(Spanned {
+                        inner: other,
+                        span: callee_span,
+                    }),
+                    arguments: arguments.inner,
+                },
+                span,
+            }),
+        }
     }
 
     fn parse_array_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
