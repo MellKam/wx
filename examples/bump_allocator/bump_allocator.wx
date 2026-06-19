@@ -21,16 +21,18 @@ global mut bump: heap::*mut u8 = heap::DATA_END;
 
 // ── core allocator ────────────────────────────────────────────────────────────
 
-pub fn alloc(size: u32) -> heap::*mut u8 {
-    local ptr: u32 = bump as u32;
-    local new_end: u32 = ptr + size;
-    local cur_end: u32 = heap.size() * PAGE_SIZE;
+// Allocates space for one T, respecting its alignment.
+pub fn alloc<T>() -> heap::*mut T {
+    local align = @align_of<T, heap>();
+    local ptr = (bump as u32 + align - 1) / align * align;
+    local new_end = ptr + @size_of<T, heap>();
+    local cur_end = heap.size() * PAGE_SIZE;
     if new_end > cur_end {
-        local needed: u32 = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
-        local _grew: u32 = heap.grow(needed);
+        local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        local _grew = heap.grow(needed);
     }
     bump = new_end as heap::*mut u8;
-    ptr as heap::*mut u8
+    ptr as heap::*mut T
 }
 
 pub fn reset() {
@@ -41,27 +43,6 @@ pub fn bytes_used() -> u32 {
     bump as u32
 }
 
-// ── typed allocation helpers ──────────────────────────────────────────────────
-
-pub fn alloc_i32() -> heap::*mut i32 {
-    alloc(4) as heap::*mut i32
-}
-
-pub fn alloc_u64() -> heap::*mut u64 {
-    alloc(8) as heap::*mut u64
-}
-
-// ── demo types ────────────────────────────────────────────────────────────────
-
-struct Point {
-    x: i32,
-    y: i32,
-}
-
-pub fn alloc_point() -> heap::*mut Point {
-    alloc(8) as heap::*mut Point
-}
-
 // ── linked list ───────────────────────────────────────────────────────────────
 
 struct Node {
@@ -69,12 +50,8 @@ struct Node {
     next: heap::*Node,   // null() when there is no next node
 }
 
-pub fn alloc_node() -> heap::*mut Node {
-    alloc(8) as heap::*mut Node
-}
-
 pub fn node_new(value: i32, next: heap::*Node) -> heap::*mut Node {
-    local n: heap::*mut Node = alloc_node();
+    local n: heap::*mut Node = alloc::<Node>();
     n.* = Node::{ value: value, next: next };
     n
 }
@@ -91,15 +68,15 @@ pub fn node_next(n: heap::*Node) -> heap::*Node {
 
 // Builds the list  3 → 2 → 1  and returns the sum of all node values.
 pub fn demo() -> i32 {
-    local n1: heap::*mut Node = node_new(1, null());
-    local n2: heap::*mut Node = node_new(2, n1);
-    local n3: heap::*mut Node = node_new(3, n2);
+    local n1 = node_new(1, null());
+    local n2 = node_new(2, n1);
+    local n3 = node_new(3, n2);
 
     local mut sum: i32 = 0;
     local mut cur: heap::*Node = n3;
     loop {
         if cur == null() { break sum };
-        local node: Node = cur.*;
+        local node = cur.*;
         sum += node.value;
         cur = node.next;
     }
@@ -107,10 +84,7 @@ pub fn demo() -> i32 {
 
 export {
     heap as "memory",
-    alloc,
     reset,
     bytes_used,
-    alloc_i32,
-    alloc_point,
     demo,
 }

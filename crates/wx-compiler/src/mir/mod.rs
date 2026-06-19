@@ -461,6 +461,10 @@ impl MIR {
             for (orig_id, subst, mono_id) in pending {
                 let tir_idx = tir.function_index_lookup[&orig_id];
                 let tir_func = &tir.functions[tir_idx as usize];
+                let is_inline = tir_func
+                    .attributes
+                    .iter()
+                    .any(|a| *a == tir::ItemAttribute::Inline);
 
                 builder.current_substitutions = subst;
                 builder.current_function_id = Some(mono_id);
@@ -471,6 +475,10 @@ impl MIR {
 
                 builder.current_substitutions = Box::new([]);
                 functions.push(mir_func);
+
+                if is_inline {
+                    inline_functions.insert(mono_id);
+                }
             }
         }
 
@@ -946,7 +954,9 @@ impl<'tir> Builder<'tir> {
                 ]));
                 Type::Aggregate { aggregate_index }
             }
-            tir::Type::Memory { .. } | tir::Type::Trait { .. } | tir::Type::TypeSet { .. } => Type::Unit,
+            tir::Type::Memory { .. } | tir::Type::Trait { .. } | tir::Type::TypeSet { .. } => {
+                Type::Unit
+            }
             tir::Type::Struct { struct_index, args } => {
                 let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
                 Type::Aggregate { aggregate_index }
@@ -1373,47 +1383,8 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::GenericMethodCall {
                 id,
                 type_args,
-                object,
                 arguments,
             } => {
-                // Resolve object type through any active TypeParam substitution.
-                let resolved_obj_ty = match &self.tir.type_pool[object.ty.as_usize()] {
-                    tir::Type::TypeParam { param_index, .. } => {
-                        self.current_substitutions[*param_index as usize]
-                    }
-                    _ => object.ty,
-                };
-                if matches!(
-                    self.tir.type_pool[resolved_obj_ty.as_usize()],
-                    tir::Type::Memory { .. }
-                ) {
-                    let memory = match &object.kind {
-                        tir::ExprKind::Memory { id: mem_id } => *mem_id,
-                        _ => unreachable!("memory method call on non-memory expression"),
-                    };
-                    let tir_fn_idx = self.tir.function_index_lookup[id];
-                    let method_name = self
-                        .interner
-                        .resolve(self.tir.functions[tir_fn_idx as usize].name.inner)
-                        .unwrap_or("");
-                    let result_ty = self.lower_type_index(expr.ty);
-                    return match method_name {
-                        "size" => Expression {
-                            kind: ExprKind::MemorySize { memory },
-                            ty: result_ty,
-                        },
-                        "grow" => {
-                            let delta =
-                                Box::new(self.lower_expression(func_ctx, &arguments[0], sink));
-                            Expression {
-                                kind: ExprKind::MemoryGrow { memory, delta },
-                                ty: result_ty,
-                            }
-                        }
-                        name => unreachable!("unknown memory method: {name}"),
-                    };
-                }
-
                 let tir_idx = self.tir.function_index_lookup[id];
                 let tir_func = &self.tir.functions[tir_idx as usize];
 
@@ -1458,13 +1429,9 @@ impl<'tir> Builder<'tir> {
                 };
                 self.record_call_edge(target_id);
 
-                let lowered_object = self.lower_expression(func_ctx, object, sink);
-                let lowered_args: Box<[_]> = std::iter::once(lowered_object)
-                    .chain(
-                        arguments
-                            .iter()
-                            .map(|arg| self.lower_expression(func_ctx, arg, sink)),
-                    )
+                let lowered_args: Box<[_]> = arguments
+                    .iter()
+                    .map(|arg| self.lower_expression(func_ctx, arg, sink))
                     .collect();
                 Expression {
                     kind: ExprKind::Call {
@@ -1491,11 +1458,7 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
-            tir::ExprKind::MethodCall {
-                object,
-                arguments,
-                id,
-            } => {
+            tir::ExprKind::MethodCall { arguments, id } => {
                 self.record_call_edge(*id);
                 let tir_idx = self.tir.function_index_lookup[id];
                 let callee_sig_idx = self
@@ -1506,13 +1469,9 @@ impl<'tir> Builder<'tir> {
                         signature_index: callee_sig_idx,
                     },
                 });
-                let object = self.lower_expression(func_ctx, object, sink);
-                let arguments: Box<_> = std::iter::once(object)
-                    .chain(
-                        arguments
-                            .iter()
-                            .map(|arg| self.lower_expression(func_ctx, arg, sink)),
-                    )
+                let arguments: Box<_> = arguments
+                    .iter()
+                    .map(|arg| self.lower_expression(func_ctx, arg, sink))
                     .collect();
                 Expression {
                     kind: ExprKind::Call { callee, arguments },
@@ -1552,21 +1511,10 @@ impl<'tir> Builder<'tir> {
                                 },
                                 _ => todo!("unknown memory compiler constant: {}", const_name),
                             },
-                            _ => {
-                                let layout = self.compute_layout(namespace_ty);
-                                let value = match const_name {
-                                    "SIZE" => layout.size as i64,
-                                    "ALIGN" => layout.align as i64,
-                                    _ => todo!(
-                                        "unknown compiler-implemented constant: {}",
-                                        const_name
-                                    ),
-                                };
-                                Expression {
-                                    kind: ExprKind::Int { value },
-                                    ty: result_ty,
-                                }
-                            }
+                            _ => todo!(
+                                "unknown compiler-implemented constant: {}",
+                                const_name
+                            ),
                         }
                     }
                 } else {
@@ -1782,6 +1730,42 @@ impl<'tir> Builder<'tir> {
                         let addr = self.lower_expression(func_ctx, &arguments[0], sink);
                         Expression {
                             kind: addr.kind,
+                            ty: self.lower_type_index(expr.ty),
+                        }
+                    }
+                    "@size_of" => {
+                        let raw_ty = type_args[0];
+                        let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {
+                            tir::Type::TypeParam { param_index, .. } => self
+                                .current_substitutions
+                                .get(*param_index as usize)
+                                .copied()
+                                .unwrap_or(raw_ty),
+                            _ => raw_ty,
+                        };
+                        let layout = self.compute_layout(concrete_t);
+                        Expression {
+                            kind: ExprKind::Int {
+                                value: layout.size as i64,
+                            },
+                            ty: self.lower_type_index(expr.ty),
+                        }
+                    }
+                    "@align_of" => {
+                        let raw_ty = type_args[0];
+                        let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {
+                            tir::Type::TypeParam { param_index, .. } => self
+                                .current_substitutions
+                                .get(*param_index as usize)
+                                .copied()
+                                .unwrap_or(raw_ty),
+                            _ => raw_ty,
+                        };
+                        let layout = self.compute_layout(concrete_t);
+                        Expression {
+                            kind: ExprKind::Int {
+                                value: layout.align as i64,
+                            },
                             ty: self.lower_type_index(expr.ty),
                         }
                     }
@@ -2014,10 +1998,7 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
-            tir::ExprKind::ArrayLiteral {
-                elements,
-                memory,
-            } => {
+            tir::ExprKind::ArrayLiteral { elements, memory } => {
                 let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
                     tir::Type::Array { of, .. } => *of,
                     _ => unreachable!(),
@@ -2088,7 +2069,9 @@ impl<'tir> Builder<'tir> {
             tir::ExprKind::SliceRange { object, start, end } => {
                 let (elem_tir_ty, mem_tir_ty, static_size) =
                     match self.tir.type_pool[object.ty.as_usize()].clone() {
-                        tir::Type::Array { of, memory, size, .. } => (of, memory, Some(size)),
+                        tir::Type::Array {
+                            of, memory, size, ..
+                        } => (of, memory, Some(size)),
                         tir::Type::Slice { of, memory, .. } => (of, memory, None),
                         _ => unreachable!(),
                     };
@@ -2110,9 +2093,10 @@ impl<'tir> Builder<'tir> {
                     Some(_) => (lowered_obj, None),
                     None => {
                         let (si, li) = match &object.kind {
-                            tir::ExprKind::Local { scope_index, local_index } => {
-                                (*scope_index, *local_index)
-                            }
+                            tir::ExprKind::Local {
+                                scope_index,
+                                local_index,
+                            } => (*scope_index, *local_index),
                             _ => {
                                 let obj_ty = self.lower_type_index(object.ty);
                                 let temp = func_ctx.frame[0].locals.len() as u32;
@@ -2154,8 +2138,7 @@ impl<'tir> Builder<'tir> {
                 // If start is Some, spill it to a temp so it can be used
                 // for both the pointer offset and the length subtraction.
                 let start_local: Option<u32> = if start.is_some() {
-                    let s_lowered =
-                        self.lower_expression(func_ctx, start.as_ref().unwrap(), sink);
+                    let s_lowered = self.lower_expression(func_ctx, start.as_ref().unwrap(), sink);
                     let temp = func_ctx.frame[0].locals.len() as u32;
                     func_ctx.frame[0].locals.push(Local {
                         ty: idx_ty,
@@ -2179,7 +2162,10 @@ impl<'tir> Builder<'tir> {
                     None => base_ptr,
                     Some(li) => {
                         let start_val = Expression {
-                            kind: ExprKind::LocalGet { scope_index: 0, local_index: li },
+                            kind: ExprKind::LocalGet {
+                                scope_index: 0,
+                                local_index: li,
+                            },
                             ty: idx_ty,
                         };
                         let byte_offset = if elem_size == 1 {
@@ -2189,7 +2175,9 @@ impl<'tir> Builder<'tir> {
                                 kind: ExprKind::Mul {
                                     left: Box::new(start_val),
                                     right: Box::new(Expression {
-                                        kind: ExprKind::Int { value: elem_size as i64 },
+                                        kind: ExprKind::Int {
+                                            value: elem_size as i64,
+                                        },
                                         ty: idx_ty,
                                     }),
                                 },
@@ -2305,7 +2293,10 @@ impl<'tir> Builder<'tir> {
                         kind: ExprKind::Sub {
                             left: Box::new(end_val),
                             right: Box::new(Expression {
-                                kind: ExprKind::LocalGet { scope_index: 0, local_index: li },
+                                kind: ExprKind::LocalGet {
+                                    scope_index: 0,
+                                    local_index: li,
+                                },
                                 ty: idx_ty,
                             }),
                         },

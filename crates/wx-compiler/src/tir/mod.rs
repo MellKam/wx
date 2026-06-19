@@ -466,11 +466,9 @@ pub enum ExprKind {
     GenericMethodCall {
         id: DefId,
         type_args: Box<[TypeIndex]>,
-        object: Box<Expression>,
         arguments: Box<[Expression]>,
     },
     MethodCall {
-        object: Box<Expression>,
         arguments: Box<[Expression]>,
         id: ast::DefId,
     },

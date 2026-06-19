@@ -5,7 +5,9 @@ pub fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
 pub fn @memory_size<M: Memory>(mem: M) -> M::Size;
 pub fn @slice_len<M: Memory, T>(slice: M::[]T) -> M::Size;
 pub fn @slice_from_parts<M: Memory, T>(data: M::*T, len: M::Size) -> M::[]T;
-pub fn @pointer_from<M: Memory, T>(ptr: M::Size) -> M::*T; 
+pub fn @pointer_from<M: Memory, T>(ptr: M::Size) -> M::*T;
+pub fn @size_of<T, M: Memory>() -> M::Size;
+pub fn @align_of<T, M: Memory>() -> M::Size;
 
 #[inline]
 pub fn null<M: Memory, T>() -> M::*T { @pointer_from(0) }

@@ -140,19 +140,6 @@ fn test_global_struct_type() {
 // ── associated consts
 // ─────────────────────────────────────────────────────────
 
-#[test]
-fn test_size_associated_const() {
-    // SIZE/ALIGN are built-in associated consts seeded by the type system;
-    // they should lower to a plain Int in MIR.
-    let case = TestCase::new(indoc! {"
-        fn get_u32_size() -> u32 {
-            u32::SIZE
-        }
-
-        export { get_u32_size }
-    "});
-    insta::assert_yaml_snapshot!(case.mir);
-}
 
 // ── string literals
 // ───────────────────────────────────────────────────────────
@@ -588,21 +575,10 @@ fn test_generic_calls_generic_multi_iteration_worklist() {
     );
 }
 
-/// BUG DOCUMENTATION – `#[inline]` on a generic function is currently silently
-/// ignored for its mono instances.
-///
-/// Root cause: the Phase-1 loop that populates `inline_functions` guards on
-/// `type_params.is_empty()`, skipping every generic function.  Mono instances
-/// created in Phase 2 are never inserted into `inline_functions`, so the Kahn
-/// inlining pass never substitutes their call sites.
-///
-/// Current behaviour : 2 functions survive (`run` + `wrap<i32>`).
-/// Correct behaviour : `wrap<i32>` should be inlined into `run`, leaving 1.
-///
-/// This assertion documents the *current* (limited) behaviour.  If it ever
-/// starts failing with `len == 1` the limitation has been fixed.
+/// Verifies that `#[inline]` on a generic function is propagated to every mono
+/// instance so callers always inline it rather than emitting a call.
 #[test]
-fn test_inline_attribute_on_generic_not_propagated_to_mono_instance() {
+fn test_inline_attribute_on_generic_propagated_to_mono_instance() {
     let case = TestCase::new(indoc! {"
         #[inline]
         fn wrap<T>(t: T) -> T { t }
@@ -617,8 +593,8 @@ fn test_inline_attribute_on_generic_not_propagated_to_mono_instance() {
     );
     assert_eq!(
         case.mir.functions.len(),
-        2,
-        "expected 2 functions (inline attr on generic currently has no effect on mono instances)"
+        1,
+        "wrap<i32> should be inlined into run and DCE'd, leaving only run"
     );
 }
 
@@ -960,6 +936,57 @@ fn test_static_entry_alignment_matches_element_type() {
     assert!(aligns.contains(&4), "i32 array must have align 4");
     assert!(aligns.contains(&8), "f64 array must have align 8");
     assert!(aligns.contains(&1), "u8 array must have align 1");
+}
+
+// ── size_of / align_of intrinsics ────────────────────────────────────────────
+
+#[test]
+fn test_size_of_lowers_to_const_int() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        fn size_u8() -> u32 { @size_of<u8, heap>() }
+        fn size_u32() -> u32 { @size_of<u32, heap>() }
+        fn size_u64() -> u32 { @size_of<u64, heap>() }
+        fn size_u16() -> u32 { @size_of<u16, heap>() }
+
+        export { size_u8, size_u32, size_u64, size_u16 }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.mir);
+}
+
+#[test]
+fn test_align_of_lowers_to_const_int() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        fn align_u8() -> u32 { @align_of<u8, heap>() }
+        fn align_u32() -> u32 { @align_of<u32, heap>() }
+        fn align_u64() -> u32 { @align_of<u64, heap>() }
+
+        export { align_u8, align_u32, align_u64 }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.mir);
+}
+
+#[test]
+fn test_size_of_generic_monomorphizes() {
+    // When T is a type param, size_of must substitute the concrete type at
+    // monomorphization time and lower to distinct Int values per instance.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        fn typed_size<T, M: Memory>() -> M::Size { @size_of<T, M>() }
+
+        fn call_u8() -> u32 { typed_size::<u8, heap>() }
+        fn call_u32() -> u32 { typed_size::<u32, heap>() }
+
+        export { call_u8, call_u32 }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]

@@ -1,0 +1,91 @@
+---
+source: crates/wx-compiler/src/mir/tests.rs
+expression: case.mir
+---
+functions:
+  - id: 33
+    signature_index: 2
+    scopes:
+      - kind: Block
+        parent: ~
+        locals: []
+        result: U32
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Int:
+                  value: 1
+              ty: U32
+      ty: U32
+    static_data: []
+  - id: 34
+    signature_index: 2
+    scopes:
+      - kind: Block
+        parent: ~
+        locals: []
+        result: U32
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Int:
+                  value: 4
+              ty: U32
+      ty: U32
+    static_data: []
+  - id: 35
+    signature_index: 2
+    scopes:
+      - kind: Block
+        parent: ~
+        locals: []
+        result: U32
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Int:
+                  value: 8
+              ty: U32
+      ty: U32
+    static_data: []
+signatures:
+  - items:
+      - U32
+      - Bool
+    params_count: 1
+  - items:
+      - U32
+      - U32
+    params_count: 1
+  - items:
+      - U32
+    params_count: 0
+globals: []
+exports:
+  - Function:
+      id: 33
+      name: 78
+  - Function:
+      id: 34
+      name: 79
+  - Function:
+      id: 35
+      name: 80
+imports: []
+memories:
+  - id: 32
+    source: Internal
+    kind: Memory32
+    min_pages: ~
+    max_pages: ~
+aggregates: []
+static_entries: []

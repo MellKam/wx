@@ -1,0 +1,112 @@
+memory heap: Memory<Size = u32>;
+
+global mut bump: heap::*mut u8 = heap::DATA_END;
+
+fn alloc_array<T>(count: u32) -> heap::*mut T {
+    local align = @align_of<T, heap>();
+    local ptr = (bump as u32 + align - 1) / align * align;
+    local new_end = ptr + count * @size_of<T, heap>();
+    local cur_end = heap.size() * PAGE_SIZE;
+    if new_end > cur_end {
+        local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        _ = heap.grow(needed);
+    }
+    bump = new_end as heap::*mut u8;
+    ptr as heap::*mut T
+}
+
+pub fn reset() {
+    bump = heap::DATA_END
+}
+
+struct Vec<M: Memory, T> {
+    buf: M::*T,
+    len: M::Size,
+    cap: M::Size,
+}
+
+fn new_vec<M: Memory, T>() -> Vec<M, T> {
+    Vec::<M, T>::{ buf: null(), len: 0, cap: 0 }
+}
+
+impl <M: Memory, T> Vec<M, T> {
+    fn push(mut self, value: T) {
+        local mut buf = self.buf;
+        local len = self.len;
+        local mut cap = self.cap;
+        
+        if len == cap {
+            local new_cap = if cap == 0 {
+                cap + 4
+            } else {
+                cap * 2
+            };
+            local new_buf = alloc_array::<T>(new_cap);
+            local mut i: u32 = 0;
+            loop {
+                if i == len {
+                    break
+                }
+                local src = (buf as u32 + i * @size_of<T, heap>()) as heap::*T;
+                local dst = (new_buf as u32
+                    + i
+                    * @size_of<T, heap>()) as heap::*mut T;
+                dst.* = src.*;
+                i += 1;
+            }
+            buf = new_buf as heap::*T;
+            cap = new_cap;
+        }
+        
+        local slot = (buf as u32 + len * @size_of<T, heap>()) as heap::*mut T;
+        slot.* = value;
+        Vec::<heap, T>::{ buf: buf, len: len + 1, cap: cap }
+    }
+
+    fn get(self, i: M::Size) -> T {
+        ((self.buf as u32 + i * @size_of<T, heap>()) as heap::*T).*
+    }
+
+    fn length(self) -> M::Size {
+        self.len
+    }
+}
+
+pub fn vec_new<T>() -> Vec<heap, T> {
+    Vec::<heap, T>::{ buf: null(), len: 0, cap: 0 }
+}
+
+pub fn vec_push<T>(v: Vec<heap, T>, value: T) -> Vec<heap, T> {}
+
+pub fn vec_get<T>(v: Vec<heap, T>, i: u32) -> T {
+    ((v.buf as u32 + i * @size_of<T, heap>()) as heap::*T).*
+}
+
+pub fn vec_len<T>(v: Vec<heap, T>) -> u32 {
+    v.len
+}
+
+pub fn demo() -> i32 {
+    local mut v = new_vec::<heap, i32>();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    v.push(40);
+    v.push(50);
+    
+    local mut sum: i32 = 0;
+    local mut i: u32 = 0;
+    loop {
+        if i == v.length() {
+            break sum
+        }
+        sum += v.get(i);
+        i += 1;
+    }
+}
+
+export {
+    heap as "memory",
+    reset,
+    demo,
+}

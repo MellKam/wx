@@ -2115,3 +2115,47 @@ fn test_null_pointer_comparison() {
     assert_eq!(is_null_ptr.call(&mut store, 4).unwrap(), 0, "non-null ptr is not null");
     assert_eq!(ptr_from_addr.call(&mut store, ()).unwrap(), 4, "@pointer_from(4) must be 4");
 }
+
+#[test]
+fn test_size_of_and_align_of_intrinsics() {
+    // @size_of and @align_of are inlined to compile-time Int nodes by MIR
+    // lowering, so the exported functions are simple i32.const returns.
+    let case = TestCase::new(indoc! {"
+        fn @size_of<T, M: Memory>() -> M::Size;
+        fn @align_of<T, M: Memory>() -> M::Size;
+
+        memory heap: Memory<Size = u32>;
+
+        fn size_u8() -> u32    { @size_of<u8, heap>() }
+        fn size_u16() -> u32   { @size_of<u16, heap>() }
+        fn size_u32() -> u32   { @size_of<u32, heap>() }
+        fn size_u64() -> u32   { @size_of<u64, heap>() }
+        fn align_u8() -> u32   { @align_of<u8, heap>() }
+        fn align_u16() -> u32  { @align_of<u16, heap>() }
+        fn align_u32() -> u32  { @align_of<u32, heap>() }
+
+        export { size_u8, size_u16, size_u32, size_u64, align_u8, align_u16, align_u32 }
+    "});
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation");
+
+    let mut get = |name: &str| instance.get_typed_func::<(), i32>(&mut store, name).unwrap();
+    let size_u8 = get("size_u8");
+    let size_u16 = get("size_u16");
+    let size_u32 = get("size_u32");
+    let size_u64 = get("size_u64");
+    let align_u8 = get("align_u8");
+    let align_u16 = get("align_u16");
+    let align_u32 = get("align_u32");
+
+    assert_eq!(size_u8.call(&mut store, ()).unwrap(), 1);
+    assert_eq!(size_u16.call(&mut store, ()).unwrap(), 2);
+    assert_eq!(size_u32.call(&mut store, ()).unwrap(), 4);
+    assert_eq!(size_u64.call(&mut store, ()).unwrap(), 8);
+    assert_eq!(align_u8.call(&mut store, ()).unwrap(), 1);
+    assert_eq!(align_u16.call(&mut store, ()).unwrap(), 2);
+    assert_eq!(align_u32.call(&mut store, ()).unwrap(), 4);
+}

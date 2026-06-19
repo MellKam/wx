@@ -148,8 +148,8 @@ impl Builder {
                 variants,
                 ..
             } => Self::build_enum_definition(interner, source, *pub_span, repr, name, variants),
-            Item::Impl { target, items, .. } => {
-                Self::build_impl_definition(interner, source, target, items)
+            Item::Impl { type_params, target, items } => {
+                Self::build_impl_definition(interner, source, type_params, target, items)
             }
             Item::ImplTrait {
                 trait_name,
@@ -184,11 +184,16 @@ impl Builder {
             Item::Struct {
                 id: _,
                 name,
+                type_params,
                 fields,
                 pub_span,
+            } => Self::build_struct_declaration(interner, name, type_params, fields, *pub_span),
+            Item::TypeSet {
+                pub_span,
+                name,
+                members,
                 ..
-            } => Self::build_struct_declaration(interner, name, fields, *pub_span),
-            Item::TypeSet { pub_span, name, members, .. } => {
+            } => {
                 let mut items = Vec::new();
                 if pub_span.is_some() {
                     items.push(Node::StaticText("pub "));
@@ -341,14 +346,17 @@ impl Builder {
     fn build_impl_definition(
         interner: &StringInterner,
         source: &str,
+        type_params: &[TypeParam],
         target: &Spanned<TypeExpression>,
         items: &[Separated<Spanned<ImplItem>>],
     ) -> Node {
-        let mut nodes = vec![
-            Node::StaticText("impl "),
-            Self::build_type_expression(interner, &target.inner),
-            Node::StaticText(" {"),
-        ];
+        let mut nodes = vec![Node::StaticText("impl ")];
+        Self::build_type_params(&mut nodes, interner, type_params);
+        if !type_params.is_empty() {
+            nodes.push(Node::StaticText(" "));
+        }
+        nodes.push(Self::build_type_expression(interner, &target.inner));
+        nodes.push(Node::StaticText(" {"));
 
         if !items.is_empty() {
             nodes.push(Node::Indent(Box::new(Node::Concat(
@@ -664,6 +672,7 @@ impl Builder {
     fn build_struct_declaration(
         interner: &StringInterner,
         name: &Spanned<SymbolU32>,
+        type_params: &[TypeParam],
         fields: &[Separated<Spanned<StructField>>],
         pub_span: Option<TextSpan>,
     ) -> Node {
@@ -673,6 +682,7 @@ impl Builder {
         }
         items.push(Node::StaticText("struct "));
         items.push(Self::symbol(interner, name.inner));
+        Self::build_type_params(&mut items, interner, type_params);
         items.push(Node::StaticText(" {"));
 
         if !fields.is_empty() {
@@ -770,6 +780,29 @@ impl Builder {
         }
     }
 
+    fn build_type_params(out: &mut Vec<Node>, interner: &StringInterner, type_params: &[TypeParam]) {
+        if type_params.is_empty() {
+            return;
+        }
+        out.push(Node::StaticText("<"));
+        for (index, param) in type_params.iter().enumerate() {
+            out.push(Self::symbol(interner, param.name.inner));
+            if !param.bounds.is_empty() {
+                out.push(Node::StaticText(": "));
+                for (bi, bound) in param.bounds.iter().enumerate() {
+                    out.push(Self::build_type_expression(interner, &bound.inner));
+                    if bi + 1 < param.bounds.len() {
+                        out.push(Node::StaticText(" + "));
+                    }
+                }
+            }
+            if index + 1 < type_params.len() {
+                out.push(Node::StaticText(", "));
+            }
+        }
+        out.push(Node::StaticText(">"));
+    }
+
     fn build_function_signature(
         out: &mut Vec<Node>,
         interner: &StringInterner,
@@ -778,25 +811,7 @@ impl Builder {
         out.push(Node::StaticText("fn "));
         out.push(Self::symbol(interner, signature.name.inner));
 
-        if !signature.type_params.is_empty() {
-            out.push(Node::StaticText("<"));
-            for (index, param) in signature.type_params.iter().enumerate() {
-                out.push(Self::symbol(interner, param.name.inner));
-                if !param.bounds.is_empty() {
-                    out.push(Node::StaticText(": "));
-                    for (bi, bound) in param.bounds.iter().enumerate() {
-                        out.push(Self::build_type_expression(interner, &bound.inner));
-                        if bi + 1 < param.bounds.len() {
-                            out.push(Node::StaticText(" + "));
-                        }
-                    }
-                }
-                if index + 1 < signature.type_params.len() {
-                    out.push(Node::StaticText(", "));
-                }
-            }
-            out.push(Node::StaticText(">"));
-        }
+        Self::build_type_params(out, interner, &signature.type_params);
 
         out.push(Node::StaticText("("));
 
@@ -1146,7 +1161,6 @@ impl Builder {
                 arguments,
             } => {
                 let mut items = Vec::new();
-                items.push(Node::StaticText("@"));
                 items.push(Self::symbol(interner, name.inner));
                 if !type_args.is_empty() {
                     items.push(Node::StaticText("<"));
@@ -1193,7 +1207,10 @@ impl Builder {
                 Node::StaticText("]"),
             ])),
             Expression::SliceRange { object, start, end } => {
-                let mut parts = vec![Self::build_expression(interner, source, object), Node::StaticText("[")];
+                let mut parts = vec![
+                    Self::build_expression(interner, source, object),
+                    Node::StaticText("["),
+                ];
                 if let Some(s) = start {
                     parts.push(Self::build_expression(interner, source, s));
                 }

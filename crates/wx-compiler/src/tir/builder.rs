@@ -1267,8 +1267,16 @@ impl<'ast> Builder<'ast, '_> {
         }
         // *mut T coerces implicitly to *T when memory and pointee match.
         if let (
-            &Type::Pointer { to: a_to, mutable: true, memory: a_mem },
-            &Type::Pointer { to: b_to, mutable: false, memory: b_mem },
+            &Type::Pointer {
+                to: a_to,
+                mutable: true,
+                memory: a_mem,
+            },
+            &Type::Pointer {
+                to: b_to,
+                mutable: false,
+                memory: b_mem,
+            },
         ) = (
             &self.tir.type_pool[a.as_usize()],
             &self.tir.type_pool[b.as_usize()],
@@ -4594,72 +4602,7 @@ impl<'ast> Builder<'ast, '_> {
     }
 
     fn substitute_type(&mut self, ty: TypeIndex, type_args: &[TypeIndex]) -> TypeIndex {
-        // Fast path: handle Copy-only and early-return variants without cloning.
         match &self.tir.type_pool[ty.as_usize()] {
-            Type::TypeParam { param_index, .. } => {
-                return type_args
-                    .get(*param_index as usize)
-                    .copied()
-                    .filter(|&t| t != TypeIndex::ERROR)
-                    .unwrap_or(ty);
-            }
-            Type::AssociatedType { .. } => return ty,
-            Type::Pointer {
-                to,
-                mutable,
-                memory,
-            } => {
-                let (to, mutable, memory) = (*to, *mutable, *memory);
-                let next_to = self.substitute_type(to, type_args);
-                let next_memory = self.substitute_type(memory, type_args);
-                return if next_to == to && next_memory == memory {
-                    ty
-                } else {
-                    self.intern_type(Type::Pointer {
-                        to: next_to,
-                        mutable,
-                        memory: next_memory,
-                    })
-                };
-            }
-            Type::Array {
-                of,
-                size,
-                mutable,
-                memory,
-            } => {
-                let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
-                let next_of = self.substitute_type(of, type_args);
-                let next_memory = self.substitute_type(memory, type_args);
-                return if next_of == of && next_memory == memory {
-                    ty
-                } else {
-                    self.intern_type(Type::Array {
-                        of: next_of,
-                        size,
-                        mutable,
-                        memory: next_memory,
-                    })
-                };
-            }
-            Type::Slice {
-                of,
-                mutable,
-                memory,
-            } => {
-                let (of, mutable, memory) = (*of, *mutable, *memory);
-                let next_of = self.substitute_type(of, type_args);
-                let next_memory = self.substitute_type(memory, type_args);
-                return if next_of == of && next_memory == memory {
-                    ty
-                } else {
-                    self.intern_type(Type::Slice {
-                        of: next_of,
-                        mutable,
-                        memory: next_memory,
-                    })
-                };
-            }
             // Types that can never contain TypeParams — return immediately.
             Type::Unit
             | Type::Bool
@@ -4681,44 +4624,97 @@ impl<'ast> Builder<'ast, '_> {
             | Type::Enum { .. }
             | Type::Module { .. }
             | Type::Memory { .. }
-            | Type::Trait { .. } => return ty,
-            Type::Struct { args, .. } if args.is_empty() => return ty,
-            // AssocTypeProjection, Tuple, Function, FunctionItem, Struct-with-args:
-            // fall through to the clone path below.
-            _ => {}
-        }
-
-        // Slow path: only complex variants with Box fields or impl_members access reach
-        // here.
-        match self.tir.type_pool[ty.as_usize()].clone() {
+            | Type::Trait { .. }
+            | Type::AssociatedType { .. }
+            | Type::TypeSet { .. } => ty,
+            Type::TypeParam { param_index, .. } => type_args
+                .get(*param_index as usize)
+                .copied()
+                .filter(|&t| t != TypeIndex::ERROR)
+                .unwrap_or(ty),
             Type::AssocTypeProjection {
                 param_index,
                 assoc_name,
                 ..
             } => {
-                let receiver = type_args.get(param_index as usize).copied().unwrap_or(ty);
-                if matches!(
-                    self.tir.type_pool[receiver.as_usize()],
-                    Type::TypeParam { .. }
-                ) {
-                    return ty;
+                let receiver = type_args.get(*param_index as usize).copied().unwrap_or(ty);
+                match &self.tir.type_pool[receiver.as_usize()] {
+                    Type::TypeParam { .. } => ty,
+                    _ => self
+                        .tir
+                        .impl_members
+                        .get(&receiver)
+                        .and_then(|m| m.get(&assoc_name))
+                        .and_then(|e| {
+                            if let ImplEntry::AssociatedType { ty: concrete } = e {
+                                Some(*concrete)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(ty),
                 }
-                self.tir
-                    .impl_members
-                    .get(&receiver)
-                    .and_then(|m| m.get(&assoc_name))
-                    .and_then(|e| {
-                        if let ImplEntry::AssociatedType { ty: concrete } = e {
-                            Some(*concrete)
-                        } else {
-                            None
-                        }
+            }
+            Type::Pointer {
+                to,
+                mutable,
+                memory,
+            } => {
+                let (to, mutable, memory) = (*to, *mutable, *memory);
+                let next_to = self.substitute_type(to, type_args);
+                let next_memory = self.substitute_type(memory, type_args);
+                if next_to == to && next_memory == memory {
+                    ty
+                } else {
+                    self.intern_type(Type::Pointer {
+                        to: next_to,
+                        mutable,
+                        memory: next_memory,
                     })
-                    .unwrap_or(ty)
+                }
+            }
+            Type::Array {
+                of,
+                size,
+                mutable,
+                memory,
+            } => {
+                let (of, size, mutable, memory) = (*of, *size, *mutable, *memory);
+                let next_of = self.substitute_type(of, type_args);
+                let next_memory = self.substitute_type(memory, type_args);
+                if next_of == of && next_memory == memory {
+                    ty
+                } else {
+                    self.intern_type(Type::Array {
+                        of: next_of,
+                        size,
+                        mutable,
+                        memory: next_memory,
+                    })
+                }
+            }
+            Type::Slice {
+                of,
+                mutable,
+                memory,
+            } => {
+                let (of, mutable, memory) = (*of, *mutable, *memory);
+                let next_of = self.substitute_type(of, type_args);
+                let next_memory = self.substitute_type(memory, type_args);
+                if next_of == of && next_memory == memory {
+                    ty
+                } else {
+                    self.intern_type(Type::Slice {
+                        of: next_of,
+                        mutable,
+                        memory: next_memory,
+                    })
+                }
             }
             Type::Tuple { elements } => {
                 let mut changed = false;
                 let substituted: Box<[TypeIndex]> = elements
+                    .clone()
                     .iter()
                     .copied()
                     .map(|element| {
@@ -4736,6 +4732,7 @@ impl<'ast> Builder<'ast, '_> {
                 }
             }
             Type::Function { signature } => {
+                let signature = signature.clone();
                 let mut changed = false;
                 let items: Box<[TypeIndex]> = signature
                     .items
@@ -4761,9 +4758,14 @@ impl<'ast> Builder<'ast, '_> {
             Type::Struct {
                 struct_index,
                 args: struct_args,
-            } if !struct_args.is_empty() => {
+            } => {
+                if struct_args.is_empty() {
+                    return ty;
+                }
                 let mut changed = false;
+                let struct_index = *struct_index;
                 let substituted: Box<[TypeIndex]> = struct_args
+                    .clone()
                     .iter()
                     .copied()
                     .map(|a| {
@@ -4785,8 +4787,13 @@ impl<'ast> Builder<'ast, '_> {
                 id,
                 type_args: item_args,
             } => {
+                if item_args.is_empty() {
+                    return ty;
+                }
                 let mut changed = false;
+                let id = *id;
                 let substituted: Box<[TypeIndex]> = item_args
+                    .clone()
                     .iter()
                     .copied()
                     .map(|item_arg| {
@@ -4804,47 +4811,32 @@ impl<'ast> Builder<'ast, '_> {
                     ty
                 }
             }
-            _ => ty,
         }
     }
 
+    /// Returns the concrete expected type for an argument position, or `None`
+    /// if inference hasn't resolved it to a usable type yet. `None` tells the
+    /// caller to emit a "type annotation required" diagnostic rather than
+    /// attempt coercion against an unknown target.
     fn substitute_expected_type(
         &mut self,
         ty: TypeIndex,
         type_args: &[TypeIndex],
     ) -> Option<TypeIndex> {
-        match &self.tir.type_pool[ty.as_usize()] {
-            Type::TypeParam { param_index, .. } => {
-                match type_args.get(*param_index as usize).copied() {
-                    Some(t)
-                        if t != TypeIndex::INTEGER
-                            && t != TypeIndex::FLOAT
-                            && t != TypeIndex::ERROR =>
-                    {
-                        Some(t)
-                    }
-                    _ => None,
-                }
-            }
-            _ => Some(self.substitute_type(ty, type_args)),
+        let result = self.substitute_type(ty, type_args);
+        match &self.tir.type_pool[result.as_usize()] {
+            Type::TypeParam { .. } | Type::Integer | Type::Float | Type::Error => None,
+            _ => Some(result),
         }
     }
 
-    fn seed_type_arg_slot(&mut self, type_args: &mut [TypeIndex], param_index: u32, ty: TypeIndex) {
-        let Some(slot) = type_args.get_mut(param_index as usize) else {
-            return;
-        };
-        if *slot == TypeIndex::ERROR {
-            *slot = ty;
-        }
-    }
-
-    fn infer_type_args_from_types(
-        &mut self,
+    fn infer_type_args(
+        &self,
+        type_args: &mut [TypeIndex],
         pattern_ty: TypeIndex,
         actual_ty: TypeIndex,
-        type_args: &mut [TypeIndex],
     ) {
+        // Unresolved comptime literals have no concrete type yet; inferring T = INTEGER would give the wrong answer once the literal is coerced.
         if actual_ty == TypeIndex::INTEGER
             || actual_ty == TypeIndex::FLOAT
             || actual_ty == TypeIndex::ERROR
@@ -4853,11 +4845,15 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         match (
-            self.tir.type_pool[pattern_ty.as_usize()].clone(),
-            self.tir.type_pool[actual_ty.as_usize()].clone(),
+            &self.tir.type_pool[pattern_ty.as_usize()],
+            &self.tir.type_pool[actual_ty.as_usize()],
         ) {
             (Type::TypeParam { param_index, .. }, _) => {
-                self.seed_type_arg_slot(type_args, param_index, actual_ty);
+                // First binding wins — don't overwrite a slot already set by turbofish or an earlier argument.
+                match type_args.get_mut(*param_index as usize) {
+                    Some(slot) if *slot == TypeIndex::ERROR => *slot = actual_ty,
+                    _ => {}
+                }
             }
             (
                 Type::AssocTypeProjection {
@@ -4878,8 +4874,8 @@ impl<'ast> Builder<'ast, '_> {
             (Type::Tuple { elements: pattern }, Type::Tuple { elements: actual })
                 if pattern.len() == actual.len() =>
             {
-                for (&pattern, &actual) in pattern.iter().zip(actual.iter()) {
-                    self.infer_type_args_from_types(pattern, actual, type_args);
+                for (pattern, actual) in pattern.iter().copied().zip(actual.iter().copied()) {
+                    self.infer_type_args(type_args, pattern, actual);
                 }
             }
             (
@@ -4892,8 +4888,13 @@ impl<'ast> Builder<'ast, '_> {
             ) if pattern_sig.params_count == actual_sig.params_count
                 && pattern_sig.items.len() == actual_sig.items.len() =>
             {
-                for (&pattern, &actual) in pattern_sig.items.iter().zip(actual_sig.items.iter()) {
-                    self.infer_type_args_from_types(pattern, actual, type_args);
+                for (pattern, actual) in pattern_sig
+                    .items
+                    .iter()
+                    .copied()
+                    .zip(actual_sig.items.iter().copied())
+                {
+                    self.infer_type_args(type_args, pattern, actual);
                 }
             }
             (
@@ -4908,8 +4909,8 @@ impl<'ast> Builder<'ast, '_> {
                     memory: actual_memory,
                 },
             ) if pattern_mutable == actual_mutable => {
-                self.infer_type_args_from_types(pattern_to, actual_to, type_args);
-                self.infer_type_args_from_types(pattern_memory, actual_memory, type_args);
+                self.infer_type_args(type_args, *pattern_to, *actual_to);
+                self.infer_type_args(type_args, *pattern_memory, *actual_memory);
             }
             (
                 Type::Array {
@@ -4925,8 +4926,8 @@ impl<'ast> Builder<'ast, '_> {
                     memory: actual_memory,
                 },
             ) if pattern_size == actual_size && pattern_mutable == actual_mutable => {
-                self.infer_type_args_from_types(pattern_of, actual_of, type_args);
-                self.infer_type_args_from_types(pattern_memory, actual_memory, type_args);
+                self.infer_type_args(type_args, *pattern_of, *actual_of);
+                self.infer_type_args(type_args, *pattern_memory, *actual_memory);
             }
             (
                 Type::Slice {
@@ -4940,8 +4941,8 @@ impl<'ast> Builder<'ast, '_> {
                     memory: actual_memory,
                 },
             ) if pattern_mutable == actual_mutable => {
-                self.infer_type_args_from_types(pattern_of, actual_of, type_args);
-                self.infer_type_args_from_types(pattern_memory, actual_memory, type_args);
+                self.infer_type_args(type_args, *pattern_of, *actual_of);
+                self.infer_type_args(type_args, *pattern_memory, *actual_memory);
             }
             (
                 Type::Struct {
@@ -4953,8 +4954,12 @@ impl<'ast> Builder<'ast, '_> {
                     args: actual_args,
                 },
             ) if pattern_struct == actual_struct && pattern_args.len() == actual_args.len() => {
-                for (&pattern, &actual) in pattern_args.iter().zip(actual_args.iter()) {
-                    self.infer_type_args_from_types(pattern, actual, type_args);
+                for (pattern, actual) in pattern_args
+                    .iter()
+                    .copied()
+                    .zip(actual_args.iter().copied())
+                {
+                    self.infer_type_args(type_args, pattern, actual);
                 }
             }
             _ => {}
@@ -5246,8 +5251,10 @@ impl<'ast> Builder<'ast, '_> {
 
                 let member_sym = last.ident.inner;
                 let entry = self
-                    .ensure_impl_members(file_id, namespace_ty)
-                    .get(&member_sym)
+                    .tir
+                    .impl_members
+                    .get(&namespace_ty)
+                    .and_then(|m| m.get(&member_sym))
                     .cloned();
                 match entry {
                     Some(ImplEntry::AssociatedConst { id, ty }) => {
@@ -6140,22 +6147,23 @@ impl<'ast> Builder<'ast, '_> {
         access_ctx: AccessContext,
         expr: &Spanned<ast::Expression>,
     ) -> Result<Expression, ()> {
-        let (name, arguments) = match &expr.inner {
+        let (name, ast_type_args, arguments) = match &expr.inner {
             ast::Expression::IntrinsicCall {
-                name, arguments, ..
-            } => (name, arguments),
+                name,
+                type_args,
+                arguments,
+            } => (name, type_args, arguments),
             _ => unreachable!(),
         };
 
-        let kind = self
-            .lookup_symbol(
-                func_ctx.resolve_context.namespace,
-                (SymbolNamespace::Value, name.inner),
-            )
-            .cloned();
-
         let func_index =
-            match kind {
+            match self
+                .lookup_symbol(
+                    func_ctx.resolve_context.namespace,
+                    (SymbolNamespace::Value, name.inner),
+                )
+                .cloned()
+            {
                 Some(SymbolKind::Pending(def_id)) => {
                     self.ensure_signature(def_id);
                     match self
@@ -6196,40 +6204,55 @@ impl<'ast> Builder<'ast, '_> {
                 span: name.span,
             });
 
-        let params: Vec<TypeIndex> = self.tir.functions[func_index as usize]
-            .params
+        let mut args: Box<[Expression]> = arguments
             .iter()
-            .map(|p| p.ty.inner)
-            .collect();
+            .map(|argument| {
+                self.build_expression(
+                    func_ctx,
+                    AccessContext {
+                        expected_type: None,
+                        access_kind: AccessKind::Read,
+                    },
+                    &argument.inner,
+                )
+            })
+            .collect::<Result<Box<_>, _>>()?;
+
+        let explicit_type_arguments = match ast_type_args.len() {
+            0 => None,
+            _ => Some(
+                ast_type_args
+                    .iter()
+                    .map(|type_arg| self.resolve_type(&func_ctx.resolve_context, type_arg))
+                    .collect::<Box<_>>(),
+            ),
+        };
+
+        // TODO: validate the number of specified generics and bounds
+
+        let type_args = self.build_generic_call_arguments(
+            func_ctx.resolve_context.file_id,
+            func_index,
+            &mut args,
+            explicit_type_arguments.as_deref(),
+            access_ctx.expected_type,
+        )?;
+
         let result_type = self.tir.functions[func_index as usize]
             .result
             .as_ref()
             .map(|r| r.inner)
             .unwrap_or(TypeIndex::UNIT);
-        let type_params_len = self.tir.functions[func_index as usize].type_params.len();
-        let name_sym = name.inner;
-        let call_span = expr.span;
-
-        let (built_args, type_args) = self.build_generic_call_arguments(
-            func_ctx,
-            arguments,
-            &params,
-            result_type,
-            type_params_len,
-            access_ctx.expected_type,
-            None,
-        )?;
-
         let return_ty = self.substitute_type(result_type, &type_args);
 
         Ok(Expression {
             kind: ExprKind::IntrinsicCall {
-                name: name_sym,
-                type_args: type_args.into_boxed_slice(),
-                arguments: built_args,
+                name: name.inner,
+                type_args,
+                arguments: args,
             },
             ty: return_ty,
-            span: call_span,
+            span: expr.span,
         })
     }
 
@@ -6240,7 +6263,7 @@ impl<'ast> Builder<'ast, '_> {
         &mut self,
         receiver_ty: TypeIndex,
         member_name: SymbolU32,
-    ) -> Option<(usize, Vec<TypeIndex>)> {
+    ) -> Option<(usize, Box<[TypeIndex]>)> {
         let outer_kind =
             GenericImplTargetKind::from_type(&self.tir.type_pool[receiver_ty.as_usize()])?;
         let &block_idx = self
@@ -6252,8 +6275,8 @@ impl<'ast> Builder<'ast, '_> {
             (block.target, block.type_params.len())
         };
         let mut type_args = vec![TypeIndex::ERROR; type_params_len];
-        self.infer_type_args_from_types(block_target, receiver_ty, &mut type_args);
-        Some((block_idx, type_args))
+        self.infer_type_args(&mut type_args, block_target, receiver_ty);
+        Some((block_idx, type_args.into_boxed_slice()))
     }
 
     fn build_object_access_expression(
@@ -6281,8 +6304,10 @@ impl<'ast> Builder<'ast, '_> {
                     .cloned()
             }),
             _ => self
-                .ensure_impl_members(func_ctx.resolve_context.file_id, object.ty)
-                .get(&member.inner)
+                .tir
+                .impl_members
+                .get(&object.ty)
+                .and_then(|m| m.get(&member.inner))
                 .cloned(),
         };
         match entry {
@@ -6387,95 +6412,6 @@ impl<'ast> Builder<'ast, '_> {
         Err(())
     }
 
-    /// Ensures `SIZE` and `ALIGN` are present for `ty` and returns its member
-    /// map. Always use this for impl-member lookups — never access
-    /// `impl_members` directly.
-    fn ensure_impl_members(
-        &mut self,
-        file_id: FileId,
-        ty: TypeIndex,
-    ) -> &HashMap<SymbolU32, ImplEntry> {
-        let size_sym = self.interner.get_or_intern("SIZE");
-        let already_seeded = self
-            .tir
-            .impl_members
-            .get(&ty)
-            .map_or(false, |m| m.contains_key(&size_sym));
-        if !already_seeded {
-            let is_sized = !matches!(
-                self.tir.type_pool[ty.as_usize()],
-                Type::Error
-                    | Type::Integer
-                    | Type::Float
-                    | Type::Module { .. }
-                    | Type::Enum { .. }
-                    | Type::Function { .. }
-                    | Type::Memory { .. }
-                    | Type::Trait { .. }
-            );
-            if is_sized {
-                let align_sym = self.interner.get_or_intern("ALIGN");
-                let size_id = self.id_generator.generate();
-                let align_id = self.id_generator.generate();
-                // TODO: replace dummy_span with the actual span of the Sized trait SIZE/ALIGN
-                // constants once the Sized lang-item trait is defined in the stdlib.
-                let dummy_span = ast::TextSpan { start: 0, end: 0 };
-                let size_index = self.tir.constants.len() as ConstIndex;
-                self.tir.constants.push(Constant {
-                    id: size_id,
-                    file_id,
-                    namespace: None,
-                    pub_span: None,
-                    name: ast::Spanned {
-                        inner: size_sym,
-                        span: dummy_span,
-                    },
-                    ty: ast::Spanned {
-                        inner: TypeIndex::U32,
-                        span: dummy_span,
-                    },
-                    value: None,
-                    accesses: Vec::new(),
-                });
-                self.tir.const_index_lookup.insert(size_id, size_index);
-                let align_index = self.tir.constants.len() as ConstIndex;
-                self.tir.constants.push(Constant {
-                    id: align_id,
-                    file_id,
-                    namespace: None,
-                    pub_span: None,
-                    name: ast::Spanned {
-                        inner: align_sym,
-                        span: dummy_span,
-                    },
-                    ty: ast::Spanned {
-                        inner: TypeIndex::U32,
-                        span: dummy_span,
-                    },
-                    value: None,
-                    accesses: Vec::new(),
-                });
-                self.tir.const_index_lookup.insert(align_id, align_index);
-                let members = self.tir.impl_members.entry(ty).or_default();
-                members.insert(
-                    size_sym,
-                    ImplEntry::AssociatedConst {
-                        id: size_id,
-                        ty: TypeIndex::U32,
-                    },
-                );
-                members.insert(
-                    align_sym,
-                    ImplEntry::AssociatedConst {
-                        id: align_id,
-                        ty: TypeIndex::U32,
-                    },
-                );
-            }
-        }
-
-        self.tir.impl_members.entry(ty).or_default()
-    }
 
     /// Build a TIR expression from a parsed `Path`.
     ///
@@ -6864,8 +6800,10 @@ impl<'ast> Builder<'ast, '_> {
             }
             _ => {
                 match self
-                    .ensure_impl_members(resolve_context.file_id, namespace_ty)
-                    .get(&member_sym)
+                    .tir
+                    .impl_members
+                    .get(&namespace_ty)
+                    .and_then(|m| m.get(&member_sym))
                     .cloned()
                 {
                     Some(ImplEntry::AssociatedType { ty }) => ty,
@@ -6899,8 +6837,10 @@ impl<'ast> Builder<'ast, '_> {
         };
 
         match self
-            .ensure_impl_members(func_ctx.resolve_context.file_id, namespace_ty)
-            .get(&member.inner)
+            .tir
+            .impl_members
+            .get(&namespace_ty)
+            .and_then(|m| m.get(&member.inner))
             .cloned()
         {
             Some(ImplEntry::AssociatedConst { id, ty }) => {
@@ -9323,68 +9263,52 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    /// Builds, infers type args, and checks arguments for a generic call.
-    /// `self_ty` always wins for slot 0; return-type expectation seeds type
-    /// args first.
     fn build_generic_call_arguments(
         &mut self,
-        ctx: &mut FunctionContext,
-        arguments: &[Separated<Spanned<ast::Expression>>],
-        params: &[TypeIndex],
-        result_type: TypeIndex,
-        type_params_len: usize,
+        file_id: FileId,
+        func_index: FunctionIndex,
+        arguments: &mut [Expression],
+        explicit_type_arguments: Option<&[TypeIndex]>,
         expected_result: Option<TypeIndex>,
-        self_ty: Option<TypeIndex>,
-    ) -> Result<(Box<[Expression]>, Vec<TypeIndex>), ()> {
-        // Phase 1: build with no hint so all argument types are known before
-        // any slot is filled — avoids left-to-right ordering issues.
-        let mut args: Box<[Expression]> = arguments
-            .iter()
-            .map(|argument| {
-                self.build_expression(
-                    ctx,
-                    AccessContext {
-                        expected_type: None,
-                        access_kind: AccessKind::Read,
-                    },
-                    &argument.inner,
-                )
-            })
-            .collect::<Result<Box<_>, _>>()?;
-
-        // Phase 2: infer type_args.
-        let mut type_args = vec![TypeIndex::ERROR; type_params_len];
-
-        if let Some(expected) = expected_result {
-            self.infer_type_args_from_types(result_type, expected, &mut type_args);
+    ) -> Result<Box<[TypeIndex]>, ()> {
+        let mut type_args =
+            vec![TypeIndex::ERROR; self.tir.functions[func_index as usize].type_params.len()];
+        if let Some(initial) = explicit_type_arguments {
+            for (slot, &ty) in type_args.iter_mut().zip(initial.iter()) {
+                if ty != TypeIndex::ERROR {
+                    *slot = ty;
+                }
+            }
         }
 
-        for (arg, &param_ty) in args.iter().zip(params.iter()) {
-            self.infer_type_args_from_types(param_ty, arg.ty, &mut type_args);
+        if let Some(expected_result) = expected_result {
+            let result_type = self.tir.functions[func_index as usize]
+                .result
+                .as_ref()
+                .map(|r| r.inner)
+                .unwrap_or(TypeIndex::UNIT);
+            self.infer_type_args(&mut type_args, result_type, expected_result);
+        }
+        for (index, arg) in arguments.iter().enumerate() {
+            let param_type = match self.tir.functions[func_index as usize].params.get(index) {
+                Some(p) => p.ty.inner,
+                None => break,
+            };
+            self.infer_type_args(&mut type_args, param_type, arg.ty);
         }
 
-        // Self is always authoritative; set it last so it can't be overridden
-        // by return-type seeding or argument inference.
-        if let Some(self_ty) = self_ty {
-            type_args[0] = self_ty;
-        }
-
-        // Phase 3: check / coerce against the now-complete type_args.
         let mut had_error = false;
-        for (index, arg) in args.iter_mut().enumerate() {
-            let param_type = match params.get(index).copied() {
-                Some(p) => p,
-                None => continue,
+        for (index, arg) in arguments.iter_mut().enumerate() {
+            let param_type = match self.tir.functions[func_index as usize].params.get(index) {
+                Some(p) => p.ty.inner,
+                None => break,
             };
 
             let expected_type = self.substitute_expected_type(param_type, &type_args);
 
             if let Some(expected) = expected_type {
                 if arg.ty.is_comptime_number() {
-                    if self
-                        .coerce_untyped_expr(ctx.resolve_context.file_id, arg, expected)
-                        .is_err()
-                    {
+                    if self.coerce_untyped_expr(file_id, arg, expected).is_err() {
                         had_error = true;
                     }
                 } else if !self.coercible_to(arg.ty, expected)
@@ -9395,7 +9319,7 @@ impl<'ast> Builder<'ast, '_> {
                         TypeMistmatchDiagnostic {
                             expected_type: expected,
                             actual_type: arg.ty,
-                            span: SourceSpan::new(ctx.resolve_context.file_id, arg.span),
+                            span: SourceSpan::new(file_id, arg.span),
                         },
                     ));
                 }
@@ -9403,8 +9327,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir
                     .diagnostics
                     .push(report_type_annotation_required(SourceSpan::new(
-                        ctx.resolve_context.file_id,
-                        arg.span,
+                        file_id, arg.span,
                     )));
                 had_error = true;
             }
@@ -9413,7 +9336,7 @@ impl<'ast> Builder<'ast, '_> {
         if had_error {
             Err(())
         } else {
-            Ok((args, type_args))
+            Ok(type_args.into_boxed_slice())
         }
     }
 
@@ -9580,13 +9503,13 @@ impl<'ast> Builder<'ast, '_> {
                             access.kind = FunctionAccessKind::DirectCall;
                         }
                         let id = self.tir.functions[func_index as usize].id;
-                        let params = &signature.params()[1..];
-                        if arguments.len() != params.len() {
+                        let non_self_params = &signature.params()[1..];
+                        if arguments.len() != non_self_params.len() {
                             self.tir.diagnostics.push(report_argument_count_mismatch(
                                 TypeFormatter::new(&self.tir, &self.interner),
                                 ArgumentCountMismatchDiagnostic {
                                     actual_count: arguments.len(),
-                                    params,
+                                    params: non_self_params,
                                     call_span: SourceSpan::new(
                                         ctx.resolve_context.file_id,
                                         callee.span,
@@ -9599,14 +9522,24 @@ impl<'ast> Builder<'ast, '_> {
                         let type_params_len =
                             self.tir.functions[func_index as usize].type_params.len();
                         if type_params_len > 0 {
-                            let (arguments, type_args) = self.build_generic_call_arguments(
-                                ctx,
-                                arguments,
-                                params,
-                                signature.result(),
-                                type_params_len,
+                            let mut arguments = std::iter::once(Ok(*object))
+                                .chain(arguments.iter().map(|arg| {
+                                    self.build_expression(
+                                        ctx,
+                                        AccessContext {
+                                            expected_type: None,
+                                            access_kind: AccessKind::Read,
+                                        },
+                                        &arg.inner,
+                                    )
+                                }))
+                                .collect::<Result<Box<_>, _>>()?;
+                            let type_args = self.build_generic_call_arguments(
+                                ctx.resolve_context.file_id,
+                                func_index,
+                                &mut arguments,
+                                None,
                                 access_ctx.expected_type,
-                                Some(object.ty),
                             )?;
                             self.check_typeset_bounds_on_type_args(
                                 func_index,
@@ -9619,8 +9552,7 @@ impl<'ast> Builder<'ast, '_> {
                             return Ok(Expression {
                                 kind: ExprKind::GenericMethodCall {
                                     id,
-                                    type_args: type_args.into_boxed_slice(),
-                                    object,
+                                    type_args,
                                     arguments,
                                 },
                                 ty: return_ty,
@@ -9628,12 +9560,11 @@ impl<'ast> Builder<'ast, '_> {
                             });
                         }
 
-                        let arguments = self.build_call_arguments(ctx, arguments, params, &[])?;
-
+                        let arguments =
+                            self.build_call_arguments(ctx, arguments, non_self_params, &[])?;
                         Ok(Expression {
                             kind: ExprKind::MethodCall {
-                                object,
-                                arguments,
+                                arguments: std::iter::once(*object).chain(arguments).collect(),
                                 id,
                             },
                             ty: signature.result(),
@@ -9675,12 +9606,14 @@ impl<'ast> Builder<'ast, '_> {
                                     self.build_call_arguments(ctx, arguments, params, &type_args)?;
                                 let return_ty =
                                     self.substitute_type(signature.result(), &type_args);
+
                                 return Ok(Expression {
                                     kind: ExprKind::GenericMethodCall {
                                         id,
-                                        type_args: type_args.into_boxed_slice(),
-                                        object,
-                                        arguments,
+                                        type_args,
+                                        arguments: std::iter::once(*object)
+                                            .chain(arguments)
+                                            .collect(),
                                     },
                                     ty: return_ty,
                                     span: expr.span,
@@ -9728,14 +9661,41 @@ impl<'ast> Builder<'ast, '_> {
 
                     let type_params_len = self.tir.functions[func_index as usize].type_params.len();
                     if type_params_len > 0 {
-                        let (arguments, type_args) = self.build_generic_call_arguments(
-                            ctx,
-                            arguments,
-                            params,
-                            signature.result(),
-                            type_params_len,
+                        // Turbofish type args are stored inside the FunctionItem type
+                        // by build_path_expression. Seed them before inference so
+                        // explicit args take priority over argument-inferred ones.
+                        let callee_ty = callee.ty;
+                        let turbofish: Vec<TypeIndex> =
+                            match &self.tir.type_pool[callee_ty.as_usize()] {
+                                Type::FunctionItem { type_args, .. } if !type_args.is_empty() => {
+                                    type_args.to_vec()
+                                }
+                                _ => vec![],
+                            };
+                        let turbofish_seed: Option<&[TypeIndex]> = if turbofish.is_empty() {
+                            None
+                        } else {
+                            Some(&turbofish)
+                        };
+
+                        let mut built_args = Vec::with_capacity(arguments.len());
+                        for arg in arguments.iter() {
+                            built_args.push(self.build_expression(
+                                ctx,
+                                AccessContext {
+                                    expected_type: None,
+                                    access_kind: AccessKind::Read,
+                                },
+                                &arg.inner,
+                            )?);
+                        }
+
+                        let type_args = self.build_generic_call_arguments(
+                            ctx.resolve_context.file_id,
+                            func_index,
+                            &mut built_args,
+                            turbofish_seed,
                             access_ctx.expected_type,
-                            None,
                         )?;
                         self.check_typeset_bounds_on_type_args(
                             func_index,
@@ -9748,8 +9708,8 @@ impl<'ast> Builder<'ast, '_> {
                         return Ok(Expression {
                             kind: ExprKind::GenericCall {
                                 id,
-                                type_args: type_args.into_boxed_slice(),
-                                arguments,
+                                type_args,
+                                arguments: built_args.into_boxed_slice(),
                             },
                             ty: return_ty,
                             span: expr.span,

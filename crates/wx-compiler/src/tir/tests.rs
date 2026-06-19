@@ -1216,42 +1216,6 @@ fn test_stdlib_method_callable() {
     );
 }
 
-/// `u32::SIZE` and `u32::ALIGN` are auto-generated associated constants.
-#[test]
-fn test_size_align_constants() {
-    let case = TestCase::new(indoc! {"
-        fn sizes() -> u32 {
-            u32::SIZE
-        }
-
-        fn aligns() -> u32 {
-            u32::ALIGN
-        }
-
-        export { sizes, aligns }
-    "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-    // u32 is 4 bytes, aligned to 4
-    let size_sym = case.graph.interner.get("SIZE").unwrap();
-    let align_sym = case.graph.interner.get("ALIGN").unwrap();
-    let members = case.tir.impl_members.get(&TypeIndex::U32).unwrap();
-    assert!(matches!(
-        members[&size_sym],
-        ImplEntry::AssociatedConst { .. }
-    ));
-    assert!(matches!(
-        members[&align_sym],
-        ImplEntry::AssociatedConst { .. }
-    ));
-}
 
 /// impl methods and associated functions are registered in `impl_members` under
 /// the correct type key with the correct `ImplEntry` variant.
