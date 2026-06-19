@@ -9628,7 +9628,7 @@ impl<'ast> Builder<'ast, '_> {
             arguments,
             method,
             object,
-            type_args,
+            ..
         } = match &expr.inner {
             ast::Expression::MethodCall(method_call) => method_call.as_ref(),
             _ => unreachable!(),
