@@ -11,6 +11,8 @@ pub fn @align_of<T, M: Memory>() -> M::Size;
 
 #[inline]
 pub fn null<M: Memory, T>() -> M::*T { @pointer_from(0) }
+#[inline]
+pub fn null_mut<M: Memory, T>() -> M::*mut T { @pointer_from::<M, T>(0) as M::*mut T }
 
 pub typeset Integer { u8, i8, u16, i16, u32, i32, u64, i64 }
 pub typeset PointerSize { u32, u64 }

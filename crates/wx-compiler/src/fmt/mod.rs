@@ -1190,7 +1190,7 @@ impl Builder {
                 let mut items = Vec::new();
                 items.push(Self::symbol(interner, name.inner));
                 if !type_args.is_empty() {
-                    items.push(Node::StaticText("<"));
+                    items.push(Node::StaticText("::<"));
                     for (i, arg) in type_args.iter().enumerate() {
                         if i > 0 {
                             items.push(Node::StaticText(", "));

@@ -23,9 +23,9 @@ global mut bump: heap::*mut u8 = heap::DATA_END;
 
 // Allocates space for one T, respecting its alignment.
 pub fn alloc<T>() -> heap::*mut T {
-    local align = @align_of<T, heap>();
+    local align = @align_of::<T, heap>();
     local ptr = (bump as u32 + align - 1) / align * align;
-    local new_end = ptr + @size_of<T, heap>();
+    local new_end = ptr + @size_of::<T, heap>();
     local cur_end = heap.size() * PAGE_SIZE;
     if new_end > cur_end {
         local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;

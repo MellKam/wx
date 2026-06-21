@@ -154,12 +154,12 @@ pub enum Type {
         trait_index: TraitIndex,
         assoc_name: SymbolU32,
     },
-    /// `M::Size` in a function signature: a projection carrying the owning type
-    /// param's index so `substitute_type` resolves it in a single pass.
+    /// `M::Size` or `A::M::Size` in a signature: a projection from a base type
+    /// (a `TypeParam` or another `AssocTypeProjection`) resolved by `substitute_type`.
     AssocTypeProjection {
         trait_index: TraitIndex,
         assoc_name: SymbolU32,
-        param_index: u32,
+        base: TypeIndex,
     },
 }
 
@@ -182,7 +182,11 @@ impl TypeIndex {
     /// Use wherever `INFER` acts as an absent-type sentinel and a concrete fallback is needed.
     #[inline]
     pub fn infer_or(self, other: TypeIndex) -> TypeIndex {
-        if self == TypeIndex::INFER { other } else { self }
+        if self == TypeIndex::INFER {
+            other
+        } else {
+            self
+        }
     }
 
     #[inline]
@@ -572,7 +576,7 @@ pub enum ExprKind {
     },
     IntrinsicCall {
         name: SymbolU32,
-        type_args: Box<[TypeIndex]>,
+        type_arguments: Box<[TypeIndex]>,
         arguments: Box<[Expression]>,
     },
     /// `[a, b, c]` — all elements are compile-time constants; placed in static data.
@@ -813,17 +817,31 @@ pub enum SymbolKind {
 /// variables (stack-scoped within a function body).
 #[derive(Clone, Copy)]
 pub enum ResolvedSymbol {
-    Local { scope_index: ScopeIndex, local_index: LocalIndex },
+    Local {
+        scope_index: ScopeIndex,
+        local_index: LocalIndex,
+    },
     Global(SymbolKind),
 }
 
 /// The kind of item found when resolving a member within a type namespace.
 #[derive(Clone)]
 pub enum ResolvedMember {
-    Function { func_index: u32, type_args: Box<[TypeIndex]> },
-    Const { id: ast::DefId, ty: TypeIndex },
-    Global { global_index: u32 },
-    EnumVariant { enum_index: u32, variant_index: u32 },
+    Function {
+        func_index: u32,
+        type_args: Box<[TypeIndex]>,
+    },
+    Const {
+        id: ast::DefId,
+        ty: TypeIndex,
+    },
+    Global {
+        global_index: u32,
+    },
+    EnumVariant {
+        enum_index: u32,
+        variant_index: u32,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -1443,22 +1461,13 @@ impl<'a> TypeFormatter<'a> {
                 Ok(())
             }
             Type::AssocTypeProjection {
-                assoc_name,
-                trait_index,
-                param_index,
+                assoc_name, base, ..
             } => {
-                self.type_params
-                    .get(*param_index as usize)
-                    .and_then(|param_info| self.interner.resolve(param_info.name))
-                    .or_else(|| {
-                        self.interner
-                            .resolve(self.tir.traits[*trait_index as usize].name.inner)
-                    })
-                    .ok_or(std::fmt::Error)
-                    .and_then(|prefix| f.write_str(prefix))?;
+                let (assoc_name, base) = (*assoc_name, *base);
+                self.write_type(f, base)?;
                 f.write_str("::")?;
                 self.interner
-                    .resolve(*assoc_name)
+                    .resolve(assoc_name)
                     .ok_or(std::fmt::Error)
                     .and_then(|type_name| f.write_str(type_name))?;
                 Ok(())
@@ -1517,7 +1526,7 @@ pub struct TIR {
 }
 
 #[derive(PartialEq)]
-enum WasmPrimitive {
+enum WasmScalar {
     I32,
     I64,
     F32,
@@ -1544,7 +1553,34 @@ impl TIR {
         builder::build(compilation)
     }
 
-    fn type_primitive(&self, ty: TypeIndex) -> Option<WasmPrimitive> {
+    pub fn are_scalar_compatible(&self, a: TypeIndex, b: TypeIndex) -> bool {
+        if a == b {
+            return true;
+        }
+        match (&self.type_pool[a.as_usize()], &self.type_pool[b.as_usize()]) {
+            (
+                Type::Pointer {
+                    to: a_to,
+                    memory: a_mem,
+                    ..
+                },
+                Type::Pointer {
+                    to: b_to,
+                    memory: b_mem,
+                    ..
+                },
+            ) => a_to == b_to && a_mem == b_mem,
+            (Type::Array { memory: a_mem, .. }, Type::Array { memory: b_mem, .. }) => {
+                a_mem == b_mem
+            }
+            _ => matches!(
+                (self.type_scalar(a), self.type_scalar(b)),
+                (Some(x), Some(y)) if x == y
+            ),
+        }
+    }
+
+    fn type_scalar(&self, ty: TypeIndex) -> Option<WasmScalar> {
         match &self.type_pool[ty.as_usize()] {
             Type::Bool
             | Type::U8
@@ -1554,27 +1590,26 @@ impl TIR {
             | Type::I32
             | Type::U32
             | Type::Char
-            | Type::Function { .. } => Some(WasmPrimitive::I32),
+            | Type::Function { .. } => Some(WasmScalar::I32),
             Type::Enum { enum_index } => {
                 let repr_type = self.enums[*enum_index as usize].ty;
-                self.type_primitive(repr_type)
+                self.type_scalar(repr_type)
             }
-            Type::U64 | Type::I64 => Some(WasmPrimitive::I64),
-            Type::F32 => Some(WasmPrimitive::F32),
-            Type::F64 => Some(WasmPrimitive::F64),
-            Type::Array { memory, .. } | Type::Pointer { memory, .. } => {
-                match &self.type_pool[memory.as_usize()] {
-                    Type::Memory { id, .. } => {
-                        let kind = self.memories[self.memory_index_lookup[id] as usize].kind;
-                        match kind {
-                            MemoryKind::Memory32 => Some(WasmPrimitive::I32),
-                            MemoryKind::Memory64 => Some(WasmPrimitive::I64),
-                        }
+            Type::U64 | Type::I64 => Some(WasmScalar::I64),
+            Type::F32 => Some(WasmScalar::F32),
+            Type::F64 => Some(WasmScalar::F64),
+            Type::Pointer { memory, .. } => match &self.type_pool[memory.as_usize()] {
+                Type::Memory { id, .. } => {
+                    let kind = self.memories[self.memory_index_lookup[id] as usize].kind;
+                    match kind {
+                        MemoryKind::Memory32 => Some(WasmScalar::I32),
+                        MemoryKind::Memory64 => Some(WasmScalar::I64),
                     }
-                    _ => None,
                 }
-            }
+                _ => None,
+            },
             Type::Tuple { .. }
+            | Type::Array { .. }
             | Type::AssociatedType { .. }
             | Type::AssocTypeProjection { .. }
             | Type::FunctionItem { .. }

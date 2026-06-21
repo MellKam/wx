@@ -892,12 +892,11 @@ pub struct Spanned<T> {
 
 impl<T: Copy> Clone for Spanned<T> {
     fn clone(&self) -> Self {
-        Spanned {
-            inner: self.inner,
-            span: self.span,
-        }
+        *self
     }
 }
+
+impl<T: Copy> Copy for Spanned<T> {}
 
 /// Represents an item in a separated list, storing both the item and its
 /// trailing separator.
@@ -1019,7 +1018,7 @@ pub enum Expression {
     Tuple {
         elements: Box<[Spanned<Expression>]>,
     },
-    /// `@name<T, U>(args)`
+    /// `@name::<T, U>(args)`
     IntrinsicCall {
         name: Spanned<SymbolU32>,
         type_args: Box<[Spanned<TypeExpression>]>,
@@ -3389,7 +3388,8 @@ impl<'ctx> Parser<'ctx> {
             span: token.span,
         };
 
-        let type_args = if parser.lexer.peek().inner == Token::LeftArrow {
+        let type_args = if parser.lexer.peek().inner == Token::ColonColon {
+            parser.lexer.next(); // consume `::`
             let (args, _) = parser.parse_type_args()?;
             args
         } else {

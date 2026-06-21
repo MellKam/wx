@@ -2126,13 +2126,13 @@ fn test_size_of_and_align_of_intrinsics() {
 
         memory heap: Memory<Size = u32>;
 
-        fn size_u8() -> u32    { @size_of<u8, heap>() }
-        fn size_u16() -> u32   { @size_of<u16, heap>() }
-        fn size_u32() -> u32   { @size_of<u32, heap>() }
-        fn size_u64() -> u32   { @size_of<u64, heap>() }
-        fn align_u8() -> u32   { @align_of<u8, heap>() }
-        fn align_u16() -> u32  { @align_of<u16, heap>() }
-        fn align_u32() -> u32  { @align_of<u32, heap>() }
+        fn size_u8() -> u32    { @size_of::<u8, heap>() }
+        fn size_u16() -> u32   { @size_of::<u16, heap>() }
+        fn size_u32() -> u32   { @size_of::<u32, heap>() }
+        fn size_u64() -> u32   { @size_of::<u64, heap>() }
+        fn align_u8() -> u32   { @align_of::<u8, heap>() }
+        fn align_u16() -> u32  { @align_of::<u16, heap>() }
+        fn align_u32() -> u32  { @align_of::<u32, heap>() }
 
         export { size_u8, size_u16, size_u32, size_u64, align_u8, align_u16, align_u32 }
     "});

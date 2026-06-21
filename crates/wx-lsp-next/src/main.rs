@@ -464,6 +464,21 @@ impl LanguageServer for Backend {
             let name = interner.resolve(func.name.inner).unwrap_or("?");
             let mut label = format!("fn {name}(");
             let mut param_infos: Vec<ParameterInformation> = Vec::new();
+            // If the first parameter is named `self`, treat this as a
+            // method: show `self` in the signature label but do not
+            // include it in the interactive `parameters` list so editors
+            // won't tab into it.
+            let is_method = func
+                .params
+                .get(0)
+                .map(|p| {
+                    interner
+                        .resolve(p.name.inner)
+                        .map(|s| s == "self")
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            let start_idx = if is_method { 1 } else { 0 };
             for (i, param) in func.params.iter().enumerate() {
                 if i > 0 {
                     label.push_str(", ");
@@ -474,10 +489,12 @@ impl LanguageServer for Backend {
                 label.push_str(": ");
                 label.push_str(&fmt.display_type(param.ty.inner).unwrap());
                 let param_end = label.len() as u32;
-                param_infos.push(ParameterInformation {
-                    label: ParameterLabel::LabelOffsets([param_start, param_end]),
-                    documentation: None,
-                });
+                if i >= start_idx {
+                    param_infos.push(ParameterInformation {
+                        label: ParameterLabel::LabelOffsets([param_start, param_end]),
+                        documentation: None,
+                    });
+                }
             }
             label.push_str(") -> ");
             match &func.result {

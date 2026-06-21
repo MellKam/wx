@@ -673,13 +673,35 @@ impl<'tir> Builder<'tir> {
     /// Resolve a memory `TypeIndex` to its concrete `ast::DefId`.
     /// If the index is a `TypeParam`, substitutes via `current_substitutions`
     /// (same step `lower_type_index` performs for type params).
-    fn resolve_memory_id(&self, memory_ty: tir::TypeIndex) -> ast::DefId {
-        let concrete = match &self.tir.type_pool[memory_ty.as_usize()] {
+    /// Resolve a TIR TypeIndex to a concrete TIR TypeIndex using `current_substitutions`.
+    /// Handles chains of `AssocTypeProjection` by recursing through the base.
+    fn resolve_tir_type(&self, ty: tir::TypeIndex) -> tir::TypeIndex {
+        match &self.tir.type_pool[ty.as_usize()] {
             tir::Type::TypeParam { param_index, .. } => {
                 self.current_substitutions[*param_index as usize]
             }
-            _ => memory_ty,
-        };
+            tir::Type::AssocTypeProjection { base, assoc_name, .. } => {
+                let (base, assoc_name) = (*base, *assoc_name);
+                let concrete_base = self.resolve_tir_type(base);
+                self.tir
+                    .impl_members
+                    .get(&concrete_base)
+                    .and_then(|m| m.get(&assoc_name))
+                    .and_then(|e| {
+                        if let tir::ImplEntry::AssociatedType { ty } = e {
+                            Some(*ty)
+                        } else {
+                            None
+                        }
+                    })
+                    .expect("no impl found for associated type projection during MIR lowering")
+            }
+            _ => ty,
+        }
+    }
+
+    fn resolve_memory_id(&self, memory_ty: tir::TypeIndex) -> ast::DefId {
+        let concrete = self.resolve_tir_type(memory_ty);
         match &self.tir.type_pool[concrete.as_usize()] {
             tir::Type::Memory { id, .. } => *id,
             _ => unreachable!("memory TypeIndex does not resolve to Type::Memory"),
@@ -918,25 +940,8 @@ impl<'tir> Builder<'tir> {
                     Type::Function { signature_index }
                 }
             }
-            tir::Type::AssocTypeProjection {
-                param_index,
-                assoc_name,
-                ..
-            } => {
-                let receiver = self.current_substitutions[param_index as usize];
-                let concrete = self
-                    .tir
-                    .impl_members
-                    .get(&receiver)
-                    .and_then(|m| m.get(&assoc_name))
-                    .and_then(|e| {
-                        if let tir::ImplEntry::AssociatedType { ty } = e {
-                            Some(*ty)
-                        } else {
-                            None
-                        }
-                    })
-                    .expect("no impl found for associated type projection during MIR lowering");
+            tir::Type::AssocTypeProjection { .. } => {
+                let concrete = self.resolve_tir_type(type_idx);
                 self.lower_type_index(concrete)
             }
             tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
@@ -1512,10 +1517,7 @@ impl<'tir> Builder<'tir> {
                                 },
                                 _ => todo!("unknown memory compiler constant: {}", const_name),
                             },
-                            _ => todo!(
-                                "unknown compiler-implemented constant: {}",
-                                const_name
-                            ),
+                            _ => todo!("unknown compiler-implemented constant: {}", const_name),
                         }
                     }
                 } else {
@@ -1630,7 +1632,7 @@ impl<'tir> Builder<'tir> {
             }
             tir::ExprKind::IntrinsicCall {
                 name,
-                type_args,
+                type_arguments: type_args,
                 arguments,
             } => {
                 let name_str = self.interner.resolve(*name).unwrap_or("");

@@ -945,10 +945,10 @@ fn test_size_of_lowers_to_const_int() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32>;
 
-        fn size_u8() -> u32 { @size_of<u8, heap>() }
-        fn size_u32() -> u32 { @size_of<u32, heap>() }
-        fn size_u64() -> u32 { @size_of<u64, heap>() }
-        fn size_u16() -> u32 { @size_of<u16, heap>() }
+        fn size_u8() -> u32 { @size_of::<u8, heap>() }
+        fn size_u32() -> u32 { @size_of::<u32, heap>() }
+        fn size_u64() -> u32 { @size_of::<u64, heap>() }
+        fn size_u16() -> u32 { @size_of::<u16, heap>() }
 
         export { size_u8, size_u32, size_u64, size_u16 }
     "});
@@ -961,9 +961,9 @@ fn test_align_of_lowers_to_const_int() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32>;
 
-        fn align_u8() -> u32 { @align_of<u8, heap>() }
-        fn align_u32() -> u32 { @align_of<u32, heap>() }
-        fn align_u64() -> u32 { @align_of<u64, heap>() }
+        fn align_u8() -> u32 { @align_of::<u8, heap>() }
+        fn align_u32() -> u32 { @align_of::<u32, heap>() }
+        fn align_u64() -> u32 { @align_of::<u64, heap>() }
 
         export { align_u8, align_u32, align_u64 }
     "});
@@ -978,7 +978,7 @@ fn test_size_of_generic_monomorphizes() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32>;
 
-        fn typed_size<T, M: Memory>() -> M::Size { @size_of<T, M>() }
+        fn typed_size<T, M: Memory>() -> M::Size { @size_of::<T, M>() }
 
         fn call_u8() -> u32 { typed_size::<u8, heap>() }
         fn call_u32() -> u32 { typed_size::<u32, heap>() }

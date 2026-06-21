@@ -2,29 +2,6 @@ memory heap: Memory<Size = u32>;
 
 global mut bump: heap::*mut u8 = heap::DATA_END;
 
-fn alloc_array<T>(count: u32) -> heap::*mut T {
-    local align = @align_of<T, heap>();
-    local ptr = (bump as u32 + align - 1) / align * align;
-    local new_end = ptr + count * @size_of<T, heap>();
-    local cur_end = heap.size() * PAGE_SIZE;
-    if new_end > cur_end {
-        local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
-        _ = heap.grow(needed);
-    }
-    bump = new_end as heap::*mut u8;
-    ptr as heap::*mut T
-}
-
-pub fn reset() {
-    bump = heap::DATA_END
-}
-
-struct Vec<M: Memory, T> {
-    buf: M::*T,
-    len: M::Size,
-    cap: M::Size,
-}
-
 struct Layout<M: Memory> {
     size: M::Size,
     align: M::Size,
@@ -32,20 +9,20 @@ struct Layout<M: Memory> {
 
 impl <M: Memory> Layout<M> {
     pub fn of<T>() -> Layout<M> {
-        Layout::{ size: @size_of<T, M>(), align: @align_of<T, M>() }
+        Layout::{ size: @size_of::<T, M>(), align: @align_of::<T, M>() }
     }
 
     pub fn array<T>(count: M::Size) -> Layout<M> {
-        Layout::{ size: @size_of<T, M>() * count, align: @align_of<T, M>() }
+        Layout::{ size: @size_of::<T, M>() * count, align: @align_of::<T, M>() }
     }
 }
 
 trait Allocator {
     type M: Memory;
 
-    fn alloc(self: Self::M::*mut Self, layout: Layout<Self::M>) -> Self::M::*mut u8;
+    fn alloc(mut self, layout: Layout<Self::M>) -> Self::M::*mut u8;
 
-    fn dealloc(self: Self::M::*mut Self, ptr: Self::M::*mut u8, layout: Layout<Self::M>);
+    fn dealloc(mut self, ptr: Self::M::*mut u8, layout: Layout<Self::M>);
 }
 
 struct BumpAllocator {}
@@ -53,47 +30,55 @@ struct BumpAllocator {}
 impl Allocator for BumpAllocator {
     type M = heap;
 
-    fn alloc(_, layout: Layout<Self::M>) -> Self::M::*mut u8 {
-        unreachable
+    fn alloc(x, layout: Layout<heap>) -> heap::*mut u8 {
+        local align = layout.align;
+        local ptr = (bump as u32 + align - 1) / align * align;
+        local new_end = ptr + layout.size;
+        local cur_end = heap.size() * PAGE_SIZE;
+        if new_end > cur_end {
+            local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        }
+        bump = new_end as heap::*mut u8;
+        ptr as heap::*mut u8
     }
 
-    fn dealloc() {}
+    fn dealloc(x, _ptr: heap::*mut u8, _layout: Layout<heap>) {}
 }
 
-impl <M: Memory, T> Vec<M, T> {
-    fn new() -> Vec<M, T> {
-        Vec::<M, T>::{ buf: null(), len: 0, cap: 0 }
+struct Vec<T, A: Allocator> {
+    buf: A::M::*mut T,
+    len: A::M::Size,
+    cap: A::M::Size,
+    alloc: A,
+}
+
+impl <T, A: Allocator> Vec<T, A> {
+    pub fn new(alloc: A) -> Vec<T, A> {
+        Vec::{ buf: null_mut(), len: 0, cap: 0, alloc }
     }
 
-    fn new_in(alloc: Allocator) -> *mut Vec<M, T> {
-        unreachable
+    pub fn push(self: A::M::*mut Self, value: T) {
+        if self.*.len == self.*.cap {
+            local new_cap = if self.*.cap == 0 {
+                4
+            } else {
+                self.*.cap * 2
+            };
+        }
     }
 
-    fn push(mut self, value: T) {}
-
-    fn get(self, i: M::Size) -> T {
-        unreachable
-    }
-
-    fn len(self) -> M::Size {
+    pub fn len(self) -> A::M::Size {
         self.len
     }
 }
 
-fn test2(x: i32, self: Vec) {}
-
-pub fn vec_new<T>() -> Vec<heap, T> {
-    Vec::<heap, T>::{ buf: null(), len: 0, cap: 0 }
+pub fn reset() {
+    bump = heap::DATA_END
 }
 
 pub fn demo() -> i32 {
-    local y = Layout::array::<i32>(10);
-    local mut v = Vec::<heap, i32>::new();
-    v.push(10);
-    v.push(20);
-    v.push(30);
-    v.push(40);
-    v.push(50);
+    local mut v = Vec::<i32, _>::new(BumpAllocator::{});
+    v.push(5);
     
     local mut sum: i32 = 0;
     local mut i: u32 = 0;

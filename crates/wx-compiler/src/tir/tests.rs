@@ -2815,10 +2815,26 @@ fn test_cannot_infer_generic_type_param_error() {
                 }
             }
             pub fn demo() {
-                local y = Layout::array::<i32>(4 as u32);
+                local y = Layout::array::<i32>(4);
             }
         "}, &[]);
     has_error_matching(&case, "cannot infer type for type parameter `M`");
+
+    // When M is also specified via turbofish on the first segment, both params
+    // are fully resolved and there should be no errors.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            struct Layout<M: Memory> { size: M::Size }
+            impl <M: Memory> Layout<M> {
+                pub fn array<T>(count: M::Size) -> Layout<M> {
+                    Layout::{ size: count }
+                }
+            }
+            pub fn demo() {
+                local y = Layout::<heap>::array::<i32>(10);
+            }
+        "}, &[]);
+    no_errors(&case);
 }
 
 // ── `_` (infer placeholder) edge cases ──────────────────────────────────────
@@ -4609,7 +4625,7 @@ fn test_struct_init_undeclared_type_in_module_path_is_error() {
     );
 }
 
-/// `@size_of<T, M>` returns `M::Size` projected from @size_of's own param list
+/// `@size_of::<T, M>` returns `M::Size` projected from @size_of's own param list
 /// (where M is at index 1).  The struct field `size: M::Size` is projected from
 /// Layout's param list (where M is at index 0).  After substitution both must
 /// normalise to the same TypeIndex so the struct init type-checks cleanly.
@@ -4625,11 +4641,11 @@ fn test_assoc_type_projection_normalised_across_functions() {
 
         impl<M: Memory> Layout<M> {
             pub fn of<T>() -> Layout<M> {
-                Layout::{ size: @size_of<T, M>(), align: @align_of<T, M>() }
+                Layout::{ size: @size_of::<T, M>(), align: @align_of::<T, M>() }
             }
 
             pub fn array<T>(count: M::Size) -> Layout<M> {
-                Layout::{ size: @size_of<T, M>() * count, align: @align_of<T, M>() }
+                Layout::{ size: @size_of::<T, M>() * count, align: @align_of::<T, M>() }
             }
         }
     "});
@@ -4728,6 +4744,53 @@ fn test_loop_with_continue_only_has_never_type() {
     // `continue` does not count as a break — loop still has Never type.
     let case = TestCase::new(indoc! {"
         pub fn f() -> i32 { loop { continue; } }
+    "});
+    no_errors(&case);
+}
+
+// ── supertrait constraint tests ───────────────────────────────────────────────
+
+#[test]
+fn test_supertrait_single_level_satisfies_bound() {
+    // T: B where B: A — passing T to a fn requiring A should type-check.
+    let case = TestCase::new(indoc! {"
+        trait A {}
+        trait B: A {}
+        fn requires_a<T: A>(x: T) {}
+        fn call_with_b<T: B>(x: T) { requires_a(x); }
+        export {}
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_supertrait_two_levels_deep_satisfies_bound() {
+    // T: C where C: B and B: A — passing T to a fn requiring A should type-check.
+    let case = TestCase::new(indoc! {"
+        trait A {}
+        trait B: A {}
+        trait C: B {}
+        fn requires_a<T: A>(x: T) {}
+        fn call_with_c<T: C>(x: T) { requires_a(x); }
+        export {}
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_nested_assoc_type_projection_resolves() {
+    // `A::M::Size` — associated type of an associated type — must resolve
+    // without error when `type M: Memory` is declared in the Allocator trait.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+        trait Allocator {
+            type M: Memory;
+            fn alloc(mut self, size: Self::M::Size) -> Self::M::*mut u8;
+        }
+        struct Vec<T, A: Allocator> {
+            len: A::M::Size,
+        }
+        export {}
     "});
     no_errors(&case);
 }

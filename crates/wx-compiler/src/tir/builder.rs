@@ -606,7 +606,10 @@ fn report_infer_in_signature(span: SourceSpan) -> Diagnostic<FileId> {
     Diagnostic::error()
         .with_code(DiagnosticCode::InferInSignature.code())
         .with_message("`_` is not allowed in item type signatures")
-        .with_label(span.primary_label().with_message("type must be specified explicitly"))
+        .with_label(
+            span.primary_label()
+                .with_message("type must be specified explicitly"),
+        )
 }
 
 fn report_undeclared_type(span: SourceSpan) -> Diagnostic<FileId> {
@@ -1663,16 +1666,18 @@ impl<'ast> Builder<'ast, '_> {
                 span: expr_span,
             }),
             SymbolKind::Function { func_index } => {
-                let func = &mut self.tir.functions[func_index as usize];
-                func.accesses.push(FunctionAccess {
-                    kind: FunctionAccessKind::Reference,
-                    file_id: resolve_ctx.file_id,
-                    span: expr_span,
-                });
-                let func_id = func.id;
+                let func_id = self.tir.functions[func_index as usize].id;
+                let type_params_len = self.tir.functions[func_index as usize].type_params.len();
+                self.tir.functions[func_index as usize]
+                    .accesses
+                    .push(FunctionAccess {
+                        kind: FunctionAccessKind::Reference,
+                        file_id: resolve_ctx.file_id,
+                        span: expr_span,
+                    });
                 let ty = self.intern_type(Type::FunctionItem {
                     id: func_id,
-                    type_args: Box::new([]),
+                    type_args: vec![TypeIndex::INFER; type_params_len].into_boxed_slice(),
                 });
                 Ok(Expression {
                     kind: ExprKind::Function { id: func_id },
@@ -1942,9 +1947,12 @@ impl<'ast> Builder<'ast, '_> {
     ) -> TypeIndex {
         let ty = self.resolve_type(resolve_context, type_expr);
         if ty == TypeIndex::INFER {
-            self.tir.diagnostics.push(report_infer_in_signature(
-                SourceSpan::new(resolve_context.file_id, type_expr.span),
-            ));
+            self.tir
+                .diagnostics
+                .push(report_infer_in_signature(SourceSpan::new(
+                    resolve_context.file_id,
+                    type_expr.span,
+                )));
             return TypeIndex::ERROR;
         }
         ty
@@ -2400,6 +2408,13 @@ impl<'ast> Builder<'ast, '_> {
                 _ => None,
             })
             .collect()
+    }
+
+    fn type_param_bounds(&self, ty: TypeIndex) -> &[TraitIndex] {
+        let Type::TypeParam { owner, param_index } = self.tir.type_pool[ty.as_usize()] else {
+            return &[];
+        };
+        self.type_param_bounds_by_owner(owner, param_index)
     }
 
     fn type_param_bounds_by_owner<'a>(
@@ -4932,36 +4947,28 @@ impl<'ast> Builder<'ast, '_> {
                 .filter(|&t| t != TypeIndex::ERROR)
                 .unwrap_or(ty),
             Type::AssocTypeProjection {
-                param_index,
+                base,
                 assoc_name,
                 trait_index,
             } => {
-                let (param_index, assoc_name, trait_index) =
-                    (*param_index, *assoc_name, *trait_index);
-                let receiver = type_args.get(param_index as usize).copied().unwrap_or(ty);
-                match &self.tir.type_pool[receiver.as_usize()] {
-                    // Receiver is still a type param — normalize the projection's
-                    // param_index to the receiver's own index so that projections
-                    // from different functions referring to the same param compare equal.
-                    Type::TypeParam {
-                        param_index: new_idx,
-                        ..
-                    } => {
-                        let new_idx = *new_idx;
-                        if new_idx == param_index {
+                let (base, assoc_name, trait_index) = (*base, *assoc_name, *trait_index);
+                let substituted = self.substitute_type(base, type_args);
+                match &self.tir.type_pool[substituted.as_usize()] {
+                    Type::TypeParam { .. } | Type::AssocTypeProjection { .. } => {
+                        if substituted == base {
                             ty
                         } else {
                             self.intern_type(Type::AssocTypeProjection {
                                 trait_index,
                                 assoc_name,
-                                param_index: new_idx,
+                                base: substituted,
                             })
                         }
                     }
                     _ => self
                         .tir
                         .impl_members
-                        .get(&receiver)
+                        .get(&substituted)
                         .and_then(|m| m.get(&assoc_name))
                         .and_then(|e| {
                             if let ImplEntry::AssociatedType { ty: concrete } = e {
@@ -5136,11 +5143,7 @@ impl<'ast> Builder<'ast, '_> {
     /// if inference hasn't resolved it to a usable type yet. `None` tells the
     /// caller to emit a "type annotation required" diagnostic rather than
     /// attempt coercion against an unknown target.
-    fn substitute_expected_type(
-        &mut self,
-        ty: TypeIndex,
-        type_args: &[TypeIndex],
-    ) -> TypeIndex {
+    fn substitute_expected_type(&mut self, ty: TypeIndex, type_args: &[TypeIndex]) -> TypeIndex {
         let result = self.substitute_type(ty, type_args);
         match &self.tir.type_pool[result.as_usize()] {
             Type::TypeParam { .. } | Type::Integer | Type::Float | Type::Error => TypeIndex::INFER,
@@ -5179,18 +5182,18 @@ impl<'ast> Builder<'ast, '_> {
                 Type::AssocTypeProjection {
                     assoc_name,
                     trait_index,
-                    param_index,
+                    base,
                     ..
                 },
                 Type::AssocTypeProjection {
                     assoc_name: actual_assoc,
                     trait_index: actual_trait,
-                    param_index: actual_param,
+                    base: actual_base,
                     ..
                 },
-            ) if assoc_name == actual_assoc
-                && trait_index == actual_trait
-                && param_index == actual_param => {}
+            ) if assoc_name == actual_assoc && trait_index == actual_trait => {
+                self.infer_type_args(type_args, *base, *actual_base);
+            }
             (Type::Tuple { elements: pattern }, Type::Tuple { elements: actual })
                 if pattern.len() == actual.len() =>
             {
@@ -5299,28 +5302,42 @@ impl<'ast> Builder<'ast, '_> {
             &self.tir.type_pool[expected.as_usize()],
         ) {
             (
-                Type::Struct { struct_index: ai, args: aa },
-                Type::Struct { struct_index: bi, args: ba },
+                Type::Struct {
+                    struct_index: ai,
+                    args: aa,
+                },
+                Type::Struct {
+                    struct_index: bi,
+                    args: ba,
+                },
             ) if ai == bi && aa.len() == ba.len() => aa
                 .iter()
                 .copied()
                 .zip(ba.iter().copied())
                 .all(|(a, b)| self.type_satisfies_annotation(a, b)),
             (
-                Type::Pointer { to: at, mutable: am, memory: amem },
-                Type::Pointer { to: bt, mutable: bm, memory: bmem },
+                Type::Pointer {
+                    to: at,
+                    mutable: am,
+                    memory: amem,
+                },
+                Type::Pointer {
+                    to: bt,
+                    mutable: bm,
+                    memory: bmem,
+                },
             ) if am == bm => {
                 self.type_satisfies_annotation(*at, *bt)
                     && self.type_satisfies_annotation(*amem, *bmem)
             }
-            (
-                Type::Tuple { elements: ae },
-                Type::Tuple { elements: be },
-            ) if ae.len() == be.len() => ae
-                .iter()
-                .copied()
-                .zip(be.iter().copied())
-                .all(|(a, b)| self.type_satisfies_annotation(a, b)),
+            (Type::Tuple { elements: ae }, Type::Tuple { elements: be })
+                if ae.len() == be.len() =>
+            {
+                ae.iter()
+                    .copied()
+                    .zip(be.iter().copied())
+                    .all(|(a, b)| self.type_satisfies_annotation(a, b))
+            }
             _ => false,
         }
     }
@@ -5344,9 +5361,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.contains_infer(*of) || self.contains_infer(*memory)
             }
             Type::Tuple { elements } => elements.iter().any(|&e| self.contains_infer(e)),
-            Type::Function { signature } => {
-                signature.items.iter().any(|&t| self.contains_infer(t))
-            }
+            Type::Function { signature } => signature.items.iter().any(|&t| self.contains_infer(t)),
             _ => false,
         }
     }
@@ -6213,7 +6228,7 @@ impl<'ast> Builder<'ast, '_> {
                 let inferred_type =
                     self.infer_block_type(ctx.resolve_context.file_id, scope, &result)?;
                 scope.inferred_type = inferred_type;
-                if result.ty.is_comptime_number() {
+                if result.ty.is_comptime_number() && !inferred_type.is_comptime_number() {
                     _ = self.coerce_untyped_expr(
                         ctx.resolve_context.file_id,
                         &mut result,
@@ -6272,12 +6287,9 @@ impl<'ast> Builder<'ast, '_> {
             if coerce_to != TypeIndex::INFER {
                 return Ok(coerce_to);
             } else {
-                self.tir
-                    .diagnostics
-                    .push(report_type_annotation_required(SourceSpan::new(
-                        file_id, value.span,
-                    )));
-                return Err(());
+                // No type context — let the comptime type bubble up. The caller
+                // (e.g. build_if_else_expression) may resolve it via the other branch.
+                return Ok(value.ty);
             }
         }
         let result_type = value.ty;
@@ -6587,7 +6599,7 @@ impl<'ast> Builder<'ast, '_> {
                 span: name.span,
             });
 
-        let mut args: Box<[Expression]> = arguments
+        let mut arguments: Box<[Expression]> = arguments
             .iter()
             .map(|argument| {
                 self.build_expression(
@@ -6601,39 +6613,55 @@ impl<'ast> Builder<'ast, '_> {
             })
             .collect::<Result<Box<_>, _>>()?;
 
-        let explicit_type_arguments = match ast_type_args.len() {
-            0 => None,
-            _ => Some(
-                ast_type_args
-                    .iter()
-                    .map(|type_arg| self.resolve_type(&func_ctx.resolve_context, type_arg))
-                    .collect::<Box<_>>(),
-            ),
-        };
-
-        // TODO: validate the number of specified generics and bounds
-
-        let type_args = self.build_generic_call_arguments(
+        let type_params_len = self.tir.functions[func_index as usize].type_params.len();
+        if !ast_type_args.is_empty() && ast_type_args.len() != type_params_len {
+            self.tir.diagnostics.push(
+                Diagnostic::error()
+                    .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                    .with_message(format!(
+                        "expected {} type argument{}, found {}",
+                        type_params_len,
+                        if type_params_len == 1 { "" } else { "s" },
+                        ast_type_args.len()
+                    ))
+                    .with_label(
+                        Label::primary(func_ctx.resolve_context.file_id, expr.span)
+                            .with_message("wrong number of type arguments"),
+                    ),
+            );
+            return Err(());
+        }
+        let mut type_args = vec![TypeIndex::INFER; type_params_len];
+        for (slot, type_arg) in type_args.iter_mut().zip(ast_type_args.iter()) {
+            *slot = self.resolve_type(&func_ctx.resolve_context, type_arg);
+        }
+        let type_arguments = self.build_generic_call_arguments(
             func_ctx.resolve_context.file_id,
             func_index,
-            &mut args,
-            explicit_type_arguments.as_deref(),
+            &mut arguments,
+            type_args.into_boxed_slice(),
             access_ctx.expected_type,
             expr.span,
         )?;
+        self.check_typeset_bounds_on_type_args(
+            func_index,
+            &type_arguments,
+            func_ctx.resolve_context.file_id,
+            expr.span,
+        );
 
         let result_type = self.tir.functions[func_index as usize]
             .result
             .as_ref()
             .map(|r| r.inner)
             .unwrap_or(TypeIndex::UNIT);
-        let return_ty = self.substitute_type(result_type, &type_args);
+        let return_ty = self.substitute_type(result_type, &type_arguments);
 
         Ok(Expression {
             kind: ExprKind::IntrinsicCall {
                 name: name.inner,
-                type_args,
-                arguments: args,
+                type_arguments,
+                arguments,
             },
             ty: return_ty,
             span: expr.span,
@@ -6683,12 +6711,15 @@ impl<'ast> Builder<'ast, '_> {
                 .members
                 .get(&member.inner)
                 .cloned(),
-            Type::TypeParam { .. } => self.type_param_bounds(object.ty).iter().find_map(|&ti| {
-                self.tir.traits[ti as usize]
-                    .members
-                    .get(&member.inner)
-                    .cloned()
-            }),
+            Type::TypeParam { owner, param_index } => self
+                .type_param_bounds_by_owner(*owner, *param_index)
+                .iter()
+                .find_map(|&ti| {
+                    self.tir.traits[ti as usize]
+                        .members
+                        .get(&member.inner)
+                        .cloned()
+                }),
             _ => self
                 .tir
                 .impl_members
@@ -6941,10 +6972,7 @@ impl<'ast> Builder<'ast, '_> {
                     self.tir.diagnostics.push(
                         Diagnostic::error()
                             .with_message("type arguments are not supported here")
-                            .with_label(Label::primary(
-                                resolve_context.file_id,
-                                first.ident.span,
-                            )),
+                            .with_label(Label::primary(resolve_context.file_id, first.ident.span)),
                     );
                     return Err(());
                 }
@@ -6974,9 +7002,11 @@ impl<'ast> Builder<'ast, '_> {
 
         self.build_namespace_member_expression(
             func_ctx,
-            namespace_ty,
-            namespace_span,
-            last.ident.clone(),
+            ast::Spanned {
+                inner: namespace_ty,
+                span: namespace_span,
+            },
+            last,
             expr_span,
         )
     }
@@ -6994,8 +7024,11 @@ impl<'ast> Builder<'ast, '_> {
         match &self.tir.type_pool[namespace_ty.as_usize()].clone() {
             Type::Module { namespace_idx } => {
                 self.register_module_access(
-                    namespace_ty,
-                    SourceSpan::new(resolve_context.file_id, namespace_span),
+                    resolve_context.file_id,
+                    ast::Spanned {
+                        inner: namespace_ty,
+                        span: namespace_span,
+                    },
                 );
                 let namespace_idx = *namespace_idx;
                 let kind = self.tir.namespaces[namespace_idx as usize]
@@ -7045,8 +7078,7 @@ impl<'ast> Builder<'ast, '_> {
                     }
                 }
             }
-            Type::TypeParam { param_index, .. } => {
-                let param_index = *param_index;
+            Type::TypeParam { .. } => {
                 let bounds = self
                     .type_param_bounds_in_context(resolve_context, namespace_ty)
                     .to_owned();
@@ -7070,7 +7102,7 @@ impl<'ast> Builder<'ast, '_> {
                         return Ok(self.intern_type(Type::AssocTypeProjection {
                             trait_index,
                             assoc_name: member.inner,
-                            param_index,
+                            base: namespace_ty,
                         }));
                     }
                 }
@@ -7080,6 +7112,58 @@ impl<'ast> Builder<'ast, '_> {
                         resolve_context.file_id,
                         member.span,
                     )));
+                Err(())
+            }
+            Type::AssocTypeProjection {
+                trait_index,
+                assoc_name,
+                ..
+            } => {
+                // Nested projection: e.g. `A::M::Size` where namespace_ty = `A::M`.
+                // Look up the bound declared on the assoc type (`type M: Memory`)
+                // and search those bound traits for the requested member.
+                let (trait_index, assoc_name) = (*trait_index, *assoc_name);
+                let bounds = self.tir.traits[trait_index as usize]
+                    .assoc_types
+                    .get(&assoc_name)
+                    .map(|at| at.bounds.clone())
+                    .unwrap_or_default();
+                for &bound_trait in bounds.iter() {
+                    let def_ids = self.tir.traits[bound_trait as usize].member_def_ids.clone();
+                    for def_id in def_ids {
+                        self.ensure_signature(def_id);
+                    }
+                    if let Some(ImplEntry::AssociatedType { .. }) = self.tir.traits
+                        [bound_trait as usize]
+                        .members
+                        .get(&member.inner)
+                    {
+                        if let Some(at) = self.tir.traits[bound_trait as usize]
+                            .assoc_types
+                            .get_mut(&member.inner)
+                        {
+                            at.accesses
+                                .push(SourceSpan::new(resolve_context.file_id, member.span));
+                        }
+                        return Ok(self.intern_type(Type::AssocTypeProjection {
+                            trait_index: bound_trait,
+                            assoc_name: member.inner,
+                            base: namespace_ty,
+                        }));
+                    }
+                }
+                let member_name = self.interner.resolve(member.inner).unwrap_or("?");
+                let type_name = TypeFormatter::new(&self.tir, &self.interner)
+                    .display_type(namespace_ty)
+                    .unwrap_or_default();
+                self.tir.diagnostics.push(
+                    Diagnostic::error()
+                        .with_code(DiagnosticCode::UndeclaredType.code())
+                        .with_message(format!(
+                            "no type named `{member_name}` found for type `{type_name}`",
+                        ))
+                        .with_label(Label::primary(resolve_context.file_id, member.span)),
+                );
                 Err(())
             }
             _ => {
@@ -7113,11 +7197,12 @@ impl<'ast> Builder<'ast, '_> {
 
     /// Register an LSP access on the module declaration that `namespace_ty`
     /// refers to. No-op if `namespace_ty` is not a `Type::Module`.
-    fn register_module_access(&mut self, namespace_ty: TypeIndex, source_span: SourceSpan) {
-        let namespace_idx = match &self.tir.type_pool[namespace_ty.as_usize()] {
+    fn register_module_access(&mut self, file_id: FileId, namespace: Spanned<TypeIndex>) {
+        let namespace_idx = match &self.tir.type_pool[namespace.inner.as_usize()] {
             Type::Module { namespace_idx } => *namespace_idx,
             _ => return,
         };
+        let source_span = SourceSpan::new(file_id, namespace.span);
         match self.tir.namespaces[namespace_idx as usize].declaration {
             ModuleDeclarationKind::Module(i) => {
                 self.tir.module_decls[i as usize].accesses.push(source_span)
@@ -7197,12 +7282,10 @@ impl<'ast> Builder<'ast, '_> {
                     .get(&(SymbolNamespace::Value, member.inner))
                     .cloned()
                 {
-                    Some(SymbolKind::Function { func_index }) => {
-                        Ok(ResolvedMember::Function {
-                            func_index,
-                            type_args: Box::new([]),
-                        })
-                    }
+                    Some(SymbolKind::Function { func_index }) => Ok(ResolvedMember::Function {
+                        func_index,
+                        type_args: Box::new([]),
+                    }),
                     Some(SymbolKind::Global { global_index }) => {
                         Ok(ResolvedMember::Global { global_index })
                     }
@@ -7223,12 +7306,10 @@ impl<'ast> Builder<'ast, '_> {
                     .get(&member.inner)
                     .cloned()
                 {
-                    Some(ImplEntry::Method(func_index)) => {
-                        Ok(ResolvedMember::Function {
-                            func_index,
-                            type_args: Box::new([]),
-                        })
-                    }
+                    Some(ImplEntry::Method(func_index)) => Ok(ResolvedMember::Function {
+                        func_index,
+                        type_args: Box::new([]),
+                    }),
                     Some(ImplEntry::AssociatedConst { id, ty }) => {
                         Ok(ResolvedMember::Const { id, ty })
                     }
@@ -7253,7 +7334,9 @@ impl<'ast> Builder<'ast, '_> {
                         .get(&member.inner)
                         .cloned()
                     {
-                        Some(ImplEntry::Method(func_index) | ImplEntry::AssociatedFn(func_index)) => {
+                        Some(
+                            ImplEntry::Method(func_index) | ImplEntry::AssociatedFn(func_index),
+                        ) => {
                             return Ok(ResolvedMember::Function {
                                 func_index,
                                 type_args,
@@ -7279,36 +7362,75 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
-    /// Build an expression from a resolved namespace member, registering LSP
-    /// accesses as a side effect. Infallible — only called after a successful
-    /// `resolve_namespace_member`.
-    fn resolved_member_to_expression(
+    /// Core namespace-member dispatch: look up `member` inside a type whose
+    /// `TypeIndex` has already been resolved.
+    fn build_namespace_member_expression(
         &mut self,
-        file_id: FileId,
-        namespace_spanned: ast::Spanned<TypeIndex>,
-        member_span: TextSpan,
-        resolved: ResolvedMember,
+        func_ctx: &FunctionContext,
+        namespace: Spanned<TypeIndex>,
+        segment: &ast::PathSegment,
         expr_span: TextSpan,
-    ) -> Expression {
+    ) -> Result<Expression, ()> {
+        let file_id = func_ctx.resolve_context.file_id;
+
+        self.register_module_access(file_id, namespace);
+
+        let resolved = self.resolve_namespace_member(file_id, namespace, segment.ident)?;
+
+        let member_span = segment.ident.span;
         match resolved {
             ResolvedMember::Function {
                 func_index,
-                type_args,
+                type_args: impl_args,
             } => {
-                let func = &mut self.tir.functions[func_index as usize];
-                func.accesses.push(FunctionAccess {
-                    kind: FunctionAccessKind::Reference,
-                    file_id,
-                    span: member_span,
-                });
-                let func_id = func.id;
+                let func_id = self.tir.functions[func_index as usize].id;
+                let type_params_len = self.tir.functions[func_index as usize].type_params.len();
+                let fn_params_len = type_params_len - impl_args.len();
+
+                if !segment.type_args.is_empty() && segment.type_args.len() != fn_params_len {
+                    self.tir.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::TypeArgCountMismatch.code())
+                            .with_message(format!(
+                                "expected {} type argument{}, found {}",
+                                fn_params_len,
+                                if fn_params_len == 1 { "" } else { "s" },
+                                segment.type_args.len()
+                            ))
+                            .with_label(
+                                SourceSpan::new(file_id, expr_span)
+                                    .primary_label()
+                                    .with_message("wrong number of type arguments"),
+                            ),
+                    );
+                }
+
+                self.tir.functions[func_index as usize]
+                    .accesses
+                    .push(FunctionAccess {
+                        kind: FunctionAccessKind::Reference,
+                        file_id,
+                        span: member_span,
+                    });
+
+                let mut combined = vec![TypeIndex::INFER; type_params_len];
+                for (slot, &arg) in combined.iter_mut().zip(impl_args.iter()) {
+                    *slot = arg;
+                }
+                for (slot, ast_arg) in combined[impl_args.len()..]
+                    .iter_mut()
+                    .zip(segment.type_args.iter())
+                {
+                    *slot = self.resolve_type(&func_ctx.resolve_context, ast_arg);
+                }
+
                 let func_ty = self.intern_type(Type::FunctionItem {
                     id: func_id,
-                    type_args,
+                    type_args: combined.into_boxed_slice(),
                 });
-                Expression {
+                Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
-                        namespace: namespace_spanned,
+                        namespace,
                         member: Box::new(Expression {
                             kind: ExprKind::Function { id: func_id },
                             ty: func_ty,
@@ -7317,7 +7439,7 @@ impl<'ast> Builder<'ast, '_> {
                     },
                     ty: func_ty,
                     span: expr_span,
-                }
+                })
             }
             ResolvedMember::Const { id, ty } => {
                 if let Some(ci) = self.tir.const_index_lookup.get(&id).copied() {
@@ -7325,9 +7447,9 @@ impl<'ast> Builder<'ast, '_> {
                         .accesses
                         .push(SourceSpan::new(file_id, member_span));
                 }
-                Expression {
+                Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
-                        namespace: namespace_spanned,
+                        namespace,
                         member: Box::new(Expression {
                             kind: ExprKind::Const { id },
                             ty,
@@ -7336,16 +7458,16 @@ impl<'ast> Builder<'ast, '_> {
                     },
                     ty,
                     span: expr_span,
-                }
+                })
             }
             ResolvedMember::Global { global_index } => {
                 let global = &mut self.tir.globals[global_index as usize];
                 global.accesses.push(SourceSpan::new(file_id, member_span));
                 let global_id = global.id;
                 let ty = global.ty.inner;
-                Expression {
+                Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
-                        namespace: namespace_spanned,
+                        namespace,
                         member: Box::new(Expression {
                             kind: ExprKind::Global { id: global_id },
                             ty,
@@ -7354,7 +7476,7 @@ impl<'ast> Builder<'ast, '_> {
                     },
                     ty,
                     span: expr_span,
-                }
+                })
             }
             ResolvedMember::EnumVariant {
                 enum_index,
@@ -7363,53 +7485,23 @@ impl<'ast> Builder<'ast, '_> {
                 self.tir.enums[enum_index as usize].variants[variant_index as usize]
                     .accesses
                     .push(SourceSpan::new(file_id, member_span));
-                let enum_ty = namespace_spanned.inner;
-                Expression {
+                Ok(Expression {
                     kind: ExprKind::NamespaceAccess {
-                        namespace: namespace_spanned,
+                        namespace,
                         member: Box::new(Expression {
                             kind: ExprKind::EnumVariant {
                                 enum_index,
                                 variant_index,
                             },
-                            ty: enum_ty,
+                            ty: namespace.inner,
                             span: member_span,
                         }),
                     },
-                    ty: enum_ty,
+                    ty: namespace.inner,
                     span: expr_span,
-                }
+                })
             }
         }
-    }
-
-    /// Core namespace-member dispatch: look up `member` inside a type whose
-    /// `TypeIndex` has already been resolved.
-    fn build_namespace_member_expression(
-        &mut self,
-        func_ctx: &FunctionContext,
-        namespace_ty: TypeIndex,
-        namespace_span: TextSpan,
-        member: Spanned<SymbolU32>,
-        expr_span: TextSpan,
-    ) -> Result<Expression, ()> {
-        let file_id = func_ctx.resolve_context.file_id;
-        let namespace_spanned = ast::Spanned {
-            inner: namespace_ty,
-            span: namespace_span,
-        };
-
-        self.register_module_access(namespace_ty, SourceSpan::new(file_id, namespace_span));
-
-        let resolved =
-            self.resolve_namespace_member(file_id, namespace_spanned.clone(), member.clone())?;
-        Ok(self.resolved_member_to_expression(
-            file_id,
-            namespace_spanned,
-            member.span,
-            resolved,
-            expr_span,
-        ))
     }
 
     fn build_label_expression(
@@ -7587,10 +7679,10 @@ impl<'ast> Builder<'ast, '_> {
             condition,
         )?;
 
-        let then_block = match then_block.inner {
+        let mut then_block = match then_block.inner {
             ast::Expression::Block { .. } => ctx.enter_block(
                 BlockScope {
-                    label: label.clone().map(|l| BlockLabel {
+                    label: label.map(|l| BlockLabel {
                         name: l.inner,
                         span: l.span,
                         accesses: Vec::new(),
@@ -7610,7 +7702,7 @@ impl<'ast> Builder<'ast, '_> {
         };
         let (else_block, ty) = match maybe_else_block {
             Some(ast_else_block) => {
-                let else_block = match ast_else_block.inner {
+                let mut else_block = match ast_else_block.inner {
                     ast::Expression::Block { .. } => ctx.enter_block(
                         BlockScope {
                             label: label.map(|l| BlockLabel {
@@ -7628,6 +7720,16 @@ impl<'ast> Builder<'ast, '_> {
                     )?,
                     _ => unreachable!(),
                 };
+
+                // Cross-branch comptime coercion: coerce the comptime branch to match the
+                // concrete sibling. Break values inside a comptime branch still need a type
+                // annotation — they're resolved at build time before we see the sibling type.
+                let file_id = ctx.resolve_context.file_id;
+                if then_block.ty.is_comptime_number() && !else_block.ty.is_comptime_number() {
+                    self.coerce_untyped_expr(file_id, &mut then_block, else_block.ty)?;
+                } else if else_block.ty.is_comptime_number() && !then_block.ty.is_comptime_number() {
+                    self.coerce_untyped_expr(file_id, &mut else_block, then_block.ty)?;
+                }
 
                 match self.unify(then_block.ty, else_block.ty) {
                     Ok(ty) => (Some(else_block), ty),
@@ -7694,24 +7796,16 @@ impl<'ast> Builder<'ast, '_> {
         )?;
         if value.ty.is_comptime_number() {
             self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut value, cast_type)?;
+        } else if self.tir.are_scalar_compatible(value.ty, cast_type) {
+            // TODO: add checks for unsafe/lossy casts like i32 to u8, or u32 to char
+            value.ty = cast_type;
         } else {
-            match (
-                self.tir.type_primitive(value.ty),
-                self.tir.type_primitive(cast_type),
-            ) {
-                (Some(x), Some(y)) if x == y => {
-                    // TODO: add checks for unsafe/lossy casts like i32 to u8, or u32 to char
-                    value.ty = cast_type;
-                }
-                _ => {
-                    self.tir.diagnostics.push(report_invalid_cast(
-                        TypeFormatter::new(&self.tir, &self.interner),
-                        value.ty,
-                        cast_type,
-                        SourceSpan::new(ctx.resolve_context.file_id, expr.span),
-                    ));
-                }
-            }
+            self.tir.diagnostics.push(report_invalid_cast(
+                TypeFormatter::new(&self.tir, &self.interner),
+                value.ty,
+                cast_type,
+                SourceSpan::new(ctx.resolve_context.file_id, expr.span),
+            ));
         }
 
         Ok(value)
@@ -7794,6 +7888,12 @@ impl<'ast> Builder<'ast, '_> {
                     let inferred_type =
                         self.infer_block_type(ctx.resolve_context.file_id, scope, &value)?;
                     if value.ty.is_comptime_number() {
+                        if inferred_type.is_comptime_number() {
+                            self.tir.diagnostics.push(report_type_annotation_required(
+                                SourceSpan::new(ctx.resolve_context.file_id, value.span),
+                            ));
+                            return Err(());
+                        }
                         self.coerce_untyped_expr(
                             ctx.resolve_context.file_id,
                             &mut value,
@@ -8161,9 +8261,12 @@ impl<'ast> Builder<'ast, '_> {
                         span: expr.span,
                     })
                 } else {
-                    self.tir.diagnostics.push(report_type_annotation_required(
-                        SourceSpan::new(ctx.resolve_context.file_id, expr.span),
-                    ));
+                    self.tir
+                        .diagnostics
+                        .push(report_type_annotation_required(SourceSpan::new(
+                            ctx.resolve_context.file_id,
+                            expr.span,
+                        )));
                     Err(())
                 }
             }
@@ -9169,6 +9272,12 @@ impl<'ast> Builder<'ast, '_> {
                         self.infer_block_type(ctx.resolve_context.file_id, scope, &value)?;
                     scope.inferred_type = inferred_type;
                     if value.ty.is_comptime_number() {
+                        if inferred_type.is_comptime_number() {
+                            self.tir.diagnostics.push(report_type_annotation_required(
+                                SourceSpan::new(ctx.resolve_context.file_id, value.span),
+                            ));
+                            return Err(());
+                        }
                         self.coerce_untyped_expr(
                             ctx.resolve_context.file_id,
                             &mut value,
@@ -9310,7 +9419,7 @@ impl<'ast> Builder<'ast, '_> {
                             TypeFormatter::new(&self.tir, &self.interner),
                             BinaryOperatorCannotBeAppliedDiagnostic {
                                 file_id: ctx.resolve_context.file_id,
-                                operator: operator.clone(),
+                                operator,
                                 operand: Spanned {
                                     inner: ty,
                                     span: right.span,
@@ -9398,7 +9507,7 @@ impl<'ast> Builder<'ast, '_> {
                                 inner: left_type,
                                 span: left.span,
                             },
-                            operator: operator.clone(),
+                            operator,
                             right_type: Spanned {
                                 inner: right_type,
                                 span: right.span,
@@ -9445,17 +9554,6 @@ impl<'ast> Builder<'ast, '_> {
             .assoc_types
             .get(assoc_name)
             .is_some_and(|a| a.typeset_bound.is_some())
-    }
-
-    fn type_param_bounds(&self, ty: TypeIndex) -> &[TraitIndex] {
-        let Type::TypeParam {
-            ref owner,
-            param_index,
-        } = self.tir.type_pool[ty.as_usize()]
-        else {
-            return &[];
-        };
-        self.type_param_bounds_by_owner(owner.clone(), param_index)
     }
 
     /// True when `arg_ty` is a `TypeParam` whose bounds include the trait that
@@ -9603,27 +9701,10 @@ impl<'ast> Builder<'ast, '_> {
         file_id: FileId,
         func_index: FunctionIndex,
         arguments: &mut [Expression],
-        explicit_type_arguments: Option<&[TypeIndex]>,
+        mut type_args: Box<[TypeIndex]>,
         expected_result: TypeIndex,
         call_span: TextSpan,
     ) -> Result<Box<[TypeIndex]>, ()> {
-        // INFER = "not yet resolved"; ERROR = "resolved to an error type from a prior failure".
-        // Keeping them distinct lets us report "cannot infer" only when inference
-        // genuinely failed, rather than conflating it with cascading type errors.
-        let mut type_args: Vec<TypeIndex> =
-            vec![TypeIndex::INFER; self.tir.functions[func_index as usize].type_params.len()];
-        if let Some(initial) = explicit_type_arguments {
-            for (slot, &ty) in type_args.iter_mut().zip(initial.iter()) {
-                // INFER in the initial type args means the impl-level param was not
-                // yet resolved (e.g. from find_generic_impl) — leave as INFER so
-                // further inference can fill it in.  ERROR (from a prior failure) is
-                // propagated directly so we do not re-report the same param.
-                if ty != TypeIndex::INFER {
-                    *slot = ty;
-                }
-            }
-        }
-
         if expected_result != TypeIndex::INFER {
             let result_type = self.tir.functions[func_index as usize]
                 .result
@@ -9685,12 +9766,6 @@ impl<'ast> Builder<'ast, '_> {
             return Err(());
         }
 
-        // type_args is already Vec<TypeIndex>.  Slots still INFER at this point
-        // did not affect the result type (they appear only via AssocTypeProjection)
-        // and are safe to pass through — the arg type checks handle them
-        // structurally.
-        let type_args_flat: Box<[TypeIndex]> = type_args.into_boxed_slice();
-
         let mut had_error = false;
         for (index, arg) in arguments.iter_mut().enumerate() {
             let param_type = match self.tir.functions[func_index as usize].params.get(index) {
@@ -9698,11 +9773,14 @@ impl<'ast> Builder<'ast, '_> {
                 None => break,
             };
 
-            let expected_type = self.substitute_expected_type(param_type, &type_args_flat);
+            let expected_type = self.substitute_expected_type(param_type, &type_args);
 
             if expected_type != TypeIndex::INFER {
                 if arg.ty.is_comptime_number() {
-                    if self.coerce_untyped_expr(file_id, arg, expected_type).is_err() {
+                    if self
+                        .coerce_untyped_expr(file_id, arg, expected_type)
+                        .is_err()
+                    {
                         had_error = true;
                     }
                 } else if !self.coercible_to(arg.ty, expected_type)
@@ -9727,11 +9805,7 @@ impl<'ast> Builder<'ast, '_> {
             }
         }
 
-        if had_error {
-            Err(())
-        } else {
-            Ok(type_args_flat)
-        }
+        if had_error { Err(()) } else { Ok(type_args) }
     }
 
     fn build_call_arguments(
@@ -9900,22 +9974,6 @@ impl<'ast> Builder<'ast, '_> {
 
             let type_params_len = self.tir.functions[func_index as usize].type_params.len();
             if type_params_len > 0 {
-                // Turbofish type args are stored inside the FunctionItem type
-                // by build_path_expression. Seed them before inference so
-                // explicit args take priority over argument-inferred ones.
-                let callee_ty = callee.ty;
-                let turbofish: Vec<TypeIndex> = match &self.tir.type_pool[callee_ty.as_usize()] {
-                    Type::FunctionItem { type_args, .. } if !type_args.is_empty() => {
-                        type_args.to_vec()
-                    }
-                    _ => vec![],
-                };
-                let turbofish_seed: Option<&[TypeIndex]> = if turbofish.is_empty() {
-                    None
-                } else {
-                    Some(&turbofish)
-                };
-
                 let mut built_args = Vec::with_capacity(arguments.len());
                 for arg in arguments.iter() {
                     built_args.push(self.build_expression(
@@ -9928,11 +9986,20 @@ impl<'ast> Builder<'ast, '_> {
                     )?);
                 }
 
+                // FunctionItem.type_args is always padded to type_params_len (with
+                // impl-level args pre-filled and remaining slots as INFER) by the time
+                // we get here — resolved_member_to_expression and
+                // resolved_symbol_to_expression both enforce this invariant.
+                let type_args: Box<[TypeIndex]> = match &self.tir.type_pool[callee.ty.as_usize()] {
+                    Type::FunctionItem { type_args, .. } => type_args.clone(),
+                    _ => vec![TypeIndex::INFER; type_params_len].into_boxed_slice(),
+                };
+
                 let type_args = self.build_generic_call_arguments(
                     ctx.resolve_context.file_id,
                     func_index,
                     &mut built_args,
-                    turbofish_seed,
+                    type_args,
                     access_ctx.expected_type,
                     expr.span,
                 )?;
@@ -9998,12 +10065,15 @@ impl<'ast> Builder<'ast, '_> {
                 .members
                 .get(&method.inner)
                 .cloned(),
-            Type::TypeParam { .. } => self.type_param_bounds(object.ty).iter().find_map(|&ti| {
-                self.tir.traits[ti as usize]
-                    .members
-                    .get(&method.inner)
-                    .cloned()
-            }),
+            Type::TypeParam { owner, param_index } => self
+                .type_param_bounds_by_owner(*owner, *param_index)
+                .iter()
+                .find_map(|&ti| {
+                    self.tir.traits[ti as usize]
+                        .members
+                        .get(&method.inner)
+                        .cloned()
+                }),
             _ => self
                 .tir
                 .impl_members
@@ -10058,7 +10128,7 @@ impl<'ast> Builder<'ast, '_> {
                         ctx.resolve_context.file_id,
                         func_index,
                         &mut built_arguments,
-                        None,
+                        vec![TypeIndex::INFER; type_params_len].into_boxed_slice(),
                         access_ctx.expected_type,
                         expr.span,
                     )?;
@@ -10279,6 +10349,11 @@ impl<'ast> Builder<'ast, '_> {
             }
             ExprKind::Binary { .. } => {
                 self.coerce_untyped_binary_expression(file_id, expression, target_idx)
+            }
+            ExprKind::Block { result: Some(ref mut r), .. } => {
+                self.coerce_untyped_expr(file_id, r, target_idx)?;
+                expression.ty = target_idx;
+                Ok(())
             }
             // Any other expression kind that ends up here already had an error
             // reported; propagate failure without emitting a second diagnostic.
@@ -10656,11 +10731,10 @@ impl<'ast> Builder<'ast, '_> {
             match &self.tir.type_pool[struct_ty.as_usize()] {
                 Type::Struct { args, .. } if args.len() == type_params_len => args.clone(),
                 _ => match &self.tir.type_pool[access_ctx.expected_type.as_usize()] {
-                    Type::Struct { struct_index: esi, args }
-                        if *esi == struct_index && args.len() == type_params_len =>
-                    {
-                        args.clone()
-                    }
+                    Type::Struct {
+                        struct_index: esi,
+                        args,
+                    } if *esi == struct_index && args.len() == type_params_len => args.clone(),
                     _ => Box::new([]),
                 },
             }
@@ -11018,7 +11092,7 @@ impl<'ast> Builder<'ast, '_> {
                     Some(trait_index) => self.intern_type(Type::AssocTypeProjection {
                         trait_index,
                         assoc_name: size_sym,
-                        param_index,
+                        base: memory,
                     }),
                     // No bound with Size — fall back to untyped; will be caught
                     // by type checking if the user provides a typed index.
@@ -11040,9 +11114,12 @@ impl<'ast> Builder<'ast, '_> {
 
         let (expected_of, expected_memory, expected_size, expected_mutable) =
             match self.tir.type_pool[access_ctx.expected_type.as_usize()].clone() {
-                Type::Array { of, memory, size, mutable } => {
-                    (of, Some(memory), Some(size), mutable)
-                }
+                Type::Array {
+                    of,
+                    memory,
+                    size,
+                    mutable,
+                } => (of, Some(memory), Some(size), mutable),
                 _ => (TypeIndex::INFER, None, None, false),
             };
 
@@ -11075,9 +11152,12 @@ impl<'ast> Builder<'ast, '_> {
                         expected_of,
                     )?;
                 } else {
-                    self.tir.diagnostics.push(report_type_annotation_required(
-                        SourceSpan::new(func_ctx.resolve_context.file_id, elem.span),
-                    ));
+                    self.tir
+                        .diagnostics
+                        .push(report_type_annotation_required(SourceSpan::new(
+                            func_ctx.resolve_context.file_id,
+                            elem.span,
+                        )));
                     return Err(());
                 }
             }
@@ -11159,7 +11239,12 @@ impl<'ast> Builder<'ast, '_> {
 
         let (expected_of, expected_memory, expected_mutable) =
             match self.tir.type_pool[access_ctx.expected_type.as_usize()].clone() {
-                Type::Array { of, memory, mutable, .. } => (of, Some(memory), mutable),
+                Type::Array {
+                    of,
+                    memory,
+                    mutable,
+                    ..
+                } => (of, Some(memory), mutable),
                 _ => (TypeIndex::INFER, None, false),
             };
 
