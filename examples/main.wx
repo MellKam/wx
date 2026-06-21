@@ -1,88 +1,11 @@
-module test;
-
-fn get_tuple() -> (i32, (Point, i32)) {
-  (1, (Point::{ x: 2 }, 3))
-}
-
-module x {
-  fn get_color() -> i32 {
-    5
-  }
-}
-
 memory heap: Memory<Size = u32>;
-
-fn testa() {
-  local m: heap::[]i32 = [1, 2, 3][..];
-}
-
-fn main() -> Point {
-  local y = test::add(2, 3);
-  
-  Point::{
-    x: g: {
-      break :g 5;
-    },
-  }
-}
-
-fn function_with_lots_of_different_args(
-  a: i32,
-  b: f64,
-  c: bool,
-  d: Color,
-  e: Point,
-  f: (i32, i32),
-) {
-  unreachable
-}
-
-fn test() {
-  function_with_lots_of_different_args(3, 3.14, false, Color::Red, Point::{
-    x: 5,
-  }, (1, 2));
-}
-
-pub enum Color: i32 {
-  Red = 1,
-  Green,
-  Blue,
-}
-
-pub struct Point {
-  x: i32,
-}
-
-module s {
-  const PI = 3.14;
-}
-
-const PI: i32 = 3;
-
-fn identity<T: PointerSize>(x: T) -> (T, T) {
-  (x, x)
-}
-
-trait Add {
-  fn add(lhs: Self, rhs: Self) -> Self;
-}
 
 trait PointerSize {
   fn size() -> u32;
-}
-
-impl Add for i32 {
-  fn add(lhs: i32, rhs: i32) -> i32 {
-    lhs + rhs
-  }
 }
 
 impl PointerSize for i64 {
   fn size() -> u32 {
     4
   }
-}
-
-export {
-  main,
 }

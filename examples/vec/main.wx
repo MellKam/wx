@@ -29,42 +29,71 @@ fn new_vec<M: Memory, T>() -> Vec<M, T> {
     Vec::<M, T>::{ buf: null(), len: 0, cap: 0 }
 }
 
-impl <M: Memory, T> Vec<M, T> {
-    fn push(mut self, value: T) {
-        local mut buf = self.buf;
-        local len = self.len;
-        local mut cap = self.cap;
-        
-        if len == cap {
-            local new_cap = if cap == 0 {
-                cap + 4
-            } else {
-                cap * 2
-            };
-            local new_buf = alloc_array::<T>(new_cap);
-            local mut i: u32 = 0;
-            loop {
-                if i == len {
-                    break
-                }
-                local src = (buf as u32 + i * @size_of<T, heap>()) as heap::*T;
-                local dst = (new_buf as u32
-                    + i
-                    * @size_of<T, heap>()) as heap::*mut T;
-                dst.* = src.*;
-                i += 1;
-            }
-            buf = new_buf as heap::*T;
-            cap = new_cap;
+struct Layout<M: Memory> {
+    size: M::Size,
+    align: M::Size,
+}
+
+impl<M: Memory> Layout<M> {
+    pub fn of<T>() -> Layout<M> {
+        Layout::{
+            size: @size_of<T, M>(),
+            align: @align_of<T, M>(),
         }
-        
-        local slot = (buf as u32 + len * @size_of<T, heap>()) as heap::*mut T;
-        slot.* = value;
-        Vec::<heap, T>::{ buf: buf, len: len + 1, cap: cap }
     }
 
+    pub fn array<T>(count: M::Size) -> Layout<M> {
+        Layout::{
+            size: @size_of<T, M>() * count,
+            align: @align_of<T, M>(),
+        }
+    }
+}
+
+trait Allocator {
+    type M: Memory;
+    fn alloc(
+        self: *mut Self, 
+        layout: Layout<Self::M>
+    ) -> Self::M::*mut u8;
+    fn dealloc(
+        self: *mut Self, 
+        ptr: Self::M::*mut u8, 
+        layout: Layout<Self::M>
+    );
+}
+
+struct BumpAllocator {}
+
+global mut bump: *mut u8 = heap::DATA_END;
+
+impl Allocator for BumpAllocator {
+    type M = heap;
+
+    fn alloc(
+        self: *mut Self, 
+        layout: Layout<Self::M>
+    ) -> Self::M::*mut u8 {
+
+    }
+
+    fn dealloc() {}
+}
+
+
+impl <M: Memory, T> Vec<M, T> {
+    fn new() -> Vec<M, T> {
+        Vec::<M, T>::{ buf: null(), len: 0, cap: 0 }
+    }
+
+    fn new_in(alloc: Allocator) -> *mut Vec<M, T> {
+
+    }
+
+    fn push(mut self, value: T) {}
+
     fn get(self, i: M::Size) -> T {
-        ((self.buf as u32 + i * @size_of<T, heap>()) as heap::*T).*
+        unreachable
     }
 
     fn len(self) -> M::Size {
@@ -77,14 +106,12 @@ pub fn vec_new<T>() -> Vec<heap, T> {
 }
 
 pub fn demo() -> i32 {
-    local mut v = new_vec::<heap, i32>();
+    local mut v = Vec::<heap, i32>::new();
     v.push(10);
     v.push(20);
     v.push(30);
     v.push(40);
     v.push(50);
-
-    foo();
     
     local mut sum: i32 = 0;
     local mut i: u32 = 0;

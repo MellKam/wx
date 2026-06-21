@@ -3404,6 +3404,34 @@ fn test_path_type_associated_fn_ufcs() {
 }
 
 #[test]
+fn test_path_struct_associated_fn_no_params() {
+    // `Counter::zero()` — zero-parameter associated function on a user-defined struct.
+    let case = TestCase::new(indoc! {"
+        struct Counter { value: u32 }
+        impl Counter {
+            pub fn zero() -> Counter { Counter::{ value: 0 } }
+        }
+        fn test() -> Counter { Counter::zero() }
+        export { test }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_path_generic_struct_associated_fn() {
+    // `Wrapper::<u32>::new(42)` — associated function on a generic struct via generic impl.
+    let case = TestCase::new(indoc! {"
+        struct Wrapper<T> { value: T }
+        impl<T> Wrapper<T> {
+            pub fn new(value: T) -> Wrapper<T> { Wrapper::{ value } }
+        }
+        fn test() -> Wrapper<u32> { Wrapper::<u32>::new(42) }
+        export { test }
+    "});
+    no_errors(&case);
+}
+
+#[test]
 fn test_path_inline_module_type_associated_fn() {
     // `math::Point::zero()` — 3-segment path through an inline module to an
     // associated function: module → type → fn.

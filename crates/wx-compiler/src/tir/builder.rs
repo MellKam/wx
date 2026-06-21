@@ -6733,6 +6733,35 @@ impl<'ast> Builder<'ast, '_> {
             self.resolve_type_identifier(&func_ctx.resolve_context, first.ident.clone())?;
         let mut namespace_span = first.ident.span;
 
+        // Apply turbofish type args on the first segment when present, e.g.
+        // `Wrapper::<u32>::new(...)` → instantiate to `Wrapper<u32>`.
+        if !first.type_args.is_empty() {
+            let resolve_context = func_ctx.resolve_context.clone();
+            let struct_index = match &self.tir.type_pool[namespace_ty.as_usize()] {
+                Type::Struct { struct_index, .. } => *struct_index,
+                _ => {
+                    self.tir.diagnostics.push(
+                        Diagnostic::error()
+                            .with_message("type arguments are not supported here")
+                            .with_label(Label::primary(
+                                resolve_context.file_id,
+                                first.ident.span,
+                            )),
+                    );
+                    return Err(());
+                }
+            };
+            let resolved_args: Box<[TypeIndex]> = first
+                .type_args
+                .iter()
+                .map(|arg| self.resolve_type(&resolve_context, arg))
+                .collect();
+            namespace_ty = self.intern_type(Type::Struct {
+                struct_index,
+                args: resolved_args,
+            });
+        }
+
         for seg in &path.segments[1..path.segments.len() - 1] {
             // namespace_span grows to cover all qualifier segments so far.
             // TODO: per-segment span requires a nested namespace expression node.
@@ -6917,7 +6946,10 @@ impl<'ast> Builder<'ast, '_> {
                 return Ok(ResolvedMember::Const { id, ty });
             }
             Some(ImplEntry::Method(func_index) | ImplEntry::AssociatedFn(func_index)) => {
-                return Ok(ResolvedMember::Function { func_index });
+                return Ok(ResolvedMember::Function {
+                    func_index,
+                    type_args: Box::new([]),
+                });
             }
             Some(ImplEntry::AssociatedType { .. }) | None => {}
         }
@@ -6962,7 +6994,10 @@ impl<'ast> Builder<'ast, '_> {
                     .cloned()
                 {
                     Some(SymbolKind::Function { func_index }) => {
-                        Ok(ResolvedMember::Function { func_index })
+                        Ok(ResolvedMember::Function {
+                            func_index,
+                            type_args: Box::new([]),
+                        })
                     }
                     Some(SymbolKind::Global { global_index }) => {
                         Ok(ResolvedMember::Global { global_index })
@@ -6985,7 +7020,10 @@ impl<'ast> Builder<'ast, '_> {
                     .cloned()
                 {
                     Some(ImplEntry::Method(func_index)) => {
-                        Ok(ResolvedMember::Function { func_index })
+                        Ok(ResolvedMember::Function {
+                            func_index,
+                            type_args: Box::new([]),
+                        })
                     }
                     Some(ImplEntry::AssociatedConst { id, ty }) => {
                         Ok(ResolvedMember::Const { id, ty })
@@ -7002,6 +7040,24 @@ impl<'ast> Builder<'ast, '_> {
                 }
             }
             _ => {
+                // Check generic impl blocks before giving up.
+                if let Some((block_idx, type_args)) =
+                    self.find_generic_impl(namespace.inner, member.inner)
+                {
+                    match self.tir.generic_impl_list[block_idx]
+                        .members
+                        .get(&member.inner)
+                        .cloned()
+                    {
+                        Some(ImplEntry::Method(func_index) | ImplEntry::AssociatedFn(func_index)) => {
+                            return Ok(ResolvedMember::Function {
+                                func_index,
+                                type_args,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
                 self.tir.diagnostics.push(
                     Diagnostic::error()
                         .with_code(DiagnosticCode::NotANamespace.code())
@@ -7030,7 +7086,10 @@ impl<'ast> Builder<'ast, '_> {
         expr_span: TextSpan,
     ) -> Expression {
         match resolved {
-            ResolvedMember::Function { func_index } => {
+            ResolvedMember::Function {
+                func_index,
+                type_args,
+            } => {
                 let func = &mut self.tir.functions[func_index as usize];
                 func.accesses.push(FunctionAccess {
                     kind: FunctionAccessKind::Reference,
@@ -7040,7 +7099,7 @@ impl<'ast> Builder<'ast, '_> {
                 let func_id = func.id;
                 let func_ty = self.intern_type(Type::FunctionItem {
                     id: func_id,
-                    type_args: Box::new([]),
+                    type_args,
                 });
                 Expression {
                     kind: ExprKind::NamespaceAccess {

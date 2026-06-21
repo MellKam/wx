@@ -794,10 +794,9 @@ pub enum ResolvedSymbol {
 }
 
 /// The kind of item found when resolving a member within a type namespace.
-/// All variants are `Copy` — no heap allocation.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ResolvedMember {
-    Function { func_index: u32 },
+    Function { func_index: u32, type_args: Box<[TypeIndex]> },
     Const { id: ast::DefId, ty: TypeIndex },
     Global { global_index: u32 },
     EnumVariant { enum_index: u32, variant_index: u32 },
