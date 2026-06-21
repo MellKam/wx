@@ -865,6 +865,7 @@ impl<'tir> Builder<'tir> {
     fn lower_type_index(&mut self, type_idx: tir::TypeIndex) -> Type {
         match type_idx {
             idx if idx == tir::TypeIndex::ERROR => unreachable!(),
+            idx if idx == tir::TypeIndex::INFER => unreachable!(),
             idx if idx == tir::TypeIndex::UNIT => return Type::Unit,
             idx if idx == tir::TypeIndex::NEVER => return Type::Never,
             idx if idx == tir::TypeIndex::INTEGER => unreachable!(),
@@ -1021,7 +1022,7 @@ impl<'tir> Builder<'tir> {
             .scopes
             .iter()
             .map(|scope| {
-                let result_type_idx = scope.inferred_type.unwrap_or(tir::TypeIndex::UNIT);
+                let result_type_idx = scope.inferred_type.infer_or(tir::TypeIndex::UNIT);
                 let locals = scope
                     .locals
                     .iter()

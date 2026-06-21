@@ -25,61 +25,40 @@ struct Vec<M: Memory, T> {
     cap: M::Size,
 }
 
-fn new_vec<M: Memory, T>() -> Vec<M, T> {
-    Vec::<M, T>::{ buf: null(), len: 0, cap: 0 }
-}
-
 struct Layout<M: Memory> {
     size: M::Size,
     align: M::Size,
 }
 
-impl<M: Memory> Layout<M> {
+impl <M: Memory> Layout<M> {
     pub fn of<T>() -> Layout<M> {
-        Layout::{
-            size: @size_of<T, M>(),
-            align: @align_of<T, M>(),
-        }
+        Layout::{ size: @size_of<T, M>(), align: @align_of<T, M>() }
     }
 
     pub fn array<T>(count: M::Size) -> Layout<M> {
-        Layout::{
-            size: @size_of<T, M>() * count,
-            align: @align_of<T, M>(),
-        }
+        Layout::{ size: @size_of<T, M>() * count, align: @align_of<T, M>() }
     }
 }
 
 trait Allocator {
     type M: Memory;
-    fn alloc(
-        self: *mut Self, 
-        layout: Layout<Self::M>
-    ) -> Self::M::*mut u8;
-    fn dealloc(
-        self: *mut Self, 
-        ptr: Self::M::*mut u8, 
-        layout: Layout<Self::M>
-    );
+
+    fn alloc(self: Self::M::*mut Self, layout: Layout<Self::M>) -> Self::M::*mut u8;
+
+    fn dealloc(self: Self::M::*mut Self, ptr: Self::M::*mut u8, layout: Layout<Self::M>);
 }
 
 struct BumpAllocator {}
 
-global mut bump: *mut u8 = heap::DATA_END;
-
 impl Allocator for BumpAllocator {
     type M = heap;
 
-    fn alloc(
-        self: *mut Self, 
-        layout: Layout<Self::M>
-    ) -> Self::M::*mut u8 {
-
+    fn alloc(_, layout: Layout<Self::M>) -> Self::M::*mut u8 {
+        unreachable
     }
 
     fn dealloc() {}
 }
-
 
 impl <M: Memory, T> Vec<M, T> {
     fn new() -> Vec<M, T> {
@@ -87,7 +66,7 @@ impl <M: Memory, T> Vec<M, T> {
     }
 
     fn new_in(alloc: Allocator) -> *mut Vec<M, T> {
-
+        unreachable
     }
 
     fn push(mut self, value: T) {}
@@ -101,11 +80,14 @@ impl <M: Memory, T> Vec<M, T> {
     }
 }
 
+fn test2(x: i32, self: Vec) {}
+
 pub fn vec_new<T>() -> Vec<heap, T> {
     Vec::<heap, T>::{ buf: null(), len: 0, cap: 0 }
 }
 
 pub fn demo() -> i32 {
+    local y = Layout::array::<i32>(10);
     local mut v = Vec::<heap, i32>::new();
     v.push(10);
     v.push(20);

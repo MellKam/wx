@@ -1127,6 +1127,8 @@ pub enum GenericArg {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum TypeExpression {
+    /// `_` — explicit inference placeholder; resolved to `TypeIndex::INFER`.
+    Infer,
     /// `i32`, `module::Type`, `module::Wrapper::<T>` — a flat path of segments.
     Path(Path),
     /// `fn(i32, i32) -> i32`
@@ -1625,6 +1627,9 @@ pub enum Keyword {
     SelfType,
     Type,
     Typeset,
+    /// `_` — wildcard in patterns, inference placeholder in types, discard in
+    /// value position.  Kept as a keyword so all three uses share one token.
+    Underscore,
 }
 
 impl TryFrom<&str> for Keyword {
@@ -1659,6 +1664,7 @@ impl TryFrom<&str> for Keyword {
             "Self" => Ok(Keyword::SelfType),
             "type" => Ok(Keyword::Type),
             "typeset" => Ok(Keyword::Typeset),
+            "_" => Ok(Keyword::Underscore),
             _ => Err(()),
         }
     }
@@ -2315,6 +2321,13 @@ impl<'ctx> Parser<'ctx> {
             Token::Identifier => {
                 let (first_tok, first_sym) =
                     match Keyword::try_from(token.span.extract_str(self.source)) {
+                        Ok(Keyword::Underscore) => {
+                            let span = self.lexer.next().span;
+                            return Ok(Spanned {
+                                inner: TypeExpression::Infer,
+                                span,
+                            });
+                        }
                         Ok(Keyword::Fn) => return Parser::parse_function_type_expression(self),
                         Ok(Keyword::SelfType) => {
                             // `Self` is valid in type paths for `Self::AssocType`, etc.
@@ -2730,7 +2743,7 @@ impl<'ctx> Parser<'ctx> {
         let text = token.span.extract_str(parser.source);
 
         match Keyword::try_from(text) {
-            Ok(Keyword::SelfKw) | Ok(Keyword::SelfType) | Err(_) => {}
+            Ok(Keyword::SelfKw) | Ok(Keyword::SelfType) | Ok(Keyword::Underscore) | Err(_) => {}
             Ok(_) => {
                 parser
                     .ast
@@ -3592,7 +3605,7 @@ impl<'ctx> Parser<'ctx> {
             }
             Token::Identifier => {
                 let text = token.span.extract_str(parser.source);
-                if text == "_" {
+                if matches!(Keyword::try_from(text), Ok(Keyword::Underscore)) {
                     let span = parser.lexer.next().span;
                     return Ok(Spanned {
                         inner: Pattern::Wildcard,

@@ -1390,6 +1390,7 @@ impl Builder {
 
     fn build_type_expression(interner: &StringInterner, type_expression: &TypeExpression) -> Node {
         match type_expression {
+            TypeExpression::Infer => Node::StaticText("_"),
             TypeExpression::Path(path) => Self::build_path(interner, path),
             TypeExpression::Function { params, result } => {
                 let mut items = Vec::new();

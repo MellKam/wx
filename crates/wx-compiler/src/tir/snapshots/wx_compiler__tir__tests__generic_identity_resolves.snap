@@ -4,6 +4,7 @@ expression: case.tir
 ---
 type_pool:
   - Error
+  - Infer
   - Unit
   - Never
   - Integer
@@ -36,9 +37,9 @@ type_pool:
         Trait: 0
       param_index: 0
   - Pointer:
-      to: 5
+      to: 6
       mutable: true
-      memory: 21
+      memory: 22
   - TypeParam:
       owner:
         Function: 15
@@ -54,22 +55,22 @@ type_pool:
   - Function:
       signature:
         items:
-          - 24
           - 25
+          - 26
         params_count: 1
   - Function:
       signature:
         items:
-          - 23
-          - 25
-          - 25
+          - 24
+          - 26
+          - 26
         params_count: 2
   - Function:
       signature:
         items:
-          - 18
-          - 25
-          - 25
+          - 19
+          - 26
+          - 26
         params_count: 2
   - TypeParam:
       owner:
@@ -78,8 +79,8 @@ type_pool:
   - Function:
       signature:
         items:
-          - 29
-          - 25
+          - 30
+          - 26
         params_count: 1
   - TypeParam:
       owner:
@@ -90,14 +91,14 @@ type_pool:
         Function: 4
       param_index: 1
   - Slice:
-      of: 32
+      of: 33
       mutable: false
-      memory: 31
+      memory: 32
   - Function:
       signature:
         items:
-          - 33
-          - 25
+          - 34
+          - 26
         params_count: 1
   - TypeParam:
       owner:
@@ -108,19 +109,19 @@ type_pool:
         Function: 5
       param_index: 1
   - Pointer:
-      to: 36
+      to: 37
       mutable: false
-      memory: 35
+      memory: 36
   - Slice:
-      of: 36
+      of: 37
       mutable: false
-      memory: 35
+      memory: 36
   - Function:
       signature:
         items:
-          - 37
-          - 25
           - 38
+          - 26
+          - 39
         params_count: 2
   - TypeParam:
       owner:
@@ -131,14 +132,14 @@ type_pool:
         Function: 6
       param_index: 1
   - Pointer:
-      to: 41
+      to: 42
       mutable: false
-      memory: 40
+      memory: 41
   - Function:
       signature:
         items:
-          - 25
-          - 42
+          - 26
+          - 43
         params_count: 1
   - TypeParam:
       owner:
@@ -151,7 +152,7 @@ type_pool:
   - Function:
       signature:
         items:
-          - 45
+          - 46
         params_count: 0
   - TypeParam:
       owner:
@@ -166,13 +167,13 @@ type_pool:
         Function: 9
       param_index: 1
   - Pointer:
-      to: 49
+      to: 50
       mutable: false
-      memory: 48
+      memory: 49
   - Function:
       signature:
         items:
-          - 50
+          - 51
         params_count: 0
   - TypeParam:
       owner:
@@ -183,26 +184,26 @@ type_pool:
         Function: 18
       param_index: 1
   - Slice:
-      of: 53
+      of: 54
       mutable: false
-      memory: 52
+      memory: 53
   - Function:
       signature:
         items:
-          - 54
-          - 25
+          - 55
+          - 26
         params_count: 1
   - Function:
       signature:
         items:
-          - 16
-          - 16
+          - 17
+          - 17
         params_count: 1
   - Function:
       signature:
         items:
+          - 17
           - 16
-          - 15
         params_count: 1
   - TypeParam:
       owner:
@@ -211,8 +212,8 @@ type_pool:
   - Function:
       signature:
         items:
-          - 58
-          - 58
+          - 59
+          - 59
         params_count: 1
 diagnostics: []
 functions:
@@ -242,7 +243,7 @@ functions:
             span:
               start: 134
               end: 135
-    signature_index: 28
+    signature_index: 29
     name:
       inner: 5
       span:
@@ -256,7 +257,7 @@ functions:
             start: 107
             end: 110
         ty:
-          inner: 18
+          inner: 19
           span:
             start: 112
             end: 113
@@ -267,12 +268,12 @@ functions:
             start: 115
             end: 120
         ty:
-          inner: 25
+          inner: 26
           span:
             start: 122
             end: 129
     result:
-      inner: 25
+      inner: 26
       span:
         start: 134
         end: 141
@@ -306,7 +307,7 @@ functions:
             span:
               start: 823
               end: 827
-    signature_index: 27
+    signature_index: 28
     name:
       inner: 37
       span:
@@ -320,7 +321,7 @@ functions:
             start: 795
             end: 799
         ty:
-          inner: 23
+          inner: 24
           span:
             start: 795
             end: 799
@@ -331,12 +332,12 @@ functions:
             start: 801
             end: 806
         ty:
-          inner: 25
+          inner: 26
           span:
             start: 808
             end: 818
     result:
-      inner: 25
+      inner: 26
       span:
         start: 823
         end: 833
@@ -355,7 +356,7 @@ functions:
                   span:
                     start: 795
                     end: 799
-                ty: 23
+                ty: 24
                 mut_span: ~
                 accesses:
                   - span:
@@ -367,15 +368,15 @@ functions:
                   span:
                     start: 801
                     end: 806
-                ty: 25
+                ty: 26
                 mut_span: ~
                 accesses:
                   - span:
                       start: 859
                       end: 864
                     kind: Read
-            inferred_type: 25
-            expected_type: 25
+            inferred_type: 26
+            expected_type: 26
       block:
         kind:
           Block:
@@ -386,13 +387,13 @@ functions:
                 IntrinsicCall:
                   name: 5
                   type_args:
-                    - 23
+                    - 24
                   arguments:
                     - kind:
                         Local:
                           scope_index: 0
                           local_index: 0
-                      ty: 23
+                      ty: 24
                       span:
                         start: 853
                         end: 857
@@ -400,15 +401,15 @@ functions:
                         Local:
                           scope_index: 0
                           local_index: 1
-                      ty: 25
+                      ty: 26
                       span:
                         start: 859
                         end: 864
-              ty: 25
+              ty: 26
               span:
                 start: 840
                 end: 865
-        ty: 25
+        ty: 26
         span:
           start: 834
           end: 869
@@ -430,7 +431,7 @@ functions:
             span:
               start: 902
               end: 906
-    signature_index: 26
+    signature_index: 27
     name:
       inner: 39
       span:
@@ -444,12 +445,12 @@ functions:
             start: 893
             end: 897
         ty:
-          inner: 24
+          inner: 25
           span:
             start: 893
             end: 897
     result:
-      inner: 25
+      inner: 26
       span:
         start: 902
         end: 912
@@ -468,15 +469,15 @@ functions:
                   span:
                     start: 893
                     end: 897
-                ty: 24
+                ty: 25
                 mut_span: ~
                 accesses:
                   - span:
                       start: 932
                       end: 936
                     kind: Read
-            inferred_type: 25
-            expected_type: 25
+            inferred_type: 26
+            expected_type: 26
       block:
         kind:
           Block:
@@ -487,21 +488,21 @@ functions:
                 IntrinsicCall:
                   name: 11
                   type_args:
-                    - 24
+                    - 25
                   arguments:
                     - kind:
                         Local:
                           scope_index: 0
                           local_index: 0
-                      ty: 24
+                      ty: 25
                       span:
                         start: 932
                         end: 936
-              ty: 25
+              ty: 26
               span:
                 start: 919
                 end: 937
-        ty: 25
+        ty: 26
         span:
           start: 913
           end: 941
@@ -527,7 +528,7 @@ functions:
             span:
               start: 185
               end: 186
-    signature_index: 30
+    signature_index: 31
     name:
       inner: 11
       span:
@@ -541,12 +542,12 @@ functions:
             start: 174
             end: 177
         ty:
-          inner: 29
+          inner: 30
           span:
             start: 179
             end: 180
     result:
-      inner: 25
+      inner: 26
       span:
         start: 185
         end: 192
@@ -591,7 +592,7 @@ functions:
             span:
               start: 238
               end: 239
-    signature_index: 34
+    signature_index: 35
     name:
       inner: 12
       span:
@@ -605,12 +606,12 @@ functions:
             start: 226
             end: 231
         ty:
-          inner: 33
+          inner: 34
           span:
             start: 233
             end: 239
     result:
-      inner: 25
+      inner: 26
       span:
         start: 244
         end: 251
@@ -663,7 +664,7 @@ functions:
             span:
               start: 327
               end: 328
-    signature_index: 39
+    signature_index: 40
     name:
       inner: 15
       span:
@@ -677,7 +678,7 @@ functions:
             start: 292
             end: 296
         ty:
-          inner: 37
+          inner: 38
           span:
             start: 298
             end: 303
@@ -688,12 +689,12 @@ functions:
             start: 305
             end: 308
         ty:
-          inner: 25
+          inner: 26
           span:
             start: 310
             end: 317
     result:
-      inner: 38
+      inner: 39
       span:
         start: 322
         end: 328
@@ -733,7 +734,7 @@ functions:
             span:
               start: 386
               end: 387
-    signature_index: 43
+    signature_index: 44
     name:
       inner: 18
       span:
@@ -747,12 +748,12 @@ functions:
             start: 365
             end: 368
         ty:
-          inner: 25
+          inner: 26
           span:
             start: 370
             end: 377
     result:
-      inner: 42
+      inner: 43
       span:
         start: 382
         end: 387
@@ -789,7 +790,7 @@ functions:
             span:
               start: 424
               end: 425
-    signature_index: 46
+    signature_index: 47
     name:
       inner: 20
       span:
@@ -797,7 +798,7 @@ functions:
         end: 404
     params: []
     result:
-      inner: 45
+      inner: 46
       span:
         start: 424
         end: 431
@@ -829,7 +830,7 @@ functions:
             span:
               start: 469
               end: 470
-    signature_index: 46
+    signature_index: 47
     name:
       inner: 21
       span:
@@ -837,7 +838,7 @@ functions:
         end: 449
     params: []
     result:
-      inner: 45
+      inner: 46
       span:
         start: 469
         end: 476
@@ -875,7 +876,7 @@ functions:
             span:
               start: 524
               end: 525
-    signature_index: 51
+    signature_index: 52
     name:
       inner: 23
       span:
@@ -883,7 +884,7 @@ functions:
         end: 500
     params: []
     result:
-      inner: 50
+      inner: 51
       span:
         start: 520
         end: 525
@@ -897,8 +898,8 @@ functions:
             label: ~
             parent: ~
             locals: []
-            inferred_type: 50
-            expected_type: 50
+            inferred_type: 51
+            expected_type: 51
       block:
         kind:
           Block:
@@ -909,21 +910,21 @@ functions:
                 IntrinsicCall:
                   name: 18
                   type_args:
-                    - 48
                     - 49
+                    - 50
                   arguments:
                     - kind:
                         Int:
                           value: 0
-                      ty: 25
+                      ty: 26
                       span:
                         start: 542
                         end: 543
-              ty: 50
+              ty: 51
               span:
                 start: 528
                 end: 544
-        ty: 50
+        ty: 51
         span:
           start: 526
           end: 546
@@ -942,15 +943,27 @@ functions:
         bounds:
           - 0
         typeset_bound: ~
-        accesses: []
+        accesses:
+          - file_id: 0
+            span:
+              start: 964
+              end: 965
+          - file_id: 0
+            span:
+              start: 1007
+              end: 1008
       - name: 13
         name_span:
           start: 961
           end: 962
         bounds: []
         typeset_bound: ~
-        accesses: []
-    signature_index: 55
+        accesses:
+          - file_id: 0
+            span:
+              start: 969
+              end: 970
+    signature_index: 56
     name:
       inner: 17
       span:
@@ -964,12 +977,12 @@ functions:
             start: 998
             end: 1002
         ty:
-          inner: 54
+          inner: 55
           span:
             start: 998
             end: 1002
     result:
-      inner: 25
+      inner: 26
       span:
         start: 1007
         end: 1014
@@ -988,15 +1001,15 @@ functions:
                   span:
                     start: 998
                     end: 1002
-                ty: 54
+                ty: 55
                 mut_span: ~
                 accesses:
                   - span:
                       start: 1032
                       end: 1036
                     kind: Read
-            inferred_type: 25
-            expected_type: 25
+            inferred_type: 26
+            expected_type: 26
       block:
         kind:
           Block:
@@ -1007,22 +1020,22 @@ functions:
                 IntrinsicCall:
                   name: 12
                   type_args:
-                    - 52
                     - 53
+                    - 54
                   arguments:
                     - kind:
                         Local:
                           scope_index: 0
                           local_index: 0
-                      ty: 54
+                      ty: 55
                       span:
                         start: 1032
                         end: 1036
-              ty: 25
+              ty: 26
               span:
                 start: 1021
                 end: 1037
-        ty: 25
+        ty: 26
         span:
           start: 1015
           end: 1041
@@ -1034,7 +1047,7 @@ functions:
       end: 1077
     kind: Impl
     type_params: []
-    signature_index: 56
+    signature_index: 57
     name:
       inner: 41
       span:
@@ -1048,12 +1061,12 @@ functions:
             start: 1097
             end: 1101
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 1097
             end: 1101
     result:
-      inner: 16
+      inner: 17
       span:
         start: 1106
         end: 1110
@@ -1072,7 +1085,7 @@ functions:
                   span:
                     start: 1097
                     end: 1101
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -1087,20 +1100,20 @@ functions:
                       start: 1214
                       end: 1218
                     kind: Read
-            inferred_type: 16
-            expected_type: 16
+            inferred_type: 17
+            expected_type: 17
           - kind: Block
             label: ~
             parent: 0
             locals: []
-            inferred_type: 16
-            expected_type: 16
+            inferred_type: 17
+            expected_type: 17
           - kind: Block
             label: ~
             parent: 0
             locals: []
-            inferred_type: 16
-            expected_type: 16
+            inferred_type: 17
+            expected_type: 17
       block:
         kind:
           Block:
@@ -1117,12 +1130,12 @@ functions:
                               Local:
                                 scope_index: 0
                                 local_index: 0
-                            ty: 16
+                            ty: 17
                             span:
                               start: 1120
                               end: 1124
                         id: 23
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1120
                       end: 1145
@@ -1144,7 +1157,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 5
+                                ty: 6
                                 span:
                                   start: 1156
                                   end: 1160
@@ -1152,15 +1165,15 @@ functions:
                                 kind:
                                   Const:
                                     id: 0
-                                ty: 5
+                                ty: 6
                                 span:
                                   start: 1170
                                   end: 1185
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1155
                             end: 1185
-                    ty: 16
+                    ty: 17
                     span:
                       start: 1146
                       end: 1200
@@ -1174,19 +1187,19 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1214
                             end: 1218
-                    ty: 16
+                    ty: 17
                     span:
                       start: 1206
                       end: 1224
-              ty: 16
+              ty: 17
               span:
                 start: 1117
                 end: 1224
-        ty: 16
+        ty: 17
         span:
           start: 1111
           end: 1228
@@ -1198,7 +1211,7 @@ functions:
       end: 1250
     kind: Impl
     type_params: []
-    signature_index: 56
+    signature_index: 57
     name:
       inner: 43
       span:
@@ -1212,12 +1225,12 @@ functions:
             start: 1270
             end: 1274
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 1270
             end: 1274
     result:
-      inner: 16
+      inner: 17
       span:
         start: 1279
         end: 1283
@@ -1236,7 +1249,7 @@ functions:
                   span:
                     start: 1270
                     end: 1274
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -1251,20 +1264,20 @@ functions:
                       start: 1387
                       end: 1391
                     kind: Read
-            inferred_type: 16
-            expected_type: 16
+            inferred_type: 17
+            expected_type: 17
           - kind: Block
             label: ~
             parent: 0
             locals: []
-            inferred_type: 16
-            expected_type: 16
+            inferred_type: 17
+            expected_type: 17
           - kind: Block
             label: ~
             parent: 0
             locals: []
-            inferred_type: 16
-            expected_type: 16
+            inferred_type: 17
+            expected_type: 17
       block:
         kind:
           Block:
@@ -1281,12 +1294,12 @@ functions:
                               Local:
                                 scope_index: 0
                                 local_index: 0
-                            ty: 16
+                            ty: 17
                             span:
                               start: 1293
                               end: 1297
                         id: 22
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1293
                       end: 1318
@@ -1308,7 +1321,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 5
+                                ty: 6
                                 span:
                                   start: 1329
                                   end: 1333
@@ -1316,15 +1329,15 @@ functions:
                                 kind:
                                   Const:
                                     id: 0
-                                ty: 5
+                                ty: 6
                                 span:
                                   start: 1343
                                   end: 1358
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1328
                             end: 1358
-                    ty: 16
+                    ty: 17
                     span:
                       start: 1319
                       end: 1373
@@ -1338,19 +1351,19 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1387
                             end: 1391
-                    ty: 16
+                    ty: 17
                     span:
                       start: 1379
                       end: 1397
-              ty: 16
+              ty: 17
               span:
                 start: 1290
                 end: 1397
-        ty: 16
+        ty: 17
         span:
           start: 1284
           end: 1401
@@ -1362,7 +1375,7 @@ functions:
       end: 1423
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 45
       span:
@@ -1376,12 +1389,12 @@ functions:
             start: 1433
             end: 1437
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 1433
             end: 1437
     result:
-      inner: 15
+      inner: 16
       span:
         start: 1442
         end: 1446
@@ -1400,15 +1413,15 @@ functions:
                   span:
                     start: 1433
                     end: 1437
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
                       start: 1454
                       end: 1458
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -1427,7 +1440,7 @@ functions:
                       Local:
                         scope_index: 0
                         local_index: 0
-                    ty: 9
+                    ty: 10
                     span:
                       start: 1454
                       end: 1458
@@ -1435,15 +1448,15 @@ functions:
                     kind:
                       Int:
                         value: 127
-                    ty: 9
+                    ty: 10
                     span:
                       start: 1470
                       end: 1474
-              ty: 15
+              ty: 16
               span:
                 start: 1453
                 end: 1474
-        ty: 15
+        ty: 16
         span:
           start: 1447
           end: 1478
@@ -1455,7 +1468,7 @@ functions:
       end: 1500
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 44
       span:
@@ -1469,12 +1482,12 @@ functions:
             start: 1520
             end: 1524
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 1520
             end: 1524
     result:
-      inner: 15
+      inner: 16
       span:
         start: 1529
         end: 1533
@@ -1498,7 +1511,7 @@ functions:
                   span:
                     start: 1520
                     end: 1524
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -1509,8 +1522,8 @@ functions:
                       start: 1555
                       end: 1559
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -1537,7 +1550,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1540
                             end: 1544
@@ -1545,11 +1558,11 @@ functions:
                           kind:
                             Char:
                               value: A
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1548
                             end: 1551
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1540
                       end: 1551
@@ -1566,7 +1579,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1555
                             end: 1559
@@ -1574,19 +1587,19 @@ functions:
                           kind:
                             Char:
                               value: Z
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1563
                             end: 1566
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1555
                       end: 1566
-              ty: 15
+              ty: 16
               span:
                 start: 1540
                 end: 1566
-        ty: 15
+        ty: 16
         span:
           start: 1534
           end: 1570
@@ -1598,7 +1611,7 @@ functions:
       end: 1592
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 42
       span:
@@ -1612,12 +1625,12 @@ functions:
             start: 1612
             end: 1616
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 1612
             end: 1616
     result:
-      inner: 15
+      inner: 16
       span:
         start: 1621
         end: 1625
@@ -1641,7 +1654,7 @@ functions:
                   span:
                     start: 1612
                     end: 1616
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -1652,8 +1665,8 @@ functions:
                       start: 1647
                       end: 1651
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -1680,7 +1693,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1632
                             end: 1636
@@ -1688,11 +1701,11 @@ functions:
                           kind:
                             Char:
                               value: a
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1640
                             end: 1643
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1632
                       end: 1643
@@ -1709,7 +1722,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1647
                             end: 1651
@@ -1717,19 +1730,19 @@ functions:
                           kind:
                             Char:
                               value: z
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1655
                             end: 1658
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1647
                       end: 1658
-              ty: 15
+              ty: 16
               span:
                 start: 1632
                 end: 1658
-        ty: 15
+        ty: 16
         span:
           start: 1626
           end: 1662
@@ -1741,7 +1754,7 @@ functions:
       end: 1684
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 51
       span:
@@ -1755,12 +1768,12 @@ functions:
             start: 1705
             end: 1709
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 1705
             end: 1709
     result:
-      inner: 15
+      inner: 16
       span:
         start: 1714
         end: 1718
@@ -1779,7 +1792,7 @@ functions:
                   span:
                     start: 1705
                     end: 1709
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -1798,8 +1811,8 @@ functions:
                       start: 1772
                       end: 1776
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -1834,7 +1847,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 1726
                                   end: 1730
@@ -1842,11 +1855,11 @@ functions:
                                 kind:
                                   Char:
                                     value: A
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 1734
                                   end: 1737
-                          ty: 15
+                          ty: 16
                           span:
                             start: 1726
                             end: 1737
@@ -1863,7 +1876,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 1741
                                   end: 1745
@@ -1871,15 +1884,15 @@ functions:
                                 kind:
                                   Char:
                                     value: Z
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 1749
                                   end: 1752
-                          ty: 15
+                          ty: 16
                           span:
                             start: 1741
                             end: 1752
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1726
                       end: 1752
@@ -1904,7 +1917,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 1757
                                   end: 1761
@@ -1912,11 +1925,11 @@ functions:
                                 kind:
                                   Char:
                                     value: a
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 1765
                                   end: 1768
-                          ty: 15
+                          ty: 16
                           span:
                             start: 1757
                             end: 1768
@@ -1933,7 +1946,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 1772
                                   end: 1776
@@ -1941,23 +1954,23 @@ functions:
                                 kind:
                                   Char:
                                     value: z
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 1780
                                   end: 1783
-                          ty: 15
+                          ty: 16
                           span:
                             start: 1772
                             end: 1783
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1757
                       end: 1783
-              ty: 15
+              ty: 16
               span:
                 start: 1725
                 end: 1784
-        ty: 15
+        ty: 16
         span:
           start: 1719
           end: 1788
@@ -1969,7 +1982,7 @@ functions:
       end: 1810
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 52
       span:
@@ -1983,12 +1996,12 @@ functions:
             start: 1826
             end: 1830
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 1826
             end: 1830
     result:
-      inner: 15
+      inner: 16
       span:
         start: 1835
         end: 1839
@@ -2007,7 +2020,7 @@ functions:
                   span:
                     start: 1826
                     end: 1830
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -2018,8 +2031,8 @@ functions:
                       start: 1861
                       end: 1865
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -2046,7 +2059,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1846
                             end: 1850
@@ -2054,11 +2067,11 @@ functions:
                           kind:
                             Char:
                               value: "0"
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1854
                             end: 1857
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1846
                       end: 1857
@@ -2075,7 +2088,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1861
                             end: 1865
@@ -2083,19 +2096,19 @@ functions:
                           kind:
                             Char:
                               value: "9"
-                          ty: 16
+                          ty: 17
                           span:
                             start: 1869
                             end: 1872
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1861
                       end: 1872
-              ty: 15
+              ty: 16
               span:
                 start: 1846
                 end: 1872
-        ty: 15
+        ty: 16
         span:
           start: 1840
           end: 1876
@@ -2107,7 +2120,7 @@ functions:
       end: 1898
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 55
       span:
@@ -2121,12 +2134,12 @@ functions:
             start: 1921
             end: 1925
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 1921
             end: 1925
     result:
-      inner: 15
+      inner: 16
       span:
         start: 1930
         end: 1934
@@ -2145,7 +2158,7 @@ functions:
                   span:
                     start: 1921
                     end: 1925
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -2172,8 +2185,8 @@ functions:
                       start: 2031
                       end: 2035
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -2216,7 +2229,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 1942
                                         end: 1946
@@ -2224,11 +2237,11 @@ functions:
                                       kind:
                                         Char:
                                           value: A
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 1950
                                         end: 1953
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 1942
                                   end: 1953
@@ -2245,7 +2258,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 1957
                                         end: 1961
@@ -2253,15 +2266,15 @@ functions:
                                       kind:
                                         Char:
                                           value: Z
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 1965
                                         end: 1968
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 1957
                                   end: 1968
-                          ty: 15
+                          ty: 16
                           span:
                             start: 1942
                             end: 1968
@@ -2286,7 +2299,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 1979
                                         end: 1983
@@ -2294,11 +2307,11 @@ functions:
                                       kind:
                                         Char:
                                           value: a
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 1987
                                         end: 1990
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 1979
                                   end: 1990
@@ -2315,7 +2328,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 1994
                                         end: 1998
@@ -2323,19 +2336,19 @@ functions:
                                       kind:
                                         Char:
                                           value: z
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2002
                                         end: 2005
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 1994
                                   end: 2005
-                          ty: 15
+                          ty: 16
                           span:
                             start: 1979
                             end: 2005
-                    ty: 15
+                    ty: 16
                     span:
                       start: 1941
                       end: 2006
@@ -2360,7 +2373,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2016
                                   end: 2020
@@ -2368,11 +2381,11 @@ functions:
                                 kind:
                                   Char:
                                     value: "0"
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2024
                                   end: 2027
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2016
                             end: 2027
@@ -2389,7 +2402,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2031
                                   end: 2035
@@ -2397,23 +2410,23 @@ functions:
                                 kind:
                                   Char:
                                     value: "9"
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2039
                                   end: 2042
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2031
                             end: 2042
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2016
                       end: 2042
-              ty: 15
+              ty: 16
               span:
                 start: 1941
                 end: 2043
-        ty: 15
+        ty: 16
         span:
           start: 1935
           end: 2047
@@ -2425,7 +2438,7 @@ functions:
       end: 2069
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 56
       span:
@@ -2439,12 +2452,12 @@ functions:
             start: 2090
             end: 2094
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 2090
             end: 2094
     result:
-      inner: 15
+      inner: 16
       span:
         start: 2099
         end: 2103
@@ -2463,7 +2476,7 @@ functions:
                   span:
                     start: 2090
                     end: 2094
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -2486,8 +2499,8 @@ functions:
                       start: 2176
                       end: 2180
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -2538,7 +2551,7 @@ functions:
                                               Local:
                                                 scope_index: 0
                                                 local_index: 0
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2110
                                               end: 2114
@@ -2546,11 +2559,11 @@ functions:
                                             kind:
                                               Char:
                                                 value: "\t"
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2118
                                               end: 2122
-                                      ty: 15
+                                      ty: 16
                                       span:
                                         start: 2110
                                         end: 2122
@@ -2567,7 +2580,7 @@ functions:
                                               Local:
                                                 scope_index: 0
                                                 local_index: 0
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2126
                                               end: 2130
@@ -2575,15 +2588,15 @@ functions:
                                             kind:
                                               Char:
                                                 value: "\n"
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2134
                                               end: 2138
-                                      ty: 15
+                                      ty: 16
                                       span:
                                         start: 2126
                                         end: 2138
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2110
                                   end: 2138
@@ -2600,7 +2613,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2142
                                         end: 2146
@@ -2608,15 +2621,15 @@ functions:
                                       kind:
                                         Char:
                                           value: 
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2150
                                         end: 2156
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2142
                                   end: 2156
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2110
                             end: 2156
@@ -2633,7 +2646,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2160
                                   end: 2164
@@ -2641,15 +2654,15 @@ functions:
                                 kind:
                                   Char:
                                     value: "\r"
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2168
                                   end: 2172
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2160
                             end: 2172
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2110
                       end: 2172
@@ -2666,7 +2679,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 2176
                             end: 2180
@@ -2674,19 +2687,19 @@ functions:
                           kind:
                             Char:
                               value: " "
-                          ty: 16
+                          ty: 17
                           span:
                             start: 2184
                             end: 2187
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2176
                       end: 2187
-              ty: 15
+              ty: 16
               span:
                 start: 2110
                 end: 2187
-        ty: 15
+        ty: 16
         span:
           start: 2104
           end: 2191
@@ -2698,7 +2711,7 @@ functions:
       end: 2213
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 62
       span:
@@ -2712,12 +2725,12 @@ functions:
             start: 2231
             end: 2235
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 2231
             end: 2235
     result:
-      inner: 15
+      inner: 16
       span:
         start: 2240
         end: 2244
@@ -2736,7 +2749,7 @@ functions:
                   span:
                     start: 2231
                     end: 2235
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -2747,8 +2760,8 @@ functions:
                       start: 2276
                       end: 2280
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -2775,7 +2788,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 9
+                          ty: 10
                           span:
                             start: 2252
                             end: 2256
@@ -2783,11 +2796,11 @@ functions:
                           kind:
                             Int:
                               value: 31
-                          ty: 9
+                          ty: 10
                           span:
                             start: 2268
                             end: 2272
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2251
                       end: 2272
@@ -2804,7 +2817,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 2276
                             end: 2280
@@ -2812,19 +2825,19 @@ functions:
                           kind:
                             Char:
                               value: 
-                          ty: 16
+                          ty: 17
                           span:
                             start: 2284
                             end: 2290
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2276
                       end: 2290
-              ty: 15
+              ty: 16
               span:
                 start: 2251
                 end: 2290
-        ty: 15
+        ty: 16
         span:
           start: 2245
           end: 2294
@@ -2836,7 +2849,7 @@ functions:
       end: 2316
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 64
       span:
@@ -2850,12 +2863,12 @@ functions:
             start: 2335
             end: 2339
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 2335
             end: 2339
     result:
-      inner: 15
+      inner: 16
       span:
         start: 2344
         end: 2348
@@ -2874,7 +2887,7 @@ functions:
                   span:
                     start: 2335
                     end: 2339
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -2901,8 +2914,8 @@ functions:
                       start: 2445
                       end: 2449
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -2945,7 +2958,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2356
                                         end: 2360
@@ -2953,11 +2966,11 @@ functions:
                                       kind:
                                         Char:
                                           value: "0"
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2364
                                         end: 2367
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2356
                                   end: 2367
@@ -2974,7 +2987,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2371
                                         end: 2375
@@ -2982,15 +2995,15 @@ functions:
                                       kind:
                                         Char:
                                           value: "9"
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2379
                                         end: 2382
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2371
                                   end: 2382
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2356
                             end: 2382
@@ -3015,7 +3028,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2393
                                         end: 2397
@@ -3023,11 +3036,11 @@ functions:
                                       kind:
                                         Char:
                                           value: A
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2401
                                         end: 2404
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2393
                                   end: 2404
@@ -3044,7 +3057,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2408
                                         end: 2412
@@ -3052,19 +3065,19 @@ functions:
                                       kind:
                                         Char:
                                           value: F
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2416
                                         end: 2419
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2408
                                   end: 2419
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2393
                             end: 2419
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2355
                       end: 2420
@@ -3089,7 +3102,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2430
                                   end: 2434
@@ -3097,11 +3110,11 @@ functions:
                                 kind:
                                   Char:
                                     value: a
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2438
                                   end: 2441
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2430
                             end: 2441
@@ -3118,7 +3131,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2445
                                   end: 2449
@@ -3126,23 +3139,23 @@ functions:
                                 kind:
                                   Char:
                                     value: f
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2453
                                   end: 2456
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2445
                             end: 2456
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2430
                       end: 2456
-              ty: 15
+              ty: 16
               span:
                 start: 2355
                 end: 2457
-        ty: 15
+        ty: 16
         span:
           start: 2349
           end: 2461
@@ -3154,7 +3167,7 @@ functions:
       end: 2483
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 67
       span:
@@ -3168,12 +3181,12 @@ functions:
             start: 2505
             end: 2509
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 2505
             end: 2509
     result:
-      inner: 15
+      inner: 16
       span:
         start: 2514
         end: 2518
@@ -3192,7 +3205,7 @@ functions:
                   span:
                     start: 2505
                     end: 2509
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -3227,8 +3240,8 @@ functions:
                       start: 2652
                       end: 2656
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -3279,7 +3292,7 @@ functions:
                                               Local:
                                                 scope_index: 0
                                                 local_index: 0
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2526
                                               end: 2530
@@ -3287,11 +3300,11 @@ functions:
                                             kind:
                                               Char:
                                                 value: "!"
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2534
                                               end: 2537
-                                      ty: 15
+                                      ty: 16
                                       span:
                                         start: 2526
                                         end: 2537
@@ -3308,7 +3321,7 @@ functions:
                                               Local:
                                                 scope_index: 0
                                                 local_index: 0
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2541
                                               end: 2545
@@ -3316,15 +3329,15 @@ functions:
                                             kind:
                                               Char:
                                                 value: /
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2549
                                               end: 2552
-                                      ty: 15
+                                      ty: 16
                                       span:
                                         start: 2541
                                         end: 2552
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2526
                                   end: 2552
@@ -3349,7 +3362,7 @@ functions:
                                               Local:
                                                 scope_index: 0
                                                 local_index: 0
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2563
                                               end: 2567
@@ -3357,11 +3370,11 @@ functions:
                                             kind:
                                               Char:
                                                 value: ":"
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2571
                                               end: 2574
-                                      ty: 15
+                                      ty: 16
                                       span:
                                         start: 2563
                                         end: 2574
@@ -3378,7 +3391,7 @@ functions:
                                               Local:
                                                 scope_index: 0
                                                 local_index: 0
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2578
                                               end: 2582
@@ -3386,19 +3399,19 @@ functions:
                                             kind:
                                               Char:
                                                 value: "@"
-                                            ty: 16
+                                            ty: 17
                                             span:
                                               start: 2586
                                               end: 2589
-                                      ty: 15
+                                      ty: 16
                                       span:
                                         start: 2578
                                         end: 2589
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2563
                                   end: 2589
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2525
                             end: 2590
@@ -3423,7 +3436,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2600
                                         end: 2604
@@ -3431,11 +3444,11 @@ functions:
                                       kind:
                                         Char:
                                           value: "["
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2608
                                         end: 2611
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2600
                                   end: 2611
@@ -3452,7 +3465,7 @@ functions:
                                         Local:
                                           scope_index: 0
                                           local_index: 0
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2615
                                         end: 2619
@@ -3460,19 +3473,19 @@ functions:
                                       kind:
                                         Char:
                                           value: "`"
-                                      ty: 16
+                                      ty: 17
                                       span:
                                         start: 2623
                                         end: 2626
-                                ty: 15
+                                ty: 16
                                 span:
                                   start: 2615
                                   end: 2626
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2600
                             end: 2626
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2525
                       end: 2627
@@ -3497,7 +3510,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2637
                                   end: 2641
@@ -3505,11 +3518,11 @@ functions:
                                 kind:
                                   Char:
                                     value: "{"
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2645
                                   end: 2648
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2637
                             end: 2648
@@ -3526,7 +3539,7 @@ functions:
                                   Local:
                                     scope_index: 0
                                     local_index: 0
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2652
                                   end: 2656
@@ -3534,23 +3547,23 @@ functions:
                                 kind:
                                   Char:
                                     value: "~"
-                                ty: 16
+                                ty: 17
                                 span:
                                   start: 2660
                                   end: 2663
-                          ty: 15
+                          ty: 16
                           span:
                             start: 2652
                             end: 2663
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2637
                       end: 2663
-              ty: 15
+              ty: 16
               span:
                 start: 2525
                 end: 2664
-        ty: 15
+        ty: 16
         span:
           start: 2519
           end: 2668
@@ -3562,7 +3575,7 @@ functions:
       end: 2690
     kind: Impl
     type_params: []
-    signature_index: 57
+    signature_index: 58
     name:
       inner: 76
       span:
@@ -3576,12 +3589,12 @@ functions:
             start: 2708
             end: 2712
         ty:
-          inner: 16
+          inner: 17
           span:
             start: 2708
             end: 2712
     result:
-      inner: 15
+      inner: 16
       span:
         start: 2717
         end: 2721
@@ -3600,7 +3613,7 @@ functions:
                   span:
                     start: 2708
                     end: 2712
-                ty: 16
+                ty: 17
                 mut_span: ~
                 accesses:
                   - span:
@@ -3611,8 +3624,8 @@ functions:
                       start: 2743
                       end: 2747
                     kind: Read
-            inferred_type: 15
-            expected_type: 15
+            inferred_type: 16
+            expected_type: 16
       block:
         kind:
           Block:
@@ -3639,7 +3652,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 2728
                             end: 2732
@@ -3647,11 +3660,11 @@ functions:
                           kind:
                             Char:
                               value: "!"
-                          ty: 16
+                          ty: 17
                           span:
                             start: 2736
                             end: 2739
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2728
                       end: 2739
@@ -3668,7 +3681,7 @@ functions:
                             Local:
                               scope_index: 0
                               local_index: 0
-                          ty: 16
+                          ty: 17
                           span:
                             start: 2743
                             end: 2747
@@ -3676,19 +3689,19 @@ functions:
                           kind:
                             Char:
                               value: "~"
-                          ty: 16
+                          ty: 17
                           span:
                             start: 2751
                             end: 2754
-                    ty: 15
+                    ty: 16
                     span:
                       start: 2743
                       end: 2754
-              ty: 15
+              ty: 16
               span:
                 start: 2728
                 end: 2754
-        ty: 15
+        ty: 16
         span:
           start: 2722
           end: 2758
@@ -3715,7 +3728,7 @@ functions:
             span:
               start: 28
               end: 29
-    signature_index: 59
+    signature_index: 60
     name:
       inner: 77
       span:
@@ -3729,12 +3742,12 @@ functions:
             start: 19
             end: 20
         ty:
-          inner: 58
+          inner: 59
           span:
             start: 22
             end: 23
     result:
-      inner: 58
+      inner: 59
       span:
         start: 28
         end: 29
@@ -3752,15 +3765,15 @@ functions:
                   span:
                     start: 19
                     end: 20
-                ty: 58
+                ty: 59
                 mut_span: ~
                 accesses:
                   - span:
                       start: 36
                       end: 37
                     kind: Read
-            inferred_type: 58
-            expected_type: 58
+            inferred_type: 59
+            expected_type: 59
       block:
         kind:
           Block:
@@ -3771,11 +3784,11 @@ functions:
                 Local:
                   scope_index: 0
                   local_index: 0
-              ty: 58
+              ty: 59
               span:
                 start: 36
                 end: 37
-        ty: 58
+        ty: 59
         span:
           start: 30
           end: 39
@@ -3788,7 +3801,7 @@ enums: []
 exports: {}
 structs: []
 impl_members:
-  16:
+  17:
     41:
       Method: 11
     42:
@@ -3827,15 +3840,15 @@ traits:
     members:
       10:
         AssociatedType:
-          ty: 20
+          ty: 21
       34:
         AssociatedConst:
           id: 13
-          ty: 9
+          ty: 10
       35:
         AssociatedConst:
           id: 14
-          ty: 22
+          ty: 23
       37:
         Method: 1
       39:
@@ -3854,7 +3867,7 @@ constants:
         start: 6
         end: 21
     ty:
-      inner: 5
+      inner: 6
       span:
         start: 23
         end: 25
@@ -3862,7 +3875,7 @@ constants:
       kind:
         Int:
           value: 32
-      ty: 5
+      ty: 6
       span:
         start: 28
         end: 39
@@ -3887,7 +3900,7 @@ constants:
         start: 51
         end: 60
     ty:
-      inner: 9
+      inner: 10
       span:
         start: 62
         end: 65
@@ -3895,7 +3908,7 @@ constants:
       kind:
         Int:
           value: 65536
-      ty: 9
+      ty: 10
       span:
         start: 68
         end: 73
@@ -3910,7 +3923,7 @@ constants:
         start: 720
         end: 732
     ty:
-      inner: 9
+      inner: 10
       span:
         start: 734
         end: 737
@@ -3926,7 +3939,7 @@ constants:
         start: 747
         end: 755
     ty:
-      inner: 22
+      inner: 23
       span:
         start: 757
         end: 770
@@ -3944,7 +3957,6 @@ typesets:
       start: 548
       end: 551
     members:
-      - 5
       - 6
       - 7
       - 8
@@ -3952,6 +3964,7 @@ typesets:
       - 10
       - 11
       - 12
+      - 13
     intersection_range:
       min: 0
       max: 127
@@ -3966,8 +3979,8 @@ typesets:
       start: 609
       end: 612
     members:
-      - 9
-      - 11
+      - 10
+      - 12
     intersection_range:
       min: 0
       max: 4294967295

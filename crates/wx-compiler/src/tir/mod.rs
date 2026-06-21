@@ -66,6 +66,11 @@ pub enum TypeParamOwner {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Error,
+    /// A type inference placeholder — written `_` in source, or injected
+    /// internally when a generic type argument cannot yet be determined.
+    /// Must never reach MIR or codegen; the TIR checker reports an error
+    /// whenever `Infer` survives past the call site that created it.
+    Infer,
     Unit,
     Never,
     Integer,
@@ -87,15 +92,20 @@ pub enum Type {
     },
     Struct {
         struct_index: u32,
-        /// Empty for non-generic structs; populated when instantiated with
-        /// concrete type args, e.g. `Point<i32>` → `args = [i32_idx]`.
+        /// Encodes three states via length:
+        ///   - non-generic struct → always empty
+        ///   - generic struct, not yet instantiated → empty
+        ///   - generic struct, instantiated → one entry per type param, e.g. `Vec<i32, u8>` → `[i32_idx, u8_idx]`
         args: Box<[TypeIndex]>,
     },
     Function {
         signature: FunctionSignature,
     },
-    /// Named function reference before coercion to a fn pointer. `type_args` is
-    /// empty for uninstantiated generics.
+    /// Named function reference before coercion to a fn pointer.
+    /// Encodes three states via length (same convention as `Struct::args`):
+    ///   - non-generic function → always empty
+    ///   - generic function, not yet instantiated → empty
+    ///   - generic function, instantiated → one entry per type param
     FunctionItem {
         id: DefId,
         type_args: Box<[TypeIndex]>,
@@ -169,6 +179,12 @@ impl TypeIndex {
         self.0 as usize
     }
 
+    /// Use wherever `INFER` acts as an absent-type sentinel and a concrete fallback is needed.
+    #[inline]
+    pub fn infer_or(self, other: TypeIndex) -> TypeIndex {
+        if self == TypeIndex::INFER { other } else { self }
+    }
+
     #[inline]
     pub fn is_comptime_number(self) -> bool {
         self == TypeIndex::INTEGER || self == TypeIndex::FLOAT
@@ -215,22 +231,23 @@ impl TypeIndex {
     // slots at startup so comparisons like `ty == TypeIndex::U32` work without
     // a pool lookup.
     pub const ERROR: TypeIndex = TypeIndex(0);
-    pub const UNIT: TypeIndex = TypeIndex(1);
-    pub const NEVER: TypeIndex = TypeIndex(2);
-    pub const INTEGER: TypeIndex = TypeIndex(3);
-    pub const FLOAT: TypeIndex = TypeIndex(4);
-    pub const U8: TypeIndex = TypeIndex(5);
-    pub const I8: TypeIndex = TypeIndex(6);
-    pub const U16: TypeIndex = TypeIndex(7);
-    pub const I16: TypeIndex = TypeIndex(8);
-    pub const U32: TypeIndex = TypeIndex(9);
-    pub const I32: TypeIndex = TypeIndex(10);
-    pub const U64: TypeIndex = TypeIndex(11);
-    pub const I64: TypeIndex = TypeIndex(12);
-    pub const F32: TypeIndex = TypeIndex(13);
-    pub const F64: TypeIndex = TypeIndex(14);
-    pub const BOOL: TypeIndex = TypeIndex(15);
-    pub const CHAR: TypeIndex = TypeIndex(16);
+    pub const INFER: TypeIndex = TypeIndex(1);
+    pub const UNIT: TypeIndex = TypeIndex(2);
+    pub const NEVER: TypeIndex = TypeIndex(3);
+    pub const INTEGER: TypeIndex = TypeIndex(4);
+    pub const FLOAT: TypeIndex = TypeIndex(5);
+    pub const U8: TypeIndex = TypeIndex(6);
+    pub const I8: TypeIndex = TypeIndex(7);
+    pub const U16: TypeIndex = TypeIndex(8);
+    pub const I16: TypeIndex = TypeIndex(9);
+    pub const U32: TypeIndex = TypeIndex(10);
+    pub const I32: TypeIndex = TypeIndex(11);
+    pub const U64: TypeIndex = TypeIndex(12);
+    pub const I64: TypeIndex = TypeIndex(13);
+    pub const F32: TypeIndex = TypeIndex(14);
+    pub const F64: TypeIndex = TypeIndex(15);
+    pub const BOOL: TypeIndex = TypeIndex(16);
+    pub const CHAR: TypeIndex = TypeIndex(17);
 }
 
 impl TryFrom<&str> for Type {
@@ -312,6 +329,7 @@ pub struct Trait {
 pub struct TraitImpl {
     pub trait_index: TraitIndex,
     pub target: TypeIndex,
+    #[cfg_attr(test, serde(serialize_with = "crate::testing::serialize_sorted_map"))]
     pub members: HashMap<SymbolU32, ImplEntry>,
     /// Span of the trait name in the header; anchors conformance diagnostics.
     #[cfg_attr(test, serde(skip))]
@@ -605,7 +623,11 @@ pub enum AccessKind {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 struct AccessContext {
-    expected_type: Option<TypeIndex>,
+    /// Hint for type inference at this expression site.
+    /// `TypeIndex::INFER` means "no constraint" (replaces `Option::None`).
+    /// A type containing `TypeIndex::INFER` (e.g. `Layout<_>`) is a partial
+    /// constraint — positions marked INFER act as wildcards.
+    expected_type: TypeIndex,
     access_kind: AccessKind,
 }
 
@@ -649,8 +671,10 @@ pub struct BlockScope {
     pub label: Option<BlockLabel>,
     pub parent: Option<ScopeIndex>,
     pub locals: Vec<Local>,
-    pub inferred_type: Option<TypeIndex>,
-    pub expected_type: Option<TypeIndex>,
+    /// Type accumulated from `break` arms; `INFER` means nothing seen yet.
+    pub inferred_type: TypeIndex,
+    /// Hint from the surrounding context; `INFER` means unconstrained.
+    pub expected_type: TypeIndex,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -1125,6 +1149,7 @@ define_diagnostic_codes! {
         MultipleTypesetBounds => "E1048",
         MethodNotFound => "E1049",
         NotAMethod => "E1050",
+        InferInSignature => "E1051",
     }
 }
 
@@ -1211,6 +1236,7 @@ impl<'a> TypeFormatter<'a> {
             Type::Pointer { .. } => "pointer",
             Type::Tuple { .. } => "tuple",
             Type::Error { .. } => "{unknown}",
+            Type::Infer => "_",
             Type::Never { .. } => "never",
             Type::AssocTypeProjection { .. } | Type::AssociatedType { .. } => "type",
             Type::TypeParam { .. } => "generic",
@@ -1228,6 +1254,7 @@ impl<'a> TypeFormatter<'a> {
             Type::Integer => f.write_str("{integer}"),
             Type::Float => f.write_str("{float}"),
             Type::Error => f.write_str("{unknown}"),
+            Type::Infer => f.write_str("_"),
             Type::Unit => f.write_str("()"),
             Type::Bool => f.write_str("bool"),
             Type::Char => f.write_str("char"),
@@ -1559,6 +1586,7 @@ impl TIR {
             | Type::TypeSet { .. }
             | Type::TypeParam { .. }
             | Type::Error
+            | Type::Infer
             | Type::Never
             | Type::Unit
             | Type::Integer

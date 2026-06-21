@@ -185,7 +185,7 @@ fn test_duplicate_export() {
     "});
 
     assert!(
-        has_error_code(&case.tir, "E1018"),
+        has_error_code(&case.tir, DiagnosticCode::DuplicateExport),
         "expected E1018 (DuplicateExport), got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -204,7 +204,7 @@ fn test_duplicate_export_with_alias() {
     "});
 
     assert!(
-        has_error_code(&case.tir, "E1018"),
+        has_error_code(&case.tir, DiagnosticCode::DuplicateExport),
         "expected E1018 (DuplicateExport), got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -291,13 +291,10 @@ fn test_local_variable_used_in_import_call() {
     insta::assert_yaml_snapshot!(case.tir);
 }
 
-fn has_error_code(tir: &TIR, code: &str) -> bool {
-    tir.diagnostics.iter().any(|d| {
-        d.code
-            .as_ref()
-            .map(|c| c.to_string().contains(code))
-            .unwrap_or(false)
-    })
+fn has_error_code(tir: &TIR, code: DiagnosticCode) -> bool {
+    tir.diagnostics
+        .iter()
+        .any(|d| d.code.as_deref() == Some(code.code()))
 }
 
 // ── coerce_untyped_int_expr ──────────────────────────────────────────────
@@ -363,7 +360,7 @@ fn test_coerce_int_overflow_i32() {
     // i32::MAX + 1 = 2147483648 overflows i32
     let case = TestCase::new("fn f() -> i32 { 2147483648 } export { f }");
     assert!(
-        has_error_code(&case.tir, "E1004"),
+        has_error_code(&case.tir, DiagnosticCode::IntegerLiteralOutOfRange),
         "expected E1004 (out of range), got: {:?}",
         case.tir
             .diagnostics
@@ -379,7 +376,7 @@ fn test_coerce_int_negative_for_u32() {
     // `-1` is `Unary { InvertSign, Int(1) }` — coerce_untyped_unary_expr only
     // allows InvertSign for i32/i64, so u32 produces E1005 (UnableToCoerce).
     assert!(
-        has_error_code(&case.tir, "E1005"),
+        has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
         "expected E1005 (UnableToCoerce) for negated literal coerced to u32, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -390,7 +387,7 @@ fn test_coerce_int_literal_for_float_type_errors() {
     // An untyped integer literal cannot be coerced to f32 (must write 1.0)
     let case = TestCase::new("fn f() -> f32 { 1 } export { f }");
     assert!(
-        has_error_code(&case.tir, "E1006"),
+        has_error_code(&case.tir, DiagnosticCode::LiteralTypeMismatch),
         "expected E1006 (int literal for float type), got: {:?}",
         case.tir
             .diagnostics
@@ -405,7 +402,7 @@ fn test_coerce_int_to_bool_errors() {
     let case = TestCase::new("fn f() -> bool { 1 } export { f }");
     // int literal is not coercible to bool — expect E1005 (unable to coerce)
     assert!(
-        has_error_code(&case.tir, "E1005"),
+        has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
         "expected E1005 (unable to coerce), got: {:?}",
         case.tir
             .diagnostics
@@ -449,7 +446,7 @@ fn test_coerce_float_to_f64() {
 fn test_coerce_float_to_i32_errors() {
     let case = TestCase::new("fn f() -> i32 { 1.5 } export { f }");
     assert!(
-        has_error_code(&case.tir, "E1005"),
+        has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
         "expected E1005 (unable to coerce float to i32), got: {:?}",
         case.tir
             .diagnostics
@@ -598,7 +595,7 @@ fn test_integer_plus_float_literal_errors() {
     // 1 is INTEGER, 1.0 is FLOAT — different comptime kinds → type mismatch
     let case = TestCase::new("fn f() -> i32 { 1 + 1.0 } export { f }");
     assert!(
-        has_error_code(&case.tir, "E1001"),
+        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
         "expected E1001 (type mismatch for INTEGER + FLOAT), got: {:?}",
         case.tir
             .diagnostics
@@ -613,7 +610,7 @@ fn test_float_plus_integer_literal_errors() {
     // Symmetric: FLOAT on the left, INTEGER on the right
     let case = TestCase::new("fn f() -> f64 { 1.0 + 1 } export { f }");
     assert!(
-        has_error_code(&case.tir, "E1001"),
+        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
         "expected E1001 (type mismatch for FLOAT + INTEGER), got: {:?}",
         case.tir
             .diagnostics
@@ -753,7 +750,7 @@ fn test_comptime_integer_local_missing_annotation_errors() {
         export { f }
     "});
     assert!(
-        has_error_code(&case.tir, "E1002"),
+        has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
         "expected E1002 (type annotation required), got: {:?}",
         case.tir
             .diagnostics
@@ -808,7 +805,7 @@ fn test_comptime_integers_standalone_comparison_requires_annotation() {
     // `1 == 2` has no type context: cannot decide i32.eq vs i64.eq → E1014
     let case = TestCase::new("fn f() -> bool { 1 == 2 } export { f }");
     assert!(
-        has_error_code(&case.tir, "E1014"),
+        has_error_code(&case.tir, DiagnosticCode::ComparisonTypeAnnotationRequired),
         "expected E1014 (comparison annotation required), got: {:?}",
         case.tir
             .diagnostics
@@ -868,7 +865,7 @@ fn test_comptime_integer_vs_float_comparison_errors() {
     // has a concrete type to drive resolution.
     let case = TestCase::new("fn f() -> bool { 1 == 1.0 } export { f }");
     assert!(
-        has_error_code(&case.tir, "E1014"),
+        has_error_code(&case.tir, DiagnosticCode::ComparisonTypeAnnotationRequired),
         "expected E1014 (ComparisonTypeAnnotationRequired) for INTEGER == FLOAT, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -967,7 +964,7 @@ fn test_struct_duplicate_field_definition() {
         export { }
     "});
     assert!(
-        has_error_code(&case.tir, "E1022"),
+        has_error_code(&case.tir, DiagnosticCode::DuplicateStructField),
         "expected E1022 (duplicate struct field), got: {:?}",
         case.tir
             .diagnostics
@@ -988,7 +985,7 @@ fn test_struct_init_undeclared_name() {
         export { main }
     "});
     assert!(
-        has_error_code(&case.tir, "E1021"),
+        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
         "expected E1021 (UndeclaredType) for unknown struct name, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -1010,7 +1007,7 @@ fn test_struct_init_unknown_field() {
         export { make }
     "});
     assert!(
-        has_error_code(&case.tir, "E1025"),
+        has_error_code(&case.tir, DiagnosticCode::UnknownStructField),
         "expected E1025 (unknown struct field), got: {:?}",
         case.tir
             .diagnostics
@@ -1038,7 +1035,7 @@ fn test_struct_init_duplicate_field() {
         export { make }
     "});
     assert!(
-        has_error_code(&case.tir, "E1026"),
+        has_error_code(&case.tir, DiagnosticCode::DuplicateStructFieldInit),
         "expected E1026 (duplicate field in init), got: {:?}",
         case.tir
             .diagnostics
@@ -1048,7 +1045,7 @@ fn test_struct_init_duplicate_field() {
     );
     // x was mentioned (just duplicated) — must NOT also appear as missing
     assert!(
-        !has_error_code(&case.tir, "E1027"),
+        !has_error_code(&case.tir, DiagnosticCode::MissingStructFields),
         "E1027 must not fire for a duplicated field (it was mentioned)"
     );
 }
@@ -1069,7 +1066,7 @@ fn test_struct_init_missing_fields() {
         export { make }
     "});
     assert!(
-        has_error_code(&case.tir, "E1027"),
+        has_error_code(&case.tir, DiagnosticCode::MissingStructFields),
         "expected E1027 (missing fields), got: {:?}",
         case.tir
             .diagnostics
@@ -1097,17 +1094,13 @@ fn test_struct_init_errored_field_not_reported_as_missing() {
     "});
     // Should have E1001 (TypeMistmatch) for field `x` receiving a bool instead of i32.
     assert!(
-        has_error_code(&case.tir, "E1001"),
+        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
         "expected E1001 (TypeMistmatch) for bool assigned to i32 field, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
     // …but must NOT report `x` as a missing field
     let missing_x = case.tir.diagnostics.iter().any(|d| {
-        d.code
-            .as_ref()
-            .map(|c| c.to_string().contains("E1027"))
-            .unwrap_or(false)
-            && d.message.contains('x')
+        d.code.as_deref() == Some(DiagnosticCode::MissingStructFields.code()) && d.message.contains('x')
     });
     assert!(
         !missing_x,
@@ -1469,7 +1462,7 @@ fn test_memory_invalid_kind_is_error() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1029")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::InvalidMemoryKind.code())),
         "expected invalid memory kind diagnostic"
     );
 }
@@ -1484,7 +1477,7 @@ fn test_fn_declaration_without_body_is_error() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1028")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingFunctionBody.code())),
         "expected E0011 diagnostic for missing function body"
     );
 }
@@ -1580,7 +1573,7 @@ fn test_memory_unknown_member_is_error() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1007")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UndeclaredIdentifier.code())),
         "expected undeclared identifier diagnostic for unknown memory member"
     );
 }
@@ -1598,7 +1591,7 @@ fn test_memory_as_value_in_expression() {
             .tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1030")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::NamespaceUsedAsValue.code())),
         "memory identifier should be usable as a value expression"
     );
 }
@@ -1776,7 +1769,7 @@ fn test_trait_conformance_missing_fn() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1033")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingTraitImplItem.code())),
         "expected E1033 for missing trait item, got: {:?}",
         case.tir
             .diagnostics
@@ -1802,7 +1795,7 @@ fn test_trait_conformance_missing_const() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1033")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingTraitImplItem.code())),
         "expected E1033 for missing const, got: {:?}",
         case.tir
             .diagnostics
@@ -1919,7 +1912,7 @@ fn test_supertrait_missing_impl_errors() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1034")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingSupertraitImpl.code())),
         "expected E1034 for missing supertrait impl, got: {:?}",
         case.tir
             .diagnostics
@@ -1993,7 +1986,7 @@ fn test_forward_ref_resolves_on_demand() {
             .tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1021")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UndeclaredType.code())),
         "E1021 should not be emitted: the query system resolves traits on demand"
     );
 }
@@ -2013,7 +2006,7 @@ fn test_struct_direct_cycle_is_error() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1032")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::CyclicTypeDependency.code())),
         "expected E1032 for direct self-referential struct"
     );
 }
@@ -2033,7 +2026,7 @@ fn test_struct_mutual_cycle_is_error() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1032")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::CyclicTypeDependency.code())),
         "expected E1032 for mutually recursive structs"
     );
 }
@@ -2050,7 +2043,7 @@ fn test_struct_three_way_cycle_is_error() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1032")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::CyclicTypeDependency.code())),
         "expected E1032 for three-way struct cycle"
     );
 }
@@ -2126,7 +2119,7 @@ fn test_struct_cycle_does_not_prevent_other_structs_from_resolving() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1032")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::CyclicTypeDependency.code())),
         "expected E1032 for Bad"
     );
     // Good should still be registered; the function should compile without
@@ -2136,7 +2129,7 @@ fn test_struct_cycle_does_not_prevent_other_structs_from_resolving() {
             .tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1021")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UndeclaredType.code())),
         "Good struct should still resolve despite Bad being cyclic"
     );
 }
@@ -2251,7 +2244,7 @@ fn test_generic_struct_wrong_type_arg_count_is_error() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1040")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::TypeArgCountMismatch.code())),
         "expected E1040 for wrong type arg count"
     );
 }
@@ -2268,7 +2261,7 @@ fn test_generic_struct_init_wrong_type_arg_count_is_error() {
         case.tir
             .diagnostics
             .iter()
-            .any(|d| d.code.as_deref() == Some("E1040")),
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::TypeArgCountMismatch.code())),
         "expected E1040 for wrong type arg count in init"
     );
 }
@@ -2387,7 +2380,7 @@ fn test_generic_unknown_bound_is_error() {
         }
     "});
     assert!(
-        has_error_code(&case.tir, "E1021"),
+        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
         "expected E1021 (UndeclaredType) for unknown trait bound 'Nonexistent', got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -2425,17 +2418,6 @@ fn has_error_matching(case: &TestCase, substring: &str) {
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
-    );
-}
-
-fn has_error(case: &TestCase, msg: &str) {
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "expected error: {}",
-        msg
     );
 }
 
@@ -2537,7 +2519,8 @@ fn test_assoc_type_unknown_member_is_error() {
             unreachable
         }
     "});
-    has_error(&case, "undeclared associated type 'Nonexistent'");
+    // TODO: improve to "undeclared associated type 'Nonexistent'" for better diagnostics
+    has_error_matching(&case, "undeclared type");
 }
 
 #[test]
@@ -2553,7 +2536,7 @@ fn test_assoc_type_bare_name_suggests_self_prefix() {
     // report_bare_assoc_type emits E1021 with message "cannot find type `Size` in
     // this scope" and a note containing the "Self::Size" suggestion.
     assert!(
-        has_error_code(&case.tir, "E1021"),
+        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
         "expected E1021 (UndeclaredType) for bare associated type name, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -2619,7 +2602,7 @@ fn test_assoc_type_impl_bound_violation_is_error() {
             type Size = bool;
         }
     "});
-    has_error(&case, "bool does not implement PointerSize");
+    has_error_matching(&case, "associated type `Size` must implement `PointerSize`");
 }
 
 #[test]
@@ -2672,7 +2655,7 @@ fn test_assoc_type_projection_concrete_mismatch_in_generic_wrapper() {
             process(n)
         }
     "});
-    has_error(&case, "type mismatch: expected C::Item, got i32");
+    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
 }
 
 #[test]
@@ -2773,7 +2756,7 @@ fn test_generic_over_memory_wrong_size_type_is_error() {
                 pass(heap, n)
             }
         "}, &[]);
-    has_error(&case, "type mismatch");
+    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
 }
 
 #[test]
@@ -2794,6 +2777,129 @@ fn test_generic_over_memory_two_concrete_memories() {
             }
         "}, &[]);
     no_errors(&case);
+}
+
+// ── Type::Infer / underscore type placeholder ────────────────────────────────
+
+#[test]
+fn test_infer_placeholder_in_generic_type_arg() {
+    // `Layout<_>` where the local variable's assigned value fully constrains
+    // the type arg — the `_` is the user-written inference placeholder and
+    // must not cause an error when the context resolves it.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            struct Layout<M: Memory> { size: M::Size }
+            impl <M: Memory> Layout<M> {
+                pub fn new(size: M::Size) -> Layout<M> {
+                    Layout::{ size }
+                }
+            }
+            pub fn demo() {
+                local x: Layout<_> = Layout::<heap>::new(4 as u32);
+            }
+        "}, &[]);
+    no_errors(&case);
+}
+
+#[test]
+fn test_cannot_infer_generic_type_param_error() {
+    // Calling a generic constructor without enough context to infer the type
+    // parameter must be an error with a "cannot infer type for type parameter"
+    // diagnostic.
+    let case = TestCase::new_multi_file("main.wx", indoc! {"
+            memory heap: Memory<Size = u32>;
+            struct Layout<M: Memory> { size: M::Size }
+            impl <M: Memory> Layout<M> {
+                pub fn array<T>(count: M::Size) -> Layout<M> {
+                    Layout::{ size: count }
+                }
+            }
+            pub fn demo() {
+                local y = Layout::array::<i32>(4 as u32);
+            }
+        "}, &[]);
+    has_error_matching(&case, "cannot infer type for type parameter `M`");
+}
+
+// ── `_` (infer placeholder) edge cases ──────────────────────────────────────
+
+#[test]
+fn test_infer_in_function_param_type_is_error() {
+    let case = TestCase::new(indoc! {"
+        fn foo(x: _) -> i32 { 0 }
+    "});
+    has_error_matching(&case, "`_` is not allowed in item type signatures");
+}
+
+#[test]
+fn test_infer_in_function_return_type_is_error() {
+    let case = TestCase::new(indoc! {"
+        fn foo() -> _ { 0 }
+    "});
+    has_error_matching(&case, "`_` is not allowed in item type signatures");
+}
+
+#[test]
+fn test_infer_in_struct_field_is_error() {
+    let case = TestCase::new(indoc! {"
+        struct Foo { x: _ }
+    "});
+    has_error_matching(&case, "`_` is not allowed in item type signatures");
+}
+
+#[test]
+fn test_infer_in_global_declaration_is_error() {
+    let case = TestCase::new(indoc! {"
+        global x: _ = 0;
+    "});
+    has_error_matching(&case, "`_` is not allowed in item type signatures");
+}
+
+#[test]
+#[ignore = "TODO: decide cast semantics for `_` — `42 as _` could infer target type from expected_type; investigate whether to support or give a better error"]
+fn test_infer_in_cast_is_error() {
+    let case = TestCase::new(indoc! {"
+        fn foo() { local x = 42 as _; }
+    "});
+    has_error_matching(&case, "`_` is not allowed in cast");
+}
+
+#[test]
+fn test_infer_multi_wildcard_tuple_annotation() {
+    // Both `_` slots should be filled from the RHS — no error.
+    let case = TestCase::new(indoc! {"
+        fn foo() {
+            local x: (i32, f32) = (1 as i32, 2.0 as f32);
+            local y: (_, _) = (1 as i32, 2.0 as f32);
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_infer_annotation_type_mismatch_still_errors() {
+    // `local x: i32 = 1.0 as f32` should still produce a type mismatch even
+    // when using `_` for the other slot.
+    let case = TestCase::new(indoc! {"
+        fn foo() {
+            local x: (i32, _) = (1.0 as f32, 2 as i32);
+        }
+    "});
+    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+}
+
+#[test]
+fn test_infer_local_no_rhs_annotation_only_is_error() {
+    // `local x: _` with no initializer is not valid syntax, but `local x: _ = expr`
+    // where expr is also completely unconstrained should produce an error.
+    let case = TestCase::new(indoc! {"
+        fn foo() -> i32 {
+            local x: _ = 42;
+            x
+        }
+    "});
+    // The integer literal 42 by itself with no constraint should require annotation.
+    assert!(has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired));
 }
 
 #[test]
@@ -2973,10 +3079,7 @@ fn test_memory_tagged_non_pointer_is_error() {
                 unreachable
             }
         "}, &[]);
-    has_error(
-        &case,
-        "memory namespace can only prefix pointer, slice, or array",
-    );
+    assert!(has_error_code(&case.tir, DiagnosticCode::UndeclaredType)); // heap::i32 — `i32` is not a member of the memory namespace
 }
 
 #[test]
@@ -3232,10 +3335,7 @@ fn test_function_item_wrong_signature_is_error() {
             apply(add, 5)
         }
     "});
-    has_error(
-        &case,
-        "type mismatch: add (fn(i32,i32)->i32) passed where fn(i32)->i32 expected",
-    );
+    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
 }
 
 // ── Type application expressions ─────────────────────────────────────────────
@@ -3261,7 +3361,7 @@ fn test_type_application_wrong_arg_count_is_error() {
         }
     "});
     assert!(
-        has_error_code(&case.tir, "E1040"),
+        has_error_code(&case.tir, DiagnosticCode::TypeArgCountMismatch),
         "expected E1040 (TypeArgCountMismatch) for too many type args, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -3276,7 +3376,7 @@ fn test_type_application_on_non_generic_is_error() {
         }
     "});
     assert!(
-        has_error_code(&case.tir, "E1040"),
+        has_error_code(&case.tir, DiagnosticCode::TypeArgCountMismatch),
         "expected E1040 (TypeArgCountMismatch) for type args on non-generic fn, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -3331,7 +3431,7 @@ fn test_deref_non_pointer_type_is_error() {
         fn bad(x: i32) -> i32 { x.* }
     "});
     assert!(
-        has_error_code(&case.tir, "E1037"),
+        has_error_code(&case.tir, DiagnosticCode::CannotDerefNonPointer),
         "expected E1037 (dereference of non-pointer type)"
     );
 }
@@ -3342,7 +3442,7 @@ fn test_deref_no_memory_is_error() {
         fn bad(ptr: *i32) -> i32 { ptr.* }
     "});
     assert!(
-        has_error_code(&case.tir, "E1038"),
+        has_error_code(&case.tir, DiagnosticCode::NoMemoryForPointer),
         "expected E1038 (no memory for pointer)"
     );
 }
@@ -3354,7 +3454,7 @@ fn test_deref_store_through_immutable_pointer_is_error() {
         fn bad(ptr: heap::*i32) { ptr.* = 42 }
     "}, &[]);
     assert!(
-        has_error_code(&case.tir, "W1000"),
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
         "expected W1000 (CannotMutateImmutable) for store through immutable pointer, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -3367,7 +3467,7 @@ fn test_deref_arithmetic_assignment_through_immutable_pointer_is_error() {
         fn bad(ptr: heap::*i32) { ptr.* += 1 }
     "}, &[]);
     assert!(
-        has_error_code(&case.tir, "W1000"),
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
         "expected W1000 (CannotMutateImmutable) for arithmetic-assign through immutable pointer, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -3596,7 +3696,7 @@ fn test_array_literal_size_mismatch_is_error() {
             }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1043"),
+        has_error_code(&case.tir, DiagnosticCode::ArraySizeMismatch),
         "expected E1043 (array size mismatch)"
     );
 }
@@ -3612,7 +3712,7 @@ fn test_array_literal_no_annotation_is_error() {
             }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1002"),
+        has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
         "expected E1002 (type annotation required)"
     );
 }
@@ -3626,7 +3726,7 @@ fn test_array_literal_no_memory_is_error() {
         }
     "});
     assert!(
-        has_error_code(&case.tir, "E1038"),
+        has_error_code(&case.tir, DiagnosticCode::NoMemoryForPointer),
         "expected E1038 (no memory for pointer)"
     );
 }
@@ -3690,7 +3790,7 @@ fn test_array_repeat_count_not_const_is_error() {
             }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1044"),
+        has_error_code(&case.tir, DiagnosticCode::ArrayRepeatCountNotConst),
         "expected E1044 (array repeat count not const)"
     );
 }
@@ -3704,7 +3804,7 @@ fn test_array_repeat_size_mismatch_is_error() {
             }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1043"),
+        has_error_code(&case.tir, DiagnosticCode::ArraySizeMismatch),
         "expected E1043 (array size mismatch)"
     );
 }
@@ -3718,7 +3818,7 @@ fn test_array_repeat_no_annotation_is_error() {
             }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1002"),
+        has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
         "expected E1002 (type annotation required)"
     );
 }
@@ -3761,7 +3861,7 @@ fn test_index_on_non_indexable_is_error() {
         fn f(x: i32) -> i32 { x[0] }
     "});
     assert!(
-        has_error_code(&case.tir, "E1042"),
+        has_error_code(&case.tir, DiagnosticCode::IndexOnNonIndexable),
         "expected E1042 (index on non-indexable type)"
     );
 }
@@ -3774,7 +3874,7 @@ fn test_index_wrong_index_type_is_error() {
             fn f(a: heap::[4]i32, i: i64) -> i32 { a[i] }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1001"),
+        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
         "expected E1001 (TypeMistmatch) for wrong index type, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -3796,7 +3896,7 @@ fn test_index_store_through_immutable_array_is_error() {
             fn f(a: heap::[4]i32) { a[0] = 42 }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "W1000"),
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
         "expected W1000 (CannotMutateImmutable) for store through immutable array, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -3818,7 +3918,7 @@ fn test_index_arithmetic_assignment_through_immutable_array_is_error() {
             fn f(a: heap::[4]i32) { a[0] += 1 }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "W1000"),
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
         "expected W1000 (CannotMutateImmutable) for arithmetic-assign through immutable array, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -3865,7 +3965,7 @@ fn test_array_literal_runtime_element_is_error() {
             }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1045"),
+        has_error_code(&case.tir, DiagnosticCode::ArrayElementNotConst),
         "expected E1045 (array element not const)"
     );
 }
@@ -3879,7 +3979,7 @@ fn test_array_repeat_runtime_value_is_error() {
             }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1045"),
+        has_error_code(&case.tir, DiagnosticCode::ArrayElementNotConst),
         "expected E1045 (array element not const)"
     );
 }
@@ -3914,7 +4014,7 @@ fn test_index_memory32_with_u64_variable_is_error() {
             fn f(a: heap::[4]i32, i: u64) -> i32 { a[i] }
         "}, &[]);
     assert!(
-        has_error_code(&case.tir, "E1001"),
+        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
         "expected E1001 (TypeMistmatch) for u64 index on Memory32 array, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -4198,7 +4298,7 @@ fn test_generic_impl_bare_type_param_is_error() {
         }
     "});
     assert!(
-        has_error_code(&case.tir, "E1001"),
+        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
         "expected E1001 (TypeMistmatch/no nominal type) for bare type param impl, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -4250,7 +4350,7 @@ fn test_slice_range_on_non_indexable_is_error() {
         export { f }
     "});
     assert!(
-        has_error_code(&case.tir, "E1042"),
+        has_error_code(&case.tir, DiagnosticCode::IndexOnNonIndexable),
         "expected E1042 (IndexOnNonIndexable) for range-index on i32, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -4302,7 +4402,7 @@ fn test_typeset_bound_violation_reports_error() {
         }
         export { main }
     "});
-    assert!(case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1047")));
+    assert!(case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some(DiagnosticCode::TypesetBoundViolation.code())));
 }
 
 #[test]
@@ -4311,7 +4411,7 @@ fn test_typeset_member_not_integer_reports_error() {
         typeset BadSet { u32, f32 }
         export { }
     "});
-    assert!(case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1046")));
+    assert!(case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some(DiagnosticCode::TypesetMemberNotInteger.code())));
 }
 
 #[test]
@@ -4365,7 +4465,7 @@ fn test_typeset_intersection_range_out_of_bounds_reports_error() {
         export { use_it }
     "});
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some("E1047")),
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref() == Some(DiagnosticCode::TypesetBoundViolation.code())),
         "expected E1047, got: {:?}",
         case.tir.diagnostics
     );
@@ -4443,7 +4543,7 @@ fn test_type_position_undeclared_in_module_path_is_error() {
         &[("src/shapes.wx", "pub struct Point { pub x: i32 }")],
     );
     assert!(
-        has_error_code(&case.tir, "E1021"),
+        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
         "expected E1021 (UndeclaredType) for missing type in module path, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -4459,7 +4559,7 @@ fn test_type_position_non_namespace_as_intermediate_is_error() {
         export { f }
     "});
     assert!(
-        has_error_code(&case.tir, "E1021"),
+        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
         "expected E1021 (UndeclaredType) when a primitive is used as a type namespace, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
@@ -4503,8 +4603,131 @@ fn test_struct_init_undeclared_type_in_module_path_is_error() {
         &[("src/shapes.wx", "pub struct Point { pub x: i32 }")],
     );
     assert!(
-        has_error_code(&case.tir, "E1021"),
+        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
         "expected E1021 (UndeclaredType) for missing struct in module path, got: {:?}",
         case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
     );
+}
+
+/// `@size_of<T, M>` returns `M::Size` projected from @size_of's own param list
+/// (where M is at index 1).  The struct field `size: M::Size` is projected from
+/// Layout's param list (where M is at index 0).  After substitution both must
+/// normalise to the same TypeIndex so the struct init type-checks cleanly.
+#[test]
+fn test_assoc_type_projection_normalised_across_functions() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        struct Layout<M: Memory> {
+            size: M::Size,
+            align: M::Size,
+        }
+
+        impl<M: Memory> Layout<M> {
+            pub fn of<T>() -> Layout<M> {
+                Layout::{ size: @size_of<T, M>(), align: @align_of<T, M>() }
+            }
+
+            pub fn array<T>(count: M::Size) -> Layout<M> {
+                Layout::{ size: @size_of<T, M>() * count, align: @align_of<T, M>() }
+            }
+        }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_assoc_type_as_memory_tag_in_trait() {
+    // `Self::M` where M: Memory should be valid as a memory tag in pointer types
+    // inside a trait definition.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        struct Layout<M: Memory> {
+            size: M::Size,
+            align: M::Size,
+        }
+
+        trait Allocator {
+            type M: Memory;
+
+            fn alloc(self: *mut Self, layout: Layout<Self::M>) -> Self::M::*mut u8;
+
+            fn dealloc(self: *mut Self, ptr: Self::M::*mut u8, layout: Layout<Self::M>);
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_assoc_type_memory_bound_satisfied_by_memory_decl() {
+    // `impl Allocator for BumpAllocator { type M = heap; }` — concrete memory
+    // satisfies the `M: Memory` bound on the associated type.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32>;
+
+        struct Layout<M: Memory> {
+            size: M::Size,
+            align: M::Size,
+        }
+
+        trait Allocator {
+            type M: Memory;
+
+            fn alloc(self: *mut Self, layout: Layout<Self::M>) -> Self::M::*mut u8;
+        }
+
+        struct BumpAllocator {}
+
+        impl Allocator for BumpAllocator {
+            type M = heap;
+
+            fn alloc(self: *mut Self, layout: Layout<Self::M>) -> Self::M::*mut u8 {
+                unreachable
+            }
+        }
+    "});
+    no_errors(&case);
+}
+
+// ── loop type inference ───────────────────────────────────────────────────────
+
+#[test]
+fn test_infinite_loop_has_never_type() {
+    // `loop {}` with no break coerces to any return type — proves Never type.
+    let case = TestCase::new(indoc! {"
+        pub fn f() -> i32 { loop {} }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_loop_with_break_has_unit_type() {
+    // bare `break` makes the loop yield Unit; returning it from a () fn is fine.
+    let case = TestCase::new(indoc! {"
+        pub fn f() { loop { break; } }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_loop_with_break_value_has_that_type() {
+    // `break 42` makes the loop yield i32.
+    let case = TestCase::new(indoc! {"
+        pub fn f() -> i32 { loop { break 42; } }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_loop_with_continue_only_has_never_type() {
+    // `continue` does not count as a break — loop still has Never type.
+    let case = TestCase::new(indoc! {"
+        pub fn f() -> i32 { loop { continue; } }
+    "});
+    no_errors(&case);
 }

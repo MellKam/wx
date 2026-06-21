@@ -87,22 +87,26 @@ Every type is a `TypeIndex` (u32) into `tir.type_pool`. The first 16 slots are p
 
 | Constant | Index |
 |---|---|
-| `ERROR_IDX` | 0 |
-| `UNIT_IDX` | 1 |
-| `NEVER_IDX` | 2 |
-| `UNKNOWN_IDX` | 3 |
-| `U8_IDX` | 4 |
-| `I8_IDX` | 5 |
-| `U16_IDX` | 6 |
-| `I16_IDX` | 7 |
-| `U32_IDX` | 8 |
-| `I32_IDX` | 9 |
-| `U64_IDX` | 10 |
-| `I64_IDX` | 11 |
-| `F32_IDX` | 12 |
-| `F64_IDX` | 13 |
-| `BOOL_IDX` | 14 |
-| `CHAR_IDX` | 15 |
+| `ERROR` | 0 |
+| `INFER` | 1 |
+| `UNIT` | 2 |
+| `NEVER` | 3 |
+| `INTEGER` | 4 |
+| `FLOAT` | 5 |
+| `U8` | 6 |
+| `I8` | 7 |
+| `U16` | 8 |
+| `I16` | 9 |
+| `U32` | 10 |
+| `I32` | 11 |
+| `U64` | 12 |
+| `I64` | 13 |
+| `F32` | 14 |
+| `F64` | 15 |
+| `BOOL` | 16 |
+| `CHAR` | 17 |
+
+`INFER` is a type inference placeholder — used internally when a generic type argument cannot yet be determined, and will be the type of user-written `_` in type annotations. Must never reach MIR or codegen.
 
 `char` is a primitive in TIR but lowers to `U32` in MIR and WASM.
 

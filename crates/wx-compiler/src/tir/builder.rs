@@ -602,6 +602,13 @@ fn report_namespace_used_as_value(span: SourceSpan) -> Diagnostic<FileId> {
         .with_note("use `::` to access members of this namespace")
 }
 
+fn report_infer_in_signature(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InferInSignature.code())
+        .with_message("`_` is not allowed in item type signatures")
+        .with_label(span.primary_label().with_message("type must be specified explicitly"))
+}
+
 fn report_undeclared_type(span: SourceSpan) -> Diagnostic<FileId> {
     Diagnostic::error()
         .with_code(DiagnosticCode::UndeclaredType.code())
@@ -1124,6 +1131,7 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
         type_pool: vec![
             // Order MUST match the IDX constants defined at the top of this file.
             Type::Error,
+            Type::Infer,
             Type::Unit,
             Type::Never,
             Type::Integer,
@@ -1651,7 +1659,7 @@ impl<'ast> Builder<'ast, '_> {
             }),
             SymbolKind::Placeholder => Ok(Expression {
                 kind: ExprKind::Placeholder,
-                ty: access_ctx.expected_type.unwrap_or(TypeIndex::ERROR),
+                ty: access_ctx.expected_type.infer_or(TypeIndex::ERROR),
                 span: expr_span,
             }),
             SymbolKind::Function { func_index } => {
@@ -1924,12 +1932,31 @@ impl<'ast> Builder<'ast, '_> {
         }
     }
 
+    /// Like [`resolve_type`], but rejects `_` in positions where a concrete type
+    /// is required (item signatures, struct fields, globals). Emits a diagnostic
+    /// and returns `ERROR` instead of `INFER` so the rest of the compiler stays clean.
+    fn resolve_signature_type(
+        &mut self,
+        resolve_context: &ResolveContext,
+        type_expr: &Spanned<ast::TypeExpression>,
+    ) -> TypeIndex {
+        let ty = self.resolve_type(resolve_context, type_expr);
+        if ty == TypeIndex::INFER {
+            self.tir.diagnostics.push(report_infer_in_signature(
+                SourceSpan::new(resolve_context.file_id, type_expr.span),
+            ));
+            return TypeIndex::ERROR;
+        }
+        ty
+    }
+
     pub fn resolve_type(
         &mut self,
         resolve_context: &ResolveContext,
         type_expr: &Spanned<ast::TypeExpression>,
     ) -> TypeIndex {
         match &type_expr.inner {
+            ast::TypeExpression::Infer => return TypeIndex::INFER,
             ast::TypeExpression::Path(path) => {
                 let last = path.segments.last().expect("path is non-empty");
 
@@ -2154,11 +2181,28 @@ impl<'ast> Builder<'ast, '_> {
                 self.intern_type(Type::Tuple { elements: elems })
             }
             ast::TypeExpression::MemoryTagged { memory, inner } => {
-                let Ok(memory_ty) =
-                    self.resolve_type_identifier(resolve_context, memory.segments[0].ident.clone())
+                let first = &memory.segments[0];
+                let Ok(mut memory_ty) =
+                    self.resolve_type_identifier(resolve_context, first.ident.clone())
                 else {
                     return TypeIndex::ERROR;
                 };
+                // Walk remaining segments (e.g. `Self::M` has two: `Self`, then `M`).
+                let mut namespace_span = first.ident.span;
+                for seg in &memory.segments[1..] {
+                    match self.resolve_namespace_type_member(
+                        resolve_context,
+                        memory_ty,
+                        namespace_span,
+                        seg.ident.clone(),
+                    ) {
+                        Ok(ty) => {
+                            memory_ty = ty;
+                            namespace_span = seg.ident.span;
+                        }
+                        Err(()) => return TypeIndex::ERROR,
+                    }
+                }
                 match &self.tir.type_pool[memory_ty.as_usize()] {
                     Type::Memory { .. }
                     | Type::TypeParam { .. }
@@ -3029,7 +3073,7 @@ impl<'ast> Builder<'ast, '_> {
                         ));
                         continue;
                     }
-                    let field_ty = self.resolve_type(&field_resolve_context, &field.ty);
+                    let field_ty = self.resolve_signature_type(&field_resolve_context, &field.ty);
                     seen_fields.insert(sym, field.name.span);
                     let idx = tir_fields.len();
                     field_lookup.insert(sym, idx);
@@ -3418,15 +3462,56 @@ impl<'ast> Builder<'ast, '_> {
                 // params because TypeParam { owner: Function(id) } is keyed by
                 // the function's DefId.  The resolved names/bounds are the same
                 // for every method; only the owner differs.
-                let resolved_type_params =
+                let impl_type_params_resolved =
                     self.resolve_ast_type_params(&resolve_context, impl_type_params);
-                let type_param_scope = TypeParamScope {
+                let impl_scope = TypeParamScope {
                     owner: TypeParamOwner::Function(*id),
-                    params: resolved_type_params.clone(),
+                    params: impl_type_params_resolved.clone(),
                 };
-                let resolve_context = resolve_context.with_type_param_scope(type_param_scope);
+                let impl_context = resolve_context.with_type_param_scope(impl_scope);
 
-                let self_type = self.resolve_type(&resolve_context, impl_target);
+                // Method-level type params (e.g. `T` in `fn of<T>()`) are appended
+                // after the impl-level ones so their param_index values are contiguous.
+                let method_type_params_resolved =
+                    self.resolve_ast_type_params(&impl_context, &signature.type_params);
+                let all_type_params: Box<[TypeParamInfo]> = impl_type_params_resolved
+                    .iter()
+                    .chain(method_type_params_resolved.iter())
+                    .cloned()
+                    .collect();
+
+                // Push a placeholder and register the function BEFORE resolving
+                // impl_target, params, and result so that record_type_param_access
+                // finds the function in function_index_lookup for all type param
+                // references — including M in `Layout<M>` in the impl target type.
+                let func_attrs = self.resolve_attributes(attributes);
+                self.register_lang_items(*id, &func_attrs);
+                let func_index = self.tir.functions.len() as u32;
+                self.tir.functions.push(Function {
+                    id: *id,
+                    file_id: resolve_context.file_id,
+                    namespace: resolve_context.namespace,
+                    body: None,
+                    type_params: all_type_params,
+                    pub_span: *pub_span,
+                    kind: FunctionKind::Impl,
+                    signature_index: TypeIndex::ERROR,
+                    name: signature.name.clone(),
+                    accesses: Vec::new(),
+                    params: Box::new([]),
+                    result: None,
+                    attributes: func_attrs,
+                });
+                self.tir.function_index_lookup.insert(*id, func_index);
+
+                // Extend scope to include method-level params before resolving
+                // impl_target so all accesses (e.g. M in `Layout<M>`) are captured
+                // now that the function is registered.
+                let impl_context = impl_context.with_type_param_scope(TypeParamScope {
+                    owner: TypeParamOwner::Function(*id),
+                    params: self.tir.functions[func_index as usize].type_params.clone(),
+                });
+                let self_type = self.resolve_type(&impl_context, impl_target);
 
                 // Reject `impl<T> T { ... }` — the outer type constructor must
                 // be concrete even if its inner types reference type params.
@@ -3438,7 +3523,7 @@ impl<'ast> Builder<'ast, '_> {
                         Diagnostic::error()
                             .with_code(DiagnosticCode::TypeMistmatch.code())
                             .with_message("no nominal type found for inherent implementation")
-                            .with_label(Label::primary(resolve_context.file_id, impl_target.span))
+                            .with_label(Label::primary(impl_context.file_id, impl_target.span))
                             .with_note(
                                 "either implement a trait on it or create a newtype to wrap it instead",
                             ),
@@ -3446,8 +3531,13 @@ impl<'ast> Builder<'ast, '_> {
                     return;
                 }
 
-                let resolve_context = resolve_context.with_self_type(Some(self_type));
                 let self_symbol = self.interner.get_or_intern("self");
+                let is_method = signature
+                    .params
+                    .first()
+                    .map(|p| p.inner.inner.name.inner == self_symbol)
+                    .unwrap_or(false);
+                let resolve_context = impl_context.with_self_type(Some(self_type));
 
                 let params: Box<_> = signature
                     .params
@@ -3475,30 +3565,10 @@ impl<'ast> Builder<'ast, '_> {
                     span: r.span,
                 });
                 let signature_index = self.intern_function(&params, result.clone());
-                let func_attrs = self.resolve_attributes(attributes);
-                self.register_lang_items(*id, &func_attrs);
-                let func_index = self.tir.functions.len() as u32;
-                let is_method = signature
-                    .params
-                    .first()
-                    .map(|p| p.inner.inner.name.inner == self_symbol)
-                    .unwrap_or(false);
-                self.tir.functions.push(Function {
-                    id: *id,
-                    file_id: resolve_context.file_id,
-                    namespace: resolve_context.namespace,
-                    body: None,
-                    type_params: resolved_type_params.clone(),
-                    pub_span: *pub_span,
-                    kind: FunctionKind::Impl,
-                    signature_index,
-                    name: signature.name.clone(),
-                    accesses: Vec::new(),
-                    params,
-                    result,
-                    attributes: func_attrs,
-                });
-                self.tir.function_index_lookup.insert(*id, func_index);
+                let func = &mut self.tir.functions[func_index as usize];
+                func.params = params;
+                func.result = result;
+                func.signature_index = signature_index;
 
                 let entry = if is_method {
                     ImplEntry::Method(func_index)
@@ -3508,7 +3578,8 @@ impl<'ast> Builder<'ast, '_> {
                 let block = &mut self.tir.generic_impl_list[block_index];
                 if block.target == TypeIndex::ERROR {
                     block.target = self_type;
-                    block.type_params = resolved_type_params;
+                    // Only impl-level params go here — used for dispatch/inference from receiver.
+                    block.type_params = impl_type_params_resolved;
                 }
                 block.members.insert(signature.name.inner, entry);
 
@@ -3812,7 +3883,9 @@ impl<'ast> Builder<'ast, '_> {
                         ));
                     } else {
                         let (ty, ty_span) = match ty {
-                            Some(ty) => (self.resolve_type(&resolve_context, ty), ty.span),
+                            Some(ty) => {
+                                (self.resolve_signature_type(&resolve_context, ty), ty.span)
+                            }
                             None => {
                                 self.tir.diagnostics.push(report_type_annotation_required(
                                     SourceSpan::new(resolve_context.file_id, name.span),
@@ -3933,6 +4006,34 @@ impl<'ast> Builder<'ast, '_> {
                         id: *id,
                     });
                     self.seed_memory_trait_impl_with(trait_index, memory_type, &bindings);
+
+                    // Register the memory type as implementing its declared trait
+                    // so that check_assoc_type_bounds can verify `type M: Memory`
+                    // bindings on concrete impls (e.g. `impl Allocator for T { type M = heap; }`).
+                    // Populate members from impl_members so conformance checking passes.
+                    let impl_member_snapshot: HashMap<SymbolU32, ImplEntry> = self
+                        .tir
+                        .impl_members
+                        .get(&memory_type)
+                        .map(|m| m.iter().map(|(&k, v)| (k, v.clone())).collect())
+                        .unwrap_or_default();
+                    let trait_impl_index = self.tir.trait_impls.len() as TraitImplIndex;
+                    self.tir.trait_impls.push(TraitImpl {
+                        trait_index,
+                        target: memory_type,
+                        members: impl_member_snapshot,
+                        span: name.span,
+                        file_id: resolve_context.file_id,
+                    });
+                    self.tir
+                        .trait_impl_lookup
+                        .insert((memory_type, trait_index), trait_impl_index);
+                    self.tir
+                        .type_trait_impls
+                        .entry(memory_type)
+                        .or_default()
+                        .push(trait_impl_index);
+
                     self.insert_symbol(
                         resolve_context.namespace,
                         (SymbolNamespace::Type, name.inner),
@@ -4611,7 +4712,9 @@ impl<'ast> Builder<'ast, '_> {
                     unreachable!();
                 };
 
-                let global_index = self.tir.global_index_lookup[id];
+                let Some(&global_index) = self.tir.global_index_lookup.get(id) else {
+                    return; // duplicate name — ensure_signature already emitted the error
+                };
                 let global_ty = self.tir.globals[global_index as usize].ty.inner;
                 let value_expr =
                     match self.build_const_expression(&resolve_context, value, global_ty) {
@@ -4653,6 +4756,9 @@ impl<'ast> Builder<'ast, '_> {
         let self_type = match &node {
             AstNodeRef::ImplMethod { impl_target, .. } => {
                 Some(self.resolve_type(&resolve_context, impl_target))
+            }
+            AstNodeRef::GenericImplMethod { block_index, .. } => {
+                Some(self.tir.generic_impl_list[*block_index].target)
             }
             AstNodeRef::ImplTraitMethod { parent_id, .. } => self
                 .trait_impl_block_lookup
@@ -4774,7 +4880,7 @@ impl<'ast> Builder<'ast, '_> {
                     name: name.clone(),
                     ty: match &param.inner.inner.ty {
                         Some(ty) => Spanned {
-                            inner: self.resolve_type(&resolve_context, &ty),
+                            inner: self.resolve_signature_type(&resolve_context, ty),
                             span: ty.span,
                         },
                         None => Spanned {
@@ -4786,7 +4892,7 @@ impl<'ast> Builder<'ast, '_> {
             })
             .collect();
         let result = signature.result.as_ref().map(|result| Spanned {
-            inner: self.resolve_type(&resolve_context, result),
+            inner: self.resolve_signature_type(&resolve_context, result),
             span: result.span,
         });
 
@@ -4799,6 +4905,7 @@ impl<'ast> Builder<'ast, '_> {
             Type::Unit
             | Type::Bool
             | Type::Error
+            | Type::Infer
             | Type::Never
             | Type::Integer
             | Type::Float
@@ -4827,11 +4934,30 @@ impl<'ast> Builder<'ast, '_> {
             Type::AssocTypeProjection {
                 param_index,
                 assoc_name,
-                ..
+                trait_index,
             } => {
-                let receiver = type_args.get(*param_index as usize).copied().unwrap_or(ty);
+                let (param_index, assoc_name, trait_index) =
+                    (*param_index, *assoc_name, *trait_index);
+                let receiver = type_args.get(param_index as usize).copied().unwrap_or(ty);
                 match &self.tir.type_pool[receiver.as_usize()] {
-                    Type::TypeParam { .. } => ty,
+                    // Receiver is still a type param — normalize the projection's
+                    // param_index to the receiver's own index so that projections
+                    // from different functions referring to the same param compare equal.
+                    Type::TypeParam {
+                        param_index: new_idx,
+                        ..
+                    } => {
+                        let new_idx = *new_idx;
+                        if new_idx == param_index {
+                            ty
+                        } else {
+                            self.intern_type(Type::AssocTypeProjection {
+                                trait_index,
+                                assoc_name,
+                                param_index: new_idx,
+                            })
+                        }
+                    }
                     _ => self
                         .tir
                         .impl_members
@@ -5014,11 +5140,11 @@ impl<'ast> Builder<'ast, '_> {
         &mut self,
         ty: TypeIndex,
         type_args: &[TypeIndex],
-    ) -> Option<TypeIndex> {
+    ) -> TypeIndex {
         let result = self.substitute_type(ty, type_args);
         match &self.tir.type_pool[result.as_usize()] {
-            Type::TypeParam { .. } | Type::Integer | Type::Float | Type::Error => None,
-            _ => Some(result),
+            Type::TypeParam { .. } | Type::Integer | Type::Float | Type::Error => TypeIndex::INFER,
+            _ => result,
         }
     }
 
@@ -5029,9 +5155,11 @@ impl<'ast> Builder<'ast, '_> {
         actual_ty: TypeIndex,
     ) {
         // Unresolved comptime literals have no concrete type yet; inferring T = INTEGER would give the wrong answer once the literal is coerced.
+        // Skip ERROR and INFER actuals too — they must not fill a still-unresolved slot.
         if actual_ty == TypeIndex::INTEGER
             || actual_ty == TypeIndex::FLOAT
             || actual_ty == TypeIndex::ERROR
+            || actual_ty == TypeIndex::INFER
         {
             return;
         }
@@ -5043,7 +5171,7 @@ impl<'ast> Builder<'ast, '_> {
             (Type::TypeParam { param_index, .. }, _) => {
                 // First binding wins — don't overwrite a slot already set by turbofish or an earlier argument.
                 match type_args.get_mut(*param_index as usize) {
-                    Some(slot) if *slot == TypeIndex::ERROR => *slot = actual_ty,
+                    Some(slot) if *slot == TypeIndex::INFER => *slot = actual_ty,
                     _ => {}
                 }
             }
@@ -5155,6 +5283,71 @@ impl<'ast> Builder<'ast, '_> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Structural compatibility check for type annotations that contain `_` holes.
+    /// `expected` is the annotation type (may contain `TypeIndex::INFER`); `actual`
+    /// is the inferred type.  INFER positions in `expected` match any type in `actual`.
+    /// Used only when `self.contains_infer(expected)` is true.
+    fn type_satisfies_annotation(&self, actual: TypeIndex, expected: TypeIndex) -> bool {
+        if expected == TypeIndex::INFER || actual == expected {
+            return true;
+        }
+        match (
+            &self.tir.type_pool[actual.as_usize()],
+            &self.tir.type_pool[expected.as_usize()],
+        ) {
+            (
+                Type::Struct { struct_index: ai, args: aa },
+                Type::Struct { struct_index: bi, args: ba },
+            ) if ai == bi && aa.len() == ba.len() => aa
+                .iter()
+                .copied()
+                .zip(ba.iter().copied())
+                .all(|(a, b)| self.type_satisfies_annotation(a, b)),
+            (
+                Type::Pointer { to: at, mutable: am, memory: amem },
+                Type::Pointer { to: bt, mutable: bm, memory: bmem },
+            ) if am == bm => {
+                self.type_satisfies_annotation(*at, *bt)
+                    && self.type_satisfies_annotation(*amem, *bmem)
+            }
+            (
+                Type::Tuple { elements: ae },
+                Type::Tuple { elements: be },
+            ) if ae.len() == be.len() => ae
+                .iter()
+                .copied()
+                .zip(be.iter().copied())
+                .all(|(a, b)| self.type_satisfies_annotation(a, b)),
+            _ => false,
+        }
+    }
+
+    /// Returns `true` if `TypeIndex::INFER` appears anywhere in `ty`'s structure.
+    /// Used to detect when a generic type parameter was not resolved during inference
+    /// and has propagated into the call's result type.
+    fn contains_infer(&self, ty: TypeIndex) -> bool {
+        if ty == TypeIndex::INFER {
+            return true;
+        }
+        match &self.tir.type_pool[ty.as_usize()] {
+            Type::Struct { args, .. } => args.iter().any(|&a| self.contains_infer(a)),
+            Type::Pointer { to, memory, .. } => {
+                self.contains_infer(*to) || self.contains_infer(*memory)
+            }
+            Type::Array { of, memory, .. } => {
+                self.contains_infer(*of) || self.contains_infer(*memory)
+            }
+            Type::Slice { of, memory, .. } => {
+                self.contains_infer(*of) || self.contains_infer(*memory)
+            }
+            Type::Tuple { elements } => elements.iter().any(|&e| self.contains_infer(e)),
+            Type::Function { signature } => {
+                signature.items.iter().any(|&t| self.contains_infer(t))
+            }
+            _ => false,
         }
     }
 
@@ -5575,14 +5768,12 @@ impl<'ast> Builder<'ast, '_> {
                     ty: param.ty.inner,
                 })
                 .collect(),
-            inferred_type: None,
-            expected_type: Some(
-                self.tir.functions[func_index as usize]
-                    .result
-                    .clone()
-                    .map(|ty| ty.inner)
-                    .unwrap_or(TypeIndex::UNIT),
-            ),
+            inferred_type: TypeIndex::INFER,
+            expected_type: self.tir.functions[func_index as usize]
+                .result
+                .clone()
+                .map(|ty| ty.inner)
+                .unwrap_or(TypeIndex::UNIT),
         };
 
         let mut ctx = FunctionContext {
@@ -5644,8 +5835,8 @@ impl<'ast> Builder<'ast, '_> {
                 }
 
                 let scope = &mut ctx.stack.scopes[ctx.scope_index as usize];
-                let inferred_type = scope.inferred_type.unwrap_or(TypeIndex::NEVER);
-                scope.inferred_type = Some(inferred_type);
+                let inferred_type = scope.inferred_type.infer_or(TypeIndex::NEVER);
+                scope.inferred_type = inferred_type;
 
                 return Ok(Expression {
                     kind: ExprKind::Block {
@@ -5666,7 +5857,7 @@ impl<'ast> Builder<'ast, '_> {
                     Some(result) => Some(self.build_expression(
                         ctx,
                         AccessContext {
-                            expected_type: Some(TypeIndex::UNIT),
+                            expected_type: TypeIndex::UNIT,
                             access_kind: AccessKind::Read,
                         },
                         &result,
@@ -5679,15 +5870,15 @@ impl<'ast> Builder<'ast, '_> {
                     &ctx.stack.scopes[ctx.scope_index as usize],
                 );
 
+                let scope = &ctx.stack.scopes[ctx.scope_index as usize];
+                let inferred_type = scope.inferred_type.infer_or(TypeIndex::NEVER);
                 Ok(Expression {
                     kind: ExprKind::Block {
                         scope_index: ctx.scope_index,
                         expressions,
                         result: result.map(Box::new),
                     },
-                    ty: ctx.stack.scopes[ctx.scope_index as usize]
-                        .inferred_type
-                        .unwrap_or(TypeIndex::NEVER),
+                    ty: inferred_type,
                     span: block.span,
                 })
             }
@@ -5700,20 +5891,20 @@ impl<'ast> Builder<'ast, '_> {
                 );
 
                 let scope = &ctx.stack.scopes[ctx.scope_index as usize];
-                let inferred_type = scope.inferred_type.expect("should have inferred type");
-                match scope.expected_type {
-                    Some(expected_type) if !self.coercible_to(inferred_type, expected_type) => {
-                        self.tir.diagnostics.push(report_type_mistmatch(
-                            TypeFormatter::new(&self.tir, &self.interner),
-                            TypeMistmatchDiagnostic {
-                                expected_type,
-                                actual_type: inferred_type,
-                                span: SourceSpan::new(ctx.resolve_context.file_id, block.span),
-                            },
-                        ));
-                        return Err(());
-                    }
-                    _ => {}
+                let inferred_type = scope.inferred_type;
+                let expected_type = scope.expected_type;
+                if expected_type != TypeIndex::INFER
+                    && !self.coercible_to(inferred_type, expected_type)
+                {
+                    self.tir.diagnostics.push(report_type_mistmatch(
+                        TypeFormatter::new(&self.tir, &self.interner),
+                        TypeMistmatchDiagnostic {
+                            expected_type,
+                            actual_type: inferred_type,
+                            span: SourceSpan::new(ctx.resolve_context.file_id, block.span),
+                        },
+                    ));
+                    return Err(());
                 }
 
                 Ok(Expression {
@@ -6021,7 +6212,7 @@ impl<'ast> Builder<'ast, '_> {
                 let scope = &mut ctx.stack.scopes[ctx.scope_index as usize];
                 let inferred_type =
                     self.infer_block_type(ctx.resolve_context.file_id, scope, &result)?;
-                scope.inferred_type = Some(inferred_type);
+                scope.inferred_type = inferred_type;
                 if result.ty.is_comptime_number() {
                     _ = self.coerce_untyped_expr(
                         ctx.resolve_context.file_id,
@@ -6034,8 +6225,8 @@ impl<'ast> Builder<'ast, '_> {
             }
             None => {
                 let scope = &mut ctx.stack.scopes[ctx.scope_index as usize];
-                let inferred_type = scope.inferred_type.unwrap_or(TypeIndex::UNIT);
-                scope.inferred_type = Some(inferred_type);
+                let inferred_type = scope.inferred_type.infer_or(TypeIndex::UNIT);
+                scope.inferred_type = inferred_type;
 
                 Ok(None)
             }
@@ -6077,21 +6268,22 @@ impl<'ast> Builder<'ast, '_> {
         value: &Expression,
     ) -> Result<TypeIndex, ()> {
         if value.ty.is_comptime_number() {
-            match scope.inferred_type.or(scope.expected_type) {
-                Some(ty) => return Ok(ty),
-                None => {
-                    self.tir
-                        .diagnostics
-                        .push(report_type_annotation_required(SourceSpan::new(
-                            file_id, value.span,
-                        )));
-                    return Err(());
-                }
+            let coerce_to = scope.inferred_type.infer_or(scope.expected_type);
+            if coerce_to != TypeIndex::INFER {
+                return Ok(coerce_to);
+            } else {
+                self.tir
+                    .diagnostics
+                    .push(report_type_annotation_required(SourceSpan::new(
+                        file_id, value.span,
+                    )));
+                return Err(());
             }
         }
         let result_type = value.ty;
-        match scope.inferred_type {
-            Some(inferred_type) if !self.coercible_to(result_type, inferred_type) => {
+        if scope.inferred_type != TypeIndex::INFER {
+            let inferred_type = scope.inferred_type;
+            if !self.coercible_to(result_type, inferred_type) {
                 self.tir.diagnostics.push(report_type_mistmatch(
                     TypeFormatter::new(&self.tir, &self.interner),
                     TypeMistmatchDiagnostic {
@@ -6100,23 +6292,24 @@ impl<'ast> Builder<'ast, '_> {
                         span: SourceSpan::new(file_id, value.span),
                     },
                 ));
-                Ok(inferred_type)
             }
-            Some(inferred) => Ok(inferred),
-            None => match scope.expected_type {
-                Some(expected_type) if !self.coercible_to(result_type, expected_type) => {
-                    self.tir.diagnostics.push(report_type_mistmatch(
-                        TypeFormatter::new(&self.tir, &self.interner),
-                        TypeMistmatchDiagnostic {
-                            expected_type,
-                            actual_type: result_type,
-                            span: SourceSpan::new(file_id, value.span),
-                        },
-                    ));
-                    Err(())
-                }
-                _ => Ok(result_type),
-            },
+            Ok(inferred_type)
+        } else if scope.expected_type != TypeIndex::INFER {
+            let expected_type = scope.expected_type;
+            if !self.coercible_to(result_type, expected_type) {
+                self.tir.diagnostics.push(report_type_mistmatch(
+                    TypeFormatter::new(&self.tir, &self.interner),
+                    TypeMistmatchDiagnostic {
+                        expected_type,
+                        actual_type: result_type,
+                        span: SourceSpan::new(file_id, value.span),
+                    },
+                ));
+                return Err(());
+            }
+            Ok(result_type)
+        } else {
+            Ok(result_type)
         }
     }
 
@@ -6149,7 +6342,7 @@ impl<'ast> Builder<'ast, '_> {
             ctx,
             AccessContext {
                 access_kind: AccessKind::Read,
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
             },
             value,
         )?;
@@ -6161,7 +6354,9 @@ impl<'ast> Builder<'ast, '_> {
             return Ok(value);
         } else if value.ty == TypeIndex::NEVER {
             let scope = ctx.stack.scopes.get_mut(ctx.scope_index as usize).unwrap();
-            scope.inferred_type = scope.inferred_type.or(Some(TypeIndex::NEVER));
+            if scope.inferred_type == TypeIndex::INFER {
+                scope.inferred_type = TypeIndex::NEVER;
+            }
             return Ok(value);
         } else if value.ty.is_comptime_number() {
             self.tir
@@ -6287,7 +6482,7 @@ impl<'ast> Builder<'ast, '_> {
                     kind: BlockKind::Block,
                     parent: Some(func_ctx.scope_index),
                     locals: Vec::new(),
-                    inferred_type: None,
+                    inferred_type: TypeIndex::INFER,
                     expected_type: access_ctx.expected_type,
                 },
                 |ctx| self.build_block_expression(ctx, expr),
@@ -6398,7 +6593,7 @@ impl<'ast> Builder<'ast, '_> {
                 self.build_expression(
                     func_ctx,
                     AccessContext {
-                        expected_type: None,
+                        expected_type: TypeIndex::INFER,
                         access_kind: AccessKind::Read,
                     },
                     &argument.inner,
@@ -6424,6 +6619,7 @@ impl<'ast> Builder<'ast, '_> {
             &mut args,
             explicit_type_arguments.as_deref(),
             access_ctx.expected_type,
+            expr.span,
         )?;
 
         let result_type = self.tir.functions[func_index as usize]
@@ -6462,8 +6658,10 @@ impl<'ast> Builder<'ast, '_> {
             let block = &self.tir.generic_impl_list[block_idx];
             (block.target, block.type_params.len())
         };
-        let mut type_args = vec![TypeIndex::ERROR; type_params_len];
+        let mut type_args: Vec<TypeIndex> = vec![TypeIndex::INFER; type_params_len];
         self.infer_type_args(&mut type_args, block_target, receiver_ty);
+        // Slots that couldn't be resolved from the receiver stay INFER so the
+        // call site can still fill them in from explicit type arguments or args.
         Some((block_idx, type_args.into_boxed_slice()))
     }
 
@@ -6628,7 +6826,7 @@ impl<'ast> Builder<'ast, '_> {
                         )));
                     Ok(Expression {
                         kind: ExprKind::Error,
-                        ty: access_ctx.expected_type.unwrap_or(TypeIndex::ERROR),
+                        ty: access_ctx.expected_type.infer_or(TypeIndex::ERROR),
                         span: expr_span,
                     })
                 }
@@ -6894,12 +7092,18 @@ impl<'ast> Builder<'ast, '_> {
                 {
                     Some(ImplEntry::AssociatedType { ty }) => Ok(ty),
                     _ => {
-                        self.tir
-                            .diagnostics
-                            .push(report_undeclared_type(SourceSpan::new(
-                                resolve_context.file_id,
-                                member.span,
-                            )));
+                        let member_name = self.interner.resolve(member.inner).unwrap_or("?");
+                        let type_name = TypeFormatter::new(&self.tir, &self.interner)
+                            .display_type(namespace_ty)
+                            .unwrap();
+                        self.tir.diagnostics.push(
+                            Diagnostic::error()
+                                .with_code(DiagnosticCode::UndeclaredType.code())
+                                .with_message(format!(
+                                    "no type named `{member_name}` found for type `{type_name}`",
+                                ))
+                                .with_label(Label::primary(resolve_context.file_id, member.span)),
+                        );
                         Err(())
                     }
                 }
@@ -7058,16 +7262,17 @@ impl<'ast> Builder<'ast, '_> {
                         _ => {}
                     }
                 }
+                let member_name = self.interner.resolve(member.inner).unwrap_or("?");
+                let type_name = TypeFormatter::new(&self.tir, &self.interner)
+                    .display_type(namespace.inner)
+                    .unwrap();
                 self.tir.diagnostics.push(
                     Diagnostic::error()
-                        .with_code(DiagnosticCode::NotANamespace.code())
+                        .with_code(DiagnosticCode::UndeclaredIdentifier.code())
                         .with_message(format!(
-                            "type `{}` is not a namespace",
-                            TypeFormatter::new(&self.tir, &self.interner)
-                                .display_type(namespace.inner)
-                                .unwrap(),
+                            "no associated item named `{member_name}` found for type `{type_name}`",
                         ))
-                        .with_label(SourceSpan::new(file_id, namespace.span).primary_label()),
+                        .with_label(SourceSpan::new(file_id, member.span).primary_label()),
                 );
                 Err(())
             }
@@ -7229,7 +7434,7 @@ impl<'ast> Builder<'ast, '_> {
                     kind: BlockKind::Block,
                     parent: Some(ctx.scope_index),
                     locals: Vec::new(),
-                    inferred_type: None,
+                    inferred_type: TypeIndex::INFER,
                     expected_type: access_ctx.expected_type,
                 },
                 |ctx| self.build_block_expression(ctx, block),
@@ -7279,31 +7484,31 @@ impl<'ast> Builder<'ast, '_> {
                 kind: BlockKind::Loop,
                 parent: Some(func_ctx.scope_index),
                 locals: Vec::new(),
-                inferred_type: None,
+                inferred_type: TypeIndex::INFER,
                 expected_type: access_ctx.expected_type,
             },
             |ctx| {
                 let block = self.build_block_expression(ctx, block)?;
 
                 let scope = &ctx.stack.scopes[ctx.scope_index as usize];
-                match (scope.expected_type, scope.inferred_type) {
-                    (Some(expected_type), Some(inferred_type))
-                        if !self.coercible_to(inferred_type, expected_type) =>
-                    {
-                        self.tir.diagnostics.push(report_type_mistmatch(
-                            TypeFormatter::new(&self.tir, &self.interner),
-                            TypeMistmatchDiagnostic {
-                                expected_type,
-                                actual_type: inferred_type,
-                                span: SourceSpan::new(file_id, expr.span),
-                            },
-                        ));
-                        return Err(());
-                    }
-                    _ => {}
+                let (expected_type, inferred_type) = (scope.expected_type, scope.inferred_type);
+                if expected_type != TypeIndex::INFER
+                    && inferred_type != TypeIndex::INFER
+                    && !self.coercible_to(inferred_type, expected_type)
+                {
+                    self.tir.diagnostics.push(report_type_mistmatch(
+                        TypeFormatter::new(&self.tir, &self.interner),
+                        TypeMistmatchDiagnostic {
+                            expected_type,
+                            actual_type: inferred_type,
+                            span: SourceSpan::new(file_id, expr.span),
+                        },
+                    ));
+                    return Err(());
                 }
 
-                let ty = block.ty;
+                // No `break` was encountered → loop is infinite → type is Never.
+                let ty = inferred_type.infer_or(TypeIndex::NEVER);
                 Ok(Expression {
                     kind: ExprKind::Loop {
                         scope_index: ctx.scope_index,
@@ -7376,7 +7581,7 @@ impl<'ast> Builder<'ast, '_> {
         let condition = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: Some(TypeIndex::BOOL),
+                expected_type: TypeIndex::BOOL,
                 access_kind: AccessKind::Read,
             },
             condition,
@@ -7393,10 +7598,10 @@ impl<'ast> Builder<'ast, '_> {
                     kind: BlockKind::Block,
                     parent: Some(ctx.scope_index),
                     locals: Vec::new(),
-                    inferred_type: None,
+                    inferred_type: TypeIndex::INFER,
                     expected_type: match maybe_else_block {
                         Some(_) => access_ctx.expected_type,
-                        None => None,
+                        None => TypeIndex::INFER,
                     },
                 },
                 |ctx| self.build_block_expression(ctx, then_block),
@@ -7416,7 +7621,7 @@ impl<'ast> Builder<'ast, '_> {
                             kind: BlockKind::Block,
                             parent: Some(ctx.scope_index),
                             locals: Vec::new(),
-                            inferred_type: None,
+                            inferred_type: TypeIndex::INFER,
                             expected_type: access_ctx.expected_type,
                         },
                         |ctx| self.build_block_expression(ctx, ast_else_block),
@@ -7482,7 +7687,7 @@ impl<'ast> Builder<'ast, '_> {
         let mut value = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: Some(cast_type),
+                expected_type: cast_type,
                 access_kind: access_ctx.access_kind,
             },
             value,
@@ -7595,7 +7800,7 @@ impl<'ast> Builder<'ast, '_> {
                             inferred_type,
                         )?;
                     }
-                    scope.inferred_type = Some(inferred_type);
+                    scope.inferred_type = inferred_type;
 
                     Ok(Expression {
                         kind: ExprKind::Break {
@@ -7613,23 +7818,21 @@ impl<'ast> Builder<'ast, '_> {
                 })),
             None => {
                 let scope = ctx.stack.scopes.get_mut(scope_index as usize).unwrap();
-                match scope.inferred_type {
-                    Some(inferred) => {
-                        if !self.coercible_to(TypeIndex::UNIT, inferred) {
-                            let formatter = TypeFormatter::new(&self.tir, &self.interner);
-                            self.tir.diagnostics.push(report_type_mistmatch(
-                                formatter,
-                                TypeMistmatchDiagnostic {
-                                    expected_type: inferred,
-                                    actual_type: TypeIndex::UNIT,
-                                    span: SourceSpan::new(ctx.resolve_context.file_id, expr.span),
-                                },
-                            ));
-                        }
+                if scope.inferred_type != TypeIndex::INFER {
+                    let inferred = scope.inferred_type;
+                    if !self.coercible_to(TypeIndex::UNIT, inferred) {
+                        let formatter = TypeFormatter::new(&self.tir, &self.interner);
+                        self.tir.diagnostics.push(report_type_mistmatch(
+                            formatter,
+                            TypeMistmatchDiagnostic {
+                                expected_type: inferred,
+                                actual_type: TypeIndex::UNIT,
+                                span: SourceSpan::new(ctx.resolve_context.file_id, expr.span),
+                            },
+                        ));
                     }
-                    None => {
-                        scope.inferred_type = Some(TypeIndex::UNIT);
-                    }
+                } else {
+                    scope.inferred_type = TypeIndex::UNIT;
                 }
 
                 Ok(Expression {
@@ -7660,7 +7863,7 @@ impl<'ast> Builder<'ast, '_> {
         let mut result = self.build_expression(
             func_ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Read,
             },
             callee,
@@ -7814,7 +8017,7 @@ impl<'ast> Builder<'ast, '_> {
         let left = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: Some(TypeIndex::BOOL),
+                expected_type: TypeIndex::BOOL,
                 access_kind: AccessKind::Read,
             },
             left,
@@ -7841,7 +8044,7 @@ impl<'ast> Builder<'ast, '_> {
         let right = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: Some(TypeIndex::BOOL),
+                expected_type: TypeIndex::BOOL,
                 access_kind: AccessKind::Read,
             },
             right,
@@ -7900,7 +8103,7 @@ impl<'ast> Builder<'ast, '_> {
                     Type::Integer | Type::Float | Type::Error | Type::Never | Type::Unit => {
                         access_ctx.expected_type
                     }
-                    _ => Some(left.ty),
+                    _ => left.ty,
                 },
                 access_kind: access_ctx.access_kind,
             },
@@ -7915,55 +8118,53 @@ impl<'ast> Builder<'ast, '_> {
                     left: Box::new(left),
                     right: Box::new(right),
                 },
-                ty: access_ctx.expected_type.unwrap_or(TypeIndex::ERROR),
+                ty: access_ctx.expected_type.infer_or(TypeIndex::ERROR),
                 span: expr.span,
             }),
             (l, r) if l.is_comptime_number() && r.is_comptime_number() => {
-                match access_ctx.expected_type {
-                    Some(expected_type) => {
-                        self.coerce_untyped_expr(
-                            ctx.resolve_context.file_id,
-                            &mut left,
-                            expected_type,
-                        )?;
-                        self.coerce_untyped_expr(
-                            ctx.resolve_context.file_id,
-                            &mut right,
-                            expected_type,
-                        )?;
+                if access_ctx.expected_type != TypeIndex::INFER {
+                    let expected_type = access_ctx.expected_type;
+                    self.coerce_untyped_expr(
+                        ctx.resolve_context.file_id,
+                        &mut left,
+                        expected_type,
+                    )?;
+                    self.coerce_untyped_expr(
+                        ctx.resolve_context.file_id,
+                        &mut right,
+                        expected_type,
+                    )?;
 
-                        if !expected_type.is_integer() && expected_type != TypeIndex::BOOL {
-                            self.tir
-                                .diagnostics
-                                .push(report_binary_operator_cannot_be_applied(
-                                    TypeFormatter::new(&self.tir, &self.interner),
-                                    BinaryOperatorCannotBeAppliedDiagnostic {
-                                        file_id: ctx.resolve_context.file_id,
-                                        operator: operator.clone(),
-                                        operand: Spanned {
-                                            inner: expected_type,
-                                            span: left.span,
-                                        },
+                    if !expected_type.is_integer() && expected_type != TypeIndex::BOOL {
+                        self.tir
+                            .diagnostics
+                            .push(report_binary_operator_cannot_be_applied(
+                                TypeFormatter::new(&self.tir, &self.interner),
+                                BinaryOperatorCannotBeAppliedDiagnostic {
+                                    file_id: ctx.resolve_context.file_id,
+                                    operator: operator.clone(),
+                                    operand: Spanned {
+                                        inner: expected_type,
+                                        span: left.span,
                                     },
-                                ));
-                        }
+                                },
+                            ));
+                    }
 
-                        Ok(Expression {
-                            kind: ExprKind::Binary {
-                                operator,
-                                left: Box::new(left),
-                                right: Box::new(right),
-                            },
-                            ty: expected_type,
-                            span: expr.span,
-                        })
-                    }
-                    None => {
-                        self.tir.diagnostics.push(report_type_annotation_required(
-                            SourceSpan::new(ctx.resolve_context.file_id, expr.span),
-                        ));
-                        Err(())
-                    }
+                    Ok(Expression {
+                        kind: ExprKind::Binary {
+                            operator,
+                            left: Box::new(left),
+                            right: Box::new(right),
+                        },
+                        ty: expected_type,
+                        span: expr.span,
+                    })
+                } else {
+                    self.tir.diagnostics.push(report_type_annotation_required(
+                        SourceSpan::new(ctx.resolve_context.file_id, expr.span),
+                    ));
+                    Err(())
                 }
             }
             (l, right_type) if l.is_comptime_number() => {
@@ -8061,7 +8262,7 @@ impl<'ast> Builder<'ast, '_> {
                         left: Box::new(left),
                         right: Box::new(right),
                     },
-                    ty: access_ctx.expected_type.unwrap_or(TypeIndex::ERROR),
+                    ty: access_ctx.expected_type.infer_or(TypeIndex::ERROR),
                     span: expr.span,
                 })
             }
@@ -8086,7 +8287,7 @@ impl<'ast> Builder<'ast, '_> {
         let mut left = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Read,
             },
             left,
@@ -8094,7 +8295,7 @@ impl<'ast> Builder<'ast, '_> {
         let mut right = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: Some(left.ty),
+                expected_type: left.ty,
                 access_kind: AccessKind::Read,
             },
             right,
@@ -8164,7 +8365,9 @@ impl<'ast> Builder<'ast, '_> {
                 ty: TypeIndex::BOOL,
                 span: expr.span,
             }),
-            (left_type, right_type) if left_type == right_type && left_type.is_primitive() => {
+            (left_type, right_type)
+                if left_type == right_type && self.is_arithmetic_type(left_type) =>
+            {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
@@ -8261,7 +8464,7 @@ impl<'ast> Builder<'ast, '_> {
         let left = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Write,
             },
             left,
@@ -8298,7 +8501,7 @@ impl<'ast> Builder<'ast, '_> {
                 let mut right = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: Some(local_type),
+                        expected_type: local_type,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8354,7 +8557,7 @@ impl<'ast> Builder<'ast, '_> {
                 let mut right = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: Some(global_type),
+                        expected_type: global_type,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8395,7 +8598,7 @@ impl<'ast> Builder<'ast, '_> {
                 let right = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: None,
+                        expected_type: TypeIndex::INFER,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8442,7 +8645,7 @@ impl<'ast> Builder<'ast, '_> {
                 let mut right_expr = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: Some(inner_ty),
+                        expected_type: inner_ty,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8510,7 +8713,7 @@ impl<'ast> Builder<'ast, '_> {
                 let mut right_expr = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: Some(elem_ty),
+                        expected_type: elem_ty,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8594,7 +8797,7 @@ impl<'ast> Builder<'ast, '_> {
         let left = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::ReadWrite,
             },
             left,
@@ -8619,7 +8822,7 @@ impl<'ast> Builder<'ast, '_> {
                     let right = self.build_expression(
                         ctx,
                         AccessContext {
-                            expected_type: Some(TypeIndex::ERROR),
+                            expected_type: TypeIndex::ERROR,
                             access_kind: AccessKind::Read,
                         },
                         right,
@@ -8664,7 +8867,7 @@ impl<'ast> Builder<'ast, '_> {
                 let mut right = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: Some(local_type),
+                        expected_type: local_type,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8736,7 +8939,7 @@ impl<'ast> Builder<'ast, '_> {
                 let mut right = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: Some(global_type),
+                        expected_type: global_type,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8807,7 +9010,7 @@ impl<'ast> Builder<'ast, '_> {
                 let mut right_expr = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: Some(inner_ty),
+                        expected_type: inner_ty,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8874,7 +9077,7 @@ impl<'ast> Builder<'ast, '_> {
                 let mut right_expr = self.build_expression(
                     ctx,
                     AccessContext {
-                        expected_type: Some(elem_ty),
+                        expected_type: elem_ty,
                         access_kind: AccessKind::Read,
                     },
                     right,
@@ -8964,7 +9167,7 @@ impl<'ast> Builder<'ast, '_> {
                     let scope = ctx.stack.scopes.get_mut(0).unwrap();
                     let inferred_type =
                         self.infer_block_type(ctx.resolve_context.file_id, scope, &value)?;
-                    scope.inferred_type = Some(inferred_type);
+                    scope.inferred_type = inferred_type;
                     if value.ty.is_comptime_number() {
                         self.coerce_untyped_expr(
                             ctx.resolve_context.file_id,
@@ -8973,20 +9176,20 @@ impl<'ast> Builder<'ast, '_> {
                         )?;
                     }
 
-                    match scope.expected_type {
-                        Some(expected_type) if !self.coercible_to(inferred_type, expected_type) => {
-                            self.tir.diagnostics.push(report_type_mistmatch(
-                                TypeFormatter::new(&self.tir, &self.interner),
-                                TypeMistmatchDiagnostic {
-                                    expected_type,
-                                    actual_type: inferred_type,
-                                    span: SourceSpan::new(ctx.resolve_context.file_id, value.span),
-                                },
-                            ));
-                            return Err(());
-                        }
-                        _ => {}
-                    };
+                    let expected_type = scope.expected_type;
+                    if expected_type != TypeIndex::INFER
+                        && !self.coercible_to(inferred_type, expected_type)
+                    {
+                        self.tir.diagnostics.push(report_type_mistmatch(
+                            TypeFormatter::new(&self.tir, &self.interner),
+                            TypeMistmatchDiagnostic {
+                                expected_type,
+                                actual_type: inferred_type,
+                                span: SourceSpan::new(ctx.resolve_context.file_id, value.span),
+                            },
+                        ));
+                        return Err(());
+                    }
 
                     Ok(Expression {
                         kind: ExprKind::Return {
@@ -9004,23 +9207,23 @@ impl<'ast> Builder<'ast, '_> {
             None => {
                 let scope = ctx.stack.scopes.get_mut(ctx.scope_index as usize).unwrap();
 
-                let inferred_type = scope.inferred_type.unwrap_or(TypeIndex::UNIT);
-                scope.inferred_type = Some(inferred_type);
+                let inferred_type = scope.inferred_type.infer_or(TypeIndex::UNIT);
+                scope.inferred_type = inferred_type;
 
-                match scope.expected_type {
-                    Some(expected_type) if self.coercible_to(inferred_type, expected_type) => {
-                        self.tir.diagnostics.push(report_type_mistmatch(
-                            TypeFormatter::new(&self.tir, &self.interner),
-                            TypeMistmatchDiagnostic {
-                                expected_type,
-                                actual_type: inferred_type,
-                                span: SourceSpan::new(ctx.resolve_context.file_id, expr.span),
-                            },
-                        ));
-                        return Err(());
-                    }
-                    _ => {}
-                };
+                let expected_type = scope.expected_type;
+                if expected_type != TypeIndex::INFER
+                    && self.coercible_to(inferred_type, expected_type)
+                {
+                    self.tir.diagnostics.push(report_type_mistmatch(
+                        TypeFormatter::new(&self.tir, &self.interner),
+                        TypeMistmatchDiagnostic {
+                            expected_type,
+                            actual_type: inferred_type,
+                            span: SourceSpan::new(ctx.resolve_context.file_id, expr.span),
+                        },
+                    ));
+                    return Err(());
+                }
 
                 Ok(Expression {
                     kind: ExprKind::Return { value: None },
@@ -9061,7 +9264,7 @@ impl<'ast> Builder<'ast, '_> {
                     Type::Integer | Type::Float | Type::Error | Type::Never | Type::Unit => {
                         access_ctx.expected_type
                     }
-                    _ => Some(left.ty),
+                    _ => left.ty,
                 },
                 access_kind: AccessKind::Read,
             },
@@ -9171,7 +9374,9 @@ impl<'ast> Builder<'ast, '_> {
 
                 Ok(right)
             }
-            (left_type, right_type) if left_type == right_type && left_type.is_primitive() => {
+            (left_type, right_type)
+                if left_type == right_type && self.is_arithmetic_type(left_type) =>
+            {
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         operator,
@@ -9201,20 +9406,45 @@ impl<'ast> Builder<'ast, '_> {
                         },
                     ));
 
-                match access_ctx.expected_type {
-                    Some(expected_type) => Ok(Expression {
+                if access_ctx.expected_type != TypeIndex::INFER {
+                    Ok(Expression {
                         kind: ExprKind::Binary {
                             operator,
                             left: Box::new(left),
                             right: Box::new(right),
                         },
-                        ty: expected_type,
+                        ty: access_ctx.expected_type,
                         span: expr.span,
-                    }),
-                    None => Err(()),
+                    })
+                } else {
+                    Err(())
                 }
             }
         }
+    }
+
+    /// True when `ty` can be used as an operand in arithmetic or comparison
+    /// expressions.  Extends `is_primitive()` to cover `AssocTypeProjection`
+    /// types bounded by a typeset (e.g. `M::Size` where `type Size: PointerSize`).
+    /// Currently all typesets consist entirely of integer primitives, so any
+    /// typeset-bounded projection is unconditionally accepted here.
+    /// TODO: re-check each typeset member when non-numeric typesets are added.
+    fn is_arithmetic_type(&self, ty: TypeIndex) -> bool {
+        if ty.is_primitive() {
+            return true;
+        }
+        let Type::AssocTypeProjection {
+            trait_index,
+            assoc_name,
+            ..
+        } = &self.tir.type_pool[ty.as_usize()]
+        else {
+            return false;
+        };
+        self.tir.traits[*trait_index as usize]
+            .assoc_types
+            .get(assoc_name)
+            .is_some_and(|a| a.typeset_bound.is_some())
     }
 
     fn type_param_bounds(&self, ty: TypeIndex) -> &[TraitIndex] {
@@ -9374,19 +9604,27 @@ impl<'ast> Builder<'ast, '_> {
         func_index: FunctionIndex,
         arguments: &mut [Expression],
         explicit_type_arguments: Option<&[TypeIndex]>,
-        expected_result: Option<TypeIndex>,
+        expected_result: TypeIndex,
+        call_span: TextSpan,
     ) -> Result<Box<[TypeIndex]>, ()> {
-        let mut type_args =
-            vec![TypeIndex::ERROR; self.tir.functions[func_index as usize].type_params.len()];
+        // INFER = "not yet resolved"; ERROR = "resolved to an error type from a prior failure".
+        // Keeping them distinct lets us report "cannot infer" only when inference
+        // genuinely failed, rather than conflating it with cascading type errors.
+        let mut type_args: Vec<TypeIndex> =
+            vec![TypeIndex::INFER; self.tir.functions[func_index as usize].type_params.len()];
         if let Some(initial) = explicit_type_arguments {
             for (slot, &ty) in type_args.iter_mut().zip(initial.iter()) {
-                if ty != TypeIndex::ERROR {
+                // INFER in the initial type args means the impl-level param was not
+                // yet resolved (e.g. from find_generic_impl) — leave as INFER so
+                // further inference can fill it in.  ERROR (from a prior failure) is
+                // propagated directly so we do not re-report the same param.
+                if ty != TypeIndex::INFER {
                     *slot = ty;
                 }
             }
         }
 
-        if let Some(expected_result) = expected_result {
+        if expected_result != TypeIndex::INFER {
             let result_type = self.tir.functions[func_index as usize]
                 .result
                 .as_ref()
@@ -9402,6 +9640,57 @@ impl<'ast> Builder<'ast, '_> {
             self.infer_type_args(&mut type_args, param_type, arg.ty);
         }
 
+        // Detect unresolvable type parameters by substituting the current type_args
+        // into the function's result type and checking whether INFER survives.
+        //
+        // substitute_type propagates INFER through TypeParam positions but leaves
+        // AssocTypeProjection positions unchanged (because those are resolved
+        // structurally at the call site rather than requiring a concrete type arg).
+        // This means `contains_infer` on the substituted result is false for
+        // params that appear only via `C::Item` style projections, and true for
+        // params that appear directly (e.g. M in `Layout<M>`).
+        let result_type = self.tir.functions[func_index as usize]
+            .result
+            .as_ref()
+            .map(|r| r.inner)
+            .unwrap_or(TypeIndex::UNIT);
+        let substituted_result = self.substitute_type(result_type, &type_args);
+        let mut had_unresolved = false;
+        if self.contains_infer(substituted_result) {
+            for (i, &slot) in type_args.iter().enumerate() {
+                if slot == TypeIndex::INFER {
+                    let param_name_sym =
+                        self.tir.functions[func_index as usize].type_params[i].name;
+                    let param_name = self
+                        .interner
+                        .resolve(param_name_sym)
+                        .unwrap_or("?")
+                        .to_string();
+                    self.tir.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::TypeAnnotationRequired.code())
+                            .with_message(format!(
+                                "cannot infer type for type parameter `{param_name}`"
+                            ))
+                            .with_label(
+                                Label::primary(file_id, call_span)
+                                    .with_message("type annotation required"),
+                            ),
+                    );
+                    had_unresolved = true;
+                }
+            }
+        }
+        if had_unresolved {
+            return Err(());
+        }
+
+        // type_args is already Vec<TypeIndex>.  Slots still INFER at this point
+        // did not affect the result type (they appear only via AssocTypeProjection)
+        // and are safe to pass through — the arg type checks handle them
+        // structurally.
+        let type_args_flat: Box<[TypeIndex]> = type_args.into_boxed_slice();
+
         let mut had_error = false;
         for (index, arg) in arguments.iter_mut().enumerate() {
             let param_type = match self.tir.functions[func_index as usize].params.get(index) {
@@ -9409,20 +9698,20 @@ impl<'ast> Builder<'ast, '_> {
                 None => break,
             };
 
-            let expected_type = self.substitute_expected_type(param_type, &type_args);
+            let expected_type = self.substitute_expected_type(param_type, &type_args_flat);
 
-            if let Some(expected) = expected_type {
+            if expected_type != TypeIndex::INFER {
                 if arg.ty.is_comptime_number() {
-                    if self.coerce_untyped_expr(file_id, arg, expected).is_err() {
+                    if self.coerce_untyped_expr(file_id, arg, expected_type).is_err() {
                         had_error = true;
                     }
-                } else if !self.coercible_to(arg.ty, expected)
-                    && !self.type_param_satisfies_bound(arg.ty, expected)
+                } else if !self.coercible_to(arg.ty, expected_type)
+                    && !self.type_param_satisfies_bound(arg.ty, expected_type)
                 {
                     self.tir.diagnostics.push(report_type_mistmatch(
                         TypeFormatter::new(&self.tir, &self.interner),
                         TypeMistmatchDiagnostic {
-                            expected_type: expected,
+                            expected_type,
                             actual_type: arg.ty,
                             span: SourceSpan::new(file_id, arg.span),
                         },
@@ -9441,7 +9730,7 @@ impl<'ast> Builder<'ast, '_> {
         if had_error {
             Err(())
         } else {
-            Ok(type_args.into_boxed_slice())
+            Ok(type_args_flat)
         }
     }
 
@@ -9459,7 +9748,8 @@ impl<'ast> Builder<'ast, '_> {
             let expected_type = params
                 .get(index)
                 .copied()
-                .and_then(|param_type| self.substitute_expected_type(param_type, type_args));
+                .map(|param_type| self.substitute_expected_type(param_type, type_args))
+                .unwrap_or(TypeIndex::INFER);
 
             let mut argument = match self.build_expression(
                 ctx,
@@ -9476,7 +9766,7 @@ impl<'ast> Builder<'ast, '_> {
                 }
             };
 
-            if let Some(expected_type) = expected_type {
+            if expected_type != TypeIndex::INFER {
                 if argument.ty.is_comptime_number() {
                     if self
                         .coerce_untyped_expr(
@@ -9538,7 +9828,7 @@ impl<'ast> Builder<'ast, '_> {
         let callee = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Read,
             },
             ast_callee,
@@ -9631,7 +9921,7 @@ impl<'ast> Builder<'ast, '_> {
                     built_args.push(self.build_expression(
                         ctx,
                         AccessContext {
-                            expected_type: None,
+                            expected_type: TypeIndex::INFER,
                             access_kind: AccessKind::Read,
                         },
                         &arg.inner,
@@ -9644,6 +9934,7 @@ impl<'ast> Builder<'ast, '_> {
                     &mut built_args,
                     turbofish_seed,
                     access_ctx.expected_type,
+                    expr.span,
                 )?;
                 self.check_typeset_bounds_on_type_args(
                     func_index,
@@ -9696,7 +9987,7 @@ impl<'ast> Builder<'ast, '_> {
         let object = self.build_expression(
             ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Read,
             },
             &object,
@@ -9756,7 +10047,7 @@ impl<'ast> Builder<'ast, '_> {
                             self.build_expression(
                                 ctx,
                                 AccessContext {
-                                    expected_type: None,
+                                    expected_type: TypeIndex::INFER,
                                     access_kind: AccessKind::Read,
                                 },
                                 &arg.inner,
@@ -9769,6 +10060,7 @@ impl<'ast> Builder<'ast, '_> {
                         &mut built_arguments,
                         None,
                         access_ctx.expected_type,
+                        expr.span,
                     )?;
                     self.check_typeset_bounds_on_type_args(
                         func_index,
@@ -9902,8 +10194,8 @@ impl<'ast> Builder<'ast, '_> {
         };
 
         let expected_type = match ty {
-            Some(ty) => Some(self.resolve_type(&ctx.resolve_context, ty)),
-            None => None,
+            Some(ty) => self.resolve_type(&ctx.resolve_context, ty),
+            None => TypeIndex::INFER,
         };
         let mut value = self.build_expression(
             ctx,
@@ -9914,8 +10206,8 @@ impl<'ast> Builder<'ast, '_> {
             value,
         )?;
 
-        let ty: TypeIndex = match (value.ty, expected_type) {
-            (v, None) if v.is_comptime_number() => {
+        let ty: TypeIndex = if expected_type == TypeIndex::INFER {
+            if value.ty.is_comptime_number() {
                 self.tir
                     .diagnostics
                     .push(report_type_annotation_required(SourceSpan::new(
@@ -9925,27 +10217,27 @@ impl<'ast> Builder<'ast, '_> {
                 // Use Error type for recovery - this allows later references to work
                 // without cascading "undeclared identifier" errors
                 TypeIndex::ERROR
+            } else {
+                value.ty
             }
-            (ty, None) => ty,
-            (v, Some(expected_type)) if v.is_comptime_number() => {
-                self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut value, expected_type)?;
-                expected_type
-            }
-            (actual_type, Some(expected_type)) => {
-                if self.coercible_to(actual_type, expected_type) {
-                    expected_type
-                } else {
-                    self.tir.diagnostics.push(report_type_mistmatch(
-                        TypeFormatter::new(&self.tir, &self.interner),
-                        TypeMistmatchDiagnostic {
-                            expected_type,
-                            actual_type,
-                            span: SourceSpan::new(ctx.resolve_context.file_id, value.span),
-                        },
-                    ));
-                    expected_type // Recover by using the expected type
-                }
-            }
+        } else if value.ty.is_comptime_number() {
+            self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut value, expected_type)?;
+            expected_type
+        } else if self.coercible_to(value.ty, expected_type)
+            || (self.contains_infer(expected_type)
+                && self.type_satisfies_annotation(value.ty, expected_type))
+        {
+            value.ty
+        } else {
+            self.tir.diagnostics.push(report_type_mistmatch(
+                TypeFormatter::new(&self.tir, &self.interner),
+                TypeMistmatchDiagnostic {
+                    expected_type,
+                    actual_type: value.ty,
+                    span: SourceSpan::new(ctx.resolve_context.file_id, value.span),
+                },
+            ));
+            expected_type // Recover by using the expected type
         };
 
         let local_index = ctx.push_local(Local {
@@ -10347,7 +10639,8 @@ impl<'ast> Builder<'ast, '_> {
         };
 
         // ── resolve type arguments ───────────────────────────────────────────
-        // Priority: explicit turbofish > infer from expected type > empty.
+        // Priority: explicit turbofish > args embedded in path type (e.g. `Self`) >
+        //           infer from expected type > empty.
         let type_params_len = self.tir.structs[struct_index as usize].type_params.len();
         let resolved_args: Box<[TypeIndex]> = if !struct_seg.type_args.is_empty() {
             struct_seg
@@ -10358,15 +10651,18 @@ impl<'ast> Builder<'ast, '_> {
         } else if type_params_len == 0 {
             Box::new([])
         } else {
-            match access_ctx.expected_type {
-                Some(expected) => match &self.tir.type_pool[expected.as_usize()] {
-                    Type::Struct {
-                        struct_index: esi,
-                        args,
-                    } if *esi == struct_index && args.len() == type_params_len => args.clone(),
+            // `struct_ty` may already carry args when the path resolved to a
+            // fully-instantiated type — e.g. `Self` inside `impl<M,T> Vec<M,T>`.
+            match &self.tir.type_pool[struct_ty.as_usize()] {
+                Type::Struct { args, .. } if args.len() == type_params_len => args.clone(),
+                _ => match &self.tir.type_pool[access_ctx.expected_type.as_usize()] {
+                    Type::Struct { struct_index: esi, args }
+                        if *esi == struct_index && args.len() == type_params_len =>
+                    {
+                        args.clone()
+                    }
                     _ => Box::new([]),
                 },
-                None => Box::new([]),
             }
         };
 
@@ -10468,7 +10764,7 @@ impl<'ast> Builder<'ast, '_> {
             let mut field_expr = match self.build_expression(
                 func_ctx,
                 AccessContext {
-                    expected_type: Some(expected_ty),
+                    expected_type: expected_ty,
                     access_kind: AccessKind::Read,
                 },
                 field_value,
@@ -10572,19 +10868,21 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         // If the expected type is a tuple, use its element types as hints.
-        let expected_elems: Option<Box<[TypeIndex]>> = access_ctx.expected_type.and_then(|ty| {
-            if let Type::Tuple { elements } = &self.tir.type_pool[ty.as_usize()] {
-                if elements.len() == ast_elements.len() {
-                    return Some(elements.clone());
+        let expected_elems: Option<Box<[TypeIndex]>> =
+            match &self.tir.type_pool[access_ctx.expected_type.as_usize()] {
+                Type::Tuple { elements } if elements.len() == ast_elements.len() => {
+                    Some(elements.clone())
                 }
-            }
-            None
-        });
+                _ => None,
+            };
 
         let mut built = Vec::with_capacity(ast_elements.len());
         let mut had_error = false;
         for (i, elem_expr) in ast_elements.iter().enumerate() {
-            let expected = expected_elems.as_ref().map(|e| e[i]);
+            let expected = expected_elems
+                .as_ref()
+                .map(|e| e[i])
+                .unwrap_or(TypeIndex::INFER);
             match self.build_expression(
                 func_ctx,
                 AccessContext {
@@ -10594,14 +10892,12 @@ impl<'ast> Builder<'ast, '_> {
                 elem_expr,
             ) {
                 Ok(mut e) => {
-                    if e.ty.is_comptime_number() {
-                        if let Some(exp_ty) = expected {
-                            let _ = self.coerce_untyped_expr(
-                                func_ctx.resolve_context.file_id,
-                                &mut e,
-                                exp_ty,
-                            );
-                        }
+                    if e.ty.is_comptime_number() && expected != TypeIndex::INFER {
+                        let _ = self.coerce_untyped_expr(
+                            func_ctx.resolve_context.file_id,
+                            &mut e,
+                            expected,
+                        );
                     }
                     built.push(e);
                 }
@@ -10644,7 +10940,7 @@ impl<'ast> Builder<'ast, '_> {
         let pointer = self.build_expression(
             func_ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Read,
             },
             pointer,
@@ -10743,17 +11039,11 @@ impl<'ast> Builder<'ast, '_> {
         let source_span = SourceSpan::new(func_ctx.resolve_context.file_id, span);
 
         let (expected_of, expected_memory, expected_size, expected_mutable) =
-            match access_ctx.expected_type {
-                Some(ty) => match self.tir.type_pool[ty.as_usize()].clone() {
-                    Type::Array {
-                        of,
-                        memory,
-                        size,
-                        mutable,
-                    } => (Some(of), Some(memory), Some(size), mutable),
-                    _ => (None, None, None, false),
-                },
-                None => (None, None, None, false),
+            match self.tir.type_pool[access_ctx.expected_type.as_usize()].clone() {
+                Type::Array { of, memory, size, mutable } => {
+                    (of, Some(memory), Some(size), mutable)
+                }
+                _ => (TypeIndex::INFER, None, None, false),
             };
 
         if let Some(expected_size) = expected_size {
@@ -10778,16 +11068,17 @@ impl<'ast> Builder<'ast, '_> {
                 element,
             )?;
             if elem.ty.is_comptime_number() {
-                match expected_of {
-                    Some(of) => {
-                        self.coerce_untyped_expr(func_ctx.resolve_context.file_id, &mut elem, of)?
-                    }
-                    None => {
-                        self.tir.diagnostics.push(report_type_annotation_required(
-                            SourceSpan::new(func_ctx.resolve_context.file_id, elem.span),
-                        ));
-                        return Err(());
-                    }
+                if expected_of != TypeIndex::INFER {
+                    self.coerce_untyped_expr(
+                        func_ctx.resolve_context.file_id,
+                        &mut elem,
+                        expected_of,
+                    )?;
+                } else {
+                    self.tir.diagnostics.push(report_type_annotation_required(
+                        SourceSpan::new(func_ctx.resolve_context.file_id, elem.span),
+                    ));
+                    return Err(());
                 }
             }
             if !elem.ty.is_numeric() {
@@ -10826,16 +11117,13 @@ impl<'ast> Builder<'ast, '_> {
                 }
             }
             ty
+        } else if expected_of != TypeIndex::INFER {
+            expected_of
         } else {
-            match expected_of {
-                Some(of) => of,
-                None => {
-                    self.tir
-                        .diagnostics
-                        .push(report_type_annotation_required(source_span));
-                    return Err(());
-                }
-            }
+            self.tir
+                .diagnostics
+                .push(report_type_annotation_required(source_span));
+            return Err(());
         };
 
         let memory = match expected_memory {
@@ -10869,23 +11157,16 @@ impl<'ast> Builder<'ast, '_> {
     ) -> Result<Expression, ()> {
         let source_span = SourceSpan::new(func_ctx.resolve_context.file_id, span);
 
-        let (expected_of, expected_memory, expected_mutable) = match access_ctx.expected_type {
-            Some(ty) => match self.tir.type_pool[ty.as_usize()].clone() {
-                Type::Array {
-                    of,
-                    memory,
-                    mutable,
-                    ..
-                } => (Some(of), Some(memory), mutable),
-                _ => (None, None, false),
-            },
-            None => (None, None, false),
-        };
+        let (expected_of, expected_memory, expected_mutable) =
+            match self.tir.type_pool[access_ctx.expected_type.as_usize()].clone() {
+                Type::Array { of, memory, mutable, .. } => (of, Some(memory), mutable),
+                _ => (TypeIndex::INFER, None, false),
+            };
 
         let count_built = self.build_expression(
             func_ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Read,
             },
             count_expr,
@@ -10903,16 +11184,16 @@ impl<'ast> Builder<'ast, '_> {
             }
         };
 
-        if let Some(expected_ty) = access_ctx.expected_type {
-            if let Type::Array { size, .. } = self.tir.type_pool[expected_ty.as_usize()].clone() {
-                if count != size {
-                    self.tir.diagnostics.push(report_array_size_mismatch(
-                        source_span,
-                        size,
-                        count as usize,
-                    ));
-                    return Err(());
-                }
+        if let Type::Array { size, .. } =
+            self.tir.type_pool[access_ctx.expected_type.as_usize()].clone()
+        {
+            if count != size {
+                self.tir.diagnostics.push(report_array_size_mismatch(
+                    source_span,
+                    size,
+                    count as usize,
+                ));
+                return Err(());
             }
         }
 
@@ -10925,19 +11206,20 @@ impl<'ast> Builder<'ast, '_> {
             value_expr,
         )?;
         if value.ty.is_comptime_number() {
-            match expected_of {
-                Some(of) => {
-                    self.coerce_untyped_expr(func_ctx.resolve_context.file_id, &mut value, of)?
-                }
-                None => {
-                    self.tir
-                        .diagnostics
-                        .push(report_type_annotation_required(SourceSpan::new(
-                            func_ctx.resolve_context.file_id,
-                            value.span,
-                        )));
-                    return Err(());
-                }
+            if expected_of != TypeIndex::INFER {
+                self.coerce_untyped_expr(
+                    func_ctx.resolve_context.file_id,
+                    &mut value,
+                    expected_of,
+                )?;
+            } else {
+                self.tir
+                    .diagnostics
+                    .push(report_type_annotation_required(SourceSpan::new(
+                        func_ctx.resolve_context.file_id,
+                        value.span,
+                    )));
+                return Err(());
             }
         }
         if !value.ty.is_numeric() {
@@ -10990,7 +11272,7 @@ impl<'ast> Builder<'ast, '_> {
         let object = self.build_expression(
             func_ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Read,
             },
             object_expr,
@@ -11024,7 +11306,7 @@ impl<'ast> Builder<'ast, '_> {
         let mut index = self.build_expression(
             func_ctx,
             AccessContext {
-                expected_type: Some(index_type),
+                expected_type: index_type,
                 access_kind: AccessKind::Read,
             },
             index_expr,
@@ -11064,7 +11346,7 @@ impl<'ast> Builder<'ast, '_> {
         let object = self.build_expression(
             func_ctx,
             AccessContext {
-                expected_type: None,
+                expected_type: TypeIndex::INFER,
                 access_kind: AccessKind::Read,
             },
             object_expr,
@@ -11101,7 +11383,7 @@ impl<'ast> Builder<'ast, '_> {
             let mut bound = builder.build_expression(
                 func_ctx,
                 AccessContext {
-                    expected_type: Some(index_type),
+                    expected_type: index_type,
                     access_kind: AccessKind::Read,
                 },
                 ast_expr,
