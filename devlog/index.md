@@ -1,5 +1,9 @@
 # Session Index
 
+## 2026-06-21
+
+- [2026-06-21-assoc-type-chains-comptime-inference.md](2026-06-21-assoc-type-chains-comptime-inference.md) — Nested `AssocTypeProjection` chains (`A::M::Size`), `are_scalar_compatible` for abstract-memory pointer casts, `null_mut` in std, formatter `::` before intrinsic type args, cross-branch comptime inference in if-else
+
 ## 2026-06-19
 
 - [2026-06-19-type-resolution-cleanup.md](2026-06-19-type-resolution-cleanup.md) — `Result<TypeIndex, ()>` return for type-resolution helpers, `register_module_access` in type-position paths, test audit: weak assertions hardened to `has_error_code`, false-positive test removed
