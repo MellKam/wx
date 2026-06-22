@@ -1144,6 +1144,8 @@ define_diagnostic_codes! {
         UnreachableCode => "W1003",
         UnusedItem => "W1004",
         MissingImportParamName => "W1005",
+        UnusedTypeParam => "W1006",
+        UnusedStructField => "W1007",
         MissingFunctionBody => "E1028",
         InvalidMemoryKind => "E1029",
         NamespaceUsedAsValue => "E1030",
@@ -1187,9 +1189,26 @@ pub struct Global {
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
+pub enum FieldAccessKind {
+    Read,
+    Init,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct FieldAccess {
+    pub kind: FieldAccessKind,
+    pub file_id: FileId,
+    pub span: ast::TextSpan,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct StructField {
     pub name: ast::Spanned<SymbolU32>,
     pub ty: ast::Spanned<TypeIndex>,
+    pub pub_span: Option<ast::TextSpan>,
+    pub accesses: Vec<FieldAccess>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -1554,70 +1573,4 @@ impl TIR {
         builder::build(compilation)
     }
 
-    pub fn are_scalar_compatible(&self, a: TypeIndex, b: TypeIndex) -> bool {
-        if a == b {
-            return true;
-        }
-        match (&self.type_pool[a.as_usize()], &self.type_pool[b.as_usize()]) {
-            (Type::Pointer { memory: a_mem, .. }, Type::Pointer { memory: b_mem, .. }) => {
-                a_mem == b_mem
-            }
-            (Type::Array { memory: a_mem, .. }, Type::Array { memory: b_mem, .. }) => {
-                a_mem == b_mem
-            }
-            _ => matches!(
-                (self.type_scalar(a), self.type_scalar(b)),
-                (Some(x), Some(y)) if x == y
-            ),
-        }
-    }
-
-    fn type_scalar(&self, ty: TypeIndex) -> Option<WasmScalar> {
-        match &self.type_pool[ty.as_usize()] {
-            Type::Bool
-            | Type::U8
-            | Type::I8
-            | Type::U16
-            | Type::I16
-            | Type::I32
-            | Type::U32
-            | Type::Char
-            | Type::Function { .. } => Some(WasmScalar::I32),
-            Type::Enum { enum_index } => {
-                let repr_type = self.enums[*enum_index as usize].ty;
-                self.type_scalar(repr_type)
-            }
-            Type::U64 | Type::I64 => Some(WasmScalar::I64),
-            Type::F32 => Some(WasmScalar::F32),
-            Type::F64 => Some(WasmScalar::F64),
-            Type::Pointer { memory, .. } => match &self.type_pool[memory.as_usize()] {
-                Type::Memory { id, .. } => {
-                    let kind = self.memories[self.memory_index_lookup[id] as usize].kind;
-                    match kind {
-                        MemoryKind::Memory32 => Some(WasmScalar::I32),
-                        MemoryKind::Memory64 => Some(WasmScalar::I64),
-                    }
-                }
-                _ => None,
-            },
-            Type::Tuple { .. }
-            | Type::Array { .. }
-            | Type::AssociatedType { .. }
-            | Type::AssocTypeProjection { .. }
-            | Type::FunctionItem { .. }
-            | Type::Struct { .. }
-            | Type::Slice { .. }
-            | Type::Module { .. }
-            | Type::Memory { .. }
-            | Type::Trait { .. }
-            | Type::TypeSet { .. }
-            | Type::TypeParam { .. }
-            | Type::Error
-            | Type::Infer
-            | Type::Never
-            | Type::Unit
-            | Type::Integer
-            | Type::Float => None,
-        }
-    }
 }

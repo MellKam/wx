@@ -979,6 +979,7 @@ fn add_compiler_diagnostic(
         DiagnosticCode::from_str(code).ok().and_then(|c| match c {
             DiagnosticCode::UnreachableCode
             | DiagnosticCode::UnusedVariable
+            | DiagnosticCode::UnusedTypeParam
             | DiagnosticCode::UnnecessaryMutability
             | DiagnosticCode::UnusedItem => Some(vec![DiagnosticTag::UNNECESSARY]),
             _ => None,
@@ -1249,6 +1250,18 @@ fn symbol_hover_text(
             };
             Some(format!("{pub_prefix}const {name}: {type_str}"))
         }
+        SymbolKind::StructField {
+            struct_idx,
+            field_idx,
+        } => {
+            let struct_ = tir.structs.get(*struct_idx as usize)?;
+            let field = struct_.fields.get(*field_idx as usize)?;
+            let fmt = fmt.with_type_params(&struct_.type_params);
+            let name = interner.resolve(field.name.inner).unwrap_or("?");
+            let type_str = fmt.display_type(field.ty.inner).unwrap();
+            let pub_prefix = if field.pub_span.is_some() { "pub " } else { "" };
+            Some(format!("{pub_prefix}{name}: {type_str}"))
+        }
         SymbolKind::AssocType {
             trait_index,
             assoc_name,
@@ -1346,6 +1359,7 @@ fn symbol_kind_to_token_type(kind: &SymbolKind) -> Option<u32> {
         SymbolKind::Trait(_) => 7,
         SymbolKind::TypeParam { .. } => 8,
         SymbolKind::AssocType { .. } => 9,
+        SymbolKind::StructField { .. } => 1,
         SymbolKind::Label { .. } => return None,
     };
     Some(idx)

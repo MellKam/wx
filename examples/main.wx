@@ -17,6 +17,10 @@ struct Layout<M: Memory> {
 
 impl <M: Memory> Layout<M> {
   pub fn of<T>() -> Layout<M> {
-    Layout::{ size: @size_of(), align: @align_of() }
+    Layout::{ size: @size_of::<T, _>(), align: @align_of::<T, _>() }
   }
+}
+
+fn main() {
+  _ = test::<i32, i32>(5);
 }

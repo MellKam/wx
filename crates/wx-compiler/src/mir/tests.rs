@@ -671,7 +671,7 @@ fn test_generic_struct_init_and_field_access_concrete() {
     let case = TestCase::new(indoc! {"
         struct Point<T> {
             x: T,
-            y: T,
+            pub y: T,
         }
 
         fn run() -> i32 {

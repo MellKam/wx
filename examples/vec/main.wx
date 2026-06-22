@@ -9,11 +9,11 @@ struct Layout<M: Memory> {
 
 impl <M: Memory> Layout<M> {
     pub fn of<T>() -> Layout<M> {
-        Layout::{ size: @size_of(), align: @align_of() }
+        Layout::{ size: @size_of::<T, M>(), align: @align_of::<T, M>() }
     }
 
     pub fn array<T>(count: M::Size) -> Layout<M> {
-        Layout::{ size: @size_of() * count, align: @align_of() }
+        Layout::{ size: @size_of::<T, M>() * count, align: @align_of::<T, M>() }
     }
 }
 
@@ -46,7 +46,7 @@ impl Allocator for BumpAllocator {
 }
 
 struct Vec<T, A: Allocator> {
-    buf: A::M::*mut T,
+    pub buf: A::M::*mut T,
     len: A::M::Size,
     cap: A::M::Size,
     alloc: A,
@@ -67,7 +67,7 @@ impl <T, A: Allocator> Vec<T, A> {
             };
             
             local layout = Layout::<A::M>::array::<T>(new_cap);
-            local new_buf = (self.*.alloc.alloc(layout)) as A::M::*mut T;
+            local new_buf = self.*.alloc.alloc(layout).cast_mut();
             
             if self.*.cap != 0 {
                 local mut i: A::M::Size = 0;
@@ -85,12 +85,12 @@ impl <T, A: Allocator> Vec<T, A> {
             self.*.cap = new_cap;
         };
         
-        (self.*.buf).add(self.*.len).* = value;
+        self.*.buf.add(self.*.len).* = value;
         self.*.len = self.*.len + 1;
     }
 
     pub fn get(self: A::M::*mut Self, index: A::M::Size) -> T {
-        (self.*.buf).add(index).*
+        self.*.buf.add(index).*
     }
 
     #[inline]
@@ -106,10 +106,6 @@ pub fn reset() {
 pub fn demo() -> i32 {
     local mut v = Vec::<i32, _>::new(BumpAllocator::{});
     v.push(5);
-    
-    if true {
-        retur
-    }
     
     local mut sum: i32 = 0;
     local mut i: u32 = 0;

@@ -2353,7 +2353,7 @@ fn test_generic_struct_in_type_position_resolves() {
 #[test]
 fn test_generic_struct_init_with_type_args() {
     let case = TestCase::new(indoc! {"
-        struct Pair<T> { first: T, second: T }
+        struct Pair<T> { pub first: T, pub second: T }
         fn make() -> Pair<i32> {
             Pair::<i32>::{ first: 1, second: 2 }
         }
@@ -5258,8 +5258,8 @@ fn test_assoc_type_projection_normalised_across_functions() {
         memory heap: Memory<Size = u32>;
 
         struct Layout<M: Memory> {
-            size: M::Size,
-            align: M::Size,
+            pub size: M::Size,
+            pub align: M::Size,
         }
 
         impl<M: Memory> Layout<M> {
@@ -5430,5 +5430,166 @@ fn test_phantom_type_param_as_infer_is_error() {
         fn phantom<T>() -> i32 { 0 }
         fn f() -> i32 { phantom::<_>() }
     "});
-    assert!(has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired));
+    assert!(has_error_code(
+        &case.tir,
+        DiagnosticCode::TypeAnnotationRequired
+    ));
+}
+
+#[test]
+fn test_phantom_type_param_suppressed_by_type_mismatch() {
+    // When the argument for a NON-phantom param causes TypeMistmatch, the
+    // phantom-param check is skipped to avoid double-reporting on the same
+    // call site.  Only TypeMistmatch should appear.
+    let case = TestCase::new(indoc! {"
+        fn phantom<T>(x: i32) -> i32 { x }
+        fn f() -> i32 { phantom::<_>(true) }
+    "});
+    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+    assert!(!has_error_code(
+        &case.tir,
+        DiagnosticCode::TypeAnnotationRequired
+    ));
+}
+
+#[test]
+fn test_phantom_type_param_suppressed_when_unrelated_arg_mismatches() {
+    // Phantom param U is unrelated to the TypeMistmatch on y — but the check
+    // is still suppressed.  Known limitation: fixing the TypeMistmatch will
+    // then reveal the phantom error on U in a second compilation.
+    //
+    // `true` is a concrete bool (not a comptime literal), so T is properly
+    // inferred as bool without triggering the comptime-literal annotation path.
+    let case = TestCase::new(indoc! {"
+        fn f<T, U>(x: T, y: i32) -> i32 { y }
+        fn g() -> i32 { f(true, true) }
+    "});
+    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+    assert!(!has_error_code(
+        &case.tir,
+        DiagnosticCode::TypeAnnotationRequired
+    ));
+}
+
+// ── unused type parameter warnings ───────────────────────────────────────────
+
+#[test]
+fn test_unused_type_param_warns() {
+    let case = TestCase::new(indoc! {"
+        pub fn phantom<T>() -> i32 { 0 }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+            == Some(DiagnosticCode::UnusedTypeParam.code())
+            && d.message.contains('T')),
+        "expected W1006 for phantom T, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_used_type_param_in_param_no_warn() {
+    let case = TestCase::new(indoc! {"
+        pub fn identity<T>(x: T) -> T { x }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedTypeParam.code())),
+        "T used in param and result should not warn"
+    );
+}
+
+#[test]
+fn test_used_type_param_in_return_only_no_warn() {
+    let case = TestCase::new(indoc! {"
+        pub fn produce<T>() -> T { loop {} }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedTypeParam.code())),
+        "T used in return type should not warn"
+    );
+}
+
+// ── unused struct field warnings ──────────────────────────────────────────────
+
+#[test]
+fn test_unused_field_init_but_not_read_warns() {
+    let case = TestCase::new(indoc! {"
+        pub struct Pair { pub x: i32, y: i32 }
+        pub fn make(x: i32) -> Pair {
+            Pair::{ x: x, y: 0 }
+        }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+            == Some(DiagnosticCode::UnusedStructField.code())
+            && d.message.contains('y')),
+        "expected W1007 for private field `y` which is initialized but never read, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_unused_field_read_suppresses_warn() {
+    let case = TestCase::new(indoc! {"
+        pub struct Pair { x: i32, y: i32 }
+        pub fn make(x: i32, y: i32) -> Pair { Pair::{ x: x, y: y } }
+        pub fn get_x(p: Pair) -> i32 { p.x }
+        pub fn get_y(p: Pair) -> i32 { p.y }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedStructField.code())),
+        "fields that are read should not warn"
+    );
+}
+
+#[test]
+fn test_pub_field_no_unused_warn() {
+    let case = TestCase::new(indoc! {"
+        pub struct Pair { pub x: i32, pub y: i32 }
+        pub fn make() -> Pair { Pair::{ x: 1, y: 2 } }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedStructField.code())),
+        "pub fields should not warn even if never read in this file"
+    );
+}
+
+#[test]
+fn test_never_initialized_field_no_warn() {
+    let case = TestCase::new(indoc! {"
+        pub struct Node { value: i32, next: i32 }
+        pub fn is_zero(n: Node) -> bool { false }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedStructField.code())),
+        "fields that are never initialized should not warn (struct itself may be unused)"
+    );
 }

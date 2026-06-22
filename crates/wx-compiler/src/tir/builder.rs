@@ -3117,6 +3117,8 @@ impl<'ast> Builder<'ast, '_> {
                             inner: field_ty,
                             span: field.ty.span,
                         },
+                        pub_span: field.pub_span,
+                        accesses: Vec::new(),
                     });
                 }
 
@@ -6221,6 +6223,7 @@ impl<'ast> Builder<'ast, '_> {
 
     fn report_unused_items(&mut self) {
         let code = DiagnosticCode::UnusedItem.code();
+        let type_param_code = DiagnosticCode::UnusedTypeParam.code();
 
         for function in self.tir.functions.iter() {
             if function.accesses.is_empty()
@@ -6237,6 +6240,28 @@ impl<'ast> Builder<'ast, '_> {
                             SourceSpan::new(function.file_id, function.name.span).primary_label(),
                         ),
                 );
+            }
+
+            if !matches!(function.kind, FunctionKind::Intrinsic)
+                && !self.tir.is_import_namespace(function.namespace)
+            {
+                for param in function.type_params.iter() {
+                    if param.accesses.is_empty() {
+                        let name = self.interner.resolve(param.name).unwrap_or("?").to_string();
+                        self.tir.diagnostics.push(
+                            Diagnostic::warning()
+                                .with_code(type_param_code)
+                                .with_message(format!("type parameter `{name}` is never used"))
+                                .with_label(
+                                    SourceSpan::new(function.file_id, param.name_span)
+                                        .primary_label(),
+                                )
+                                .with_note(
+                                    "consider removing this type parameter or using it in signature",
+                                ),
+                        );
+                    }
+                }
             }
         }
 
@@ -6271,6 +6296,8 @@ impl<'ast> Builder<'ast, '_> {
             }
         }
 
+        let field_code = DiagnosticCode::UnusedStructField.code();
+
         for struct_ in self.tir.structs.iter() {
             if struct_.pub_span.is_none() && struct_.accesses.is_empty() {
                 let name = self.interner.resolve(struct_.name.inner).unwrap();
@@ -6282,6 +6309,33 @@ impl<'ast> Builder<'ast, '_> {
                             SourceSpan::new(struct_.file_id, struct_.name.span).primary_label(),
                         ),
                 );
+            } else {
+                // Struct is live — warn about fields that are initialized but never read.
+                for field in struct_.fields.iter() {
+                    if field.pub_span.is_some() {
+                        continue;
+                    }
+                    let has_read = field
+                        .accesses
+                        .iter()
+                        .any(|a| matches!(a.kind, FieldAccessKind::Read));
+                    let has_init = field
+                        .accesses
+                        .iter()
+                        .any(|a| matches!(a.kind, FieldAccessKind::Init));
+                    if has_init && !has_read {
+                        let name = self.interner.resolve(field.name.inner).unwrap();
+                        self.tir.diagnostics.push(
+                            Diagnostic::warning()
+                                .with_code(field_code)
+                                .with_message(format!("field `{name}` is never read"))
+                                .with_label(
+                                    SourceSpan::new(struct_.file_id, field.name.span)
+                                        .primary_label(),
+                                ),
+                        );
+                    }
+                }
             }
         }
     }
@@ -6857,6 +6911,13 @@ impl<'ast> Builder<'ast, '_> {
                 } else {
                     self.substitute_type(raw_field_ty, &args)
                 };
+                self.tir.structs[struct_index as usize].fields[field_index]
+                    .accesses
+                    .push(FieldAccess {
+                        kind: FieldAccessKind::Read,
+                        file_id: func_ctx.resolve_context.file_id,
+                        span: member.span,
+                    });
                 return Ok(Expression {
                     kind: ExprKind::ObjectAccess {
                         object: Box::new(object),
@@ -7871,9 +7932,12 @@ impl<'ast> Builder<'ast, '_> {
         let cast_type = if cast_type == TypeIndex::INFER {
             let expected = access_ctx.expected_type;
             if expected == TypeIndex::INFER {
-                self.tir.diagnostics.push(report_type_annotation_required(
-                    SourceSpan::new(ctx.resolve_context.file_id, expr.span),
-                ));
+                self.tir
+                    .diagnostics
+                    .push(report_type_annotation_required(SourceSpan::new(
+                        ctx.resolve_context.file_id,
+                        expr.span,
+                    )));
                 return self.build_expression(ctx, access_ctx, value);
             }
             expected
@@ -7890,7 +7954,7 @@ impl<'ast> Builder<'ast, '_> {
         )?;
         if value.ty.is_comptime_number() {
             self.coerce_untyped_expr(ctx.resolve_context.file_id, &mut value, cast_type)?;
-        } else if self.tir.are_scalar_compatible(value.ty, cast_type) {
+        } else if self.are_scalar_compatible(value.ty, cast_type) {
             // TODO: add checks for unsafe/lossy casts like i32 to u8, or u32 to char
             value.ty = cast_type;
         } else {
@@ -7903,6 +7967,86 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         Ok(value)
+    }
+
+    fn are_scalar_compatible(&self, a: TypeIndex, b: TypeIndex) -> bool {
+        if a == b {
+            return true;
+        }
+        match (&self.tir.type_pool[a.as_usize()], &self.tir.type_pool[b.as_usize()]) {
+            (Type::Pointer { memory: a_mem, .. }, Type::Pointer { memory: b_mem, .. }) => {
+                a_mem == b_mem
+            }
+            (Type::Array { memory: a_mem, .. }, Type::Array { memory: b_mem, .. }) => {
+                a_mem == b_mem
+            }
+            // Allow M::Size ↔ M::*T (both directions): same memory base, assoc type is "Size"
+            (
+                Type::AssocTypeProjection { base: a_base, assoc_name, .. },
+                Type::Pointer { memory: b_mem, .. },
+            ) => {
+                a_base == b_mem && self.interner.resolve(*assoc_name) == Some("Size")
+            }
+            (
+                Type::Pointer { memory: a_mem, .. },
+                Type::AssocTypeProjection { base: b_base, assoc_name, .. },
+            ) => {
+                a_mem == b_base && self.interner.resolve(*assoc_name) == Some("Size")
+            }
+            _ => matches!(
+                (self.type_scalar(a), self.type_scalar(b)),
+                (Some(x), Some(y)) if x == y
+            ),
+        }
+    }
+
+    fn type_scalar(&self, ty: TypeIndex) -> Option<WasmScalar> {
+        match &self.tir.type_pool[ty.as_usize()] {
+            Type::Bool
+            | Type::U8
+            | Type::I8
+            | Type::U16
+            | Type::I16
+            | Type::I32
+            | Type::U32
+            | Type::Char
+            | Type::Function { .. } => Some(WasmScalar::I32),
+            Type::Enum { enum_index } => {
+                let repr_type = self.tir.enums[*enum_index as usize].ty;
+                self.type_scalar(repr_type)
+            }
+            Type::U64 | Type::I64 => Some(WasmScalar::I64),
+            Type::F32 => Some(WasmScalar::F32),
+            Type::F64 => Some(WasmScalar::F64),
+            Type::Pointer { memory, .. } => match &self.tir.type_pool[memory.as_usize()] {
+                Type::Memory { id, .. } => {
+                    let kind = self.tir.memories[self.tir.memory_index_lookup[id] as usize].kind;
+                    match kind {
+                        MemoryKind::Memory32 => Some(WasmScalar::I32),
+                        MemoryKind::Memory64 => Some(WasmScalar::I64),
+                    }
+                }
+                _ => None,
+            },
+            Type::Tuple { .. }
+            | Type::Array { .. }
+            | Type::AssociatedType { .. }
+            | Type::AssocTypeProjection { .. }
+            | Type::FunctionItem { .. }
+            | Type::Struct { .. }
+            | Type::Slice { .. }
+            | Type::Module { .. }
+            | Type::Memory { .. }
+            | Type::Trait { .. }
+            | Type::TypeSet { .. }
+            | Type::TypeParam { .. }
+            | Type::Error
+            | Type::Infer
+            | Type::Never
+            | Type::Unit
+            | Type::Integer
+            | Type::Float => None,
+        }
     }
 
     fn build_break_expression(
@@ -8976,7 +9120,10 @@ impl<'ast> Builder<'ast, '_> {
                             );
                         }
                     }
-                    ExprKind::Local { scope_index, local_index } => {
+                    ExprKind::Local {
+                        scope_index,
+                        local_index,
+                    } => {
                         let local = ctx.stack.get_mut_local(*scope_index, *local_index).unwrap();
                         if local.mut_span.is_none() {
                             self.tir.diagnostics.push(report_cannot_mutate_immutable(
@@ -9012,15 +9159,23 @@ impl<'ast> Builder<'ast, '_> {
                         field_ty,
                     )?;
                 } else if !self.coercible_to(right_expr.ty, field_ty) {
-                    self.tir.diagnostics.push(report_binary_expression_mistmatch(
-                        TypeFormatter::new(&self.tir, &self.interner),
-                        BinaryExpressionMistmatchDiagnostic {
-                            file_id: ctx.resolve_context.file_id,
-                            left_type: Spanned { inner: field_ty, span: left_span },
-                            operator: operator.clone(),
-                            right_type: Spanned { inner: right_expr.ty, span: right_expr.span },
-                        },
-                    ));
+                    self.tir
+                        .diagnostics
+                        .push(report_binary_expression_mistmatch(
+                            TypeFormatter::new(&self.tir, &self.interner),
+                            BinaryExpressionMistmatchDiagnostic {
+                                file_id: ctx.resolve_context.file_id,
+                                left_type: Spanned {
+                                    inner: field_ty,
+                                    span: left_span,
+                                },
+                                operator: operator.clone(),
+                                right_type: Spanned {
+                                    inner: right_expr.ty,
+                                    span: right_expr.span,
+                                },
+                            },
+                        ));
                 }
                 Ok(Expression {
                     kind: ExprKind::Binary {
@@ -9926,35 +10081,31 @@ impl<'ast> Builder<'ast, '_> {
             .as_ref()
             .map(|r| r.inner)
             .unwrap_or(TypeIndex::UNIT);
-        // Substitute to trigger type interning (needed for consistent pool
-        // ordering) and to detect params that appear directly in the result.
-        // We then check ALL slots unconditionally: a param that appears only via
-        // an associated-type projection (e.g. T in `size_of<T,M>()->M::Size`)
-        // never surfaces in the substituted result, so a `contains_infer` guard
-        // would silently miss it.  Any slot still INFER here is unresolvable.
-        let _ = self.substitute_type(result_type, &type_args);
+        let substituted_result = self.substitute_type(result_type, &type_args);
         let mut had_unresolved = false;
-        for (i, &slot) in type_args.iter().enumerate() {
-            if slot == TypeIndex::INFER {
-                let param_name_sym =
-                    self.tir.functions[func_index as usize].type_params[i].name;
-                let param_name = self
-                    .interner
-                    .resolve(param_name_sym)
-                    .unwrap_or("?")
-                    .to_string();
-                self.tir.diagnostics.push(
-                    Diagnostic::error()
-                        .with_code(DiagnosticCode::TypeAnnotationRequired.code())
-                        .with_message(format!(
-                            "cannot infer type for type parameter `{param_name}`"
-                        ))
-                        .with_label(
-                            Label::primary(file_id, call_span)
-                                .with_message("type annotation required"),
-                        ),
-                );
-                had_unresolved = true;
+        if self.contains_infer(substituted_result) {
+            for (i, &slot) in type_args.iter().enumerate() {
+                if slot == TypeIndex::INFER {
+                    let param_name_sym =
+                        self.tir.functions[func_index as usize].type_params[i].name;
+                    let param_name = self
+                        .interner
+                        .resolve(param_name_sym)
+                        .unwrap_or("?")
+                        .to_string();
+                    self.tir.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::TypeAnnotationRequired.code())
+                            .with_message(format!(
+                                "cannot infer type for type parameter `{param_name}`"
+                            ))
+                            .with_label(
+                                Label::primary(file_id, call_span)
+                                    .with_message("type annotation required"),
+                            ),
+                    );
+                    had_unresolved = true;
+                }
             }
         }
         if had_unresolved {
@@ -9989,6 +10140,7 @@ impl<'ast> Builder<'ast, '_> {
                             span: SourceSpan::new(file_id, arg.span),
                         },
                     ));
+                    had_error = true;
                 }
             } else if arg.ty.is_comptime_number() {
                 self.tir
@@ -9997,6 +10149,36 @@ impl<'ast> Builder<'ast, '_> {
                         file_id, arg.span,
                     )));
                 had_error = true;
+            }
+        }
+
+        // Any slot still INFER after return-type and argument inference is a
+        // phantom param — one that appears nowhere in the function's signature
+        // and can never be constrained.  Skip if coercion already failed to
+        // avoid double-reporting on top of a TypeMistmatch.
+        if !had_error {
+            for (i, &slot) in type_args.iter().enumerate() {
+                if slot == TypeIndex::INFER {
+                    let param_name_sym =
+                        self.tir.functions[func_index as usize].type_params[i].name;
+                    let param_name = self
+                        .interner
+                        .resolve(param_name_sym)
+                        .unwrap_or("?")
+                        .to_string();
+                    self.tir.diagnostics.push(
+                        Diagnostic::error()
+                            .with_code(DiagnosticCode::TypeAnnotationRequired.code())
+                            .with_message(format!(
+                                "cannot infer type for type parameter `{param_name}`"
+                            ))
+                            .with_label(
+                                Label::primary(file_id, call_span)
+                                    .with_message("type annotation required"),
+                            ),
+                    );
+                    had_error = true;
+                }
             }
         }
 
@@ -10131,9 +10313,8 @@ impl<'ast> Builder<'ast, '_> {
                             )),
                     );
                 if ast_callee.inner.is_block_like() {
-                    diagnostic = diagnostic.with_note(
-                        "consider using a semicolon here to finish the statement: `;`",
-                    );
+                    diagnostic = diagnostic
+                        .with_note("consider using a semicolon here to finish the statement: `;`");
                 }
                 self.tir.diagnostics.push(diagnostic);
 
@@ -10749,6 +10930,59 @@ impl<'ast> Builder<'ast, '_> {
                     file_id, expr.span,
                 )));
             Err(())
+        } else if matches!(self.tir.type_pool[target_idx.as_usize()], Type::Pointer { .. }) {
+            match self.type_scalar(target_idx) {
+                Some(WasmScalar::I32) => {
+                    if value < 0 || value > u32::MAX as i64 {
+                        self.tir.diagnostics.push(report_integer_literal_out_of_range(
+                            formatter,
+                            IntegerLiteralOutOfRangeDiagnostic {
+                                ty: TypeIndex::U32,
+                                value,
+                                span: SourceSpan::new(file_id, expr.span),
+                            },
+                        ));
+                    }
+                }
+                Some(WasmScalar::I64) => {
+                    if value < 0 {
+                        self.tir.diagnostics.push(report_integer_literal_out_of_range(
+                            formatter,
+                            IntegerLiteralOutOfRangeDiagnostic {
+                                ty: TypeIndex::U64,
+                                value,
+                                span: SourceSpan::new(file_id, expr.span),
+                            },
+                        ));
+                    }
+                }
+                _ => {
+                    // Generic pointer (TypeParam memory) — validate against PointerSize bounds
+                    if let Some(ts) = self
+                        .tir
+                        .typesets
+                        .iter()
+                        .find(|ts| self.interner.resolve(ts.name.inner) == Some("PointerSize"))
+                    {
+                        if !ts.intersection_range.contains(value) {
+                            let ts_name = self
+                                .interner
+                                .resolve(ts.name.inner)
+                                .unwrap_or("PointerSize")
+                                .to_string();
+                            self.tir.diagnostics.push(report_integer_literal_out_of_typeset_range(
+                                value,
+                                &ts_name,
+                                &ts.intersection_range,
+                                SourceSpan::new(file_id, expr.span),
+                            ));
+                            return Err(());
+                        }
+                    }
+                }
+            }
+            expr.ty = target_idx;
+            Ok(())
         } else if let Some(typeset_index) = self.typeset_bound_for(target_idx) {
             let ts = &self.tir.typesets[typeset_index as usize];
             let range = &ts.intersection_range;
@@ -11042,6 +11276,13 @@ impl<'ast> Builder<'ast, '_> {
             // Mark this field as mentioned (by its name span) before building the value,
             // so that build errors don't cause it to appear in the "missing fields" list.
             first_mention[field_index] = Some(field.name.span);
+            self.tir.structs[struct_index as usize].fields[field_index]
+                .accesses
+                .push(FieldAccess {
+                    kind: FieldAccessKind::Init,
+                    file_id: func_ctx.resolve_context.file_id,
+                    span: field.name.span,
+                });
 
             let field_value = match &field.value {
                 Some(expr) => expr.as_ref(),

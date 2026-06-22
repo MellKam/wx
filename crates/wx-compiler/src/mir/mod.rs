@@ -1901,13 +1901,6 @@ impl<'tir> Builder<'tir> {
                             ty: result_ty,
                         }
                     }
-                    "@pointer_from" => {
-                        let addr = self.lower_expression(func_ctx, &arguments[0], sink);
-                        Expression {
-                            kind: addr.kind,
-                            ty: self.lower_type_index(expr.ty),
-                        }
-                    }
                     "@size_of" => {
                         let raw_ty = type_args[0];
                         let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {

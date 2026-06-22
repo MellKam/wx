@@ -1,8 +1,8 @@
 use string_interner::symbol::SymbolU32;
 use wx_compiler::ast::{DefId, StringInterner, TextSpan};
 use wx_compiler::tir::{
-    EnumVariantIndex, ExportItem, LocalIndex, ScopeIndex, SourceSpan, TIR, TraitIndex,
-    TypeParamOwner,
+    EnumVariantIndex, ExportItem, FieldAccessKind, LocalIndex, ScopeIndex, SourceSpan, TIR,
+    TraitIndex, TypeParamOwner,
 };
 use wx_compiler::vfs::FileId;
 
@@ -41,6 +41,10 @@ pub enum SymbolKind {
     AssocType {
         trait_index: TraitIndex,
         assoc_name: SymbolU32,
+    },
+    StructField {
+        struct_idx: u32,
+        field_idx: u32,
     },
 }
 
@@ -244,6 +248,25 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
                     source: SourceSpan::new(access.file_id, access.span),
                     kind: kind.clone(),
                 });
+            }
+        }
+
+        for (field_idx, field) in struct_.fields.iter().enumerate() {
+            let kind = SymbolKind::StructField {
+                struct_idx: struct_idx as u32,
+                field_idx: field_idx as u32,
+            };
+            index.definitions.push(SpanInfo {
+                source: SourceSpan::new(struct_.file_id, field.name.span),
+                kind: kind.clone(),
+            });
+            for access in &field.accesses {
+                if matches!(access.kind, FieldAccessKind::Read | FieldAccessKind::Init) {
+                    index.references.push(SpanInfo {
+                        source: SourceSpan::new(access.file_id, access.span),
+                        kind: kind.clone(),
+                    });
+                }
             }
         }
     }

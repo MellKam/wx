@@ -5,18 +5,16 @@ pub fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
 pub fn @memory_size<M: Memory>(mem: M) -> M::Size;
 pub fn @slice_len<M: Memory, T>(slice: M::[]T) -> M::Size;
 pub fn @slice_from_parts<M: Memory, T>(data: M::*T, len: M::Size) -> M::[]T;
-pub fn @pointer_from<M: Memory, T>(ptr: M::Size) -> M::*T;
 pub fn @size_of<T, M: Memory>() -> M::Size;
 pub fn @align_of<T, M: Memory>() -> M::Size;
 pub fn @i64_extend_i32(value: i32) -> i64;
 pub fn @u64_extend_u32(value: u32) -> u64;
 pub fn @i32_wrap_i64(value: i64) -> i32;
-// pub fn @pointer_offset<M: Memory, T>(count: M::*T) -> M::*T;
 
 #[inline]
-pub fn null<M: Memory, T>() -> M::*T { @pointer_from(0) }
+pub fn null<M: Memory, T>() -> M::*T { 0 as _ }
 #[inline]
-pub fn null_mut<M: Memory, T>() -> M::*mut T { @pointer_from(0) as _ }
+pub fn null_mut<M: Memory, T>() -> M::*mut T { 0 as _ }
 
 pub typeset Integer { u8, i8, u16, i16, u32, i32, u64, i64 }
 pub typeset PointerSize { u32, u64 }
@@ -41,25 +39,43 @@ pub trait Memory {
 
 impl<M: Memory, T> M::*T {
   #[inline]
-  pub fn cast_mut(self) -> M::*mut T {
-    self as _
+  pub fn addr(self) -> M::Size { self as _ }
+
+  #[inline]
+  pub fn cast_mut(self) -> M::*mut T { self as _ }
+
+  #[inline]
+  pub fn cast<U>(self) -> M::*U { self as _ }
+
+  #[inline]
+  pub fn add(self, count: M::Size) -> M::*T {
+    (self.addr() + count * @size_of::<T, M>()) as _
   }
 
   #[inline]
-  pub fn cast<U>(self) -> M::*U {
-    self as _
+  pub fn sub(self, count: M::Size) -> M::*T {
+    (self.addr() - count * @size_of::<T, M>()) as _
   }
 }
 
 impl<M: Memory, T> M::*mut T {
   #[inline]
-  pub fn cast_const(self) -> M::*T {
-    self as _
+  pub fn addr(self) -> M::Size { self as _ }
+
+  #[inline]
+  pub fn cast_const(self) -> M::*T { self as _ }
+
+  #[inline]
+  pub fn cast<U>(self) -> M::*mut U { self as _ }
+
+  #[inline]
+  pub fn add(self, count: M::Size) -> M::*mut T {
+    (self.addr() + count * @size_of::<T, M>()) as _
   }
 
   #[inline]
-  pub fn cast<U>(self) -> M::*mut U {
-    self as _
+  pub fn sub(self, count: M::Size) -> M::*mut T {
+    (self.addr() - count * @size_of::<T, M>()) as _
   }
 }
 

@@ -9,11 +9,10 @@ use super::*;
 const STD: &str = indoc! {"
     fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
     fn @memory_size<M: Memory>(mem: M) -> M::Size;
-    fn @pointer_from<M: Memory, T>(ptr: M::Size) -> M::*T;
 
     typeset PointerSize { u32, u64 }
 
-    pub fn null<M: Memory, T>() -> M::*T { @pointer_from(0) }
+    pub fn null<M: Memory, T>() -> M::*T { 0 as M::*T }
 
     trait Memory {
         type Size: PointerSize;
@@ -2326,7 +2325,7 @@ fn test_null_pointer_comparison() {
 
         fn make_null() -> *Node { null() }
         fn is_null_ptr(p: *Node) -> bool { p == null() }
-        fn ptr_from_addr() -> *Node { @pointer_from(4) }
+        fn ptr_from_addr() -> *Node { 4 as heap::*Node }
 
         export { heap, make_null, is_null_ptr, ptr_from_addr }
     "});
@@ -2349,7 +2348,7 @@ fn test_null_pointer_comparison() {
     assert_eq!(make_null.call(&mut store, ()).unwrap(), 0, "null() must be 0");
     assert_eq!(is_null_ptr.call(&mut store, 0).unwrap(), 1, "null ptr is null");
     assert_eq!(is_null_ptr.call(&mut store, 4).unwrap(), 0, "non-null ptr is not null");
-    assert_eq!(ptr_from_addr.call(&mut store, ()).unwrap(), 4, "@pointer_from(4) must be 4");
+    assert_eq!(ptr_from_addr.call(&mut store, ()).unwrap(), 4, "4 as *Node must be 4");
 }
 
 #[test]
