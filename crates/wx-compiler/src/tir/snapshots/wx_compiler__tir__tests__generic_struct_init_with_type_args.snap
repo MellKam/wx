@@ -42,11 +42,11 @@ type_pool:
       memory: 22
   - TypeParam:
       owner:
-        Function: 16
+        Function: 19
       param_index: 0
   - TypeParam:
       owner:
-        Function: 17
+        Function: 20
       param_index: 0
   - AssocTypeProjection:
       trait_index: 0
@@ -191,61 +191,175 @@ type_pool:
         items:
           - 55
         params_count: 0
+  - Function:
+      signature:
+        items:
+          - 11
+          - 13
+        params_count: 1
+  - Function:
+      signature:
+        items:
+          - 10
+          - 12
+        params_count: 1
+  - Function:
+      signature:
+        items:
+          - 13
+          - 11
+        params_count: 1
   - TypeParam:
       owner:
-        Function: 9
+        Function: 12
       param_index: 0
   - TypeParam:
       owner:
-        Function: 9
+        Function: 12
       param_index: 1
   - Pointer:
-      to: 58
+      to: 61
       mutable: false
-      memory: 57
+      memory: 60
   - Function:
       signature:
         items:
-          - 59
+          - 62
         params_count: 0
   - TypeParam:
       owner:
-        Function: 10
+        Function: 13
       param_index: 0
   - TypeParam:
       owner:
-        Function: 10
+        Function: 13
       param_index: 1
   - Pointer:
-      to: 62
+      to: 65
       mutable: true
-      memory: 61
+      memory: 64
   - Function:
       signature:
         items:
-          - 63
+          - 66
         params_count: 0
   - TypeParam:
       owner:
-        Function: 19
+        Function: 22
       param_index: 0
   - TypeParam:
       owner:
-        Function: 19
+        Function: 22
+      param_index: 1
+  - Pointer:
+      to: 69
+      mutable: false
+      memory: 68
+  - Pointer:
+      to: 69
+      mutable: true
+      memory: 68
+  - Function:
+      signature:
+        items:
+          - 70
+          - 71
+        params_count: 1
+  - TypeParam:
+      owner:
+        Function: 23
+      param_index: 0
+  - TypeParam:
+      owner:
+        Function: 23
+      param_index: 1
+  - Pointer:
+      to: 74
+      mutable: false
+      memory: 73
+  - TypeParam:
+      owner:
+        Function: 23
+      param_index: 2
+  - Pointer:
+      to: 76
+      mutable: false
+      memory: 73
+  - Function:
+      signature:
+        items:
+          - 75
+          - 77
+        params_count: 1
+  - TypeParam:
+      owner:
+        Function: 24
+      param_index: 0
+  - TypeParam:
+      owner:
+        Function: 24
+      param_index: 1
+  - Pointer:
+      to: 80
+      mutable: true
+      memory: 79
+  - Pointer:
+      to: 80
+      mutable: false
+      memory: 79
+  - Function:
+      signature:
+        items:
+          - 81
+          - 82
+        params_count: 1
+  - TypeParam:
+      owner:
+        Function: 25
+      param_index: 0
+  - TypeParam:
+      owner:
+        Function: 25
+      param_index: 1
+  - Pointer:
+      to: 85
+      mutable: true
+      memory: 84
+  - TypeParam:
+      owner:
+        Function: 25
+      param_index: 2
+  - Pointer:
+      to: 87
+      mutable: true
+      memory: 84
+  - Function:
+      signature:
+        items:
+          - 86
+          - 88
+        params_count: 1
+  - TypeParam:
+      owner:
+        Function: 26
+      param_index: 0
+  - TypeParam:
+      owner:
+        Function: 26
       param_index: 1
   - Slice:
-      of: 66
+      of: 91
       mutable: false
-      memory: 65
+      memory: 90
   - AssocTypeProjection:
       trait_index: 0
       assoc_name: 10
-      base: 65
+      base: 90
   - Function:
       signature:
         items:
-          - 67
-          - 68
+          - 92
+          - 93
         params_count: 1
   - Function:
       signature:
@@ -261,7 +375,7 @@ type_pool:
         params_count: 1
   - TypeParam:
       owner:
-        Struct: 33
+        Struct: 40
       param_index: 0
   - Struct:
       struct_index: 0
@@ -270,20 +384,20 @@ type_pool:
   - Function:
       signature:
         items:
-          - 73
+          - 98
         params_count: 0
   - AssocTypeProjection:
       trait_index: 0
       assoc_name: 10
-      base: 57
+      base: 60
   - Pointer:
-      to: 62
+      to: 65
       mutable: false
-      memory: 61
+      memory: 64
   - AssocTypeProjection:
       trait_index: 0
       assoc_name: 10
-      base: 61
+      base: 64
   - Struct:
       struct_index: 0
       args: []
@@ -353,66 +467,66 @@ functions:
       - kind: DirectCall
         file_id: 0
         span:
-          start: 937
-          end: 949
+          start: 1112
+          end: 1124
     attributes: []
     body: ~
-  - id: 16
+  - id: 19
     file_id: 0
     namespace: ~
     pub_span: ~
     kind: Trait
     type_params:
-      - name: 37
+      - name: 41
         name_span:
-          start: 773
-          end: 779
+          start: 948
+          end: 954
         bounds:
           - 0
         typeset_bound: ~
         accesses:
           - file_id: 0
             span:
-              start: 905
-              end: 909
+              start: 1080
+              end: 1084
           - file_id: 0
             span:
-              start: 920
-              end: 924
+              start: 1095
+              end: 1099
     signature_index: 29
     name:
-      inner: 38
+      inner: 42
       span:
-        start: 887
-        end: 891
+        start: 1062
+        end: 1066
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 892
-            end: 896
+            start: 1067
+            end: 1071
         ty:
           inner: 24
           span:
-            start: 892
-            end: 896
+            start: 1067
+            end: 1071
       - mut_span: ~
         name:
           inner: 9
           span:
-            start: 898
-            end: 903
+            start: 1073
+            end: 1078
         ty:
           inner: 28
           span:
-            start: 905
-            end: 915
+            start: 1080
+            end: 1090
     result:
       inner: 28
       span:
-        start: 920
-        end: 930
+        start: 1095
+        end: 1105
     accesses: []
     attributes:
       - Inline
@@ -424,28 +538,28 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 892
-                    end: 896
+                    start: 1067
+                    end: 1071
                 ty: 24
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 950
-                      end: 954
+                      start: 1125
+                      end: 1129
                     kind: Read
               - name:
                   inner: 9
                   span:
-                    start: 898
-                    end: 903
+                    start: 1073
+                    end: 1078
                 ty: 28
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 956
-                      end: 961
+                      start: 1131
+                      end: 1136
                     kind: Read
             inferred_type: 28
             expected_type: 28
@@ -467,65 +581,65 @@ functions:
                           local_index: 0
                       ty: 24
                       span:
-                        start: 950
-                        end: 954
+                        start: 1125
+                        end: 1129
                     - kind:
                         Local:
                           scope_index: 0
                           local_index: 1
                       ty: 28
                       span:
-                        start: 956
-                        end: 961
+                        start: 1131
+                        end: 1136
               ty: 28
               span:
-                start: 937
-                end: 962
+                start: 1112
+                end: 1137
         ty: 28
         span:
-          start: 931
-          end: 966
-  - id: 17
+          start: 1106
+          end: 1141
+  - id: 20
     file_id: 0
     namespace: ~
     pub_span: ~
     kind: Trait
     type_params:
-      - name: 37
+      - name: 41
         name_span:
-          start: 773
-          end: 779
+          start: 948
+          end: 954
         bounds:
           - 0
         typeset_bound: ~
         accesses:
           - file_id: 0
             span:
-              start: 999
-              end: 1003
+              start: 1174
+              end: 1178
     signature_index: 27
     name:
-      inner: 40
+      inner: 44
       span:
-        start: 985
-        end: 989
+        start: 1160
+        end: 1164
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 990
-            end: 994
+            start: 1165
+            end: 1169
         ty:
           inner: 25
           span:
-            start: 990
-            end: 994
+            start: 1165
+            end: 1169
     result:
       inner: 26
       span:
-        start: 999
-        end: 1009
+        start: 1174
+        end: 1184
     accesses: []
     attributes:
       - Inline
@@ -537,16 +651,16 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 990
-                    end: 994
+                    start: 1165
+                    end: 1169
                 ty: 25
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 1029
-                      end: 1033
+                      start: 1204
+                      end: 1208
                     kind: Read
             inferred_type: 26
             expected_type: 26
@@ -568,16 +682,16 @@ functions:
                           local_index: 0
                       ty: 25
                       span:
-                        start: 1029
-                        end: 1033
+                        start: 1204
+                        end: 1208
               ty: 26
               span:
-                start: 1016
-                end: 1034
+                start: 1191
+                end: 1209
         ty: 26
         span:
-          start: 1010
-          end: 1038
+          start: 1185
+          end: 1213
   - id: 3
     file_id: 0
     namespace: ~
@@ -627,8 +741,8 @@ functions:
       - kind: DirectCall
         file_id: 0
         span:
-          start: 1016
-          end: 1028
+          start: 1191
+          end: 1203
     attributes: []
     body: ~
   - id: 4
@@ -691,8 +805,8 @@ functions:
       - kind: DirectCall
         file_id: 0
         span:
-          start: 1118
-          end: 1128
+          start: 1627
+          end: 1637
     attributes: []
     body: ~
   - id: 5
@@ -833,13 +947,13 @@ functions:
       - kind: DirectCall
         file_id: 0
         span:
-          start: 528
-          end: 541
+          start: 719
+          end: 732
       - kind: DirectCall
         file_id: 0
         span:
-          start: 604
-          end: 617
+          start: 795
+          end: 808
     attributes: []
     body: ~
   - id: 7
@@ -925,145 +1039,142 @@ functions:
   - id: 9
     file_id: 0
     namespace: ~
-    pub_span:
-      start: 489
-      end: 492
-    kind: Free
-    type_params:
-      - name: 6
-        name_span:
-          start: 501
-          end: 502
-        bounds:
-          - 0
-        typeset_bound: ~
-        accesses:
-          - file_id: 0
-            span:
-              start: 520
-              end: 521
-      - name: 13
-        name_span:
-          start: 512
-          end: 513
-        bounds: []
-        typeset_bound: ~
-        accesses:
-          - file_id: 0
-            span:
-              start: 524
-              end: 525
-    signature_index: 60
+    pub_span: ~
+    kind: Intrinsic
+    type_params: []
+    signature_index: 57
     name:
-      inner: 23
+      inner: 22
       span:
-        start: 496
+        start: 485
         end: 500
-    params: []
+    params:
+      - mut_span: ~
+        name:
+          inner: 23
+          span:
+            start: 501
+            end: 506
+        ty:
+          inner: 11
+          span:
+            start: 508
+            end: 511
     result:
-      inner: 59
+      inner: 13
       span:
-        start: 520
-        end: 525
+        start: 516
+        end: 519
     accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals: []
-            inferred_type: 59
-            expected_type: 59
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                IntrinsicCall:
-                  name: 18
-                  type_arguments:
-                    - 57
-                    - 58
-                  arguments:
-                    - kind:
-                        Int:
-                          value: 0
-                      ty: 75
-                      span:
-                        start: 542
-                        end: 543
-              ty: 59
-              span:
-                start: 528
-                end: 544
-        ty: 59
-        span:
-          start: 526
-          end: 546
+    attributes: []
+    body: ~
   - id: 10
     file_id: 0
     namespace: ~
+    pub_span: ~
+    kind: Intrinsic
+    type_params: []
+    signature_index: 58
+    name:
+      inner: 26
+      span:
+        start: 528
+        end: 543
+    params:
+      - mut_span: ~
+        name:
+          inner: 23
+          span:
+            start: 544
+            end: 549
+        ty:
+          inner: 10
+          span:
+            start: 551
+            end: 554
+    result:
+      inner: 12
+      span:
+        start: 559
+        end: 562
+    accesses: []
+    attributes: []
+    body: ~
+  - id: 11
+    file_id: 0
+    namespace: ~
+    pub_span: ~
+    kind: Intrinsic
+    type_params: []
+    signature_index: 59
+    name:
+      inner: 28
+      span:
+        start: 571
+        end: 584
+    params:
+      - mut_span: ~
+        name:
+          inner: 23
+          span:
+            start: 585
+            end: 590
+        ty:
+          inner: 13
+          span:
+            start: 592
+            end: 595
+    result:
+      inner: 11
+      span:
+        start: 600
+        end: 603
+    accesses: []
+    attributes: []
+    body: ~
+  - id: 12
+    file_id: 0
+    namespace: ~
     pub_span:
-      start: 557
-      end: 560
+      start: 680
+      end: 683
     kind: Free
     type_params:
       - name: 6
         name_span:
-          start: 573
-          end: 574
+          start: 692
+          end: 693
         bounds:
           - 0
         typeset_bound: ~
         accesses:
           - file_id: 0
             span:
-              start: 592
-              end: 593
-          - file_id: 0
-            span:
-              start: 632
-              end: 633
-          - file_id: 0
-            span:
-              start: 620
-              end: 621
+              start: 711
+              end: 712
       - name: 13
         name_span:
-          start: 584
-          end: 585
+          start: 703
+          end: 704
         bounds: []
         typeset_bound: ~
         accesses:
           - file_id: 0
             span:
-              start: 600
-              end: 601
-          - file_id: 0
-            span:
-              start: 640
-              end: 641
-          - file_id: 0
-            span:
-              start: 623
-              end: 624
-    signature_index: 64
+              start: 715
+              end: 716
+    signature_index: 63
     name:
-      inner: 24
+      inner: 30
       span:
-        start: 564
-        end: 572
+        start: 687
+        end: 691
     params: []
     result:
-      inner: 63
+      inner: 62
       span:
-        start: 592
-        end: 601
+        start: 711
+        end: 716
     accesses: []
     attributes:
       - Inline
@@ -1074,8 +1185,8 @@ functions:
             label: ~
             parent: ~
             locals: []
-            inferred_type: 63
-            expected_type: 63
+            inferred_type: 62
+            expected_type: 62
       block:
         kind:
           Block:
@@ -1086,82 +1197,169 @@ functions:
                 IntrinsicCall:
                   name: 18
                   type_arguments:
+                    - 60
                     - 61
-                    - 62
                   arguments:
                     - kind:
                         Int:
                           value: 0
-                      ty: 77
+                      ty: 100
                       span:
-                        start: 626
-                        end: 627
-              ty: 63
+                        start: 733
+                        end: 734
+              ty: 62
               span:
-                start: 604
-                end: 628
-        ty: 63
+                start: 719
+                end: 735
+        ty: 62
         span:
-          start: 602
-          end: 643
-  - id: 19
+          start: 717
+          end: 737
+  - id: 13
     file_id: 0
     namespace: ~
     pub_span:
-      start: 1088
-      end: 1090
+      start: 748
+      end: 751
+    kind: Free
+    type_params:
+      - name: 6
+        name_span:
+          start: 764
+          end: 765
+        bounds:
+          - 0
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 783
+              end: 784
+      - name: 13
+        name_span:
+          start: 775
+          end: 776
+        bounds: []
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 791
+              end: 792
+    signature_index: 67
+    name:
+      inner: 31
+      span:
+        start: 755
+        end: 763
+    params: []
+    result:
+      inner: 66
+      span:
+        start: 783
+        end: 792
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals: []
+            inferred_type: 66
+            expected_type: 66
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                IntrinsicCall:
+                  name: 18
+                  type_arguments:
+                    - 64
+                    - 65
+                  arguments:
+                    - kind:
+                        Int:
+                          value: 0
+                      ty: 102
+                      span:
+                        start: 809
+                        end: 810
+              ty: 66
+              span:
+                start: 795
+                end: 811
+        ty: 66
+        span:
+          start: 793
+          end: 818
+  - id: 22
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 1262
+      end: 1264
     kind: Impl
     type_params:
       - name: 6
         name_span:
-          start: 1047
-          end: 1048
+          start: 1222
+          end: 1223
         bounds:
           - 0
         typeset_bound: ~
         accesses:
           - file_id: 0
             span:
-              start: 1061
-              end: 1062
+              start: 1236
+              end: 1237
           - file_id: 0
             span:
-              start: 1104
-              end: 1105
+              start: 1283
+              end: 1284
       - name: 13
         name_span:
-          start: 1058
-          end: 1059
+          start: 1233
+          end: 1234
         bounds: []
         typeset_bound: ~
         accesses:
           - file_id: 0
             span:
-              start: 1066
-              end: 1067
-    signature_index: 69
+              start: 1240
+              end: 1241
+          - file_id: 0
+            span:
+              start: 1291
+              end: 1292
+    signature_index: 72
     name:
-      inner: 17
+      inner: 45
       span:
-        start: 1091
-        end: 1094
+        start: 1265
+        end: 1273
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 1095
-            end: 1099
+            start: 1274
+            end: 1278
         ty:
-          inner: 67
+          inner: 70
           span:
-            start: 1095
-            end: 1099
+            start: 1274
+            end: 1278
     result:
-      inner: 68
+      inner: 71
       span:
-        start: 1104
-        end: 1111
+        start: 1283
+        end: 1292
     accesses: []
     attributes:
       - Inline
@@ -1173,19 +1371,445 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 1095
-                    end: 1099
-                ty: 67
+                    start: 1274
+                    end: 1278
+                ty: 70
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 1129
-                      end: 1133
+                      start: 1299
+                      end: 1303
                     kind: Read
-            inferred_type: 68
-            expected_type: 68
+            inferred_type: 71
+            expected_type: 71
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Local:
+                  scope_index: 0
+                  local_index: 0
+              ty: 71
+              span:
+                start: 1299
+                end: 1303
+        ty: 71
+        span:
+          start: 1293
+          end: 1312
+  - id: 23
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 1332
+      end: 1334
+    kind: Impl
+    type_params:
+      - name: 6
+        name_span:
+          start: 1222
+          end: 1223
+        bounds:
+          - 0
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1236
+              end: 1237
+          - file_id: 0
+            span:
+              start: 1352
+              end: 1353
+      - name: 13
+        name_span:
+          start: 1233
+          end: 1234
+        bounds: []
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1240
+              end: 1241
+      - name: 47
+        name_span:
+          start: 1340
+          end: 1341
+        bounds: []
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1356
+              end: 1357
+    signature_index: 78
+    name:
+      inner: 46
+      span:
+        start: 1335
+        end: 1339
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 1343
+            end: 1347
+        ty:
+          inner: 75
+          span:
+            start: 1343
+            end: 1347
+    result:
+      inner: 77
+      span:
+        start: 1352
+        end: 1357
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 1343
+                    end: 1347
+                ty: 75
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 1364
+                      end: 1368
+                    kind: Read
+            inferred_type: 77
+            expected_type: 77
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Local:
+                  scope_index: 0
+                  local_index: 0
+              ty: 77
+              span:
+                start: 1364
+                end: 1368
+        ty: 77
+        span:
+          start: 1358
+          end: 1377
+  - id: 24
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 1430
+      end: 1432
+    kind: Impl
+    type_params:
+      - name: 6
+        name_span:
+          start: 1386
+          end: 1387
+        bounds:
+          - 0
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1400
+              end: 1401
+          - file_id: 0
+            span:
+              start: 1453
+              end: 1454
+      - name: 13
+        name_span:
+          start: 1397
+          end: 1398
+        bounds: []
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1408
+              end: 1409
+          - file_id: 0
+            span:
+              start: 1457
+              end: 1458
+    signature_index: 83
+    name:
+      inner: 48
+      span:
+        start: 1433
+        end: 1443
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 1444
+            end: 1448
+        ty:
+          inner: 81
+          span:
+            start: 1444
+            end: 1448
+    result:
+      inner: 82
+      span:
+        start: 1453
+        end: 1458
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 1444
+                    end: 1448
+                ty: 81
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 1465
+                      end: 1469
+                    kind: Read
+            inferred_type: 82
+            expected_type: 82
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Local:
+                  scope_index: 0
+                  local_index: 0
+              ty: 82
+              span:
+                start: 1465
+                end: 1469
+        ty: 82
+        span:
+          start: 1459
+          end: 1478
+  - id: 25
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 1498
+      end: 1500
+    kind: Impl
+    type_params:
+      - name: 6
+        name_span:
+          start: 1386
+          end: 1387
+        bounds:
+          - 0
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1400
+              end: 1401
+          - file_id: 0
+            span:
+              start: 1518
+              end: 1519
+      - name: 13
+        name_span:
+          start: 1397
+          end: 1398
+        bounds: []
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1408
+              end: 1409
+      - name: 47
+        name_span:
+          start: 1506
+          end: 1507
+        bounds: []
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1526
+              end: 1527
+    signature_index: 89
+    name:
+      inner: 46
+      span:
+        start: 1501
+        end: 1505
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 1509
+            end: 1513
+        ty:
+          inner: 86
+          span:
+            start: 1509
+            end: 1513
+    result:
+      inner: 88
+      span:
+        start: 1518
+        end: 1527
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 1509
+                    end: 1513
+                ty: 86
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 1534
+                      end: 1538
+                    kind: Read
+            inferred_type: 88
+            expected_type: 88
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Local:
+                  scope_index: 0
+                  local_index: 0
+              ty: 88
+              span:
+                start: 1534
+                end: 1538
+        ty: 88
+        span:
+          start: 1528
+          end: 1547
+  - id: 26
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 1597
+      end: 1599
+    kind: Impl
+    type_params:
+      - name: 6
+        name_span:
+          start: 1556
+          end: 1557
+        bounds:
+          - 0
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1570
+              end: 1571
+          - file_id: 0
+            span:
+              start: 1613
+              end: 1614
+      - name: 13
+        name_span:
+          start: 1567
+          end: 1568
+        bounds: []
+        typeset_bound: ~
+        accesses:
+          - file_id: 0
+            span:
+              start: 1575
+              end: 1576
+    signature_index: 94
+    name:
+      inner: 17
+      span:
+        start: 1600
+        end: 1603
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 1604
+            end: 1608
+        ty:
+          inner: 92
+          span:
+            start: 1604
+            end: 1608
+    result:
+      inner: 93
+      span:
+        start: 1613
+        end: 1620
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 1604
+                    end: 1608
+                ty: 92
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 1638
+                      end: 1642
+                    kind: Read
+            inferred_type: 93
+            expected_type: 93
       block:
         kind:
           Block:
@@ -1196,56 +1820,56 @@ functions:
                 IntrinsicCall:
                   name: 12
                   type_arguments:
-                    - 65
-                    - 66
+                    - 90
+                    - 91
                   arguments:
                     - kind:
                         Local:
                           scope_index: 0
                           local_index: 0
-                      ty: 67
+                      ty: 92
                       span:
-                        start: 1129
-                        end: 1133
-              ty: 68
+                        start: 1638
+                        end: 1642
+              ty: 93
               span:
-                start: 1118
-                end: 1134
-        ty: 68
+                start: 1627
+                end: 1643
+        ty: 93
         span:
-          start: 1112
-          end: 1138
-  - id: 20
+          start: 1621
+          end: 1647
+  - id: 27
     file_id: 0
     namespace: ~
     pub_span:
-      start: 1172
-      end: 1174
+      start: 1681
+      end: 1683
     kind: Impl
     type_params: []
-    signature_index: 70
+    signature_index: 95
     name:
-      inner: 42
+      inner: 50
       span:
-        start: 1175
-        end: 1193
+        start: 1684
+        end: 1702
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 1194
-            end: 1198
+            start: 1703
+            end: 1707
         ty:
           inner: 17
           span:
-            start: 1194
-            end: 1198
+            start: 1703
+            end: 1707
     result:
       inner: 17
       span:
-        start: 1203
-        end: 1207
+        start: 1712
+        end: 1716
     accesses: []
     attributes:
       - Inline
@@ -1257,24 +1881,24 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 1194
-                    end: 1198
+                    start: 1703
+                    end: 1707
                 ty: 17
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 1217
-                      end: 1221
+                      start: 1726
+                      end: 1730
                     kind: Read
                   - span:
-                      start: 1253
-                      end: 1257
+                      start: 1762
+                      end: 1766
                     kind: Read
                   - span:
-                      start: 1311
-                      end: 1315
+                      start: 1820
+                      end: 1824
                     kind: Read
             inferred_type: 17
             expected_type: 17
@@ -1308,13 +1932,13 @@ functions:
                                 local_index: 0
                             ty: 17
                             span:
-                              start: 1217
-                              end: 1221
-                        id: 24
+                              start: 1726
+                              end: 1730
+                        id: 31
                     ty: 16
                     span:
-                      start: 1217
-                      end: 1242
+                      start: 1726
+                      end: 1751
                   then_block:
                     kind:
                       Block:
@@ -1326,8 +1950,8 @@ functions:
                               operator:
                                 inner: BitXor
                                 span:
-                                  start: 1265
-                                  end: 1266
+                                  start: 1774
+                                  end: 1775
                               left:
                                 kind:
                                   Local:
@@ -1335,24 +1959,24 @@ functions:
                                     local_index: 0
                                 ty: 6
                                 span:
-                                  start: 1253
-                                  end: 1257
+                                  start: 1762
+                                  end: 1766
                               right:
                                 kind:
                                   Const:
                                     id: 0
                                 ty: 6
                                 span:
-                                  start: 1267
-                                  end: 1282
+                                  start: 1776
+                                  end: 1791
                           ty: 17
                           span:
-                            start: 1252
-                            end: 1282
+                            start: 1761
+                            end: 1791
                     ty: 17
                     span:
-                      start: 1243
-                      end: 1297
+                      start: 1752
+                      end: 1806
                   else_block:
                     kind:
                       Block:
@@ -1365,51 +1989,51 @@ functions:
                               local_index: 0
                           ty: 17
                           span:
-                            start: 1311
-                            end: 1315
+                            start: 1820
+                            end: 1824
                     ty: 17
                     span:
-                      start: 1303
-                      end: 1321
+                      start: 1812
+                      end: 1830
               ty: 17
               span:
-                start: 1214
-                end: 1321
+                start: 1723
+                end: 1830
         ty: 17
         span:
-          start: 1208
-          end: 1325
-  - id: 21
+          start: 1717
+          end: 1834
+  - id: 28
     file_id: 0
     namespace: ~
     pub_span:
-      start: 1345
-      end: 1347
+      start: 1854
+      end: 1856
     kind: Impl
     type_params: []
-    signature_index: 70
+    signature_index: 95
     name:
-      inner: 44
+      inner: 52
       span:
-        start: 1348
-        end: 1366
+        start: 1857
+        end: 1875
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 1367
-            end: 1371
+            start: 1876
+            end: 1880
         ty:
           inner: 17
           span:
-            start: 1367
-            end: 1371
+            start: 1876
+            end: 1880
     result:
       inner: 17
       span:
-        start: 1376
-        end: 1380
+        start: 1885
+        end: 1889
     accesses: []
     attributes:
       - Inline
@@ -1421,24 +2045,24 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 1367
-                    end: 1371
+                    start: 1876
+                    end: 1880
                 ty: 17
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 1390
-                      end: 1394
+                      start: 1899
+                      end: 1903
                     kind: Read
                   - span:
-                      start: 1426
-                      end: 1430
+                      start: 1935
+                      end: 1939
                     kind: Read
                   - span:
-                      start: 1484
-                      end: 1488
+                      start: 1993
+                      end: 1997
                     kind: Read
             inferred_type: 17
             expected_type: 17
@@ -1472,13 +2096,13 @@ functions:
                                 local_index: 0
                             ty: 17
                             span:
-                              start: 1390
-                              end: 1394
-                        id: 23
+                              start: 1899
+                              end: 1903
+                        id: 30
                     ty: 16
                     span:
-                      start: 1390
-                      end: 1415
+                      start: 1899
+                      end: 1924
                   then_block:
                     kind:
                       Block:
@@ -1490,8 +2114,8 @@ functions:
                               operator:
                                 inner: BitXor
                                 span:
-                                  start: 1438
-                                  end: 1439
+                                  start: 1947
+                                  end: 1948
                               left:
                                 kind:
                                   Local:
@@ -1499,24 +2123,24 @@ functions:
                                     local_index: 0
                                 ty: 6
                                 span:
-                                  start: 1426
-                                  end: 1430
+                                  start: 1935
+                                  end: 1939
                               right:
                                 kind:
                                   Const:
                                     id: 0
                                 ty: 6
                                 span:
-                                  start: 1440
-                                  end: 1455
+                                  start: 1949
+                                  end: 1964
                           ty: 17
                           span:
-                            start: 1425
-                            end: 1455
+                            start: 1934
+                            end: 1964
                     ty: 17
                     span:
-                      start: 1416
-                      end: 1470
+                      start: 1925
+                      end: 1979
                   else_block:
                     kind:
                       Block:
@@ -1529,51 +2153,51 @@ functions:
                               local_index: 0
                           ty: 17
                           span:
-                            start: 1484
-                            end: 1488
+                            start: 1993
+                            end: 1997
                     ty: 17
                     span:
-                      start: 1476
-                      end: 1494
+                      start: 1985
+                      end: 2003
               ty: 17
               span:
-                start: 1387
-                end: 1494
+                start: 1896
+                end: 2003
         ty: 17
         span:
-          start: 1381
-          end: 1498
-  - id: 22
+          start: 1890
+          end: 2007
+  - id: 29
     file_id: 0
     namespace: ~
     pub_span:
-      start: 1518
-      end: 1520
+      start: 2027
+      end: 2029
     kind: Impl
     type_params: []
-    signature_index: 71
+    signature_index: 96
     name:
-      inner: 46
+      inner: 54
       span:
-        start: 1521
-        end: 1529
+        start: 2030
+        end: 2038
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 1530
-            end: 1534
+            start: 2039
+            end: 2043
         ty:
           inner: 17
           span:
-            start: 1530
-            end: 1534
+            start: 2039
+            end: 2043
     result:
       inner: 16
       span:
-        start: 1539
-        end: 1543
+        start: 2048
+        end: 2052
     accesses: []
     attributes:
       - Inline
@@ -1585,16 +2209,16 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 1530
-                    end: 1534
+                    start: 2039
+                    end: 2043
                 ty: 17
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 1551
-                      end: 1555
+                      start: 2060
+                      end: 2064
                     kind: Read
             inferred_type: 16
             expected_type: 16
@@ -1609,8 +2233,8 @@ functions:
                   operator:
                     inner: LessEq
                     span:
-                      start: 1564
-                      end: 1566
+                      start: 2073
+                      end: 2075
                   left:
                     kind:
                       Local:
@@ -1618,61 +2242,61 @@ functions:
                         local_index: 0
                     ty: 10
                     span:
-                      start: 1551
-                      end: 1555
+                      start: 2060
+                      end: 2064
                   right:
                     kind:
                       Int:
                         value: 127
                     ty: 10
                     span:
-                      start: 1567
-                      end: 1571
+                      start: 2076
+                      end: 2080
               ty: 16
               span:
-                start: 1550
-                end: 1571
+                start: 2059
+                end: 2080
         ty: 16
         span:
-          start: 1544
-          end: 1575
-  - id: 23
+          start: 2053
+          end: 2084
+  - id: 30
     file_id: 0
     namespace: ~
     pub_span:
-      start: 1595
-      end: 1597
+      start: 2104
+      end: 2106
     kind: Impl
     type_params: []
-    signature_index: 71
+    signature_index: 96
     name:
-      inner: 45
+      inner: 53
       span:
-        start: 1598
-        end: 1616
+        start: 2107
+        end: 2125
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 1617
-            end: 1621
+            start: 2126
+            end: 2130
         ty:
           inner: 17
           span:
-            start: 1617
-            end: 1621
+            start: 2126
+            end: 2130
     result:
       inner: 16
       span:
-        start: 1626
-        end: 1630
+        start: 2135
+        end: 2139
     accesses:
       - kind: DirectCall
         file_id: 0
         span:
-          start: 1395
-          end: 1413
+          start: 1904
+          end: 1922
     attributes:
       - Inline
     body:
@@ -1683,20 +2307,20 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 1617
-                    end: 1621
+                    start: 2126
+                    end: 2130
                 ty: 17
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 1637
-                      end: 1641
+                      start: 2146
+                      end: 2150
                     kind: Read
                   - span:
-                      start: 1652
-                      end: 1656
+                      start: 2161
+                      end: 2165
                     kind: Read
             inferred_type: 16
             expected_type: 16
@@ -1711,16 +2335,16 @@ functions:
                   operator:
                     inner: And
                     span:
-                      start: 1649
-                      end: 1651
+                      start: 2158
+                      end: 2160
                   left:
                     kind:
                       Binary:
                         operator:
                           inner: GreaterEq
                           span:
-                            start: 1642
-                            end: 1644
+                            start: 2151
+                            end: 2153
                         left:
                           kind:
                             Local:
@@ -1728,28 +2352,28 @@ functions:
                               local_index: 0
                           ty: 17
                           span:
-                            start: 1637
-                            end: 1641
+                            start: 2146
+                            end: 2150
                         right:
                           kind:
                             Char:
                               value: A
                           ty: 17
                           span:
-                            start: 1645
-                            end: 1648
+                            start: 2154
+                            end: 2157
                     ty: 16
                     span:
-                      start: 1637
-                      end: 1648
+                      start: 2146
+                      end: 2157
                   right:
                     kind:
                       Binary:
                         operator:
                           inner: LessEq
                           span:
-                            start: 1657
-                            end: 1659
+                            start: 2166
+                            end: 2168
                         left:
                           kind:
                             Local:
@@ -1757,65 +2381,65 @@ functions:
                               local_index: 0
                           ty: 17
                           span:
-                            start: 1652
-                            end: 1656
+                            start: 2161
+                            end: 2165
                         right:
                           kind:
                             Char:
                               value: Z
                           ty: 17
                           span:
-                            start: 1660
-                            end: 1663
+                            start: 2169
+                            end: 2172
                     ty: 16
                     span:
-                      start: 1652
-                      end: 1663
+                      start: 2161
+                      end: 2172
               ty: 16
               span:
-                start: 1637
-                end: 1663
+                start: 2146
+                end: 2172
         ty: 16
         span:
-          start: 1631
-          end: 1667
-  - id: 24
+          start: 2140
+          end: 2176
+  - id: 31
     file_id: 0
     namespace: ~
     pub_span:
-      start: 1687
-      end: 1689
+      start: 2196
+      end: 2198
     kind: Impl
     type_params: []
-    signature_index: 71
+    signature_index: 96
     name:
-      inner: 43
+      inner: 51
       span:
-        start: 1690
-        end: 1708
+        start: 2199
+        end: 2217
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 1709
-            end: 1713
+            start: 2218
+            end: 2222
         ty:
           inner: 17
           span:
-            start: 1709
-            end: 1713
+            start: 2218
+            end: 2222
     result:
       inner: 16
       span:
-        start: 1718
-        end: 1722
+        start: 2227
+        end: 2231
     accesses:
       - kind: DirectCall
         file_id: 0
         span:
-          start: 1222
-          end: 1240
+          start: 1731
+          end: 1749
     attributes:
       - Inline
     body:
@@ -1826,20 +2450,20 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 1709
-                    end: 1713
+                    start: 2218
+                    end: 2222
                 ty: 17
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 1729
-                      end: 1733
+                      start: 2238
+                      end: 2242
                     kind: Read
                   - span:
-                      start: 1744
-                      end: 1748
+                      start: 2253
+                      end: 2257
                     kind: Read
             inferred_type: 16
             expected_type: 16
@@ -1854,16 +2478,16 @@ functions:
                   operator:
                     inner: And
                     span:
-                      start: 1741
-                      end: 1743
+                      start: 2250
+                      end: 2252
                   left:
                     kind:
                       Binary:
                         operator:
                           inner: GreaterEq
                           span:
-                            start: 1734
-                            end: 1736
+                            start: 2243
+                            end: 2245
                         left:
                           kind:
                             Local:
@@ -1871,28 +2495,28 @@ functions:
                               local_index: 0
                           ty: 17
                           span:
-                            start: 1729
-                            end: 1733
+                            start: 2238
+                            end: 2242
                         right:
                           kind:
                             Char:
                               value: a
                           ty: 17
                           span:
-                            start: 1737
-                            end: 1740
+                            start: 2246
+                            end: 2249
                     ty: 16
                     span:
-                      start: 1729
-                      end: 1740
+                      start: 2238
+                      end: 2249
                   right:
                     kind:
                       Binary:
                         operator:
                           inner: LessEq
                           span:
-                            start: 1749
-                            end: 1751
+                            start: 2258
+                            end: 2260
                         left:
                           kind:
                             Local:
@@ -1900,59 +2524,59 @@ functions:
                               local_index: 0
                           ty: 17
                           span:
-                            start: 1744
-                            end: 1748
+                            start: 2253
+                            end: 2257
                         right:
                           kind:
                             Char:
                               value: z
                           ty: 17
                           span:
-                            start: 1752
-                            end: 1755
+                            start: 2261
+                            end: 2264
                     ty: 16
                     span:
-                      start: 1744
-                      end: 1755
+                      start: 2253
+                      end: 2264
               ty: 16
               span:
-                start: 1729
-                end: 1755
+                start: 2238
+                end: 2264
         ty: 16
         span:
-          start: 1723
-          end: 1759
-  - id: 25
+          start: 2232
+          end: 2268
+  - id: 32
     file_id: 0
     namespace: ~
     pub_span:
-      start: 1779
-      end: 1781
+      start: 2288
+      end: 2290
     kind: Impl
     type_params: []
-    signature_index: 71
+    signature_index: 96
     name:
-      inner: 52
+      inner: 60
       span:
-        start: 1782
-        end: 1801
+        start: 2291
+        end: 2310
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
-            start: 1802
-            end: 1806
+            start: 2311
+            end: 2315
         ty:
           inner: 17
           span:
-            start: 1802
-            end: 1806
+            start: 2311
+            end: 2315
     result:
       inner: 16
       span:
-        start: 1811
-        end: 1815
+        start: 2320
+        end: 2324
     accesses: []
     attributes:
       - Inline
@@ -1964,28 +2588,28 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
-                    start: 1802
-                    end: 1806
+                    start: 2311
+                    end: 2315
                 ty: 17
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 1823
-                      end: 1827
+                      start: 2332
+                      end: 2336
                     kind: Read
                   - span:
-                      start: 1838
-                      end: 1842
+                      start: 2347
+                      end: 2351
                     kind: Read
                   - span:
-                      start: 1854
-                      end: 1858
+                      start: 2363
+                      end: 2367
                     kind: Read
                   - span:
-                      start: 1869
-                      end: 1873
+                      start: 2378
+                      end: 2382
                     kind: Read
             inferred_type: 16
             expected_type: 16
@@ -2000,24 +2624,24 @@ functions:
                   operator:
                     inner: BitOr
                     span:
-                      start: 1851
-                      end: 1852
+                      start: 2360
+                      end: 2361
                   left:
                     kind:
                       Binary:
                         operator:
                           inner: And
                           span:
-                            start: 1835
-                            end: 1837
+                            start: 2344
+                            end: 2346
                         left:
                           kind:
                             Binary:
                               operator:
                                 inner: GreaterEq
                                 span:
-                                  start: 1828
-                                  end: 1830
+                                  start: 2337
+                                  end: 2339
                               left:
                                 kind:
                                   Local:
@@ -2025,28 +2649,28 @@ functions:
                                     local_index: 0
                                 ty: 17
                                 span:
-                                  start: 1823
-                                  end: 1827
+                                  start: 2332
+                                  end: 2336
                               right:
                                 kind:
                                   Char:
                                     value: A
                                 ty: 17
                                 span:
-                                  start: 1831
-                                  end: 1834
+                                  start: 2340
+                                  end: 2343
                           ty: 16
                           span:
-                            start: 1823
-                            end: 1834
+                            start: 2332
+                            end: 2343
                         right:
                           kind:
                             Binary:
                               operator:
                                 inner: LessEq
                                 span:
-                                  start: 1843
-                                  end: 1845
+                                  start: 2352
+                                  end: 2354
                               left:
                                 kind:
                                   Local:
@@ -2054,40 +2678,40 @@ functions:
                                     local_index: 0
                                 ty: 17
                                 span:
-                                  start: 1838
-                                  end: 1842
+                                  start: 2347
+                                  end: 2351
                               right:
                                 kind:
                                   Char:
                                     value: Z
                                 ty: 17
                                 span:
-                                  start: 1846
-                                  end: 1849
+                                  start: 2355
+                                  end: 2358
                           ty: 16
                           span:
-                            start: 1838
-                            end: 1849
+                            start: 2347
+                            end: 2358
                     ty: 16
                     span:
-                      start: 1823
-                      end: 1849
+                      start: 2332
+                      end: 2358
                   right:
                     kind:
                       Binary:
                         operator:
                           inner: And
                           span:
-                            start: 1866
-                            end: 1868
+                            start: 2375
+                            end: 2377
                         left:
                           kind:
                             Binary:
                               operator:
                                 inner: GreaterEq
                                 span:
-                                  start: 1859
-                                  end: 1861
+                                  start: 2368
+                                  end: 2370
                               left:
                                 kind:
                                   Local:
@@ -2095,28 +2719,28 @@ functions:
                                     local_index: 0
                                 ty: 17
                                 span:
-                                  start: 1854
-                                  end: 1858
+                                  start: 2363
+                                  end: 2367
                               right:
                                 kind:
                                   Char:
                                     value: a
                                 ty: 17
                                 span:
-                                  start: 1862
-                                  end: 1865
+                                  start: 2371
+                                  end: 2374
                           ty: 16
                           span:
-                            start: 1854
-                            end: 1865
+                            start: 2363
+                            end: 2374
                         right:
                           kind:
                             Binary:
                               operator:
                                 inner: LessEq
                                 span:
-                                  start: 1874
-                                  end: 1876
+                                  start: 2383
+                                  end: 2385
                               left:
                                 kind:
                                   Local:
@@ -2124,917 +2748,50 @@ functions:
                                     local_index: 0
                                 ty: 17
                                 span:
-                                  start: 1869
-                                  end: 1873
+                                  start: 2378
+                                  end: 2382
                               right:
                                 kind:
                                   Char:
                                     value: z
                                 ty: 17
                                 span:
-                                  start: 1877
-                                  end: 1880
+                                  start: 2386
+                                  end: 2389
                           ty: 16
-                          span:
-                            start: 1869
-                            end: 1880
-                    ty: 16
-                    span:
-                      start: 1854
-                      end: 1880
-              ty: 16
-              span:
-                start: 1822
-                end: 1881
-        ty: 16
-        span:
-          start: 1816
-          end: 1885
-  - id: 26
-    file_id: 0
-    namespace: ~
-    pub_span:
-      start: 1905
-      end: 1907
-    kind: Impl
-    type_params: []
-    signature_index: 71
-    name:
-      inner: 53
-      span:
-        start: 1908
-        end: 1922
-    params:
-      - mut_span: ~
-        name:
-          inner: 39
-          span:
-            start: 1923
-            end: 1927
-        ty:
-          inner: 17
-          span:
-            start: 1923
-            end: 1927
-    result:
-      inner: 16
-      span:
-        start: 1932
-        end: 1936
-    accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals:
-              - name:
-                  inner: 39
-                  span:
-                    start: 1923
-                    end: 1927
-                ty: 17
-                mut_span: ~
-                accesses:
-                  - span:
-                      start: 1943
-                      end: 1947
-                    kind: Read
-                  - span:
-                      start: 1958
-                      end: 1962
-                    kind: Read
-            inferred_type: 16
-            expected_type: 16
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                Binary:
-                  operator:
-                    inner: And
-                    span:
-                      start: 1955
-                      end: 1957
-                  left:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: GreaterEq
-                          span:
-                            start: 1948
-                            end: 1950
-                        left:
-                          kind:
-                            Local:
-                              scope_index: 0
-                              local_index: 0
-                          ty: 17
-                          span:
-                            start: 1943
-                            end: 1947
-                        right:
-                          kind:
-                            Char:
-                              value: "0"
-                          ty: 17
-                          span:
-                            start: 1951
-                            end: 1954
-                    ty: 16
-                    span:
-                      start: 1943
-                      end: 1954
-                  right:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: LessEq
-                          span:
-                            start: 1963
-                            end: 1965
-                        left:
-                          kind:
-                            Local:
-                              scope_index: 0
-                              local_index: 0
-                          ty: 17
-                          span:
-                            start: 1958
-                            end: 1962
-                        right:
-                          kind:
-                            Char:
-                              value: "9"
-                          ty: 17
-                          span:
-                            start: 1966
-                            end: 1969
-                    ty: 16
-                    span:
-                      start: 1958
-                      end: 1969
-              ty: 16
-              span:
-                start: 1943
-                end: 1969
-        ty: 16
-        span:
-          start: 1937
-          end: 1973
-  - id: 27
-    file_id: 0
-    namespace: ~
-    pub_span:
-      start: 1993
-      end: 1995
-    kind: Impl
-    type_params: []
-    signature_index: 71
-    name:
-      inner: 56
-      span:
-        start: 1996
-        end: 2017
-    params:
-      - mut_span: ~
-        name:
-          inner: 39
-          span:
-            start: 2018
-            end: 2022
-        ty:
-          inner: 17
-          span:
-            start: 2018
-            end: 2022
-    result:
-      inner: 16
-      span:
-        start: 2027
-        end: 2031
-    accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals:
-              - name:
-                  inner: 39
-                  span:
-                    start: 2018
-                    end: 2022
-                ty: 17
-                mut_span: ~
-                accesses:
-                  - span:
-                      start: 2039
-                      end: 2043
-                    kind: Read
-                  - span:
-                      start: 2054
-                      end: 2058
-                    kind: Read
-                  - span:
-                      start: 2076
-                      end: 2080
-                    kind: Read
-                  - span:
-                      start: 2091
-                      end: 2095
-                    kind: Read
-                  - span:
-                      start: 2113
-                      end: 2117
-                    kind: Read
-                  - span:
-                      start: 2128
-                      end: 2132
-                    kind: Read
-            inferred_type: 16
-            expected_type: 16
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                Binary:
-                  operator:
-                    inner: BitOr
-                    span:
-                      start: 2110
-                      end: 2111
-                  left:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: BitOr
-                          span:
-                            start: 2073
-                            end: 2074
-                        left:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: And
-                                span:
-                                  start: 2051
-                                  end: 2053
-                              left:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: GreaterEq
-                                      span:
-                                        start: 2044
-                                        end: 2046
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2039
-                                        end: 2043
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: A
-                                      ty: 17
-                                      span:
-                                        start: 2047
-                                        end: 2050
-                                ty: 16
-                                span:
-                                  start: 2039
-                                  end: 2050
-                              right:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: LessEq
-                                      span:
-                                        start: 2059
-                                        end: 2061
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2054
-                                        end: 2058
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: Z
-                                      ty: 17
-                                      span:
-                                        start: 2062
-                                        end: 2065
-                                ty: 16
-                                span:
-                                  start: 2054
-                                  end: 2065
-                          ty: 16
-                          span:
-                            start: 2039
-                            end: 2065
-                        right:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: And
-                                span:
-                                  start: 2088
-                                  end: 2090
-                              left:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: GreaterEq
-                                      span:
-                                        start: 2081
-                                        end: 2083
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2076
-                                        end: 2080
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: a
-                                      ty: 17
-                                      span:
-                                        start: 2084
-                                        end: 2087
-                                ty: 16
-                                span:
-                                  start: 2076
-                                  end: 2087
-                              right:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: LessEq
-                                      span:
-                                        start: 2096
-                                        end: 2098
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2091
-                                        end: 2095
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: z
-                                      ty: 17
-                                      span:
-                                        start: 2099
-                                        end: 2102
-                                ty: 16
-                                span:
-                                  start: 2091
-                                  end: 2102
-                          ty: 16
-                          span:
-                            start: 2076
-                            end: 2102
-                    ty: 16
-                    span:
-                      start: 2038
-                      end: 2103
-                  right:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: And
-                          span:
-                            start: 2125
-                            end: 2127
-                        left:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: GreaterEq
-                                span:
-                                  start: 2118
-                                  end: 2120
-                              left:
-                                kind:
-                                  Local:
-                                    scope_index: 0
-                                    local_index: 0
-                                ty: 17
-                                span:
-                                  start: 2113
-                                  end: 2117
-                              right:
-                                kind:
-                                  Char:
-                                    value: "0"
-                                ty: 17
-                                span:
-                                  start: 2121
-                                  end: 2124
-                          ty: 16
-                          span:
-                            start: 2113
-                            end: 2124
-                        right:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: LessEq
-                                span:
-                                  start: 2133
-                                  end: 2135
-                              left:
-                                kind:
-                                  Local:
-                                    scope_index: 0
-                                    local_index: 0
-                                ty: 17
-                                span:
-                                  start: 2128
-                                  end: 2132
-                              right:
-                                kind:
-                                  Char:
-                                    value: "9"
-                                ty: 17
-                                span:
-                                  start: 2136
-                                  end: 2139
-                          ty: 16
-                          span:
-                            start: 2128
-                            end: 2139
-                    ty: 16
-                    span:
-                      start: 2113
-                      end: 2139
-              ty: 16
-              span:
-                start: 2038
-                end: 2140
-        ty: 16
-        span:
-          start: 2032
-          end: 2144
-  - id: 28
-    file_id: 0
-    namespace: ~
-    pub_span:
-      start: 2164
-      end: 2166
-    kind: Impl
-    type_params: []
-    signature_index: 71
-    name:
-      inner: 57
-      span:
-        start: 2167
-        end: 2186
-    params:
-      - mut_span: ~
-        name:
-          inner: 39
-          span:
-            start: 2187
-            end: 2191
-        ty:
-          inner: 17
-          span:
-            start: 2187
-            end: 2191
-    result:
-      inner: 16
-      span:
-        start: 2196
-        end: 2200
-    accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals:
-              - name:
-                  inner: 39
-                  span:
-                    start: 2187
-                    end: 2191
-                ty: 17
-                mut_span: ~
-                accesses:
-                  - span:
-                      start: 2207
-                      end: 2211
-                    kind: Read
-                  - span:
-                      start: 2223
-                      end: 2227
-                    kind: Read
-                  - span:
-                      start: 2239
-                      end: 2243
-                    kind: Read
-                  - span:
-                      start: 2257
-                      end: 2261
-                    kind: Read
-                  - span:
-                      start: 2273
-                      end: 2277
-                    kind: Read
-            inferred_type: 16
-            expected_type: 16
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                Binary:
-                  operator:
-                    inner: Or
-                    span:
-                      start: 2270
-                      end: 2272
-                  left:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: Or
-                          span:
-                            start: 2254
-                            end: 2256
-                        left:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: Or
-                                span:
-                                  start: 2236
-                                  end: 2238
-                              left:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: Or
-                                      span:
-                                        start: 2220
-                                        end: 2222
-                                    left:
-                                      kind:
-                                        Binary:
-                                          operator:
-                                            inner: Eq
-                                            span:
-                                              start: 2212
-                                              end: 2214
-                                          left:
-                                            kind:
-                                              Local:
-                                                scope_index: 0
-                                                local_index: 0
-                                            ty: 17
-                                            span:
-                                              start: 2207
-                                              end: 2211
-                                          right:
-                                            kind:
-                                              Char:
-                                                value: "\t"
-                                            ty: 17
-                                            span:
-                                              start: 2215
-                                              end: 2219
-                                      ty: 16
-                                      span:
-                                        start: 2207
-                                        end: 2219
-                                    right:
-                                      kind:
-                                        Binary:
-                                          operator:
-                                            inner: Eq
-                                            span:
-                                              start: 2228
-                                              end: 2230
-                                          left:
-                                            kind:
-                                              Local:
-                                                scope_index: 0
-                                                local_index: 0
-                                            ty: 17
-                                            span:
-                                              start: 2223
-                                              end: 2227
-                                          right:
-                                            kind:
-                                              Char:
-                                                value: "\n"
-                                            ty: 17
-                                            span:
-                                              start: 2231
-                                              end: 2235
-                                      ty: 16
-                                      span:
-                                        start: 2223
-                                        end: 2235
-                                ty: 16
-                                span:
-                                  start: 2207
-                                  end: 2235
-                              right:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: Eq
-                                      span:
-                                        start: 2244
-                                        end: 2246
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2239
-                                        end: 2243
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: 
-                                      ty: 17
-                                      span:
-                                        start: 2247
-                                        end: 2253
-                                ty: 16
-                                span:
-                                  start: 2239
-                                  end: 2253
-                          ty: 16
-                          span:
-                            start: 2207
-                            end: 2253
-                        right:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: Eq
-                                span:
-                                  start: 2262
-                                  end: 2264
-                              left:
-                                kind:
-                                  Local:
-                                    scope_index: 0
-                                    local_index: 0
-                                ty: 17
-                                span:
-                                  start: 2257
-                                  end: 2261
-                              right:
-                                kind:
-                                  Char:
-                                    value: "\r"
-                                ty: 17
-                                span:
-                                  start: 2265
-                                  end: 2269
-                          ty: 16
-                          span:
-                            start: 2257
-                            end: 2269
-                    ty: 16
-                    span:
-                      start: 2207
-                      end: 2269
-                  right:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: Eq
-                          span:
-                            start: 2278
-                            end: 2280
-                        left:
-                          kind:
-                            Local:
-                              scope_index: 0
-                              local_index: 0
-                          ty: 17
-                          span:
-                            start: 2273
-                            end: 2277
-                        right:
-                          kind:
-                            Char:
-                              value: " "
-                          ty: 17
-                          span:
-                            start: 2281
-                            end: 2284
-                    ty: 16
-                    span:
-                      start: 2273
-                      end: 2284
-              ty: 16
-              span:
-                start: 2207
-                end: 2284
-        ty: 16
-        span:
-          start: 2201
-          end: 2288
-  - id: 29
-    file_id: 0
-    namespace: ~
-    pub_span:
-      start: 2308
-      end: 2310
-    kind: Impl
-    type_params: []
-    signature_index: 71
-    name:
-      inner: 63
-      span:
-        start: 2311
-        end: 2327
-    params:
-      - mut_span: ~
-        name:
-          inner: 39
-          span:
-            start: 2328
-            end: 2332
-        ty:
-          inner: 17
-          span:
-            start: 2328
-            end: 2332
-    result:
-      inner: 16
-      span:
-        start: 2337
-        end: 2341
-    accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals:
-              - name:
-                  inner: 39
-                  span:
-                    start: 2328
-                    end: 2332
-                ty: 17
-                mut_span: ~
-                accesses:
-                  - span:
-                      start: 2349
-                      end: 2353
-                    kind: Read
-                  - span:
-                      start: 2373
-                      end: 2377
-                    kind: Read
-            inferred_type: 16
-            expected_type: 16
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                Binary:
-                  operator:
-                    inner: Or
-                    span:
-                      start: 2370
-                      end: 2372
-                  left:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: LessEq
-                          span:
-                            start: 2362
-                            end: 2364
-                        left:
-                          kind:
-                            Local:
-                              scope_index: 0
-                              local_index: 0
-                          ty: 10
-                          span:
-                            start: 2349
-                            end: 2353
-                        right:
-                          kind:
-                            Int:
-                              value: 31
-                          ty: 10
-                          span:
-                            start: 2365
-                            end: 2369
-                    ty: 16
-                    span:
-                      start: 2348
-                      end: 2369
-                  right:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: Eq
                           span:
                             start: 2378
-                            end: 2380
-                        left:
-                          kind:
-                            Local:
-                              scope_index: 0
-                              local_index: 0
-                          ty: 17
-                          span:
-                            start: 2373
-                            end: 2377
-                        right:
-                          kind:
-                            Char:
-                              value: 
-                          ty: 17
-                          span:
-                            start: 2381
-                            end: 2387
+                            end: 2389
                     ty: 16
                     span:
-                      start: 2373
-                      end: 2387
+                      start: 2363
+                      end: 2389
               ty: 16
               span:
-                start: 2348
-                end: 2387
+                start: 2331
+                end: 2390
         ty: 16
         span:
-          start: 2342
-          end: 2391
-  - id: 30
+          start: 2325
+          end: 2394
+  - id: 33
     file_id: 0
     namespace: ~
     pub_span:
-      start: 2411
-      end: 2413
+      start: 2414
+      end: 2416
     kind: Impl
     type_params: []
-    signature_index: 71
+    signature_index: 96
     name:
-      inner: 65
+      inner: 61
       span:
-        start: 2414
+        start: 2417
         end: 2431
     params:
       - mut_span: ~
         name:
-          inner: 39
+          inner: 43
           span:
             start: 2432
             end: 2436
@@ -3059,7 +2816,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 39
+                  inner: 43
                   span:
                     start: 2432
                     end: 2436
@@ -3067,738 +2824,12 @@ functions:
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 2453
-                      end: 2457
-                    kind: Read
-                  - span:
-                      start: 2468
-                      end: 2472
-                    kind: Read
-                  - span:
-                      start: 2490
-                      end: 2494
-                    kind: Read
-                  - span:
-                      start: 2505
-                      end: 2509
-                    kind: Read
-                  - span:
-                      start: 2527
-                      end: 2531
-                    kind: Read
-                  - span:
-                      start: 2542
-                      end: 2546
-                    kind: Read
-            inferred_type: 16
-            expected_type: 16
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                Binary:
-                  operator:
-                    inner: BitOr
-                    span:
-                      start: 2524
-                      end: 2525
-                  left:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: BitOr
-                          span:
-                            start: 2487
-                            end: 2488
-                        left:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: And
-                                span:
-                                  start: 2465
-                                  end: 2467
-                              left:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: GreaterEq
-                                      span:
-                                        start: 2458
-                                        end: 2460
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2453
-                                        end: 2457
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: "0"
-                                      ty: 17
-                                      span:
-                                        start: 2461
-                                        end: 2464
-                                ty: 16
-                                span:
-                                  start: 2453
-                                  end: 2464
-                              right:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: LessEq
-                                      span:
-                                        start: 2473
-                                        end: 2475
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2468
-                                        end: 2472
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: "9"
-                                      ty: 17
-                                      span:
-                                        start: 2476
-                                        end: 2479
-                                ty: 16
-                                span:
-                                  start: 2468
-                                  end: 2479
-                          ty: 16
-                          span:
-                            start: 2453
-                            end: 2479
-                        right:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: And
-                                span:
-                                  start: 2502
-                                  end: 2504
-                              left:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: GreaterEq
-                                      span:
-                                        start: 2495
-                                        end: 2497
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2490
-                                        end: 2494
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: A
-                                      ty: 17
-                                      span:
-                                        start: 2498
-                                        end: 2501
-                                ty: 16
-                                span:
-                                  start: 2490
-                                  end: 2501
-                              right:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: LessEq
-                                      span:
-                                        start: 2510
-                                        end: 2512
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2505
-                                        end: 2509
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: F
-                                      ty: 17
-                                      span:
-                                        start: 2513
-                                        end: 2516
-                                ty: 16
-                                span:
-                                  start: 2505
-                                  end: 2516
-                          ty: 16
-                          span:
-                            start: 2490
-                            end: 2516
-                    ty: 16
-                    span:
                       start: 2452
-                      end: 2517
-                  right:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: And
-                          span:
-                            start: 2539
-                            end: 2541
-                        left:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: GreaterEq
-                                span:
-                                  start: 2532
-                                  end: 2534
-                              left:
-                                kind:
-                                  Local:
-                                    scope_index: 0
-                                    local_index: 0
-                                ty: 17
-                                span:
-                                  start: 2527
-                                  end: 2531
-                              right:
-                                kind:
-                                  Char:
-                                    value: a
-                                ty: 17
-                                span:
-                                  start: 2535
-                                  end: 2538
-                          ty: 16
-                          span:
-                            start: 2527
-                            end: 2538
-                        right:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: LessEq
-                                span:
-                                  start: 2547
-                                  end: 2549
-                              left:
-                                kind:
-                                  Local:
-                                    scope_index: 0
-                                    local_index: 0
-                                ty: 17
-                                span:
-                                  start: 2542
-                                  end: 2546
-                              right:
-                                kind:
-                                  Char:
-                                    value: f
-                                ty: 17
-                                span:
-                                  start: 2550
-                                  end: 2553
-                          ty: 16
-                          span:
-                            start: 2542
-                            end: 2553
-                    ty: 16
-                    span:
-                      start: 2527
-                      end: 2553
-              ty: 16
-              span:
-                start: 2452
-                end: 2554
-        ty: 16
-        span:
-          start: 2446
-          end: 2558
-  - id: 31
-    file_id: 0
-    namespace: ~
-    pub_span:
-      start: 2578
-      end: 2580
-    kind: Impl
-    type_params: []
-    signature_index: 71
-    name:
-      inner: 68
-      span:
-        start: 2581
-        end: 2601
-    params:
-      - mut_span: ~
-        name:
-          inner: 39
-          span:
-            start: 2602
-            end: 2606
-        ty:
-          inner: 17
-          span:
-            start: 2602
-            end: 2606
-    result:
-      inner: 16
-      span:
-        start: 2611
-        end: 2615
-    accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals:
-              - name:
-                  inner: 39
-                  span:
-                    start: 2602
-                    end: 2606
-                ty: 17
-                mut_span: ~
-                accesses:
-                  - span:
-                      start: 2623
-                      end: 2627
+                      end: 2456
                     kind: Read
                   - span:
-                      start: 2638
-                      end: 2642
-                    kind: Read
-                  - span:
-                      start: 2660
-                      end: 2664
-                    kind: Read
-                  - span:
-                      start: 2675
-                      end: 2679
-                    kind: Read
-                  - span:
-                      start: 2697
-                      end: 2701
-                    kind: Read
-                  - span:
-                      start: 2712
-                      end: 2716
-                    kind: Read
-                  - span:
-                      start: 2734
-                      end: 2738
-                    kind: Read
-                  - span:
-                      start: 2749
-                      end: 2753
-                    kind: Read
-            inferred_type: 16
-            expected_type: 16
-      block:
-        kind:
-          Block:
-            scope_index: 0
-            expressions: []
-            result:
-              kind:
-                Binary:
-                  operator:
-                    inner: BitOr
-                    span:
-                      start: 2731
-                      end: 2732
-                  left:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: BitOr
-                          span:
-                            start: 2694
-                            end: 2695
-                        left:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: BitOr
-                                span:
-                                  start: 2657
-                                  end: 2658
-                              left:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: And
-                                      span:
-                                        start: 2635
-                                        end: 2637
-                                    left:
-                                      kind:
-                                        Binary:
-                                          operator:
-                                            inner: GreaterEq
-                                            span:
-                                              start: 2628
-                                              end: 2630
-                                          left:
-                                            kind:
-                                              Local:
-                                                scope_index: 0
-                                                local_index: 0
-                                            ty: 17
-                                            span:
-                                              start: 2623
-                                              end: 2627
-                                          right:
-                                            kind:
-                                              Char:
-                                                value: "!"
-                                            ty: 17
-                                            span:
-                                              start: 2631
-                                              end: 2634
-                                      ty: 16
-                                      span:
-                                        start: 2623
-                                        end: 2634
-                                    right:
-                                      kind:
-                                        Binary:
-                                          operator:
-                                            inner: LessEq
-                                            span:
-                                              start: 2643
-                                              end: 2645
-                                          left:
-                                            kind:
-                                              Local:
-                                                scope_index: 0
-                                                local_index: 0
-                                            ty: 17
-                                            span:
-                                              start: 2638
-                                              end: 2642
-                                          right:
-                                            kind:
-                                              Char:
-                                                value: /
-                                            ty: 17
-                                            span:
-                                              start: 2646
-                                              end: 2649
-                                      ty: 16
-                                      span:
-                                        start: 2638
-                                        end: 2649
-                                ty: 16
-                                span:
-                                  start: 2623
-                                  end: 2649
-                              right:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: And
-                                      span:
-                                        start: 2672
-                                        end: 2674
-                                    left:
-                                      kind:
-                                        Binary:
-                                          operator:
-                                            inner: GreaterEq
-                                            span:
-                                              start: 2665
-                                              end: 2667
-                                          left:
-                                            kind:
-                                              Local:
-                                                scope_index: 0
-                                                local_index: 0
-                                            ty: 17
-                                            span:
-                                              start: 2660
-                                              end: 2664
-                                          right:
-                                            kind:
-                                              Char:
-                                                value: ":"
-                                            ty: 17
-                                            span:
-                                              start: 2668
-                                              end: 2671
-                                      ty: 16
-                                      span:
-                                        start: 2660
-                                        end: 2671
-                                    right:
-                                      kind:
-                                        Binary:
-                                          operator:
-                                            inner: LessEq
-                                            span:
-                                              start: 2680
-                                              end: 2682
-                                          left:
-                                            kind:
-                                              Local:
-                                                scope_index: 0
-                                                local_index: 0
-                                            ty: 17
-                                            span:
-                                              start: 2675
-                                              end: 2679
-                                          right:
-                                            kind:
-                                              Char:
-                                                value: "@"
-                                            ty: 17
-                                            span:
-                                              start: 2683
-                                              end: 2686
-                                      ty: 16
-                                      span:
-                                        start: 2675
-                                        end: 2686
-                                ty: 16
-                                span:
-                                  start: 2660
-                                  end: 2686
-                          ty: 16
-                          span:
-                            start: 2622
-                            end: 2687
-                        right:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: And
-                                span:
-                                  start: 2709
-                                  end: 2711
-                              left:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: GreaterEq
-                                      span:
-                                        start: 2702
-                                        end: 2704
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2697
-                                        end: 2701
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: "["
-                                      ty: 17
-                                      span:
-                                        start: 2705
-                                        end: 2708
-                                ty: 16
-                                span:
-                                  start: 2697
-                                  end: 2708
-                              right:
-                                kind:
-                                  Binary:
-                                    operator:
-                                      inner: LessEq
-                                      span:
-                                        start: 2717
-                                        end: 2719
-                                    left:
-                                      kind:
-                                        Local:
-                                          scope_index: 0
-                                          local_index: 0
-                                      ty: 17
-                                      span:
-                                        start: 2712
-                                        end: 2716
-                                    right:
-                                      kind:
-                                        Char:
-                                          value: "`"
-                                      ty: 17
-                                      span:
-                                        start: 2720
-                                        end: 2723
-                                ty: 16
-                                span:
-                                  start: 2712
-                                  end: 2723
-                          ty: 16
-                          span:
-                            start: 2697
-                            end: 2723
-                    ty: 16
-                    span:
-                      start: 2622
-                      end: 2724
-                  right:
-                    kind:
-                      Binary:
-                        operator:
-                          inner: And
-                          span:
-                            start: 2746
-                            end: 2748
-                        left:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: GreaterEq
-                                span:
-                                  start: 2739
-                                  end: 2741
-                              left:
-                                kind:
-                                  Local:
-                                    scope_index: 0
-                                    local_index: 0
-                                ty: 17
-                                span:
-                                  start: 2734
-                                  end: 2738
-                              right:
-                                kind:
-                                  Char:
-                                    value: "{"
-                                ty: 17
-                                span:
-                                  start: 2742
-                                  end: 2745
-                          ty: 16
-                          span:
-                            start: 2734
-                            end: 2745
-                        right:
-                          kind:
-                            Binary:
-                              operator:
-                                inner: LessEq
-                                span:
-                                  start: 2754
-                                  end: 2756
-                              left:
-                                kind:
-                                  Local:
-                                    scope_index: 0
-                                    local_index: 0
-                                ty: 17
-                                span:
-                                  start: 2749
-                                  end: 2753
-                              right:
-                                kind:
-                                  Char:
-                                    value: "~"
-                                ty: 17
-                                span:
-                                  start: 2757
-                                  end: 2760
-                          ty: 16
-                          span:
-                            start: 2749
-                            end: 2760
-                    ty: 16
-                    span:
-                      start: 2734
-                      end: 2760
-              ty: 16
-              span:
-                start: 2622
-                end: 2761
-        ty: 16
-        span:
-          start: 2616
-          end: 2765
-  - id: 32
-    file_id: 0
-    namespace: ~
-    pub_span:
-      start: 2785
-      end: 2787
-    kind: Impl
-    type_params: []
-    signature_index: 71
-    name:
-      inner: 77
-      span:
-        start: 2788
-        end: 2804
-    params:
-      - mut_span: ~
-        name:
-          inner: 39
-          span:
-            start: 2805
-            end: 2809
-        ty:
-          inner: 17
-          span:
-            start: 2805
-            end: 2809
-    result:
-      inner: 16
-      span:
-        start: 2814
-        end: 2818
-    accesses: []
-    attributes:
-      - Inline
-    body:
-      stack:
-        scopes:
-          - kind: Block
-            label: ~
-            parent: ~
-            locals:
-              - name:
-                  inner: 39
-                  span:
-                    start: 2805
-                    end: 2809
-                ty: 17
-                mut_span: ~
-                accesses:
-                  - span:
-                      start: 2825
-                      end: 2829
-                    kind: Read
-                  - span:
-                      start: 2840
-                      end: 2844
+                      start: 2467
+                      end: 2471
                     kind: Read
             inferred_type: 16
             expected_type: 16
@@ -3813,16 +2844,16 @@ functions:
                   operator:
                     inner: And
                     span:
-                      start: 2837
-                      end: 2839
+                      start: 2464
+                      end: 2466
                   left:
                     kind:
                       Binary:
                         operator:
                           inner: GreaterEq
                           span:
-                            start: 2830
-                            end: 2832
+                            start: 2457
+                            end: 2459
                         left:
                           kind:
                             Local:
@@ -3830,28 +2861,28 @@ functions:
                               local_index: 0
                           ty: 17
                           span:
-                            start: 2825
-                            end: 2829
+                            start: 2452
+                            end: 2456
                         right:
                           kind:
                             Char:
-                              value: "!"
+                              value: "0"
                           ty: 17
                           span:
-                            start: 2833
-                            end: 2836
+                            start: 2460
+                            end: 2463
                     ty: 16
                     span:
-                      start: 2825
-                      end: 2836
+                      start: 2452
+                      end: 2463
                   right:
                     kind:
                       Binary:
                         operator:
                           inner: LessEq
                           span:
-                            start: 2845
-                            end: 2847
+                            start: 2472
+                            end: 2474
                         left:
                           kind:
                             Local:
@@ -3859,43 +2890,1636 @@ functions:
                               local_index: 0
                           ty: 17
                           span:
-                            start: 2840
-                            end: 2844
+                            start: 2467
+                            end: 2471
+                        right:
+                          kind:
+                            Char:
+                              value: "9"
+                          ty: 17
+                          span:
+                            start: 2475
+                            end: 2478
+                    ty: 16
+                    span:
+                      start: 2467
+                      end: 2478
+              ty: 16
+              span:
+                start: 2452
+                end: 2478
+        ty: 16
+        span:
+          start: 2446
+          end: 2482
+  - id: 34
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 2502
+      end: 2504
+    kind: Impl
+    type_params: []
+    signature_index: 96
+    name:
+      inner: 64
+      span:
+        start: 2505
+        end: 2526
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 2527
+            end: 2531
+        ty:
+          inner: 17
+          span:
+            start: 2527
+            end: 2531
+    result:
+      inner: 16
+      span:
+        start: 2536
+        end: 2540
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 2527
+                    end: 2531
+                ty: 17
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 2548
+                      end: 2552
+                    kind: Read
+                  - span:
+                      start: 2563
+                      end: 2567
+                    kind: Read
+                  - span:
+                      start: 2585
+                      end: 2589
+                    kind: Read
+                  - span:
+                      start: 2600
+                      end: 2604
+                    kind: Read
+                  - span:
+                      start: 2622
+                      end: 2626
+                    kind: Read
+                  - span:
+                      start: 2637
+                      end: 2641
+                    kind: Read
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Binary:
+                  operator:
+                    inner: BitOr
+                    span:
+                      start: 2619
+                      end: 2620
+                  left:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: BitOr
+                          span:
+                            start: 2582
+                            end: 2583
+                        left:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: And
+                                span:
+                                  start: 2560
+                                  end: 2562
+                              left:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: GreaterEq
+                                      span:
+                                        start: 2553
+                                        end: 2555
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 2548
+                                        end: 2552
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: A
+                                      ty: 17
+                                      span:
+                                        start: 2556
+                                        end: 2559
+                                ty: 16
+                                span:
+                                  start: 2548
+                                  end: 2559
+                              right:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: LessEq
+                                      span:
+                                        start: 2568
+                                        end: 2570
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 2563
+                                        end: 2567
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: Z
+                                      ty: 17
+                                      span:
+                                        start: 2571
+                                        end: 2574
+                                ty: 16
+                                span:
+                                  start: 2563
+                                  end: 2574
+                          ty: 16
+                          span:
+                            start: 2548
+                            end: 2574
+                        right:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: And
+                                span:
+                                  start: 2597
+                                  end: 2599
+                              left:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: GreaterEq
+                                      span:
+                                        start: 2590
+                                        end: 2592
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 2585
+                                        end: 2589
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: a
+                                      ty: 17
+                                      span:
+                                        start: 2593
+                                        end: 2596
+                                ty: 16
+                                span:
+                                  start: 2585
+                                  end: 2596
+                              right:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: LessEq
+                                      span:
+                                        start: 2605
+                                        end: 2607
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 2600
+                                        end: 2604
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: z
+                                      ty: 17
+                                      span:
+                                        start: 2608
+                                        end: 2611
+                                ty: 16
+                                span:
+                                  start: 2600
+                                  end: 2611
+                          ty: 16
+                          span:
+                            start: 2585
+                            end: 2611
+                    ty: 16
+                    span:
+                      start: 2547
+                      end: 2612
+                  right:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: And
+                          span:
+                            start: 2634
+                            end: 2636
+                        left:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: GreaterEq
+                                span:
+                                  start: 2627
+                                  end: 2629
+                              left:
+                                kind:
+                                  Local:
+                                    scope_index: 0
+                                    local_index: 0
+                                ty: 17
+                                span:
+                                  start: 2622
+                                  end: 2626
+                              right:
+                                kind:
+                                  Char:
+                                    value: "0"
+                                ty: 17
+                                span:
+                                  start: 2630
+                                  end: 2633
+                          ty: 16
+                          span:
+                            start: 2622
+                            end: 2633
+                        right:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: LessEq
+                                span:
+                                  start: 2642
+                                  end: 2644
+                              left:
+                                kind:
+                                  Local:
+                                    scope_index: 0
+                                    local_index: 0
+                                ty: 17
+                                span:
+                                  start: 2637
+                                  end: 2641
+                              right:
+                                kind:
+                                  Char:
+                                    value: "9"
+                                ty: 17
+                                span:
+                                  start: 2645
+                                  end: 2648
+                          ty: 16
+                          span:
+                            start: 2637
+                            end: 2648
+                    ty: 16
+                    span:
+                      start: 2622
+                      end: 2648
+              ty: 16
+              span:
+                start: 2547
+                end: 2649
+        ty: 16
+        span:
+          start: 2541
+          end: 2653
+  - id: 35
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 2673
+      end: 2675
+    kind: Impl
+    type_params: []
+    signature_index: 96
+    name:
+      inner: 65
+      span:
+        start: 2676
+        end: 2695
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 2696
+            end: 2700
+        ty:
+          inner: 17
+          span:
+            start: 2696
+            end: 2700
+    result:
+      inner: 16
+      span:
+        start: 2705
+        end: 2709
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 2696
+                    end: 2700
+                ty: 17
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 2716
+                      end: 2720
+                    kind: Read
+                  - span:
+                      start: 2732
+                      end: 2736
+                    kind: Read
+                  - span:
+                      start: 2748
+                      end: 2752
+                    kind: Read
+                  - span:
+                      start: 2766
+                      end: 2770
+                    kind: Read
+                  - span:
+                      start: 2782
+                      end: 2786
+                    kind: Read
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Binary:
+                  operator:
+                    inner: Or
+                    span:
+                      start: 2779
+                      end: 2781
+                  left:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: Or
+                          span:
+                            start: 2763
+                            end: 2765
+                        left:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: Or
+                                span:
+                                  start: 2745
+                                  end: 2747
+                              left:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: Or
+                                      span:
+                                        start: 2729
+                                        end: 2731
+                                    left:
+                                      kind:
+                                        Binary:
+                                          operator:
+                                            inner: Eq
+                                            span:
+                                              start: 2721
+                                              end: 2723
+                                          left:
+                                            kind:
+                                              Local:
+                                                scope_index: 0
+                                                local_index: 0
+                                            ty: 17
+                                            span:
+                                              start: 2716
+                                              end: 2720
+                                          right:
+                                            kind:
+                                              Char:
+                                                value: "\t"
+                                            ty: 17
+                                            span:
+                                              start: 2724
+                                              end: 2728
+                                      ty: 16
+                                      span:
+                                        start: 2716
+                                        end: 2728
+                                    right:
+                                      kind:
+                                        Binary:
+                                          operator:
+                                            inner: Eq
+                                            span:
+                                              start: 2737
+                                              end: 2739
+                                          left:
+                                            kind:
+                                              Local:
+                                                scope_index: 0
+                                                local_index: 0
+                                            ty: 17
+                                            span:
+                                              start: 2732
+                                              end: 2736
+                                          right:
+                                            kind:
+                                              Char:
+                                                value: "\n"
+                                            ty: 17
+                                            span:
+                                              start: 2740
+                                              end: 2744
+                                      ty: 16
+                                      span:
+                                        start: 2732
+                                        end: 2744
+                                ty: 16
+                                span:
+                                  start: 2716
+                                  end: 2744
+                              right:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: Eq
+                                      span:
+                                        start: 2753
+                                        end: 2755
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 2748
+                                        end: 2752
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: 
+                                      ty: 17
+                                      span:
+                                        start: 2756
+                                        end: 2762
+                                ty: 16
+                                span:
+                                  start: 2748
+                                  end: 2762
+                          ty: 16
+                          span:
+                            start: 2716
+                            end: 2762
+                        right:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: Eq
+                                span:
+                                  start: 2771
+                                  end: 2773
+                              left:
+                                kind:
+                                  Local:
+                                    scope_index: 0
+                                    local_index: 0
+                                ty: 17
+                                span:
+                                  start: 2766
+                                  end: 2770
+                              right:
+                                kind:
+                                  Char:
+                                    value: "\r"
+                                ty: 17
+                                span:
+                                  start: 2774
+                                  end: 2778
+                          ty: 16
+                          span:
+                            start: 2766
+                            end: 2778
+                    ty: 16
+                    span:
+                      start: 2716
+                      end: 2778
+                  right:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: Eq
+                          span:
+                            start: 2787
+                            end: 2789
+                        left:
+                          kind:
+                            Local:
+                              scope_index: 0
+                              local_index: 0
+                          ty: 17
+                          span:
+                            start: 2782
+                            end: 2786
+                        right:
+                          kind:
+                            Char:
+                              value: " "
+                          ty: 17
+                          span:
+                            start: 2790
+                            end: 2793
+                    ty: 16
+                    span:
+                      start: 2782
+                      end: 2793
+              ty: 16
+              span:
+                start: 2716
+                end: 2793
+        ty: 16
+        span:
+          start: 2710
+          end: 2797
+  - id: 36
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 2817
+      end: 2819
+    kind: Impl
+    type_params: []
+    signature_index: 96
+    name:
+      inner: 71
+      span:
+        start: 2820
+        end: 2836
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 2837
+            end: 2841
+        ty:
+          inner: 17
+          span:
+            start: 2837
+            end: 2841
+    result:
+      inner: 16
+      span:
+        start: 2846
+        end: 2850
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 2837
+                    end: 2841
+                ty: 17
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 2858
+                      end: 2862
+                    kind: Read
+                  - span:
+                      start: 2882
+                      end: 2886
+                    kind: Read
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Binary:
+                  operator:
+                    inner: Or
+                    span:
+                      start: 2879
+                      end: 2881
+                  left:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: LessEq
+                          span:
+                            start: 2871
+                            end: 2873
+                        left:
+                          kind:
+                            Local:
+                              scope_index: 0
+                              local_index: 0
+                          ty: 10
+                          span:
+                            start: 2858
+                            end: 2862
+                        right:
+                          kind:
+                            Int:
+                              value: 31
+                          ty: 10
+                          span:
+                            start: 2874
+                            end: 2878
+                    ty: 16
+                    span:
+                      start: 2857
+                      end: 2878
+                  right:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: Eq
+                          span:
+                            start: 2887
+                            end: 2889
+                        left:
+                          kind:
+                            Local:
+                              scope_index: 0
+                              local_index: 0
+                          ty: 17
+                          span:
+                            start: 2882
+                            end: 2886
+                        right:
+                          kind:
+                            Char:
+                              value: 
+                          ty: 17
+                          span:
+                            start: 2890
+                            end: 2896
+                    ty: 16
+                    span:
+                      start: 2882
+                      end: 2896
+              ty: 16
+              span:
+                start: 2857
+                end: 2896
+        ty: 16
+        span:
+          start: 2851
+          end: 2900
+  - id: 37
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 2920
+      end: 2922
+    kind: Impl
+    type_params: []
+    signature_index: 96
+    name:
+      inner: 73
+      span:
+        start: 2923
+        end: 2940
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 2941
+            end: 2945
+        ty:
+          inner: 17
+          span:
+            start: 2941
+            end: 2945
+    result:
+      inner: 16
+      span:
+        start: 2950
+        end: 2954
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 2941
+                    end: 2945
+                ty: 17
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 2962
+                      end: 2966
+                    kind: Read
+                  - span:
+                      start: 2977
+                      end: 2981
+                    kind: Read
+                  - span:
+                      start: 2999
+                      end: 3003
+                    kind: Read
+                  - span:
+                      start: 3014
+                      end: 3018
+                    kind: Read
+                  - span:
+                      start: 3036
+                      end: 3040
+                    kind: Read
+                  - span:
+                      start: 3051
+                      end: 3055
+                    kind: Read
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Binary:
+                  operator:
+                    inner: BitOr
+                    span:
+                      start: 3033
+                      end: 3034
+                  left:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: BitOr
+                          span:
+                            start: 2996
+                            end: 2997
+                        left:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: And
+                                span:
+                                  start: 2974
+                                  end: 2976
+                              left:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: GreaterEq
+                                      span:
+                                        start: 2967
+                                        end: 2969
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 2962
+                                        end: 2966
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: "0"
+                                      ty: 17
+                                      span:
+                                        start: 2970
+                                        end: 2973
+                                ty: 16
+                                span:
+                                  start: 2962
+                                  end: 2973
+                              right:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: LessEq
+                                      span:
+                                        start: 2982
+                                        end: 2984
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 2977
+                                        end: 2981
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: "9"
+                                      ty: 17
+                                      span:
+                                        start: 2985
+                                        end: 2988
+                                ty: 16
+                                span:
+                                  start: 2977
+                                  end: 2988
+                          ty: 16
+                          span:
+                            start: 2962
+                            end: 2988
+                        right:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: And
+                                span:
+                                  start: 3011
+                                  end: 3013
+                              left:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: GreaterEq
+                                      span:
+                                        start: 3004
+                                        end: 3006
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 2999
+                                        end: 3003
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: A
+                                      ty: 17
+                                      span:
+                                        start: 3007
+                                        end: 3010
+                                ty: 16
+                                span:
+                                  start: 2999
+                                  end: 3010
+                              right:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: LessEq
+                                      span:
+                                        start: 3019
+                                        end: 3021
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 3014
+                                        end: 3018
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: F
+                                      ty: 17
+                                      span:
+                                        start: 3022
+                                        end: 3025
+                                ty: 16
+                                span:
+                                  start: 3014
+                                  end: 3025
+                          ty: 16
+                          span:
+                            start: 2999
+                            end: 3025
+                    ty: 16
+                    span:
+                      start: 2961
+                      end: 3026
+                  right:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: And
+                          span:
+                            start: 3048
+                            end: 3050
+                        left:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: GreaterEq
+                                span:
+                                  start: 3041
+                                  end: 3043
+                              left:
+                                kind:
+                                  Local:
+                                    scope_index: 0
+                                    local_index: 0
+                                ty: 17
+                                span:
+                                  start: 3036
+                                  end: 3040
+                              right:
+                                kind:
+                                  Char:
+                                    value: a
+                                ty: 17
+                                span:
+                                  start: 3044
+                                  end: 3047
+                          ty: 16
+                          span:
+                            start: 3036
+                            end: 3047
+                        right:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: LessEq
+                                span:
+                                  start: 3056
+                                  end: 3058
+                              left:
+                                kind:
+                                  Local:
+                                    scope_index: 0
+                                    local_index: 0
+                                ty: 17
+                                span:
+                                  start: 3051
+                                  end: 3055
+                              right:
+                                kind:
+                                  Char:
+                                    value: f
+                                ty: 17
+                                span:
+                                  start: 3059
+                                  end: 3062
+                          ty: 16
+                          span:
+                            start: 3051
+                            end: 3062
+                    ty: 16
+                    span:
+                      start: 3036
+                      end: 3062
+              ty: 16
+              span:
+                start: 2961
+                end: 3063
+        ty: 16
+        span:
+          start: 2955
+          end: 3067
+  - id: 38
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 3087
+      end: 3089
+    kind: Impl
+    type_params: []
+    signature_index: 96
+    name:
+      inner: 76
+      span:
+        start: 3090
+        end: 3110
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 3111
+            end: 3115
+        ty:
+          inner: 17
+          span:
+            start: 3111
+            end: 3115
+    result:
+      inner: 16
+      span:
+        start: 3120
+        end: 3124
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 3111
+                    end: 3115
+                ty: 17
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 3132
+                      end: 3136
+                    kind: Read
+                  - span:
+                      start: 3147
+                      end: 3151
+                    kind: Read
+                  - span:
+                      start: 3169
+                      end: 3173
+                    kind: Read
+                  - span:
+                      start: 3184
+                      end: 3188
+                    kind: Read
+                  - span:
+                      start: 3206
+                      end: 3210
+                    kind: Read
+                  - span:
+                      start: 3221
+                      end: 3225
+                    kind: Read
+                  - span:
+                      start: 3243
+                      end: 3247
+                    kind: Read
+                  - span:
+                      start: 3258
+                      end: 3262
+                    kind: Read
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Binary:
+                  operator:
+                    inner: BitOr
+                    span:
+                      start: 3240
+                      end: 3241
+                  left:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: BitOr
+                          span:
+                            start: 3203
+                            end: 3204
+                        left:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: BitOr
+                                span:
+                                  start: 3166
+                                  end: 3167
+                              left:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: And
+                                      span:
+                                        start: 3144
+                                        end: 3146
+                                    left:
+                                      kind:
+                                        Binary:
+                                          operator:
+                                            inner: GreaterEq
+                                            span:
+                                              start: 3137
+                                              end: 3139
+                                          left:
+                                            kind:
+                                              Local:
+                                                scope_index: 0
+                                                local_index: 0
+                                            ty: 17
+                                            span:
+                                              start: 3132
+                                              end: 3136
+                                          right:
+                                            kind:
+                                              Char:
+                                                value: "!"
+                                            ty: 17
+                                            span:
+                                              start: 3140
+                                              end: 3143
+                                      ty: 16
+                                      span:
+                                        start: 3132
+                                        end: 3143
+                                    right:
+                                      kind:
+                                        Binary:
+                                          operator:
+                                            inner: LessEq
+                                            span:
+                                              start: 3152
+                                              end: 3154
+                                          left:
+                                            kind:
+                                              Local:
+                                                scope_index: 0
+                                                local_index: 0
+                                            ty: 17
+                                            span:
+                                              start: 3147
+                                              end: 3151
+                                          right:
+                                            kind:
+                                              Char:
+                                                value: /
+                                            ty: 17
+                                            span:
+                                              start: 3155
+                                              end: 3158
+                                      ty: 16
+                                      span:
+                                        start: 3147
+                                        end: 3158
+                                ty: 16
+                                span:
+                                  start: 3132
+                                  end: 3158
+                              right:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: And
+                                      span:
+                                        start: 3181
+                                        end: 3183
+                                    left:
+                                      kind:
+                                        Binary:
+                                          operator:
+                                            inner: GreaterEq
+                                            span:
+                                              start: 3174
+                                              end: 3176
+                                          left:
+                                            kind:
+                                              Local:
+                                                scope_index: 0
+                                                local_index: 0
+                                            ty: 17
+                                            span:
+                                              start: 3169
+                                              end: 3173
+                                          right:
+                                            kind:
+                                              Char:
+                                                value: ":"
+                                            ty: 17
+                                            span:
+                                              start: 3177
+                                              end: 3180
+                                      ty: 16
+                                      span:
+                                        start: 3169
+                                        end: 3180
+                                    right:
+                                      kind:
+                                        Binary:
+                                          operator:
+                                            inner: LessEq
+                                            span:
+                                              start: 3189
+                                              end: 3191
+                                          left:
+                                            kind:
+                                              Local:
+                                                scope_index: 0
+                                                local_index: 0
+                                            ty: 17
+                                            span:
+                                              start: 3184
+                                              end: 3188
+                                          right:
+                                            kind:
+                                              Char:
+                                                value: "@"
+                                            ty: 17
+                                            span:
+                                              start: 3192
+                                              end: 3195
+                                      ty: 16
+                                      span:
+                                        start: 3184
+                                        end: 3195
+                                ty: 16
+                                span:
+                                  start: 3169
+                                  end: 3195
+                          ty: 16
+                          span:
+                            start: 3131
+                            end: 3196
+                        right:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: And
+                                span:
+                                  start: 3218
+                                  end: 3220
+                              left:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: GreaterEq
+                                      span:
+                                        start: 3211
+                                        end: 3213
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 3206
+                                        end: 3210
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: "["
+                                      ty: 17
+                                      span:
+                                        start: 3214
+                                        end: 3217
+                                ty: 16
+                                span:
+                                  start: 3206
+                                  end: 3217
+                              right:
+                                kind:
+                                  Binary:
+                                    operator:
+                                      inner: LessEq
+                                      span:
+                                        start: 3226
+                                        end: 3228
+                                    left:
+                                      kind:
+                                        Local:
+                                          scope_index: 0
+                                          local_index: 0
+                                      ty: 17
+                                      span:
+                                        start: 3221
+                                        end: 3225
+                                    right:
+                                      kind:
+                                        Char:
+                                          value: "`"
+                                      ty: 17
+                                      span:
+                                        start: 3229
+                                        end: 3232
+                                ty: 16
+                                span:
+                                  start: 3221
+                                  end: 3232
+                          ty: 16
+                          span:
+                            start: 3206
+                            end: 3232
+                    ty: 16
+                    span:
+                      start: 3131
+                      end: 3233
+                  right:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: And
+                          span:
+                            start: 3255
+                            end: 3257
+                        left:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: GreaterEq
+                                span:
+                                  start: 3248
+                                  end: 3250
+                              left:
+                                kind:
+                                  Local:
+                                    scope_index: 0
+                                    local_index: 0
+                                ty: 17
+                                span:
+                                  start: 3243
+                                  end: 3247
+                              right:
+                                kind:
+                                  Char:
+                                    value: "{"
+                                ty: 17
+                                span:
+                                  start: 3251
+                                  end: 3254
+                          ty: 16
+                          span:
+                            start: 3243
+                            end: 3254
+                        right:
+                          kind:
+                            Binary:
+                              operator:
+                                inner: LessEq
+                                span:
+                                  start: 3263
+                                  end: 3265
+                              left:
+                                kind:
+                                  Local:
+                                    scope_index: 0
+                                    local_index: 0
+                                ty: 17
+                                span:
+                                  start: 3258
+                                  end: 3262
+                              right:
+                                kind:
+                                  Char:
+                                    value: "~"
+                                ty: 17
+                                span:
+                                  start: 3266
+                                  end: 3269
+                          ty: 16
+                          span:
+                            start: 3258
+                            end: 3269
+                    ty: 16
+                    span:
+                      start: 3243
+                      end: 3269
+              ty: 16
+              span:
+                start: 3131
+                end: 3270
+        ty: 16
+        span:
+          start: 3125
+          end: 3274
+  - id: 39
+    file_id: 0
+    namespace: ~
+    pub_span:
+      start: 3294
+      end: 3296
+    kind: Impl
+    type_params: []
+    signature_index: 96
+    name:
+      inner: 85
+      span:
+        start: 3297
+        end: 3313
+    params:
+      - mut_span: ~
+        name:
+          inner: 43
+          span:
+            start: 3314
+            end: 3318
+        ty:
+          inner: 17
+          span:
+            start: 3314
+            end: 3318
+    result:
+      inner: 16
+      span:
+        start: 3323
+        end: 3327
+    accesses: []
+    attributes:
+      - Inline
+    body:
+      stack:
+        scopes:
+          - kind: Block
+            label: ~
+            parent: ~
+            locals:
+              - name:
+                  inner: 43
+                  span:
+                    start: 3314
+                    end: 3318
+                ty: 17
+                mut_span: ~
+                accesses:
+                  - span:
+                      start: 3334
+                      end: 3338
+                    kind: Read
+                  - span:
+                      start: 3349
+                      end: 3353
+                    kind: Read
+            inferred_type: 16
+            expected_type: 16
+      block:
+        kind:
+          Block:
+            scope_index: 0
+            expressions: []
+            result:
+              kind:
+                Binary:
+                  operator:
+                    inner: And
+                    span:
+                      start: 3346
+                      end: 3348
+                  left:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: GreaterEq
+                          span:
+                            start: 3339
+                            end: 3341
+                        left:
+                          kind:
+                            Local:
+                              scope_index: 0
+                              local_index: 0
+                          ty: 17
+                          span:
+                            start: 3334
+                            end: 3338
+                        right:
+                          kind:
+                            Char:
+                              value: "!"
+                          ty: 17
+                          span:
+                            start: 3342
+                            end: 3345
+                    ty: 16
+                    span:
+                      start: 3334
+                      end: 3345
+                  right:
+                    kind:
+                      Binary:
+                        operator:
+                          inner: LessEq
+                          span:
+                            start: 3354
+                            end: 3356
+                        left:
+                          kind:
+                            Local:
+                              scope_index: 0
+                              local_index: 0
+                          ty: 17
+                          span:
+                            start: 3349
+                            end: 3353
                         right:
                           kind:
                             Char:
                               value: "~"
                           ty: 17
                           span:
-                            start: 2848
-                            end: 2851
+                            start: 3357
+                            end: 3360
                     ty: 16
                     span:
-                      start: 2840
-                      end: 2851
+                      start: 3349
+                      end: 3360
               ty: 16
               span:
-                start: 2825
-                end: 2851
+                start: 3334
+                end: 3360
         ty: 16
         span:
-          start: 2819
-          end: 2855
-  - id: 34
+          start: 3328
+          end: 3364
+  - id: 41
     file_id: 1
     namespace: ~
     pub_span: ~
     kind: Free
     type_params: []
-    signature_index: 74
+    signature_index: 99
     name:
-      inner: 81
+      inner: 89
       span:
         start: 42
         end: 46
     params: []
     result:
-      inner: 73
+      inner: 98
       span:
         start: 52
         end: 61
@@ -3913,8 +4537,8 @@ functions:
             label: ~
             parent: ~
             locals: []
-            inferred_type: 73
-            expected_type: 73
+            inferred_type: 98
+            expected_type: 98
       block:
         kind:
           Block:
@@ -3939,11 +4563,11 @@ functions:
                       span:
                         start: 101
                         end: 102
-              ty: 73
+              ty: 98
               span:
                 start: 68
                 end: 104
-        ty: 73
+        ty: 98
         span:
           start: 62
           end: 106
@@ -3954,22 +4578,22 @@ module_decls: []
 import_decls: []
 enums: []
 exports:
-  81:
+  89:
     Function:
       internal_name:
-        inner: 81
+        inner: 89
         span:
           start: 116
           end: 120
       external_name: ~
-      id: 34
+      id: 41
 structs:
-  - id: 33
+  - id: 40
     file_id: 1
     namespace: ~
     pub_span: ~
     name:
-      inner: 78
+      inner: 86
       span:
         start: 7
         end: 11
@@ -3991,28 +4615,28 @@ structs:
               end: 36
     fields:
       - name:
-          inner: 79
+          inner: 87
           span:
             start: 17
             end: 22
         ty:
-          inner: 72
+          inner: 97
           span:
             start: 24
             end: 25
       - name:
-          inner: 80
+          inner: 88
           span:
             start: 27
             end: 33
         ty:
-          inner: 72
+          inner: 97
           span:
             start: 35
             end: 36
     lookup:
-      79: 0
-      80: 1
+      87: 0
+      88: 1
     accesses:
       - file_id: 1
         span:
@@ -4024,56 +4648,56 @@ structs:
           end: 72
 impl_members:
   17:
-    42:
-      Method: 12
-    43:
-      Method: 16
-    44:
-      Method: 13
-    45:
-      Method: 15
-    46:
-      Method: 14
-    52:
-      Method: 17
-    53:
-      Method: 18
-    56:
+    50:
       Method: 19
-    57:
-      Method: 20
-    63:
-      Method: 21
-    65:
-      Method: 22
-    68:
+    51:
       Method: 23
-    77:
+    52:
+      Method: 20
+    53:
+      Method: 22
+    54:
+      Method: 21
+    60:
       Method: 24
+    61:
+      Method: 25
+    64:
+      Method: 26
+    65:
+      Method: 27
+    71:
+      Method: 28
+    73:
+      Method: 29
+    76:
+      Method: 30
+    85:
+      Method: 31
 traits:
   - file_id: 0
     namespace: ~
     name:
       inner: 7
       span:
-        start: 773
-        end: 779
+        start: 948
+        end: 954
     supertraits: []
     members:
       10:
         AssociatedType:
           ty: 21
-      35:
+      39:
         AssociatedConst:
-          id: 14
+          id: 17
           ty: 10
-      36:
-        AssociatedConst:
-          id: 15
-          ty: 23
-      38:
-        Method: 1
       40:
+        AssociatedConst:
+          id: 18
+          ty: 23
+      42:
+        Method: 1
+      44:
         Method: 2
 trait_impls: []
 trait_impl_lookup: {}
@@ -4104,12 +4728,12 @@ constants:
     accesses:
       - file_id: 0
         span:
-          start: 1267
-          end: 1282
+          start: 1776
+          end: 1791
       - file_id: 0
         span:
-          start: 1440
-          end: 1455
+          start: 1949
+          end: 1964
   - id: 1
     file_id: 0
     namespace: ~
@@ -4135,49 +4759,49 @@ constants:
         start: 68
         end: 73
     accesses: []
-  - id: 14
+  - id: 17
     file_id: 0
     namespace: ~
     pub_span: ~
     name:
-      inner: 35
+      inner: 39
       span:
-        start: 817
-        end: 829
+        start: 992
+        end: 1004
     ty:
       inner: 10
       span:
-        start: 831
-        end: 834
+        start: 1006
+        end: 1009
     value: ~
     accesses: []
-  - id: 15
+  - id: 18
     file_id: 0
     namespace: ~
     pub_span: ~
     name:
-      inner: 36
+      inner: 40
       span:
-        start: 844
-        end: 852
+        start: 1019
+        end: 1027
     ty:
       inner: 23
       span:
-        start: 854
-        end: 867
+        start: 1029
+        end: 1042
     value: ~
     accesses: []
 typesets:
-  - id: 11
+  - id: 14
     file_id: 0
     name:
-      inner: 25
+      inner: 32
       span:
-        start: 657
-        end: 664
+        start: 832
+        end: 839
     pub_span:
-      start: 645
-      end: 648
+      start: 820
+      end: 823
     members:
       - 6
       - 7
@@ -4190,16 +4814,16 @@ typesets:
     intersection_range:
       min: 0
       max: 127
-  - id: 12
+  - id: 15
     file_id: 0
     name:
-      inner: 32
+      inner: 36
       span:
-        start: 718
-        end: 729
+        start: 893
+        end: 904
     pub_span:
-      start: 706
-      end: 709
+      start: 881
+      end: 884
     members:
       - 10
       - 12

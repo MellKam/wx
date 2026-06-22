@@ -3442,9 +3442,10 @@ impl<'ctx> Parser<'ctx> {
                 })),
                 span,
             }),
-            Expression::TypeApplication { callee: inner, args }
-                if matches!(inner.inner, Expression::ObjectAccess { .. }) =>
-            {
+            Expression::TypeApplication {
+                callee: inner,
+                args,
+            } if matches!(inner.inner, Expression::ObjectAccess { .. }) => {
                 let (object, member) = match inner.inner {
                     Expression::ObjectAccess { object, member } => (object, member),
                     _ => unreachable!(),
@@ -4254,7 +4255,7 @@ impl<'ctx> Parser<'ctx> {
                     }
                 }
             },
-            should_warn_missing_separator: Some(TraitItem::is_block_like),
+            should_warn_missing_separator: Some(|item: &TraitItem| !item.is_block_like()),
         }
         .parse(parser)?;
 

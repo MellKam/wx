@@ -201,6 +201,10 @@ pub enum Instruction {
     I64Store(MemArg),
     F32Store(MemArg),
     F64Store(MemArg),
+    // Conversion
+    I64ExtendI32S,
+    I64ExtendI32U,
+    I32WrapI64,
     // Nop (used as a placeholder)
     Nop,
     // Symbolic references — resolved to concrete i32.const values by the
@@ -650,7 +654,7 @@ impl<'f> Scheduler<'f> {
             DataNodeKind::Param { index, .. } => {
                 self.body.push(Instruction::LocalGet(index));
             }
-            DataNodeKind::GlobalGet { id } => {
+            DataNodeKind::GlobalGet { id, .. } => {
                 self.body.push(Instruction::GlobalGet(id));
             }
             DataNodeKind::FunctionRef { id } => {
@@ -811,6 +815,18 @@ impl<'f> Scheduler<'f> {
             DataNodeKind::Eqz { operand } => {
                 self.emit_value(operand);
                 self.body.push(Instruction::I32Eqz);
+            }
+            DataNodeKind::I64ExtendI32S { operand } => {
+                self.emit_value(operand);
+                self.body.push(Instruction::I64ExtendI32S);
+            }
+            DataNodeKind::I64ExtendI32U { operand } => {
+                self.emit_value(operand);
+                self.body.push(Instruction::I64ExtendI32U);
+            }
+            DataNodeKind::I32WrapI64 { operand } => {
+                self.emit_value(operand);
+                self.body.push(Instruction::I32WrapI64);
             }
 
             DataNodeKind::Eq { left, right, ty } => {

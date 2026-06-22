@@ -681,6 +681,186 @@ fn test_dead_function_strings_excluded_from_data_section() {
     );
 }
 
+// ── global initializer execution
+// ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_global_init_constant_executes() {
+    // Zero-init in the global section + start function assignment must produce
+    // the declared value, not the WASM zero default.
+    let case = TestCase::new(indoc! {"
+        global mut x: i32 = 42
+        fn get() -> i32 { x }
+        export { get }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    assert_eq!(get.call(&mut store, ()).unwrap(), 42);
+}
+
+#[test]
+fn test_global_init_arithmetic_executes() {
+    let case = TestCase::new(indoc! {"
+        global mut x: i32 = 2 + 3
+        fn get() -> i32 { x }
+        export { get }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    assert_eq!(get.call(&mut store, ()).unwrap(), 5);
+}
+
+#[test]
+fn test_global_init_function_call_executes() {
+    let case = TestCase::new(indoc! {"
+        fn compute() -> i32 { 7 as i32 }
+        global mut x: i32 = compute()
+        fn get() -> i32 { x }
+        export { get }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    assert_eq!(get.call(&mut store, ()).unwrap(), 7);
+}
+
+#[test]
+fn test_global_init_block_with_locals_executes() {
+    let case = TestCase::new(indoc! {"
+        global mut x: i32 = {
+            local a = 3 as i32;
+            local b = 4 as i32;
+            a * b
+        }
+        fn get() -> i32 { x }
+        export { get }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    assert_eq!(get.call(&mut store, ()).unwrap(), 12);
+}
+
+#[test]
+fn test_global_init_multiple_sequential_executes() {
+    // g2 is declared after g1: when g2's initializer runs, g1 already holds 10.
+    let case = TestCase::new(indoc! {"
+        global mut g1: i32 = 10
+        global mut g2: i32 = g1 + 1
+        fn get_g1() -> i32 { g1 }
+        fn get_g2() -> i32 { g2 }
+        export { get_g1, get_g2 }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let get_g1 = instance.get_typed_func::<(), i32>(&mut store, "get_g1").unwrap();
+    let get_g2 = instance.get_typed_func::<(), i32>(&mut store, "get_g2").unwrap();
+    assert_eq!(get_g1.call(&mut store, ()).unwrap(), 10);
+    assert_eq!(get_g2.call(&mut store, ()).unwrap(), 11);
+}
+
+#[test]
+fn test_global_init_reverse_order_sees_zero() {
+    // g2 is declared before g1: when g2 is initialized in the start function,
+    // g1 is still the WASM zero-default (0), so g2 = 0 + 1 = 1, not 10 + 1 = 11.
+    // Both use non-literal initializers so both are emitted into the start function
+    // in declaration order.
+    let case = TestCase::new(indoc! {"
+        fn ten() -> i32 { 10 }
+        global mut g2: i32 = g1 + 1
+        global mut g1: i32 = ten()
+        fn get_g1() -> i32 { g1 }
+        fn get_g2() -> i32 { g2 }
+        export { get_g1, get_g2 }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let get_g1 = instance.get_typed_func::<(), i32>(&mut store, "get_g1").unwrap();
+    let get_g2 = instance.get_typed_func::<(), i32>(&mut store, "get_g2").unwrap();
+    assert_eq!(get_g1.call(&mut store, ()).unwrap(), 10);
+    assert_eq!(get_g2.call(&mut store, ()).unwrap(), 1); // saw g1 == 0
+}
+
+#[test]
+fn test_global_init_f64_executes() {
+    let case = TestCase::new(indoc! {"
+        global mut f: f64 = 1.0 + 2.5
+        fn get() -> f64 { f }
+        export { get }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let get = instance.get_typed_func::<(), f64>(&mut store, "get").unwrap();
+    assert_eq!(get.call(&mut store, ()).unwrap(), 3.5);
+}
+
+#[test]
+fn test_global_init_if_expression_executes() {
+    let case = TestCase::new(indoc! {"
+        fn flag() -> bool { true }
+        global mut x: i32 = if flag() { 100 as i32 } else { 200 as i32 }
+        fn get() -> i32 { x }
+        export { get }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    assert_eq!(get.call(&mut store, ()).unwrap(), 100);
+}
+
+#[test]
+fn test_global_init_generic_null_pointer_executes() {
+    // global mut head: heap::*Node = null()
+    // null() is a generic function: null<M: Memory, T>() -> M::*T
+    // Type params must be inferred from the global's declared type.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> { min: 1 }
+        struct Node { x: i32 }
+        global mut head: heap::*Node = null()
+        fn get_head() -> u32 { head as u32 }
+        export { get_head }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let get_head = instance.get_typed_func::<(), i32>(&mut store, "get_head").unwrap();
+    assert_eq!(get_head.call(&mut store, ()).unwrap(), 0);
+}
+
+#[test]
+fn test_global_immutable_with_init_wat() {
+    // An immutable global with a non-trivial initializer goes through the start
+    // function, which calls global.set.  WASM forbids global.set on an immutable
+    // global, so this snapshot documents the currently-generated (invalid) output.
+    // TODO: either force WASM-mutable for all initialised globals, or reject
+    //       immutable globals with non-const initialisers at compile time.
+    let case = TestCase::new(indoc! {"
+        global x: i32 = 42
+        fn get() -> i32 { x }
+        export { get }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
 // ── WAT snapshots
 // ─────────────────────────────────────────────────────────────
 
@@ -1384,6 +1564,62 @@ fn test_struct_pointer_load_and_store() {
     assert_eq!(load_y.call(&mut store, 16).expect("load_y failed"), 99);
 
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_struct_field_write_through_pointer() {
+    // `ptr.*.field = val` — field write through a mutable pointer.
+    // Uses the byte-offset PointerStore path, not whole-struct assignment.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> { min: 1 }
+        struct Point { x: i32, y: i32 }
+        fn set_x(ptr: heap::*mut Point, v: i32) { ptr.*.x = v }
+        fn set_y(ptr: heap::*mut Point, v: i32) { ptr.*.y = v }
+        fn get_x(ptr: heap::*Point) -> i32 { ptr.*.x }
+        fn get_y(ptr: heap::*Point) -> i32 { ptr.*.y }
+        export { heap, set_x, set_y, get_x, get_y }
+    "});
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let set_x = instance.get_typed_func::<(i32, i32), ()>(&mut store, "set_x").unwrap();
+    let set_y = instance.get_typed_func::<(i32, i32), ()>(&mut store, "set_y").unwrap();
+    let get_x = instance.get_typed_func::<i32, i32>(&mut store, "get_x").unwrap();
+    let get_y = instance.get_typed_func::<i32, i32>(&mut store, "get_y").unwrap();
+    set_x.call(&mut store, (0, 42)).unwrap();
+    set_y.call(&mut store, (0, 99)).unwrap();
+    assert_eq!(get_x.call(&mut store, 0).unwrap(), 42);
+    assert_eq!(get_y.call(&mut store, 0).unwrap(), 99);
+}
+
+#[test]
+fn test_local_struct_field_assignment() {
+    // `local mut s.field = val` — AggregateSet path: reconstruct struct with one field replaced.
+    let case = TestCase::new(indoc! {"
+        struct Point { x: i32, y: i32 }
+        fn make(x: i32, y: i32) -> Point {
+            local mut p = Point::{ x: 0, y: 0 };
+            p.x = x;
+            p.y = y;
+            p
+        }
+        fn get_x(p: Point) -> i32 { p.x }
+        fn get_y(p: Point) -> i32 { p.y }
+        export { make, get_x, get_y }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance =
+        wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let make = instance
+        .get_typed_func::<(i32, i32), (i32, i32)>(&mut store, "make")
+        .unwrap();
+    let (x, y) = make.call(&mut store, (7, 13)).unwrap();
+    assert_eq!(x, 7);
+    assert_eq!(y, 13);
 }
 
 // ── Generic structs

@@ -182,7 +182,8 @@ impl<'mir> Builder<'mir> {
 
             // ── Module-level state ────────────────────────────────────────
             ExprKind::Global { id } => {
-                let node = self.func.ensure_node(DataNodeKind::GlobalGet { id: *id });
+                let ty = ScalarType::try_from(expr.ty).unwrap_or(ScalarType::I32);
+                let node = self.func.ensure_node(DataNodeKind::GlobalGet { id: *id, ty });
                 StackResult::Value(node)
             }
             ExprKind::GlobalSet { id, value } => {
@@ -412,6 +413,22 @@ impl<'mir> Builder<'mir> {
                 let operand = self.build_expr(block_idx, bindings, value).unwrap_value();
                 StackResult::Value(self.func.ensure_node(DataNodeKind::Eqz { operand }))
             }
+            ExprKind::I64ExtendI32S { value } => {
+                let operand = self.build_expr(block_idx, bindings, value).unwrap_value();
+                StackResult::Value(
+                    self.func.ensure_node(DataNodeKind::I64ExtendI32S { operand }),
+                )
+            }
+            ExprKind::I64ExtendI32U { value } => {
+                let operand = self.build_expr(block_idx, bindings, value).unwrap_value();
+                StackResult::Value(
+                    self.func.ensure_node(DataNodeKind::I64ExtendI32U { operand }),
+                )
+            }
+            ExprKind::I32WrapI64 { value } => {
+                let operand = self.build_expr(block_idx, bindings, value).unwrap_value();
+                StackResult::Value(self.func.ensure_node(DataNodeKind::I32WrapI64 { operand }))
+            }
 
             // ── Aggregates ────────────────────────────────────────────────
             ExprKind::Aggregate { values } => {
@@ -451,6 +468,49 @@ impl<'mir> Builder<'mir> {
                     ty: field_ty,
                 });
                 StackResult::Value(node)
+            }
+
+            ExprKind::AggregateSet {
+                scope_index,
+                local_index,
+                value_index,
+                value,
+            } => {
+                let new_val = self.build_expr(block_idx, bindings, value).unwrap_value();
+                let idx = self.flat_index(*scope_index, *local_index);
+                self.ensure_bindings_capacity(bindings, idx + 1);
+                let old_aggregate = bindings[idx].unwrap_value();
+                let aggregate_index = match self.func.data_nodes[old_aggregate as usize]
+                    .kind
+                    .node_type()
+                {
+                    NodeType::Aggregate(i) => i,
+                    _ => panic!("AggregateSet on non-aggregate binding"),
+                };
+                let fields: Box<[DataNodeIndex]> = self.mir.aggregates[aggregate_index as usize]
+                    .values
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &ft)| {
+                        if i == *value_index as usize {
+                            new_val
+                        } else {
+                            let ty =
+                                ScalarType::try_from(ft).expect("aggregate field must be scalar");
+                            self.func.ensure_node(DataNodeKind::AggregateGet {
+                                aggregate: old_aggregate,
+                                field_index: i as u32,
+                                ty,
+                            })
+                        }
+                    })
+                    .collect();
+                bindings[idx] =
+                    StackResult::Value(self.func.ensure_node(DataNodeKind::Aggregate {
+                        fields,
+                        aggregate_index,
+                    }));
+                StackResult::Unit
             }
 
             // ── Control flow ──────────────────────────────────────────────

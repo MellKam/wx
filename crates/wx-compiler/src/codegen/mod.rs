@@ -318,6 +318,11 @@ pub struct ImportSection {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+struct StartSection {
+    func_index: u32,
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct WasmModule {
     types: TypeSection,
     imports: ImportSection,
@@ -326,6 +331,7 @@ pub struct WasmModule {
     memory: MemorySection,
     globals: GlobalSection,
     exports: ExportSection,
+    start: Option<StartSection>,
     elements: ElementSection,
     code: CodeSection,
     data: DataSection,
@@ -463,7 +469,13 @@ impl Builder {
             let mut mems: Vec<&mir::MemoryInfo> = mir.memories.iter().collect();
             mems.sort_by_key(|m| m.source);
             for (idx, m) in mems.iter().enumerate() {
-                builder.memories.insert(m.id, MemoryEntry { wasm_index: idx as u32, kind: m.kind });
+                builder.memories.insert(
+                    m.id,
+                    MemoryEntry {
+                        wasm_index: idx as u32,
+                        kind: m.kind,
+                    },
+                );
             }
         }
 
@@ -569,16 +581,29 @@ impl Builder {
             globals: mir
                 .globals
                 .iter()
-                .map(|global| Global {
-                    ty: ValueType::try_from(global.ty).unwrap(),
-                    mutability: match global.mutability {
-                        mir::Mutability::Mutable => Mutability::Mutable,
-                        mir::Mutability::Immutable => Mutability::Immutable,
-                    },
-                    value: builder.build_global_expr(global),
+                .map(|global| {
+                    let init_value = match (global.const_init, ValueType::try_from(global.ty).unwrap()) {
+                        (mir::ConstInit::Int(v), ValueType::I32) => Expression::I32Const { value: v as i32 },
+                        (mir::ConstInit::Int(v), ValueType::I64) => Expression::I64Const { value: v },
+                        (mir::ConstInit::Float(v), ValueType::F32) => Expression::F32Const { value: v as f32 },
+                        (mir::ConstInit::Float(v), ValueType::F64) => Expression::F64Const { value: v },
+                        _ => unreachable!(),
+                    };
+                    Global {
+                        ty: ValueType::try_from(global.ty).unwrap(),
+                        mutability: match global.mutability {
+                            mir::Mutability::Mutable => Mutability::Mutable,
+                            mir::Mutability::Immutable => Mutability::Immutable,
+                        },
+                        value: init_value,
+                    }
                 })
                 .collect::<Box<_>>(),
         };
+
+        let start = mir.start_function.map(|id| StartSection {
+            func_index: builder.func_wasm_index[&id],
+        });
 
         let required_pages = match static_segment_size {
             0 => 0,
@@ -660,6 +685,7 @@ impl Builder {
                 types: function_signatures.into_boxed_slice(),
             },
             exports: ExportSection { items: exports },
+            start,
             code: CodeSection {
                 functions: functions.into_boxed_slice(),
             },
@@ -962,6 +988,9 @@ impl Builder {
                 self.memories[&m.memory].wasm_index,
                 sink,
             ),
+            SI::I64ExtendI32S => sink.push(Instruction::I64ExtendI32S as u8),
+            SI::I64ExtendI32U => sink.push(Instruction::I64ExtendI32U as u8),
+            SI::I32WrapI64 => sink.push(Instruction::I32WrapI64 as u8),
             SI::Nop => sink.push(Instruction::Nop as u8),
             SI::FunctionPointer(id) => {
                 let wasm_idx = self.func_wasm_index[&id];
@@ -975,18 +1004,16 @@ impl Builder {
                 sink.push(Instruction::I32Const as u8);
                 (offset as i32).encode(sink);
             }
-            SI::DataSectionEnd { memory } => {
-                match self.memories[&memory].kind {
-                    tir::MemoryKind::Memory32 => {
-                        sink.push(Instruction::I32Const as u8);
-                        (self.static_segment_size as i32).encode(sink);
-                    }
-                    tir::MemoryKind::Memory64 => {
-                        sink.push(Instruction::I64Const as u8);
-                        (self.static_segment_size as i64).encode(sink);
-                    }
+            SI::DataSectionEnd { memory } => match self.memories[&memory].kind {
+                tir::MemoryKind::Memory32 => {
+                    sink.push(Instruction::I32Const as u8);
+                    (self.static_segment_size as i32).encode(sink);
                 }
-            }
+                tir::MemoryKind::Memory64 => {
+                    sink.push(Instruction::I64Const as u8);
+                    (self.static_segment_size as i64).encode(sink);
+                }
+            },
         }
     }
 
@@ -998,35 +1025,6 @@ impl Builder {
         }
     }
 
-    fn build_global_expr(&self, global: &mir::Global) -> Expression {
-        match global.value.kind {
-            mir::ExprKind::Int { value } => match global.ty {
-                mir::Type::I32 | mir::Type::U32 => Expression::I32Const {
-                    value: value as i32,
-                },
-                mir::Type::I64 | mir::Type::U64 => Expression::I64Const { value },
-                _ => unreachable!(),
-            },
-            mir::ExprKind::Float { value } => match global.ty {
-                mir::Type::F32 => Expression::F32Const {
-                    value: value as f32,
-                },
-                mir::Type::F64 => Expression::F64Const { value },
-                _ => unreachable!(),
-            },
-            mir::ExprKind::MemoryOffset { memory } => {
-                match self.memories[&memory].kind {
-                    tir::MemoryKind::Memory32 => Expression::I32Const {
-                        value: self.static_segment_size as i32,
-                    },
-                    tir::MemoryKind::Memory64 => Expression::I64Const {
-                        value: self.static_segment_size as i64,
-                    },
-                }
-            }
-            _ => unreachable!(),
-        }
-    }
 }
 
 #[allow(unused)]
@@ -1537,6 +1535,17 @@ impl Encode for GlobalSection {
     }
 }
 
+impl Encode for StartSection {
+    fn encode(&self, sink: &mut Vec<u8>) {
+        // TODO: maybe encode it without intermediate vec?
+        sink.push(SectionId::Start as u8);
+        let mut section_sink: Vec<u8> = Vec::new();
+        self.func_index.encode(&mut section_sink);
+        (section_sink.len() as u32).encode(sink);
+        sink.extend_from_slice(&section_sink);
+    }
+}
+
 impl FunctionBody {
     fn encode(&self, sink: &mut Vec<u8>, module: &WasmModule, func_index: FuncIndex) {
         let mut body_content: Vec<u8> = Vec::new();
@@ -1790,6 +1799,9 @@ impl WasmModule {
         match self.exports.items.len() {
             0 => {}
             _ => self.exports.encode(&mut sink),
+        }
+        if let Some(ref start) = self.start {
+            start.encode(&mut sink);
         }
         match self.elements.segments.len() {
             0 => {}

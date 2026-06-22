@@ -48,6 +48,12 @@ pub enum ExprKind {
         local_index: LocalIndex,
         value_index: u32,
     },
+    AggregateSet {
+        scope_index: ScopeIndex,
+        local_index: LocalIndex,
+        value_index: u32,
+        value: Box<Expression>,
+    },
     Global {
         id: ast::DefId,
     },
@@ -165,6 +171,15 @@ pub enum ExprKind {
         block: Box<Expression>,
     },
     Neg {
+        value: Box<Expression>,
+    },
+    I64ExtendI32S {
+        value: Box<Expression>,
+    },
+    I64ExtendI32U {
+        value: Box<Expression>,
+    },
+    I32WrapI64 {
         value: Box<Expression>,
     },
     /// `i32.const <data_section_end>` — byte offset of the first writable
@@ -292,6 +307,9 @@ pub struct MIR {
     /// graph.
     #[cfg_attr(test, serde(skip))]
     pub call_edges: Vec<(ast::DefId, ast::DefId)>,
+    /// The synthetic start function that assigns all user-defined globals at
+    /// module instantiation time, if any globals are declared.
+    pub start_function: Option<ast::DefId>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -378,11 +396,21 @@ pub struct Function {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy)]
+pub enum ConstInit {
+    Int(i64),
+    Float(f64),
+}
+
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Global {
     pub id: ast::DefId,
     pub ty: Type,
     pub mutability: Mutability,
-    pub value: Expression,
+    /// WASM global section init expression. Mutable globals use zero here
+    /// and are assigned at runtime by the start function. Immutable globals
+    /// carry their literal value directly.
+    pub const_init: ConstInit,
 }
 
 /// Memory layout of a type: size in bytes and required alignment in bytes.
@@ -446,6 +474,19 @@ impl MIR {
             }
         }
 
+        let globals: Vec<Global> = tir
+            .globals
+            .iter()
+            .filter(|g| !tir.is_import_namespace(g.namespace) && g.value.is_some())
+            .map(|g| builder.lower_global(g))
+            .collect();
+
+        // Build the start function before the mono loop so that any generic
+        // functions called in global initializers (e.g. null<M, T>()) are added
+        // to the worklist and processed together with the rest.
+        let start_id = builder.mono_registry.id_generator.generate();
+        let start_function = builder.build_start_function(tir, start_id);
+
         // Monomorphization: drain the registry worklist populated by lower_expression
         // when it encountered calls to generic functions. Each iteration may add new
         // entries (generic-calls-generic), so we loop until the worklist is exhausted.
@@ -481,13 +522,6 @@ impl MIR {
                 }
             }
         }
-
-        let globals: Vec<Global> = tir
-            .globals
-            .iter()
-            .filter(|g| !tir.is_import_namespace(g.namespace) && g.value.is_some())
-            .map(|g| builder.lower_global(g))
-            .collect();
 
         let imports: Vec<ImportModule> = tir
             .import_decls
@@ -527,6 +561,10 @@ impl MIR {
 
         let signatures = builder.signature_pool;
 
+        if let Some(ref f) = start_function {
+            functions.push(f.clone());
+        }
+
         let mut mir = MIR {
             functions,
             inline_functions,
@@ -534,6 +572,7 @@ impl MIR {
             signatures,
             aggregates: builder.aggregates.into_boxed_slice(),
             imports,
+            start_function: start_function.map(|_| start_id),
             memories: tir
                 .memories
                 .iter()
@@ -1068,26 +1107,159 @@ impl<'tir> Builder<'tir> {
     }
 
     fn lower_global(&mut self, global: &tir::Global) -> Global {
-        let mut dummy_ctx = FunctionContext {
-            frame: Vec::new(),
-            current_scope_index: 0,
-            static_data: Vec::new(),
+        let ty = self.lower_type_index(global.ty.inner);
+        let zero = match ty {
+            Type::F32 | Type::F64 => ConstInit::Float(0.0),
+            _ => ConstInit::Int(0),
         };
-        let value_expr = global
+        let const_init = global
             .value
             .as_ref()
-            .expect("lower_global called on global without value");
-
+            .and_then(|body| match body.block.kind {
+                tir::ExprKind::Int { value } => Some(ConstInit::Int(value)),
+                tir::ExprKind::Float { value } => Some(ConstInit::Float(value)),
+                _ => None,
+            })
+            .unwrap_or(zero);
         Global {
             id: global.id,
-            ty: self.lower_type_index(global.ty.inner),
+            ty,
             mutability: if global.mut_span.is_some() {
                 Mutability::Mutable
             } else {
                 Mutability::Immutable
             },
-            value: self.lower_expression(&mut dummy_ctx, &value_expr.inner, &mut Vec::new()),
+            const_init,
         }
+    }
+
+    /// Builds the synthetic `__wx_start` function that initializes all user
+    /// globals in declaration order. Returns `None` when there are no globals
+    /// with initializers.
+    fn build_start_function(
+        &mut self,
+        tir: &tir::TIR,
+        start_id: ast::DefId,
+    ) -> Option<Function> {
+        let globals_with_init: Vec<&tir::Global> = tir
+            .globals
+            .iter()
+            .filter(|g| {
+                g.mut_span.is_some()
+                    && g.value.as_ref().map_or(false, |body| {
+                        !matches!(
+                            body.block.kind,
+                            tir::ExprKind::Int { .. } | tir::ExprKind::Float { .. }
+                        )
+                    })
+            })
+            .collect();
+
+        if globals_with_init.is_empty() {
+            return None;
+        }
+
+        self.current_function_id = Some(start_id);
+
+        // Root scope for the start function body (no params, no locals).
+        let root_scope = BlockScope {
+            kind: tir::BlockKind::Block,
+            parent: None,
+            locals: vec![],
+            result: Type::Unit,
+        };
+        let mut combined_frame: Vec<BlockScope> = vec![root_scope];
+        let mut combined_body: Vec<Expression> = Vec::new();
+        let mut combined_static_data: Vec<u32> = Vec::new();
+
+        for g in globals_with_init {
+            let body = g.value.as_ref().unwrap();
+
+            let frame: Vec<BlockScope> = body
+                .stack
+                .scopes
+                .iter()
+                .map(|scope| {
+                    let result_ty = scope.inferred_type.infer_or(tir::TypeIndex::UNIT);
+                    let locals = scope
+                        .locals
+                        .iter()
+                        .map(|tir_local| Local {
+                            ty: self.lower_type_index(tir_local.ty),
+                            mutability: if tir_local.mut_span.is_some() {
+                                Mutability::Mutable
+                            } else {
+                                Mutability::Immutable
+                            },
+                        })
+                        .collect();
+                    BlockScope {
+                        kind: scope.kind,
+                        parent: scope.parent,
+                        locals,
+                        result: self.lower_type_index(result_ty),
+                    }
+                })
+                .collect();
+
+            let mut ctx = FunctionContext {
+                current_scope_index: 0,
+                frame,
+                static_data: Vec::new(),
+            };
+
+            let mut sink = Vec::new();
+            let lowered = self.lower_expression(&mut ctx, &body.block, &mut sink);
+
+            // Offset all scope indices so this global's scopes don't collide
+            // with scopes from prior globals in the combined frame.
+            let scope_offset = combined_frame.len() as ScopeIndex;
+            let lowered = rewrite_body(lowered, scope_offset, 0);
+            let sink: Vec<Expression> = sink
+                .into_iter()
+                .map(|e| rewrite_body(e, scope_offset, 0))
+                .collect();
+
+            // Append this global's scopes to the combined frame, adjusting
+            // parent pointers so roots become children of the start body scope.
+            for mut scope in ctx.frame {
+                scope.parent = match scope.parent {
+                    None => Some(0),
+                    Some(p) => Some(p + scope_offset),
+                };
+                combined_frame.push(scope);
+            }
+
+            combined_body.extend(sink);
+            combined_body.push(Expression {
+                kind: ExprKind::GlobalSet {
+                    id: g.id,
+                    value: Box::new(lowered),
+                },
+                ty: Type::Unit,
+            });
+            combined_static_data.extend(ctx.static_data);
+        }
+
+        let unit_sig = FunctionSignature {
+            items: Box::new([Type::Unit]),
+            params_count: 0,
+        };
+        let signature_index = self.intern_signature(unit_sig);
+
+        Some(Function {
+            id: start_id,
+            signature_index,
+            scopes: combined_frame,
+            block: Expression {
+                kind: ExprKind::Block {
+                    scope_index: 0,
+                    expressions: combined_body.into_boxed_slice(),
+                },
+                ty: Type::Unit,
+            },
+            static_data: combined_static_data,
+        })
     }
 
     /// Encode one compile-time element (Int or Float ExprKind + its TIR type)
@@ -1772,6 +1944,24 @@ impl<'tir> Builder<'tir> {
                             ty: self.lower_type_index(expr.ty),
                         }
                     }
+                    "@i64_extend_i32" => Expression {
+                        kind: ExprKind::I64ExtendI32S {
+                            value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
+                        },
+                        ty: self.lower_type_index(expr.ty),
+                    },
+                    "@u64_extend_u32" => Expression {
+                        kind: ExprKind::I64ExtendI32U {
+                            value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
+                        },
+                        ty: self.lower_type_index(expr.ty),
+                    },
+                    "@i32_wrap_i64" => Expression {
+                        kind: ExprKind::I32WrapI64 {
+                            value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
+                        },
+                        ty: self.lower_type_index(expr.ty),
+                    },
                     name => todo!("MIR lowering for intrinsic '{name}'"),
                 }
             }
@@ -2361,6 +2551,36 @@ impl<'tir> Builder<'tir> {
                     memory: self.resolve_memory_id(*memory),
                 }
             }
+            tir::ExprKind::ObjectAccess { object, member } => {
+                let (struct_index, args) = match &self.tir.type_pool[object.ty.as_usize()] {
+                    tir::Type::Struct { struct_index, args } => (*struct_index, args.clone()),
+                    _ => unreachable!("ObjectAccess on non-struct type"),
+                };
+                let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
+                let decl_index =
+                    self.tir.structs[struct_index as usize].lookup[&member.inner] as usize;
+                let phys_index =
+                    self.aggregates[aggregate_index as usize].decl_to_phys[decl_index] as usize;
+                match &object.kind {
+                    tir::ExprKind::Deref { pointer, memory } => {
+                        let field_offset =
+                            self.aggregates[aggregate_index as usize].offsets[phys_index];
+                        ExprKind::PointerStore {
+                            pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
+                            value: Box::new(self.lower_expression(func_ctx, right, sink)),
+                            offset: field_offset,
+                            memory: self.resolve_memory_id(*memory),
+                        }
+                    }
+                    tir::ExprKind::Local { scope_index, local_index } => ExprKind::AggregateSet {
+                        scope_index: *scope_index,
+                        local_index: *local_index,
+                        value_index: phys_index as u32,
+                        value: Box::new(self.lower_expression(func_ctx, right, sink)),
+                    },
+                    _ => unreachable!("ObjectAccess assignment with unsupported object kind"),
+                }
+            }
             tir::ExprKind::Placeholder => {
                 // `_ = expr`: evaluate rhs for side effects, discard the value.
                 ExprKind::Drop {
@@ -2508,6 +2728,17 @@ fn rewrite_body(
             local_index,
             value: rw_box(value),
         },
+        ExprKind::AggregateSet {
+            scope_index,
+            local_index,
+            value_index,
+            value,
+        } => ExprKind::AggregateSet {
+            scope_index: scope_index + scope_offset,
+            local_index,
+            value_index,
+            value: rw_box(value),
+        },
         ExprKind::Block {
             scope_index,
             expressions,
@@ -2542,6 +2773,15 @@ fn rewrite_body(
             value: rw_box(value),
         },
         ExprKind::Eqz { value } => ExprKind::Eqz {
+            value: rw_box(value),
+        },
+        ExprKind::I64ExtendI32S { value } => ExprKind::I64ExtendI32S {
+            value: rw_box(value),
+        },
+        ExprKind::I64ExtendI32U { value } => ExprKind::I64ExtendI32U {
+            value: rw_box(value),
+        },
+        ExprKind::I32WrapI64 { value } => ExprKind::I32WrapI64 {
             value: rw_box(value),
         },
         ExprKind::GlobalSet { id, value } => ExprKind::GlobalSet {
@@ -2752,9 +2992,13 @@ fn inline_expr(
         ExprKind::LocalSet { value, .. }
         | ExprKind::GlobalSet { value, .. }
         | ExprKind::Drop { value }
+        | ExprKind::AggregateSet { value, .. }
         | ExprKind::Neg { value }
         | ExprKind::BitNot { value }
-        | ExprKind::Eqz { value } => {
+        | ExprKind::Eqz { value }
+        | ExprKind::I64ExtendI32S { value }
+        | ExprKind::I64ExtendI32U { value }
+        | ExprKind::I32WrapI64 { value } => {
             inline_expr(value, caller_scopes, inline_id, inline_body, current_scope)
         }
 
@@ -3018,7 +3262,7 @@ pub fn run_inlining_pass(mir: &mut MIR) {
         }
     }
 
-    // Dead code elimination: BFS from exported function roots.
+    // Dead code elimination: BFS from exported functions and the start function.
     let mut live: HashSet<ast::DefId> = mir
         .exports
         .iter()
@@ -3027,6 +3271,9 @@ pub fn run_inlining_pass(mir: &mut MIR) {
             _ => None,
         })
         .collect();
+    if let Some(start_id) = mir.start_function {
+        live.insert(start_id);
+    }
     let mut dce_queue: VecDeque<ast::DefId> = live.iter().copied().collect();
     while let Some(id) = dce_queue.pop_front() {
         for &callee_id in graph.callees.get(&id).into_iter().flatten() {

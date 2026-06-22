@@ -179,6 +179,7 @@ pub enum DataNodeKind {
     /// Read from a mutable module global. Excluded from CSE.
     GlobalGet {
         id: ast::DefId,
+        ty: ScalarType,
     },
     /// Function reference (constant index into the WASM table). CSE-eligible.
     FunctionRef {
@@ -274,6 +275,18 @@ pub enum DataNodeKind {
     },
     /// `i32.eqz` — produces I32.
     Eqz {
+        operand: DataNodeIndex,
+    },
+    /// `i64.extend_i32_s` — sign-extends I32 to I64.
+    I64ExtendI32S {
+        operand: DataNodeIndex,
+    },
+    /// `i64.extend_i32_u` — zero-extends I32 to I64.
+    I64ExtendI32U {
+        operand: DataNodeIndex,
+    },
+    /// `i32.wrap_i64` — truncates I64 to I32.
+    I32WrapI64 {
         operand: DataNodeIndex,
     },
 
@@ -422,13 +435,17 @@ impl DataNodeKind {
             | DataNodeKind::GtU { .. }
             | DataNodeKind::GtEqS { .. }
             | DataNodeKind::GtEqU { .. }
-            | DataNodeKind::GlobalGet { .. }
             | DataNodeKind::FunctionRef { .. }
             | DataNodeKind::StaticDataRef { .. }
             | DataNodeKind::MemoryOffset { .. }
             | DataNodeKind::MemoryIndex { .. }
             | DataNodeKind::MemorySizeResult { .. }
-            | DataNodeKind::MemoryGrowResult { .. } => NodeType::Scalar(ScalarType::I32),
+            | DataNodeKind::MemoryGrowResult { .. }
+            | DataNodeKind::I32WrapI64 { .. } => NodeType::Scalar(ScalarType::I32),
+            DataNodeKind::I64ExtendI32S { .. } | DataNodeKind::I64ExtendI32U { .. } => {
+                NodeType::Scalar(ScalarType::I64)
+            }
+            DataNodeKind::GlobalGet { ty, .. } => NodeType::Scalar(*ty),
 
             DataNodeKind::PointerLoadResult { access, .. } => NodeType::Scalar(access.scalar_type()),
 
@@ -762,6 +779,9 @@ impl Function {
             DataNodeKind::Neg    { operand, .. }
             | DataNodeKind::BitNot { operand, .. }
             | DataNodeKind::Eqz    { operand }
+            | DataNodeKind::I64ExtendI32S { operand }
+            | DataNodeKind::I64ExtendI32U { operand }
+            | DataNodeKind::I32WrapI64 { operand }
             | DataNodeKind::AggregateGet { aggregate: operand, .. } => {
                 self.data_nodes[*operand as usize].uses.push(user_id);
             }

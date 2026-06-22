@@ -141,6 +141,9 @@ fn mark_node_inputs_live(
         DataNodeKind::Neg { operand, .. }
         | DataNodeKind::BitNot { operand, .. }
         | DataNodeKind::Eqz { operand }
+        | DataNodeKind::I64ExtendI32S { operand }
+        | DataNodeKind::I64ExtendI32U { operand }
+        | DataNodeKind::I32WrapI64 { operand }
         | DataNodeKind::AggregateGet {
             aggregate: operand, ..
         } => {

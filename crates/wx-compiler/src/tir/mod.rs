@@ -1168,6 +1168,7 @@ define_diagnostic_codes! {
         MethodNotFound => "E1049",
         NotAMethod => "E1050",
         InferInSignature => "E1051",
+        MissingElseBlock => "E1052",
     }
 }
 
@@ -1181,7 +1182,7 @@ pub struct Global {
     pub ty: ast::Spanned<TypeIndex>,
     pub pub_span: Option<ast::TextSpan>,
     pub mut_span: Option<ast::TextSpan>,
-    pub value: Option<Box<ast::Spanned<Expression>>>,
+    pub value: Option<FunctionBody>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -1558,18 +1559,9 @@ impl TIR {
             return true;
         }
         match (&self.type_pool[a.as_usize()], &self.type_pool[b.as_usize()]) {
-            (
-                Type::Pointer {
-                    to: a_to,
-                    memory: a_mem,
-                    ..
-                },
-                Type::Pointer {
-                    to: b_to,
-                    memory: b_mem,
-                    ..
-                },
-            ) => a_to == b_to && a_mem == b_mem,
+            (Type::Pointer { memory: a_mem, .. }, Type::Pointer { memory: b_mem, .. }) => {
+                a_mem == b_mem
+            }
             (Type::Array { memory: a_mem, .. }, Type::Array { memory: b_mem, .. }) => {
                 a_mem == b_mem
             }

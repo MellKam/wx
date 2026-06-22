@@ -937,8 +937,14 @@ impl Builder {
                                         None => {}
                                     }
                                 } else {
-                                    // Non-last statement: only add semicolon if not block-like
-                                    if !statement.inner.inner.is_block_like() {
+                                    // Non-last statement: non-block-like always gets `;`;
+                                    // block-like preserves an explicit `;` but doesn't add one.
+                                    let needs_semi = if statement.inner.inner.is_block_like() {
+                                        statement.separator.is_some()
+                                    } else {
+                                        true
+                                    };
+                                    if needs_semi {
                                         items.push(Node::StaticText(";"));
                                     }
                                     items.push(Node::HardLine);

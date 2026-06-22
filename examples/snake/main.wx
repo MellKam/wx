@@ -1,0 +1,204 @@
+memory heap: Memory<Size = u32>;
+
+import "host" {
+  fn draw_rect(x: i32, y: i32, w: i32, h: i32, color: u32);
+  fn clear(color: u32);
+  fn poll_key() -> i32;
+  fn get_time_ms() -> i64;
+}
+
+const CELL_SIZE: i32 = 8;
+
+const GRID_W: i32 = 32;
+
+const GRID_H: i32 = 24;
+
+const STEP_MS: i64 = 120;
+
+struct Node {
+  x: i32,
+  y: i32,
+  next: heap::*mut Node,
+}
+
+global mut head: heap::*mut Node = null_mut();
+
+global mut len: i32 = 0;
+
+global mut dir: i32 = 0;
+
+global mut food_x: i32 = 16;
+
+global mut food_y: i32 = 12;
+
+global mut acc_ms: i64 = 0;
+
+pub fn node_new(
+  value_x: i32,
+  value_y: i32,
+  next: heap::*mut Node,
+) -> heap::*mut Node {
+  local n: heap::*mut Node = alloc::<Node>();
+  n.* = Node::{ x: value_x, y: value_y, next: next };
+  n
+}
+
+pub fn push_front(x: i32, y: i32) {
+  head = node_new(x, y, head);
+  len += 1;
+}
+
+pub fn pop_back() {
+  if head == null() {
+    return;
+  }
+  if head.*.next == null() {
+    head = null_mut();
+    len = 0;
+    return;
+  }
+  local mut cur = head as *mut Node;
+  loop {
+    local mut n = cur.*;
+    if n.next.*.next == null() {
+      n.next = null_mut();
+      cur.* = n;
+      len -= 1;
+      break;
+    }
+    cur = n.next;
+  }
+}
+
+pub fn contains(x: i32, y: i32) -> bool {
+  local mut cur: heap::*Node = head;
+  loop {
+    if cur == null() {
+      break false
+    }
+    local n = cur.*;
+    if n.x == x && n.y == y {
+      break true
+    }
+    cur = n.next;
+  }
+}
+
+pub fn place_food() {
+  local t = host::get_time_ms();
+  local mut fx = (@i32_wrap_i64(t) % GRID_W + GRID_W) % GRID_W;
+  local fy = ((@i32_wrap_i64(t) / 13) % GRID_H + GRID_H) % GRID_H;
+  if contains(fx, fy) {
+    fx = (fx + 3) % GRID_W;
+  }
+  food_x = fx;
+  food_y = fy;
+}
+
+pub fn start() {
+  reset();
+  
+  push_front(5, 5);
+  push_front(4, 5);
+  push_front(3, 5);
+  dir = 0;
+  place_food();
+}
+
+pub fn reset() {
+  bump = heap::DATA_END;
+  head = null_mut();
+  len = 0;
+  acc_ms = 0;
+}
+
+pub fn step() {
+  local key = host::poll_key();
+  if key == 1 && dir != 0 {
+    dir = 2;
+  }
+  if key == 2 && dir != 3 {
+    dir = 1;
+  }
+  if key == 3 && dir != 2 {
+    dir = 0;
+  }
+  if key == 4 && dir != 1 {
+    dir = 3;
+  }
+  
+  local mut hx: i32 = 0;
+  local mut hy: i32 = 0;
+  if head == null() {
+    hx = 0;
+    hy = 0;
+  } else {
+    hx = head.*.x;
+    hy = head.*.y;
+  }
+  if dir == 0 {
+    hx = (hx + 1) % GRID_W;
+  }
+  if dir == 1 {
+    hy = (hy + 1) % GRID_H;
+  }
+  if dir == 2 {
+    hx = (hx - 1 + GRID_W) % GRID_W;
+  }
+  if dir == 3 {
+    hy = (hy - 1 + GRID_H) % GRID_H;
+  }
+  
+  if contains(hx, hy) {
+    start();
+    return;
+  }
+  
+  push_front(hx, hy);
+  
+  if hx == food_x && hy == food_y {
+    place_food();
+  } else {
+    pop_back();
+  }
+}
+
+pub fn update(dt: i64) {
+  acc_ms = acc_ms + dt;
+  loop {
+    if acc_ms < STEP_MS {
+      break;
+    }
+    acc_ms = acc_ms - STEP_MS;
+    step();
+  }
+}
+
+pub fn draw() {
+  host::clear(0xFF101010);
+  
+  host::draw_rect(food_x * CELL_SIZE, food_y * CELL_SIZE, CELL_SIZE, CELL_SIZE, 0xFFFFFF00);
+  
+  local mut cur: heap::*Node = head;
+  local mut first: bool = true;
+  loop {
+    if cur == null() {
+      break;
+    }
+    local n = cur.*;
+    if first {
+      host::draw_rect(n.x * CELL_SIZE, n.y * CELL_SIZE, CELL_SIZE, CELL_SIZE, 0xFFFF0000);
+      first = false;
+    } else {
+      host::draw_rect(n.x * CELL_SIZE, n.y * CELL_SIZE, CELL_SIZE, CELL_SIZE, 0xFF00FF00);
+    }
+    cur = n.next;
+  }
+}
+
+export {
+  heap as "memory",
+  start,
+  update,
+  draw,
+}

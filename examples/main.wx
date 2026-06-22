@@ -9,3 +9,14 @@ impl PointerSize for i64 {
     4
   }
 }
+
+struct Layout<M: Memory> {
+  size: M::Size,
+  align: M::Size,
+}
+
+impl <M: Memory> Layout<M> {
+  pub fn of<T>() -> Layout<M> {
+    Layout::{ size: @size_of(), align: @align_of() }
+  }
+}

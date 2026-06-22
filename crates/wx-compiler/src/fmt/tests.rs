@@ -522,3 +522,61 @@ fn test_format_impl_trait_items() {
         "}
     );
 }
+
+#[test]
+fn test_format_block_like_statement_semicolon() {
+    // Without explicit `;`: formatter does not add one after block-like statements.
+    let case = TestCase::new(indoc! {"
+        fn f() -> i32 {
+            if true {}
+            42
+        }
+    "});
+    let output = format(
+        &case.ast,
+        &case.interner,
+        &case.files.get(case.ast.file_id).unwrap().source,
+        RendererConfig {
+            max_line_width: 80,
+            indent_width: 4,
+            trailing_comma: true,
+        },
+    );
+    assert_eq!(
+        output,
+        indoc! {"
+            fn f() -> i32 {
+                if true {}
+                42
+            }
+        "}
+    );
+
+    // With explicit `;`: formatter preserves it so the user can visually
+    // separate the block statement from the expression that follows.
+    let case = TestCase::new(indoc! {"
+        fn f() -> i32 {
+            if true {};
+            42
+        }
+    "});
+    let output = format(
+        &case.ast,
+        &case.interner,
+        &case.files.get(case.ast.file_id).unwrap().source,
+        RendererConfig {
+            max_line_width: 80,
+            indent_width: 4,
+            trailing_comma: true,
+        },
+    );
+    assert_eq!(
+        output,
+        indoc! {"
+            fn f() -> i32 {
+                if true {};
+                42
+            }
+        "}
+    );
+}
