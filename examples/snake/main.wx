@@ -1,5 +1,20 @@
 memory heap: Memory<Size = u32>;
 
+global mut bump: heap::*mut u8 = heap::DATA_END;
+
+pub fn alloc<T>() -> heap::*mut T {
+  local align = @align_of::<T, heap>();
+  local ptr = (bump as u32 + align - 1) / align * align;
+  local new_end = ptr + @size_of::<T, heap>();
+  local cur_end = heap.size() * PAGE_SIZE;
+  if new_end > cur_end {
+    local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+    _ = heap.grow(needed);
+  }
+  bump = new_end as heap::*mut u8;
+  ptr as heap::*mut T
+}
+
 import "host" {
   fn draw_rect(x: i32, y: i32, w: i32, h: i32, color: u32);
   fn clear(color: u32);
@@ -49,10 +64,10 @@ pub fn push_front(x: i32, y: i32) {
 }
 
 pub fn pop_back() {
-  if head == null() {
+  if head.is_null() {
     return;
   }
-  if head.*.next == null() {
+  if head.*.next.is_null() {
     head = null_mut();
     len = 0;
     return;
@@ -60,7 +75,7 @@ pub fn pop_back() {
   local mut cur = head as *mut Node;
   loop {
     local mut n = cur.*;
-    if n.next.*.next == null() {
+    if n.next.*.next.is_null() {
       n.next = null_mut();
       cur.* = n;
       len -= 1;
@@ -73,7 +88,7 @@ pub fn pop_back() {
 pub fn contains(x: i32, y: i32) -> bool {
   local mut cur: heap::*Node = head;
   loop {
-    if cur == null() {
+    if cur.is_null() {
       break false
     }
     local n = cur.*;
@@ -129,7 +144,7 @@ pub fn step() {
   
   local mut hx: i32 = 0;
   local mut hy: i32 = 0;
-  if head == null() {
+  if head.is_null() {
     hx = 0;
     hy = 0;
   } else {
@@ -182,7 +197,7 @@ pub fn draw() {
   local mut cur: heap::*Node = head;
   local mut first: bool = true;
   loop {
-    if cur == null() {
+    if cur.is_null() {
       break;
     }
     local n = cur.*;

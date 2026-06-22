@@ -26,7 +26,6 @@
 
 use std::collections::HashMap;
 
-
 use crate::codegen::ValueType;
 use crate::mir;
 use crate::opt::liveness::DataLiveness;
@@ -229,7 +228,6 @@ pub enum BlockType {
     Value(ValueType),
 }
 
-
 // ── Scheduler
 // ─────────────────────────────────────────────────────────────────
 
@@ -323,15 +321,11 @@ impl<'f> Scheduler<'f> {
                 if let StackResult::Value(result_node) = result {
                     match self.func.data_nodes[*result_node as usize].kind {
                         DataNodeKind::AggregateCallResult { aggregate_index } => {
-                            // Multi-value return: fields land on the WASM stack in
-                            // field order (field[0] deepest, field[n-1] topmost).
-                            // Pop in reverse order so each local.set captures the
-                            // correct field, then restore field-order indexing.
+                            // Multi-value return: fields arrive deepest-first; pop in
+                            // reverse so each local.set captures the correct field.
                             //
-                            // Always capture into locals even if data-node uses is
-                            // empty: the result may still be referenced as a control-
-                            // node argument (call args, return), which is not tracked
-                            // in DataNode::uses.
+                            // Always spill: result may be referenced via control-node
+                            // args (return, call) not tracked in DataNode::uses.
                             let mut locals = Vec::with_capacity(
                                 self.mir.aggregates[aggregate_index as usize].values.len(),
                             );
@@ -354,7 +348,7 @@ impl<'f> Scheduler<'f> {
                             if self.should_spill(&self.func.data_nodes[*result_node as usize]) {
                                 let ty = self.func.data_nodes[*result_node as usize]
                                     .kind
-                                    .scalar_type();
+                                    .unwrap_scalar();
                                 let local = self.alloc_local(ty);
                                 self.node_to_local.insert(*result_node, local);
                                 self.body.push(Instruction::LocalSet(local));
@@ -426,7 +420,7 @@ impl<'f> Scheduler<'f> {
                         } else {
                             let ty = self.func.data_nodes[result_node as usize]
                                 .kind
-                                .scalar_type();
+                                .unwrap_scalar();
                             let l = self.alloc_local(ty);
                             self.node_to_local.insert(result_node, l);
                             l
@@ -456,11 +450,25 @@ impl<'f> Scheduler<'f> {
                     }
                 }
 
-                // The outer block always has an empty result type.
-                // Break values stay in their LoopParam locals — the parent reads
-                // from those locals after the loop exits, rather than relying on
-                // WASM block-result passing (which would leave an extra value on
-                // the stack that the parent also re-emits).
+                // Pre-allocate WASM locals for break-result phi nodes so that
+                // Break handlers inside the body can write to them before `br`.
+                for phi in self.func.blocks[*body as usize]
+                    .as_ref()
+                    .unwrap()
+                    .break_result_outputs
+                    .iter()
+                    .copied()
+                {
+                    if self.node_to_local.contains_key(&phi) {
+                        continue;
+                    }
+                    let ty = self.func.data_nodes[phi as usize].kind.unwrap_scalar();
+                    let local = self.alloc_local(ty);
+                    self.node_to_local.insert(phi, local);
+                }
+
+                // The outer block has an empty result type: break values are held
+                // in phi locals, not passed via WASM block result.
                 self.body.push(Instruction::Block {
                     ty: BlockType::Empty,
                 });
@@ -470,10 +478,8 @@ impl<'f> Scheduler<'f> {
 
                 self.emit_block(*body);
 
-                // Write after values back into LoopParam locals for the next iteration.
-                // ALL values are pushed first (using the ORIGINAL locals), then
-                // popped in reverse — this avoids swap-corruption where writing lp_a
-                // first would cause lp_b's after-computation to read the wrong value.
+                // Push all after-values first, then pop in reverse — avoids
+                // swap-corruption when two params share an input node.
                 for &lp in outputs.iter() {
                     if let DataNodeKind::LoopParam { after, .. } =
                         self.func.data_nodes[lp as usize].kind
@@ -488,19 +494,39 @@ impl<'f> Scheduler<'f> {
                     }
                 }
 
-                // Implicit loop continue — branch back to the loop header.
-                // If the body always breaks or returns, this instruction is
-                // unreachable but harmless under WASM validation.
+                // Back-edge; unreachable if the body always breaks or returns.
                 self.body.push(Instruction::Br(0));
 
                 self.body.push(Instruction::End); // Loop
                 self.body.push(Instruction::End); // Block
             }
 
-            ControlNode::Break { target, .. } => {
-                // Break values are accessed via the value node's local after the loop.
-                // We do NOT push the value before `br` — the outer block has an empty
-                // result type, so the branch carries no stack value.
+            ControlNode::Break { target, value } => {
+                if let StackResult::Value(v) = value {
+                    // Store break value into phi locals; LocalSet in reverse
+                    // because emit_value pushes fields lowest-first.
+                    let n_phis = self.func.blocks[*target as usize]
+                        .as_ref()
+                        .unwrap()
+                        .break_result_outputs
+                        .len();
+                    if n_phis > 0 {
+                        self.emit_value(*v);
+                        for phi in self.func.blocks[*target as usize]
+                            .as_ref()
+                            .unwrap()
+                            .break_result_outputs
+                            .iter()
+                            .copied()
+                            .rev()
+                        {
+                            let phi_local = *self.node_to_local.get(&phi).expect(
+                                "break result phi local must be pre-allocated by Loop handler",
+                            );
+                            self.body.push(Instruction::LocalSet(phi_local));
+                        }
+                    }
+                }
                 let depth = self.break_depth(block_idx, *target);
                 self.body.push(Instruction::Br(depth));
             }
@@ -546,16 +572,20 @@ impl<'f> Scheduler<'f> {
                     return;
                 }
                 self.emit_value(*address);
-                let m = MemArg { align: access.align_log2(), offset: *offset, memory: *memory };
+                let m = MemArg {
+                    align: access.align_log2(),
+                    offset: *offset,
+                    memory: *memory,
+                };
                 let load_instr = match access {
-                    MemAccess::I8S  => Instruction::I32Load8S(m),
-                    MemAccess::I8U  => Instruction::I32Load8U(m),
+                    MemAccess::I8S => Instruction::I32Load8S(m),
+                    MemAccess::I8U => Instruction::I32Load8U(m),
                     MemAccess::I16S => Instruction::I32Load16S(m),
                     MemAccess::I16U => Instruction::I32Load16U(m),
-                    MemAccess::I32  => Instruction::I32Load(m),
-                    MemAccess::I64  => Instruction::I64Load(m),
-                    MemAccess::F32  => Instruction::F32Load(m),
-                    MemAccess::F64  => Instruction::F64Load(m),
+                    MemAccess::I32 => Instruction::I32Load(m),
+                    MemAccess::I64 => Instruction::I64Load(m),
+                    MemAccess::F32 => Instruction::F32Load(m),
+                    MemAccess::F64 => Instruction::F64Load(m),
                 };
                 self.body.push(load_instr);
                 // PointerLoadResult always spills (no_cse + always_spill).
@@ -574,14 +604,18 @@ impl<'f> Scheduler<'f> {
             } => {
                 self.emit_value(*address);
                 self.emit_value(*value);
-                let m = MemArg { align: access.align_log2(), offset: *offset, memory: *memory };
+                let m = MemArg {
+                    align: access.align_log2(),
+                    offset: *offset,
+                    memory: *memory,
+                };
                 let store_instr = match access {
-                    MemAccess::I8S | MemAccess::I8U   => Instruction::I32Store8(m),
+                    MemAccess::I8S | MemAccess::I8U => Instruction::I32Store8(m),
                     MemAccess::I16S | MemAccess::I16U => Instruction::I32Store16(m),
-                    MemAccess::I32  => Instruction::I32Store(m),
-                    MemAccess::I64  => Instruction::I64Store(m),
-                    MemAccess::F32  => Instruction::F32Store(m),
-                    MemAccess::F64  => Instruction::F64Store(m),
+                    MemAccess::I32 => Instruction::I32Store(m),
+                    MemAccess::I64 => Instruction::I64Store(m),
+                    MemAccess::F32 => Instruction::F32Store(m),
+                    MemAccess::F64 => Instruction::F64Store(m),
                 };
                 self.body.push(store_instr);
             }
@@ -1070,7 +1104,7 @@ impl<'f> Scheduler<'f> {
             return l;
         }
         self.emit_value_inline(node);
-        let ty = self.func.data_nodes[node as usize].kind.scalar_type();
+        let ty = self.func.data_nodes[node as usize].kind.unwrap_scalar();
         let local = self.alloc_local(ty);
         self.body.push(Instruction::LocalSet(local));
         self.node_to_local.insert(node, local);
@@ -1091,7 +1125,7 @@ impl<'f> Scheduler<'f> {
             if self.node_to_local.contains_key(&phi) {
                 continue;
             }
-            let ty = self.func.data_nodes[phi as usize].kind.scalar_type();
+            let ty = self.func.data_nodes[phi as usize].kind.unwrap_scalar();
             let local = self.alloc_local(ty);
             self.node_to_local.insert(phi, local);
         }
@@ -1124,14 +1158,9 @@ impl<'f> Scheduler<'f> {
     /// WASM `br` depth for a `break` targeting `target_block` from
     /// `current_block`.
     fn break_depth(&self, current: BlockIndex, target: BlockIndex) -> u32 {
-        // Walk up the block tree counting WASM nesting levels.
-        //
-        // A loop body block (is_loop=true) is wrapped in TWO WASM instructions:
-        //   `block $b0` (outer, for break/exit) + `loop $l0` (inner, for continue).
-        // All other blocks (if-then, else) are wrapped in ONE WASM instruction.
-        //
-        // When the target itself is a loop body, we add +1 so the branch lands on
-        // the outer `block $b0` (exit), not the inner `loop $l0` (continue).
+        // Walk up the block tree. is_loop blocks cost 2 WASM levels (block + loop);
+        // others cost 1. Add +1 when the target is_loop so we exit via the outer
+        // `block` (break) rather than the inner `loop` (continue).
         let mut depth = 0u32;
         let mut idx = current;
         loop {
@@ -1150,9 +1179,7 @@ impl<'f> Scheduler<'f> {
     /// WASM `br` depth for a `continue` (branch to loop header) from
     /// `current_block`.
     fn continue_depth(&self, current: BlockIndex, target: BlockIndex) -> u32 {
-        // `continue` targets the inner `loop $l0` instruction.
-        // `break_depth` returns the depth of the outer `block $b0` (one past the loop),
-        // so subtract 1 to land on `loop $l0` instead.
+        // break_depth targets the outer block; subtract 1 to reach the inner loop.
         self.break_depth(current, target) - 1
     }
 
@@ -1175,7 +1202,7 @@ impl<'f> Scheduler<'f> {
     fn stack_result_block_type(&self, result: StackResult) -> BlockType {
         match result {
             StackResult::Value(node) => {
-                let ty = self.func.data_nodes[node as usize].kind.scalar_type();
+                let ty = self.func.data_nodes[node as usize].kind.unwrap_scalar();
                 BlockType::Value(ValueType::from(ty))
             }
             _ => BlockType::Empty,

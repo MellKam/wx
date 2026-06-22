@@ -6,7 +6,7 @@
 //! # Structure
 //! - [`DataNode`] — a pure value computation (constants, arithmetic, phis,
 //!   aggregates). Nodes with identical [`DataNodeKind`] are deduplicated (CSE)
-//!   via `Function::ensure_node`.
+//!   via `Builder::node`.
 //! - [`ControlNode`] — a side-effecting operation or control-flow construct.
 //!   Placed sequentially inside [`Block`]s.
 //! - [`Block`] — a linear sequence of `ControlNode`s, one per MIR scope.
@@ -26,10 +26,6 @@ use crate::{ast, mir};
 pub type DataNodeIndex = u32;
 pub type BlockIndex = u32;
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-/// Primitive WASM value types. Unsigned/sub-word MIR types all lower to one of
-/// these.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ScalarType {
@@ -39,13 +35,8 @@ pub enum ScalarType {
     F64,
 }
 
-/// The width and sign of a pointer load or store, determining which WASM
-/// memory instruction and `memarg` alignment to emit.
-///
-/// Sign only matters for narrow (sub-word) loads: WASM has `i32.load8_s` vs
-/// `i32.load8_u` to choose between sign-extension and zero-extension when
-/// widening to 32 bits. Full-width loads (`i32.load`, `i64.load`) read all
-/// bits verbatim, and stores never sign-extend at any width.
+/// Sign only matters for narrow loads: `i32.load8_s` vs `i32.load8_u`.
+/// Full-width loads and stores are always unsigned.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(Debug, serde::Serialize))]
 pub enum MemAccess {
@@ -125,14 +116,12 @@ impl From<ScalarType> for crate::codegen::ValueType {
     }
 }
 
-/// The type of a data node's output — either a WASM scalar or a struct value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeType {
     Scalar(ScalarType),
     Aggregate(mir::AggregateIndex),
 }
 
-/// What a MIR expression produces when lowered into the sea-of-nodes graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StackResult {
     Value(DataNodeIndex),
@@ -149,14 +138,6 @@ impl StackResult {
     }
 }
 
-// ── Data nodes
-// ────────────────────────────────────────────────────────────────
-
-/// A pure (or near-pure) value computation.
-///
-/// All variants except `GlobalGet`, `MemorySizeResult`, `CallResult`,
-/// `MemoryGrowResult`, and `LoopParam` are inserted into the CSE map; identical
-/// computations reuse the same node.
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(test, derive(Debug))]
 pub enum DataNodeKind {
@@ -181,22 +162,19 @@ pub enum DataNodeKind {
         id: ast::DefId,
         ty: ScalarType,
     },
-    /// Function reference (constant index into the WASM table). CSE-eligible.
+    /// Constant index into the WASM function table.
     FunctionRef {
         id: ast::DefId,
     },
     /// Pointer into the static data segment for a string or array constant.
-    /// CSE-eligible.
     StaticDataRef {
         data_index: u32,
     },
-    /// Byte offset of the end of the data section (a link-time constant).
-    /// CSE-eligible.
+    /// Byte offset of the end of the data section (link-time constant).
     MemoryOffset {
         memory: ast::DefId,
     },
-    /// Wasm linear-memory index as an integer constant, resolved at codegen.
-    /// CSE-eligible.
+    /// WASM linear-memory index as an integer constant, resolved at codegen.
     MemoryIndex {
         memory: ast::DefId,
     },
@@ -343,13 +321,11 @@ pub enum DataNodeKind {
     },
 
     // ── Aggregates (structs as SSA values) ─────────────────────────────────
-    /// Construct an aggregate from its component scalar nodes.
     Aggregate {
         fields: Box<[DataNodeIndex]>,
         aggregate_index: mir::AggregateIndex,
     },
-    /// Extract one scalar field from an aggregate value.
-    /// Folds immediately if `aggregate` is a known `Aggregate` node.
+    /// Folds immediately when `aggregate` is a known `Aggregate` node.
     AggregateGet {
         aggregate: DataNodeIndex,
         field_index: u32,
@@ -381,11 +357,8 @@ pub enum DataNodeKind {
         args: Box<[DataNodeIndex]>,
         ty: ScalarType,
     },
-    /// Aggregate value returned by a call. Unlike `Aggregate`, there are no
-    /// concrete field sub-nodes — the per-field values come from the WASM
-    /// multi-return stack. The scheduler captures them into per-field locals
-    /// immediately when the call instruction is emitted.
-    /// `AggregateGet` of this node does not fold (no known fields to inline).
+    /// Unlike `Aggregate`, has no concrete field sub-nodes — values come from
+    /// the WASM multi-return stack. `AggregateGet` of this node does not fold.
     AggregateCallResult {
         aggregate_index: mir::AggregateIndex,
     },
@@ -447,7 +420,9 @@ impl DataNodeKind {
             }
             DataNodeKind::GlobalGet { ty, .. } => NodeType::Scalar(*ty),
 
-            DataNodeKind::PointerLoadResult { access, .. } => NodeType::Scalar(access.scalar_type()),
+            DataNodeKind::PointerLoadResult { access, .. } => {
+                NodeType::Scalar(access.scalar_type())
+            }
 
             DataNodeKind::Aggregate {
                 aggregate_index, ..
@@ -458,38 +433,35 @@ impl DataNodeKind {
         }
     }
 
-    pub fn scalar_type(&self) -> ScalarType {
+    pub fn unwrap_scalar(&self) -> ScalarType {
         match self.node_type() {
             NodeType::Scalar(s) => s,
             NodeType::Aggregate(_) => panic!("expected scalar node type, got aggregate"),
         }
     }
 
-    /// Returns true for kinds excluded from the CSE map.
-    fn no_cse(&self) -> bool {
-        matches!(
-            self,
+    /// Returns true when two nodes with the same inputs are guaranteed to
+    /// produce the same value and can be deduplicated. Impure nodes (reads of
+    /// mutable state, call results, memory ops) and LoopParams (mutated after
+    /// creation) are not pure and each represent a distinct value.
+    fn is_pure(&self) -> bool {
+        match self {
             DataNodeKind::GlobalGet { .. }
-                | DataNodeKind::MemorySizeResult { .. }
-                | DataNodeKind::CallResult { .. }
-                | DataNodeKind::AggregateCallResult { .. }
-                | DataNodeKind::MemoryGrowResult { .. }
-                | DataNodeKind::PointerLoadResult { .. }
-                // LoopParam nodes are mutated after creation, so they cannot be CSE'd.
-                | DataNodeKind::LoopParam { .. }
-        )
+            | DataNodeKind::MemorySizeResult { .. }
+            | DataNodeKind::CallResult { .. }
+            | DataNodeKind::AggregateCallResult { .. }
+            | DataNodeKind::MemoryGrowResult { .. }
+            | DataNodeKind::PointerLoadResult { .. }
+            | DataNodeKind::LoopParam { .. } => false,
+            _ => true,
+        }
     }
 }
 
-/// A value node with its reverse-edge use list.
 pub struct DataNode {
     pub kind: DataNodeKind,
-    /// Indices of nodes whose computation depends on this node's output.
     pub uses: Vec<DataNodeIndex>,
 }
-
-// ── Control nodes
-// ─────────────────────────────────────────────────────────────
 
 pub enum ControlNode {
     Return {
@@ -499,7 +471,6 @@ pub enum ControlNode {
         id: ast::DefId,
         value: DataNodeIndex,
     },
-    /// A function call with possible side effects.
     Call {
         callee: DataNodeIndex,
         args: Box<[DataNodeIndex]>,
@@ -535,26 +506,21 @@ pub enum ControlNode {
     Unreachable,
     MemorySize {
         memory: ast::DefId,
-        /// The `MemorySizeResult` data node produced by this operation.
         result: DataNodeIndex,
     },
     MemoryGrow {
         memory: ast::DefId,
         delta: DataNodeIndex,
-        /// The `MemoryGrowResult` data node produced by this operation.
         result: DataNodeIndex,
     },
-    /// Load a scalar value from a raw pointer address. Sequenced with stores.
     PointerLoad {
         address: DataNodeIndex,
         /// Byte offset added to `address` at the WASM instruction level (memarg).
         offset: u32,
-        /// The `PointerLoadResult` data node that carries the loaded value.
         result: DataNodeIndex,
         memory: ast::DefId,
         access: MemAccess,
     },
-    /// Store a scalar value to a raw pointer address.
     PointerStore {
         address: DataNodeIndex,
         /// Byte offset added to `address` at the WASM instruction level (memarg).
@@ -565,18 +531,18 @@ pub enum ControlNode {
     },
 }
 
-// ── Blocks ────────────────────────────────────────────────────────────────────
-
 pub struct Block {
-    /// Whether this block is a loop body (affects `Continue` semantics).
     pub is_loop: bool,
     pub parent: Option<BlockIndex>,
     pub statements: Vec<ControlNode>,
+    /// Exit value. For loop blocks, overwritten with `body_fallthrough` after
+    /// `build_loop`; the pre-overwrite value is saved into `ControlNode::Loop.result`.
     pub result: StackResult,
+    /// Phi nodes at the loop-exit join point for `break <value>` paths.
+    /// Scheduler pre-allocates WASM locals for these; each `Break` stores into
+    /// them before the `br`. Empty when all breaks carry the same value.
+    pub break_result_outputs: Vec<DataNodeIndex>,
 }
-
-// ── Function (the graph)
-// ──────────────────────────────────────────────────────
 
 pub struct Function {
     pub id: ast::DefId,
@@ -584,8 +550,7 @@ pub struct Function {
     /// One slot per MIR scope (indexed by scope index). `None` until the scope
     /// is built.
     pub blocks: Vec<Option<Block>>,
-    /// CSE map: `DataNodeKind` → existing `DataNodeIndex`.
-    /// Excludes nodes where `DataNodeKind::no_cse()` is true.
+    /// CSE map: `DataNodeKind` → existing `DataNodeIndex`. Impure nodes excluded.
     data_lookup: HashMap<DataNodeKind, DataNodeIndex>,
 }
 
@@ -599,53 +564,19 @@ impl Function {
         }
     }
 
-    /// Get or create a data node, applying CSE and constant folding.
-    ///
-    /// For `AggregateGet` of a known `Aggregate`, returns the field node
-    /// directly (no new node is created). For arithmetic on two `Int`
-    /// constants, folds to a new `Int` node.
-    pub fn ensure_node(&mut self, kind: DataNodeKind) -> DataNodeIndex {
-        // ── Structural / constant-folding optimizations ───────────────────
-        // These produce a result without creating a new node for `kind`.
-
-        // AggregateGet of a concrete Aggregate folds to the field node directly.
-        if let DataNodeKind::AggregateGet {
-            aggregate,
-            field_index,
-            ..
-        } = &kind
-        {
-            if let DataNodeKind::Aggregate { fields, .. } =
-                &self.data_nodes[*aggregate as usize].kind
-            {
-                return fields[*field_index as usize];
-            }
-        }
-
-        // Phi with equal operands is a no-op.
-        if let DataNodeKind::Phi { left, right, .. } = &kind {
-            if left == right {
-                return *left;
-            }
-        }
-
-        // Integer constant folding for binary arithmetic.
-        if let Some(folded) = self.try_fold_int(&kind) {
-            return folded;
-        }
-
-        // ── CSE lookup ────────────────────────────────────────────────────
-        if !kind.no_cse() {
+    /// Get or create a data node via CSE only. Does not apply any algebraic
+    /// simplification — call `Builder::node` for that.
+    pub fn intern_node(&mut self, kind: DataNodeKind) -> DataNodeIndex {
+        if kind.is_pure() {
             if let Some(&id) = self.data_lookup.get(&kind) {
                 return id;
             }
         }
 
-        // ── Allocate new node ─────────────────────────────────────────────
         let id = self.data_nodes.len() as DataNodeIndex;
         self.register_uses(&kind, id);
 
-        if !kind.no_cse() {
+        if kind.is_pure() {
             self.data_lookup.insert(kind.clone(), id);
         }
         self.data_nodes.push(DataNode {
@@ -703,51 +634,6 @@ impl Function {
         self.data_nodes[after as usize].uses.push(id);
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────
-
-    /// Integer constant folding. Returns `Some(node_id)` when the expression
-    /// reduces to an `Int` constant.
-    fn try_fold_int(&mut self, kind: &DataNodeKind) -> Option<DataNodeIndex> {
-        let (left, right, ty) = match *kind {
-            DataNodeKind::Add { left, right, ty } => (left, right, ty),
-            DataNodeKind::Sub { left, right, ty } => (left, right, ty),
-            DataNodeKind::Mul { left, right, ty } => (left, right, ty),
-            DataNodeKind::Div { left, right, ty } => (left, right, ty),
-            DataNodeKind::Rem { left, right, ty } => (left, right, ty),
-            DataNodeKind::BitAnd { left, right, ty } => (left, right, ty),
-            DataNodeKind::BitOr { left, right, ty } => (left, right, ty),
-            DataNodeKind::BitXor { left, right, ty } => (left, right, ty),
-            _ => return None,
-        };
-
-        let l = self.as_int(left)?;
-        let r = self.as_int(right)?;
-
-        let result = match kind {
-            DataNodeKind::Add { .. } => l.wrapping_add(r),
-            DataNodeKind::Sub { .. } => l.wrapping_sub(r),
-            DataNodeKind::Mul { .. } => l.wrapping_mul(r),
-            DataNodeKind::Div { .. } if r == 0 => return None,
-            DataNodeKind::Div { .. } => l.wrapping_div(r),
-            DataNodeKind::Rem { .. } if r == 0 => return None,
-            DataNodeKind::Rem { .. } => l.wrapping_rem(r),
-            DataNodeKind::BitAnd { .. } => l & r,
-            DataNodeKind::BitOr { .. } => l | r,
-            DataNodeKind::BitXor { .. } => l ^ r,
-            _ => unreachable!(),
-        };
-
-        Some(self.ensure_node(DataNodeKind::Int { value: result, ty }))
-    }
-
-    fn as_int(&self, node: DataNodeIndex) -> Option<i64> {
-        match self.data_nodes[node as usize].kind {
-            DataNodeKind::Int { value, .. } => Some(value),
-            _ => None,
-        }
-    }
-
-    /// Walk a node's inputs and push `user_id` into their use lists.
     fn register_uses(&mut self, kind: &DataNodeKind, user_id: DataNodeIndex) {
         match kind {
             DataNodeKind::Add { left, right, .. }

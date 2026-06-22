@@ -435,7 +435,7 @@ fn test_aggregate_field_fold() {
 fn test_dead_node_has_zero_uses() {
     let case = TestCase::new(indoc! {"
         fn dead(x: i32) -> i32 {
-            local _unused: i32 = x * 2;
+            local _unused: i32 = x * 3;
             x
         }
         export { dead }
@@ -1675,4 +1675,357 @@ fn test_snapshot_sched_call_two_args() {
         export { caller }
     "});
     insta::assert_yaml_snapshot!(case.schedule_full());
+}
+
+// ── Loop break-value tests ─────────────────────────────────────────────────────
+
+/// A loop with two `break <value>` paths producing **different** scalars must
+/// create a Phi node and populate `break_result_outputs` on the loop body block.
+#[test]
+fn test_loop_two_breaks_different_values_creates_phi() {
+    let case = TestCase::new(indoc! {"
+        fn f(x: i32) -> bool {
+            loop {
+                if x > 10 { break false }
+                break true
+            }
+        }
+        export { f }
+    "});
+    let opt = Builder::build(&case.mir, case.get_first_func());
+
+    // Exactly one Phi for the two break values (false vs true).
+    let phi_count = opt
+        .data_nodes
+        .iter()
+        .filter(|n| matches!(n.kind, DataNodeKind::Phi { .. }))
+        .count();
+    assert_eq!(
+        phi_count, 1,
+        "expected one Phi for the break result; nodes: {:#?}",
+        opt.data_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+    );
+
+    // The loop body block must have break_result_outputs populated with that phi.
+    let loop_block = opt
+        .blocks
+        .iter()
+        .filter_map(|b| b.as_ref())
+        .find(|b| b.is_loop)
+        .expect("expected a loop body block");
+    assert_eq!(
+        loop_block.break_result_outputs.len(),
+        1,
+        "expected one phi index in break_result_outputs; got {:?}",
+        loop_block.break_result_outputs
+    );
+
+    // The phi's inputs must be the two break values (Int{0}=false, Int{1}=true).
+    let phi_idx = loop_block.break_result_outputs[0];
+    assert!(
+        matches!(
+            opt.data_nodes[phi_idx as usize].kind,
+            DataNodeKind::Phi { .. }
+        ),
+        "break_result_outputs[0] must be a Phi node"
+    );
+}
+
+/// A loop with a single `break <value>` path needs no Phi — only one value
+/// ever exits the loop. `break_result_outputs` must remain empty.
+#[test]
+fn test_loop_single_break_no_phi() {
+    let case = TestCase::new(indoc! {"
+        fn f() -> i32 { loop { break 42 } }
+        export { f }
+    "});
+    let opt = Builder::build(&case.mir, case.get_first_func());
+
+    let phi_count = opt
+        .data_nodes
+        .iter()
+        .filter(|n| matches!(n.kind, DataNodeKind::Phi { .. }))
+        .count();
+    assert_eq!(phi_count, 0, "single break needs no Phi");
+
+    let loop_block = opt
+        .blocks
+        .iter()
+        .filter_map(|b| b.as_ref())
+        .find(|b| b.is_loop)
+        .expect("expected a loop body block");
+    assert!(
+        loop_block.break_result_outputs.is_empty(),
+        "break_result_outputs must be empty for a single-break loop"
+    );
+}
+
+/// When every `break` in a loop carries the same scalar value, `Phi(v, v)`
+/// folds to `v` and `break_result_outputs` remains empty (no local needed).
+#[test]
+fn test_loop_two_breaks_same_value_phi_folds() {
+    let case = TestCase::new(indoc! {"
+        fn f(x: i32) -> i32 {
+            loop {
+                if x > 0 { break 7 }
+                break 7
+            }
+        }
+        export { f }
+    "});
+    let opt = Builder::build(&case.mir, case.get_first_func());
+
+    let phi_count = opt
+        .data_nodes
+        .iter()
+        .filter(|n| matches!(n.kind, DataNodeKind::Phi { .. }))
+        .count();
+    assert_eq!(phi_count, 0, "Phi(7, 7) must fold away");
+
+    let loop_block = opt
+        .blocks
+        .iter()
+        .filter_map(|b| b.as_ref())
+        .find(|b| b.is_loop)
+        .expect("expected a loop body block");
+    assert!(
+        loop_block.break_result_outputs.is_empty(),
+        "break_result_outputs must be empty when phi folds"
+    );
+}
+
+/// Regression: scheduler must not panic at `node_to_local[&phi]` when a loop
+/// has two breaks with different values. The break-result phi must be
+/// pre-allocated and written by each break site before `br`.
+#[test]
+fn test_sched_loop_break_two_values_no_panic() {
+    let case = TestCase::new(indoc! {"
+        fn f(x: i32) -> bool {
+            loop {
+                if x > 10 { break false }
+                break true
+            }
+        }
+        export { f }
+    "});
+    // Must not panic.
+    let body = case.schedule();
+
+    // Structure: Block, Loop, ..., End (loop), End (block), LocalGet (phi result).
+    let last_end = body
+        .iter()
+        .rposition(|i| matches!(i, Instruction::End))
+        .expect("expected End instructions");
+    assert!(
+        matches!(body.get(last_end + 1), Some(Instruction::LocalGet(_))),
+        "expected LocalGet after End End (phi result); got {:#?}",
+        body
+    );
+
+    // Each break site must emit a LocalSet before its Br.
+    // Both `break false` (inside the if) and `break true` (direct) write to the phi local.
+    let local_sets_in_loop: Vec<_> = body[..=last_end]
+        .iter()
+        .filter(|i| matches!(i, Instruction::LocalSet(_)))
+        .collect();
+    assert!(
+        local_sets_in_loop.len() >= 2,
+        "expected at least 2 LocalSets (one per break site) inside the loop; got {:#?}",
+        body
+    );
+}
+
+/// A single-break loop emits the break value inline (no phi, no pre-allocated
+/// local needed). The value is pushed after `End End` by the Return handler.
+#[test]
+fn test_sched_loop_single_break_value() {
+    let case = TestCase::new(indoc! {"
+        fn f() -> i32 { loop { break 42 } }
+        export { f }
+    "});
+    let body = case.schedule();
+
+    // Must end with I32Const(42) — the value emitted after the loop exits.
+    assert!(
+        matches!(body.last(), Some(Instruction::I32Const(42))),
+        "expected I32Const(42) as the last instruction; got {:#?}",
+        body
+    );
+
+    // No LocalSet for a break phi — break_result_outputs is empty.
+    let last_end = body
+        .iter()
+        .rposition(|i| matches!(i, Instruction::End))
+        .expect("expected End instructions");
+    let sets_in_loop: Vec<_> = body[..=last_end]
+        .iter()
+        .filter(|i| matches!(i, Instruction::LocalSet(_)))
+        .collect();
+    assert!(
+        sets_in_loop.is_empty(),
+        "no LocalSet expected inside a single-break loop; got {:#?}",
+        body
+    );
+}
+
+/// Three breaks with distinct values exercise the phi-chain replace strategy:
+/// `break_result_outputs` always holds the final phi, so all three break sites
+/// write to the same local and the result is read from it after `End End`.
+#[test]
+fn test_sched_loop_three_breaks() {
+    let case = TestCase::new(indoc! {"
+        fn f(x: i32) -> i32 {
+            loop {
+                if x < 0 { break 0 }
+                if x == 0 { break 1 }
+                break 2
+            }
+        }
+        export { f }
+    "});
+    let body = case.schedule();
+
+    let last_end = body
+        .iter()
+        .rposition(|i| matches!(i, Instruction::End))
+        .expect("expected End instructions");
+
+    // All three break sites write to the phi local inside the loop.
+    let sets_in_loop: Vec<_> = body[..=last_end]
+        .iter()
+        .filter(|i| matches!(i, Instruction::LocalSet(_)))
+        .collect();
+    assert!(
+        sets_in_loop.len() >= 3,
+        "expected at least 3 LocalSets (one per break site); got {:#?}",
+        body
+    );
+
+    // Result read via LocalGet after the loop.
+    assert!(
+        matches!(body.get(last_end + 1), Some(Instruction::LocalGet(_))),
+        "expected LocalGet after End End; got {:#?}",
+        body
+    );
+}
+
+/// A loop that both mutates a loop variable AND exits with a valued break must
+/// allocate separate locals for the loop param and the break-result phi without
+/// corrupting either.
+#[test]
+fn test_sched_loop_break_value_with_mutated_var() {
+    let case = TestCase::new(indoc! {"
+        fn f(start: i32) -> bool {
+            local mut i: i32 = start;
+            loop {
+                if i <= 0 { break false }
+                if i > 100 { break true }
+                i = i - 1;
+            }
+        }
+        export { f }
+    "});
+    let body = case.schedule();
+
+    let last_end = body
+        .iter()
+        .rposition(|i| matches!(i, Instruction::End))
+        .expect("expected End instructions");
+
+    // The loop param write-back plus the two phi stores = at least 3 LocalSets.
+    let sets: Vec<_> = body[..=last_end]
+        .iter()
+        .filter(|i| matches!(i, Instruction::LocalSet(_)))
+        .collect();
+    assert!(
+        sets.len() >= 3,
+        "expected LocalSets for loop-param write-back + 2 phi stores; got {:#?}",
+        body
+    );
+
+    // Break result comes from a LocalGet after the loop, not an inline const.
+    assert!(
+        matches!(body.get(last_end + 1), Some(Instruction::LocalGet(_))),
+        "expected LocalGet (phi result) after End End; got {:#?}",
+        body
+    );
+}
+
+// ── Strength reduction tests ───────────────────────────────────────────────────
+
+/// `x * 8` must be lowered to `x << 3` — no Mul node should survive.
+#[test]
+fn test_strength_reduce_mul_power_of_two() {
+    let case = TestCase::new(indoc! {"
+        fn f(x: i32) -> i32 { x * 8 }
+        export { f }
+    "});
+    let opt = Builder::build(&case.mir, case.get_first_func());
+
+    let mul_exists = opt
+        .data_nodes
+        .iter()
+        .any(|n| matches!(n.kind, DataNodeKind::Mul { .. }));
+    assert!(
+        !mul_exists,
+        "x*8 should be reduced to x<<3; nodes: {:#?}",
+        opt.data_nodes.iter().map(|n| &n.kind).collect::<Vec<_>>()
+    );
+
+    let shl = opt
+        .data_nodes
+        .iter()
+        .find(|n| matches!(n.kind, DataNodeKind::Shl { .. }))
+        .expect("expected Shl node from strength reduction");
+
+    if let DataNodeKind::Shl { right, .. } = shl.kind {
+        assert!(
+            matches!(
+                opt.data_nodes[right as usize].kind,
+                DataNodeKind::Int { value: 3, .. }
+            ),
+            "shift amount should be 3; got {:?}",
+            opt.data_nodes[right as usize].kind
+        );
+    }
+}
+
+/// Non-power-of-two multiplier must NOT be strength-reduced.
+#[test]
+fn test_no_strength_reduce_non_power_of_two() {
+    let case = TestCase::new(indoc! {"
+        fn f(x: i32) -> i32 { x * 7 }
+        export { f }
+    "});
+    let opt = Builder::build(&case.mir, case.get_first_func());
+
+    let mul_exists = opt
+        .data_nodes
+        .iter()
+        .any(|n| matches!(n.kind, DataNodeKind::Mul { .. }));
+    assert!(mul_exists, "x*7 must not be strength-reduced; no Mul found");
+}
+
+/// `const * const` where the constant is a power of two must be constant-folded
+/// to a single Int node — not reduced to a Shl first (which would skip folding).
+#[test]
+fn test_const_mul_power_of_two_fully_folds() {
+    let case = TestCase::new(indoc! {"
+        fn f() -> i32 { 3 * 4 }
+        export { f }
+    "});
+    let opt = Builder::build(&case.mir, case.get_first_func());
+
+    let arith_exists = opt
+        .data_nodes
+        .iter()
+        .any(|n| matches!(n.kind, DataNodeKind::Mul { .. } | DataNodeKind::Shl { .. }));
+    assert!(!arith_exists, "3*4 should fold to Int{{12}}, not Mul or Shl");
+
+    assert!(
+        opt.data_nodes
+            .iter()
+            .any(|n| matches!(n.kind, DataNodeKind::Int { value: 12, .. })),
+        "expected Int{{12}} after constant fold"
+    );
 }

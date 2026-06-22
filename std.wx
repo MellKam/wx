@@ -39,6 +39,9 @@ pub trait Memory {
 
 impl<M: Memory, T> M::*T {
   #[inline]
+  pub fn is_null(self) -> bool { self.addr() == 0 }
+
+  #[inline]
   pub fn addr(self) -> M::Size { self as _ }
 
   #[inline]
@@ -59,6 +62,9 @@ impl<M: Memory, T> M::*T {
 }
 
 impl<M: Memory, T> M::*mut T {
+  #[inline]
+  pub fn is_null(self) -> bool { self.addr() == 0 }
+  
   #[inline]
   pub fn addr(self) -> M::Size { self as _ }
 
