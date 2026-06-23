@@ -11,13 +11,11 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     i32.shl
   )
   (func (;1;) (type 0) (param i32) (result i32)
-    (local i32 i32)
+    (local i32)
     local.get 0
     call 0
-    local.set 1
-    local.get 1
+    local.tee 1
     call 0
-    local.set 2
-    local.get 2
+    local.tee 1
   )
 )

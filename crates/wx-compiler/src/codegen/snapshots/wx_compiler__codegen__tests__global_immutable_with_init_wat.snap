@@ -9,7 +9,6 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
   (func (;0;) (type 0) (result i32)
     (local i32)
     global.get 0
-    local.set 0
-    local.get 0
+    local.tee 0
   )
 )

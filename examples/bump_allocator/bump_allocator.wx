@@ -12,7 +12,7 @@
 //   0          DATA_END                            bump      heap end
 
 memory heap: Memory<Size = u32> {
-    min: 1,   // start with one 64 KiB page
+    min_pages: 1,   // start with one 64 KiB page
 };
 
 // ── allocator state ───────────────────────────────────────────────────────────

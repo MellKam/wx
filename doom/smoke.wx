@@ -1,0 +1,70 @@
+// Smoke test: exercises the primitives needed for DOOM
+//
+//  1. u8 array element reads  (WAD parsing needs these)
+//  2. Bit-shifts + OR to assemble multi-byte integers from raw bytes
+//  3. u8 pointer stores via *mut u8  (framebuffer pixel writes)
+//  4. Pointer arithmetic (.add()) to stride through a pixel buffer
+memory heap: Memory<Size = u32> { min_pages: 4 };
+
+// ── WAD parsing primitives ────────────────────────────────────────────────────
+// Read a little-endian u16 from a byte slice.
+pub fn read_u16_le(data: heap::[]u8, off: u32) -> u32 {
+    (data[off] as u32) | ((data[off + 1] as u32) << 8)
+}
+
+// Read a little-endian i32 from a byte slice.
+pub fn read_i32_le(data: heap::[]u8, off: u32) -> i32 {
+    (data[off] as i32)
+        | ((data[off + 1] as i32) << 8)
+        | ((data[off + 2] as i32) << 16)
+        | ((data[off + 3] as i32) << 24)
+}
+
+// Check the 4-byte WAD magic: "IWAD" = [0x49, 0x57, 0x41, 0x44]
+pub fn check_wad_magic(data: heap::[]u8) -> bool {
+    if data.len() < 4 { return false };
+    data[0] == 0x49 && data[1] == 0x57 && data[2] == 0x41 && data[3] == 0x44
+}
+
+// ── Framebuffer ───────────────────────────────────────────────────────────────
+const FB_WIDTH: u32 = 320;
+const FB_HEIGHT: u32 = 200;
+
+// Framebuffer lives right after static data, 3 bytes per pixel (RGB8).
+pub fn fb_ptr() -> u32 {
+    heap::DATA_END as u32
+}
+
+// Write one RGB pixel.
+pub fn set_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) {
+    local base: heap::*mut u8 =
+        (fb_ptr() + (y * FB_WIDTH + x) * 3) as heap::*mut u8;
+    base.* = r;
+    base.add(1).* = g;
+    base.add(2).* = b;
+}
+
+// Fill the whole framebuffer with a single color.
+pub fn clear(r: u8, g: u8, b: u8) {
+    local mut y: u32 = 0;
+    loop {
+        if y >= FB_HEIGHT { break };
+        local mut x: u32 = 0;
+        loop {
+            if x >= FB_WIDTH { break };
+            set_pixel(x, y, r, g, b);
+            x += 1;
+        };
+        y += 1;
+    }
+}
+
+export {
+    heap as "memory",
+    check_wad_magic,
+    read_u16_le,
+    read_i32_le,
+    fb_ptr,
+    set_pixel,
+    clear,
+}

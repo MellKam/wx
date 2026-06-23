@@ -263,9 +263,11 @@ impl<'f> Scheduler<'f> {
         let locals: Vec<Local> = sig
             .params()
             .iter()
-            .flat_map(|&ty| Self::flatten_mir_type(ty, &mir.aggregates))
+            .copied()
+            .flat_map(|ty| Self::flatten_mir_type(ty, &mir.aggregates))
             .map(|ty| Local { ty })
             .collect();
+        let params_count = locals.len();
 
         let mut sched = Scheduler {
             func,
@@ -285,6 +287,9 @@ impl<'f> Scheduler<'f> {
         if matches!(sched.body.last(), Some(Instruction::Return)) {
             sched.body.pop();
         }
+
+        coalesce_locals(&mut sched.body, &mut sched.locals, params_count);
+        peephole_local_tee(&mut sched.body);
 
         ScheduledFunction {
             locals: sched.locals,
@@ -1208,4 +1213,171 @@ impl<'f> Scheduler<'f> {
             _ => BlockType::Empty,
         }
     }
+}
+
+// ── Local coalescing ──────────────────────────────────────────────────────────
+
+/// Reuse WASM local slots for spilled values whose live ranges do not overlap.
+///
+/// Each spill slot has a live range `[first_write, last_read]` measured in flat
+/// instruction-list positions. Two slots of the same WASM type can share a slot
+/// number when one range ends strictly before the other begins.
+///
+/// Param slots (indices `0..params_count`) are never remapped — WASM passes
+/// arguments via the first N locals and the ABI cannot be changed.
+fn coalesce_locals(body: &mut Vec<Instruction>, locals: &mut Vec<Local>, params_count: usize) {
+    let n = locals.len();
+    if n <= params_count {
+        return;
+    }
+
+    // ── Step 1: compute live ranges ──────────────────────────────────────────
+    let mut first_write = vec![usize::MAX; n];
+    let mut last_read = vec![0usize; n];
+
+    for (i, instr) in body.iter().enumerate() {
+        match instr {
+            Instruction::LocalSet(s) => {
+                let s = *s as usize;
+                if s >= params_count {
+                    first_write[s] = first_write[s].min(i);
+                }
+            }
+            Instruction::LocalGet(s) => {
+                let s = *s as usize;
+                if s >= params_count {
+                    last_read[s] = last_read[s].max(i);
+                }
+            }
+            Instruction::LocalTee(s) => {
+                let s = *s as usize;
+                if s >= params_count {
+                    first_write[s] = first_write[s].min(i);
+                    last_read[s] = last_read[s].max(i);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Normalize: dead stores (written, never read) collapse to a point range.
+    // Slots never written (shouldn't normally happen) get range [0, 0].
+    for s in params_count..n {
+        if first_write[s] == usize::MAX {
+            first_write[s] = 0;
+        }
+        if last_read[s] < first_write[s] {
+            last_read[s] = first_write[s];
+        }
+    }
+
+    // ── Step 2: linear scan ──────────────────────────────────────────────────
+    let mut order: Vec<usize> = (params_count..n).collect();
+    order.sort_unstable_by_key(|&s| first_write[s]);
+
+    let ty_idx = |ty: ScalarType| match ty {
+        ScalarType::I32 => 0usize,
+        ScalarType::I64 => 1,
+        ScalarType::F32 => 2,
+        ScalarType::F64 => 3,
+    };
+
+    // Per-type free lists of slot numbers available for reuse.
+    let mut free: [Vec<u32>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    // Active intervals: (last_read, new_slot_number, type_index).
+    let mut active: Vec<(usize, u32, usize)> = Vec::new();
+    let mut next_slot = params_count as u32;
+    let mut mapping = vec![0u32; n];
+    for i in 0..params_count {
+        mapping[i] = i as u32;
+    }
+
+    for old in order {
+        let start = first_write[old];
+        let end = last_read[old];
+        let ti = ty_idx(locals[old].ty);
+
+        // Expire intervals that ended strictly before this one starts.
+        let mut i = 0;
+        while i < active.len() {
+            if active[i].0 < start {
+                let (_, freed, freed_ti) = active.swap_remove(i);
+                free[freed_ti].push(freed);
+            } else {
+                i += 1;
+            }
+        }
+
+        let new_slot = free[ti].pop().unwrap_or_else(|| {
+            let s = next_slot;
+            next_slot += 1;
+            s
+        });
+
+        mapping[old] = new_slot;
+        active.push((end, new_slot, ti));
+    }
+
+    // ── Step 3: rebuild locals and rewrite instructions ──────────────────────
+    let new_spill_count = (next_slot - params_count as u32) as usize;
+    let mut spill_types = vec![ScalarType::I32; new_spill_count];
+    for old in params_count..n {
+        let new = mapping[old] as usize;
+        if new >= params_count {
+            spill_types[new - params_count] = locals[old].ty;
+        }
+    }
+    locals.truncate(params_count);
+    locals.extend(spill_types.into_iter().map(|ty| Local { ty }));
+
+    for instr in body.iter_mut() {
+        match instr {
+            Instruction::LocalGet(s) | Instruction::LocalSet(s) | Instruction::LocalTee(s) => {
+                *s = mapping[*s as usize];
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Replace `LocalSet(n), LocalGet(n)` pairs with a single `LocalTee(n)`,
+/// and eliminate `LocalTee(n), LocalSet(n)` by dropping the redundant tee.
+///
+/// `local.tee` writes the top-of-stack value to the local *and* leaves a copy
+/// on the stack, which is exactly what set+get does in two instructions.
+/// Conversely, `local.tee(n)` immediately followed by `local.set(n)` writes
+/// the same value to the local twice — the tee is redundant; a plain set suffices.
+fn peephole_local_tee(body: &mut Vec<Instruction>) {
+    let mut out = Vec::with_capacity(body.len());
+    let mut i = 0;
+    while i < body.len() {
+        if let Instruction::LocalSet(s) = body[i] {
+            // set(N), get(N), set(N) → set(N): the middle get feeds back into a set
+            // of the same slot, so both the tee and the redundant write collapse.
+            if i + 2 < body.len() {
+                if let (Instruction::LocalGet(g), Instruction::LocalSet(s2)) =
+                    (&body[i + 1], &body[i + 2])
+                {
+                    if *g == s && *s2 == s {
+                        out.push(Instruction::LocalSet(s));
+                        i += 3;
+                        continue;
+                    }
+                }
+            }
+            // set(N), get(N) → tee(N)
+            if i + 1 < body.len() {
+                if let Instruction::LocalGet(g) = body[i + 1] {
+                    if s == g {
+                        out.push(Instruction::LocalTee(s));
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(body[i].clone());
+        i += 1;
+    }
+    *body = out;
 }

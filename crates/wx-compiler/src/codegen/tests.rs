@@ -831,7 +831,7 @@ fn test_global_init_generic_null_pointer_executes() {
     // null() is a generic function: null<M: Memory, T>() -> M::*T
     // Type params must be inferred from the global's declared type.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min: 1 }
+        memory heap: Memory<Size = u32> { min_pages: 1 }
         struct Node { x: i32 }
         global mut head: heap::*Node = null()
         fn get_head() -> u32 { head as u32 }
@@ -1393,7 +1393,7 @@ fn test_struct_call_result_wat() {
 fn test_pointer_deref_load_and_store() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn read(ptr: heap::*i32) -> i32 {
@@ -1438,7 +1438,7 @@ fn test_pointer_deref_load_and_store() {
 fn test_pointer_deref_increment() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1
+            min_pages: 1
         }
 
         fn increment(ptr: heap::*mut i32) {
@@ -1487,7 +1487,7 @@ fn test_struct_pointer_load_and_store() {
     // The WAT snapshot pins the emitted instruction shape.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1
+            min_pages: 1
         }
 
         struct Point {
@@ -1570,7 +1570,7 @@ fn test_struct_field_write_through_pointer() {
     // `ptr.*.field = val` — field write through a mutable pointer.
     // Uses the byte-offset PointerStore path, not whole-struct assignment.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min: 1 }
+        memory heap: Memory<Size = u32> { min_pages: 1 }
         struct Point { x: i32, y: i32 }
         fn set_x(ptr: heap::*mut Point, v: i32) { ptr.*.x = v }
         fn set_y(ptr: heap::*mut Point, v: i32) { ptr.*.y = v }
@@ -1847,7 +1847,7 @@ fn test_generic_struct_pointer_load_store() {
     // (x@0, y@4), going through the same path as the non-generic pointer tests.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1
+            min_pages: 1
         }
 
         struct Point<T> {
@@ -1917,7 +1917,7 @@ fn test_memory_grow_and_size() {
     // @memory_grow intrinsics via the Memory trait default methods.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn size_pages() -> u32 {
@@ -1961,7 +1961,7 @@ fn test_memory_size_before_grow_ordering() {
     // memory.size after memory.grow, returning 2 instead of 1.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn capture_size_before_grow() -> u32 {
@@ -1999,7 +1999,7 @@ fn test_array_literal_read_by_index() {
     // base + i * elem_size.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn get(i: u32) -> i32 {
@@ -2031,7 +2031,7 @@ fn test_array_write_and_read_back() {
     // a round-trip write+read to verify PointerStore/PointerLoad addressing.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn write(arr: [4]mut i32, i: u32, v: i32) { arr[i] = v; }
@@ -2080,7 +2080,7 @@ fn test_dead_array_excluded_from_data_section() {
     // array owned by a dead function must not appear in the WASM data segment.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn live() -> i32 { 42 }
@@ -2107,7 +2107,7 @@ fn test_array_index_wat() {
     // instruction shape (i32.add + i32.mul offset arithmetic).
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn get(i: u32) -> i32 {
@@ -2143,7 +2143,7 @@ fn test_slice_range_wat() {
     //   • from > to produces a nonsensical negative length
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn full_copy(s: heap::[]i32) -> heap::[]i32 {
@@ -2177,7 +2177,7 @@ fn test_slice_range_array_wat() {
     // arr[i..n]  — ptr = base + i*4, len = n − i
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn full_array(arr: heap::[4]i32) -> heap::[]i32 {
@@ -2202,7 +2202,7 @@ fn test_narrow_pointer_deref_sign_extension_and_byte_isolation() {
     // 3. Byte isolation: writing through *mut u8 must not touch adjacent bytes.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         fn read_u8(ptr: heap::*u8) -> u8 { ptr.* }
@@ -2248,7 +2248,7 @@ fn test_global_read_before_write_returns_old_value() {
     // of the original ptr.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         global mut bump: heap::*mut u8 = heap::DATA_END;
@@ -2284,7 +2284,7 @@ fn test_global_initialized_to_data_end() {
     // and reading it back at runtime must return that same value.
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         global mut bump: heap::*mut u8 = heap::DATA_END;
@@ -2318,7 +2318,7 @@ fn test_null_pointer_comparison() {
     //  2. a non-zero pointer does NOT compare equal to null()
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
 
         struct Node { value: i32, next: *Node }
@@ -2393,4 +2393,44 @@ fn test_size_of_and_align_of_intrinsics() {
     assert_eq!(align_u8.call(&mut store, ()).unwrap(), 1);
     assert_eq!(align_u16.call(&mut store, ()).unwrap(), 2);
     assert_eq!(align_u32.call(&mut store, ()).unwrap(), 4);
+}
+
+#[test]
+fn test_check_wad_magic_wat() {
+    // Constant slice indices 0-3 must all fold into `i32.load8_u offset=N`
+    // with no runtime Add/Mul — the four loads become offset=0,1,2,3.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> { min_pages: 1 };
+
+        pub fn check_wad_magic(data: heap::[]u8) -> bool {
+            data[0] == 0x49
+                && data[1] == 0x57
+                && data[2] == 0x41
+                && data[3] == 0x44
+        }
+
+        export { check_wad_magic }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}
+
+#[test]
+fn test_constant_index_offset_folding_wat() {
+    // Constant array and slice indices must be folded directly into the WASM
+    // memarg immediate (e.g. `i32.load offset=8`) with no runtime Add/Mul.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory<Size = u32> { min_pages: 1 };
+
+        fn get_arr() -> i32 {
+            local arr: [4]i32 = [10, 20, 30, 40];
+            arr[2]
+        }
+
+        fn get_slice(s: heap::[]i32) -> i32 {
+            s[3]
+        }
+
+        export { get_arr, get_slice }
+    "});
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }

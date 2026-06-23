@@ -4031,10 +4031,10 @@ impl<'ast> Builder<'ast, '_> {
                         name: name.clone(),
                         min_pages: config
                             .as_ref()
-                            .and_then(|c| c.min.as_ref().map(|s| s.inner)),
+                            .and_then(|c| c.min_pages.as_ref().map(|s| s.inner)),
                         max_pages: config
                             .as_ref()
-                            .and_then(|c| c.max.as_ref().map(|s| s.inner)),
+                            .and_then(|c| c.max_pages.as_ref().map(|s| s.inner)),
                     });
                     self.tir.memory_index_lookup.insert(*id, memory_index);
                     let memory_type = self.intern_type(Type::Memory {

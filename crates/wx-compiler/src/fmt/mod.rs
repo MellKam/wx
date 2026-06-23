@@ -31,11 +31,15 @@ enum Node {
     IfBreak(char),
 }
 
-struct Builder;
+struct Builder<'a> {
+    interner: &'a StringInterner,
+    source: &'a str,
+    comments: &'a CommentMap,
+}
 
-impl Builder {
-    fn symbol(interner: &StringInterner, symbol: SymbolU32) -> Node {
-        let len = interner.resolve(symbol).unwrap().len() as u32;
+impl<'a> Builder<'a> {
+    fn symbol(&self, symbol: SymbolU32) -> Node {
+        let len = self.interner.resolve(symbol).unwrap().len() as u32;
         Node::Symbol { symbol, len }
     }
 
@@ -49,27 +53,62 @@ impl Builder {
         newlines.saturating_sub(1).min(1)
     }
 
-    fn build(ast: &AST, interner: &StringInterner, source: &str) -> Node {
-        Self::build_item_list(interner, source, &ast.items)
+    fn build(&self, ast: &AST) -> Node {
+        self.build_item_list(&ast.items, true)
     }
 
-    fn build_item_list(
-        interner: &StringInterner,
-        source: &str,
-        items: &[Separated<Spanned<Item>>],
-    ) -> Node {
+    fn build_item_list(&self, items: &[Separated<Spanned<Item>>], toplevel: bool) -> Node {
         let mut nodes = Vec::new();
+
+        // Emit any comments that appear before the first item.
+        if toplevel {
+            if let Some(first) = items.first() {
+                for c in self.comments.between(0, first.inner.span.start) {
+                    nodes.push(Node::SourceText(c.span));
+                    nodes.push(Node::HardLine);
+                }
+            }
+        }
+
         for (index, item) in items.iter().enumerate() {
             if index > 0 {
-                nodes.push(Node::BlankLine);
+                let prev = &items[index - 1];
+                let gap_comments =
+                    self.comments.between(prev.inner.span.end, item.inner.span.start);
+
+                if prev.inner.inner.is_block_like() || item.inner.inner.is_block_like() {
+                    // Always one blank line around block-like items.
+                    nodes.push(Node::BlankLine);
+                } else {
+                    // Between compact items, mirror blank lines from source.
+                    // When comments are present, measure only the gap before
+                    // the first comment so the comment's own newline isn't
+                    // counted as a blank line.
+                    let blank_end = gap_comments
+                        .first()
+                        .map_or(item.inner.span.start as usize, |c| c.span.start as usize);
+                    let blank = Self::count_blank_lines(
+                        self.source,
+                        prev.inner.span.end as usize,
+                        blank_end,
+                    );
+                    for _ in 0..blank {
+                        nodes.push(Node::BlankLine);
+                    }
+                }
+                // Emit comments that fall in the gap between the two items.
+                for c in gap_comments {
+                    nodes.push(Node::HardLine);
+                    nodes.push(Node::SourceText(c.span));
+                }
                 nodes.push(Node::HardLine);
             }
-            nodes.push(Self::build_item(interner, source, &item.inner.inner));
+            nodes.push(self.build_item(&item.inner.inner));
         }
         Node::Concat(nodes.into())
     }
 
-    fn build_item(interner: &StringInterner, source: &str, item: &Item) -> Node {
+    fn build_item(&self, item: &Item) -> Node {
         match item {
             Item::Function {
                 signature,
@@ -79,13 +118,13 @@ impl Builder {
                 ..
             } => {
                 let mut items = Vec::new();
-                Builder::build_attributes(&mut items, interner, attributes);
+                self.build_attributes(&mut items, attributes);
                 if pub_span.is_some() {
                     items.push(Node::StaticText("pub "));
                 }
-                Builder::build_function_signature(&mut items, interner, signature);
+                self.build_function_signature(&mut items, signature);
                 items.push(Node::StaticText(" "));
-                items.push(Self::build_expression(interner, source, block));
+                items.push(self.build_fn_body(block));
                 Node::Group(Box::new(Node::Concat(items.into())))
             }
             Item::FunctionDeclaration {
@@ -95,17 +134,17 @@ impl Builder {
                 ..
             } => {
                 let mut items = Vec::new();
-                Builder::build_attributes(&mut items, interner, attributes);
+                self.build_attributes(&mut items, attributes);
                 if pub_span.is_some() {
                     items.push(Node::StaticText("pub "));
                 }
-                Builder::build_function_signature(&mut items, interner, signature);
+                self.build_function_signature(&mut items, signature);
                 items.push(Node::StaticText(";"));
                 Node::Concat(items.into())
             }
             Item::IntrinsicFunction { signature, .. } => {
                 let mut items = Vec::new();
-                Builder::build_function_signature(&mut items, interner, signature);
+                self.build_function_signature(&mut items, signature);
                 items.push(Node::StaticText(";"));
                 Node::Concat(items.into())
             }
@@ -116,61 +155,82 @@ impl Builder {
                 ty: type_annotation,
                 value,
                 ..
-            } => Self::build_global_definition(
-                interner,
-                source,
+            } => self.build_global_definition(
                 *pub_span,
                 *mut_span,
                 name,
                 type_annotation,
                 value,
             ),
-            Item::Export { entries } => Builder::build_export_definition(interner, entries),
+            Item::Export { entries } => self.build_export_definition(entries),
             Item::Import {
                 module,
                 alias,
                 entries,
-            } => Self::build_import_definition(interner, module, alias, entries),
-            Item::Memory { name, kind, .. } => Node::Concat(
-                vec![
+            } => self.build_import_definition(module, alias, entries),
+            Item::Memory {
+                name, kind, config, ..
+            } => {
+                let mut parts = vec![
                     Node::StaticText("memory "),
-                    Self::symbol(interner, name.inner),
+                    self.symbol(name.inner),
                     Node::StaticText(": "),
-                    Self::build_type_expression(interner, &kind.inner),
-                    Node::StaticText(";"),
-                ]
-                .into(),
-            ),
+                    self.build_type_expression(&kind.inner),
+                ];
+                if let Some(cfg) = config {
+                    let mut fields: Vec<Node> = Vec::new();
+                    if let Some(min) = &cfg.min_pages {
+                        fields.push(Node::StaticText("min_pages: "));
+                        fields.push(Node::SourceText(min.span));
+                    }
+                    if let Some(max) = &cfg.max_pages {
+                        if !fields.is_empty() {
+                            fields.push(Node::StaticText(", "));
+                        }
+                        fields.push(Node::StaticText("max_pages: "));
+                        fields.push(Node::SourceText(max.span));
+                    }
+                    if !fields.is_empty() {
+                        parts.push(Node::StaticText(" { "));
+                        parts.extend(fields);
+                        parts.push(Node::StaticText(" }"));
+                    }
+                }
+                parts.push(Node::StaticText(";"));
+                Node::Concat(parts.into())
+            }
             Item::Enum {
                 pub_span,
                 repr,
                 name,
                 variants,
                 ..
-            } => Self::build_enum_definition(interner, source, *pub_span, repr, name, variants),
-            Item::Impl { type_params, target, items } => {
-                Self::build_impl_definition(interner, source, type_params, target, items)
-            }
+            } => self.build_enum_definition(*pub_span, repr, name, variants),
+            Item::Impl {
+                type_params,
+                target,
+                items,
+            } => self.build_impl_definition(type_params, target, items),
             Item::ImplTrait {
                 trait_name,
                 target,
                 items,
                 ..
-            } => Self::build_impl_trait_definition(interner, source, trait_name, target, items),
+            } => self.build_impl_trait_definition(trait_name, target, items),
             Item::Const {
                 pub_span,
                 name,
                 ty,
                 value,
                 ..
-            } => Self::build_const_definition(interner, source, *pub_span, name, ty, value),
+            } => self.build_const_definition(*pub_span, name, ty, value),
             Item::Module {
                 pub_span,
                 name,
                 items,
-            } => Self::build_module_definition(interner, source, *pub_span, name, items),
+            } => self.build_module_definition(*pub_span, name, items),
             Item::ModuleDeclaration { pub_span, name } => {
-                Self::build_module_declaration(interner, *pub_span, name)
+                self.build_module_declaration(*pub_span, name)
             }
             Item::Trait {
                 pub_span,
@@ -178,16 +238,14 @@ impl Builder {
                 supertraits,
                 items,
                 ..
-            } => {
-                Self::build_trait_definition(interner, source, *pub_span, name, supertraits, items)
-            }
+            } => self.build_trait_definition(*pub_span, name, supertraits, items),
             Item::Struct {
                 id: _,
                 name,
                 type_params,
                 fields,
                 pub_span,
-            } => Self::build_struct_declaration(interner, name, type_params, fields, *pub_span),
+            } => self.build_struct_declaration(name, type_params, fields, *pub_span),
             Item::TypeSet {
                 pub_span,
                 name,
@@ -199,13 +257,13 @@ impl Builder {
                     items.push(Node::StaticText("pub "));
                 }
                 items.push(Node::StaticText("typeset "));
-                items.push(Self::symbol(interner, name.inner));
+                items.push(self.symbol(name.inner));
                 items.push(Node::StaticText(" { "));
                 for (i, m) in members.iter().enumerate() {
                     if i > 0 {
                         items.push(Node::StaticText(", "));
                     }
-                    items.push(Self::build_type_expression(interner, &m.inner.inner));
+                    items.push(self.build_type_expression(&m.inner.inner));
                 }
                 items.push(Node::StaticText(" }"));
                 Node::Group(Box::new(Node::Concat(items.into())))
@@ -214,7 +272,7 @@ impl Builder {
     }
 
     fn build_import_definition(
-        interner: &StringInterner,
+        &self,
         module: &Spanned<SymbolU32>,
         alias: &Option<Spanned<SymbolU32>>,
         entries: &[Separated<Spanned<ImportEntry>>],
@@ -222,11 +280,11 @@ impl Builder {
         let mut items = Vec::new();
 
         items.push(Node::StaticText("import "));
-        items.push(Self::symbol(interner, module.inner));
+        items.push(self.symbol(module.inner));
 
         if let Some(alias) = alias {
             items.push(Node::StaticText(" as "));
-            items.push(Self::symbol(interner, alias.inner));
+            items.push(self.symbol(alias.inner));
         }
 
         items.push(Node::StaticText(" {"));
@@ -239,17 +297,13 @@ impl Builder {
                     let mut entry_nodes = Vec::new();
 
                     if let Some(ext_name) = &entry.inner.inner.external_name {
-                        entry_nodes.push(Self::symbol(interner, ext_name.inner));
+                        entry_nodes.push(self.symbol(ext_name.inner));
                         entry_nodes.push(Node::StaticText(": "));
                     }
 
                     match &entry.inner.inner.declaration {
                         ImportDeclaration::Function { signature, .. } => {
-                            Builder::build_function_signature(
-                                &mut entry_nodes,
-                                interner,
-                                signature,
-                            );
+                            self.build_function_signature(&mut entry_nodes, signature);
                             entry_nodes =
                                 vec![Node::Group(Box::new(Node::Concat(entry_nodes.into())))];
                         }
@@ -260,15 +314,15 @@ impl Builder {
                             if mut_span.is_some() {
                                 entry_nodes.push(Node::StaticText("mut "));
                             }
-                            entry_nodes.push(Self::symbol(interner, name.inner));
+                            entry_nodes.push(self.symbol(name.inner));
                             entry_nodes.push(Node::StaticText(": "));
-                            entry_nodes.push(Self::build_type_expression(interner, &ty.inner));
+                            entry_nodes.push(self.build_type_expression(&ty.inner));
                         }
                         ImportDeclaration::Memory { name, kind, .. } => {
                             entry_nodes.push(Node::StaticText("memory "));
-                            entry_nodes.push(Self::symbol(interner, name.inner));
+                            entry_nodes.push(self.symbol(name.inner));
                             entry_nodes.push(Node::StaticText(": "));
-                            entry_nodes.push(Self::build_type_expression(interner, &kind.inner));
+                            entry_nodes.push(self.build_type_expression(&kind.inner));
                         }
                     }
 
@@ -299,8 +353,7 @@ impl Builder {
     }
 
     fn build_module_definition(
-        interner: &StringInterner,
-        source: &str,
+        &self,
         pub_span: Option<TextSpan>,
         name: &Spanned<SymbolU32>,
         items: &[Separated<Spanned<Item>>],
@@ -310,14 +363,14 @@ impl Builder {
             nodes.push(Node::StaticText("pub "));
         }
         nodes.push(Node::StaticText("module "));
-        nodes.push(Self::symbol(interner, name.inner));
+        nodes.push(self.symbol(name.inner));
         nodes.push(Node::StaticText(" {"));
 
         if !items.is_empty() {
             nodes.push(Node::Indent(Box::new(Node::Concat(
                 vec![
                     Node::HardLine,
-                    Self::build_item_list(interner, source, items),
+                    self.build_item_list(items, false),
                 ]
                 .into(),
             ))));
@@ -329,7 +382,7 @@ impl Builder {
     }
 
     fn build_module_declaration(
-        interner: &StringInterner,
+        &self,
         pub_span: Option<TextSpan>,
         name: &Spanned<SymbolU32>,
     ) -> Node {
@@ -338,31 +391,30 @@ impl Builder {
             nodes.push(Node::StaticText("pub "));
         }
         nodes.push(Node::StaticText("module "));
-        nodes.push(Self::symbol(interner, name.inner));
+        nodes.push(self.symbol(name.inner));
         nodes.push(Node::StaticText(";"));
         Node::Concat(nodes.into())
     }
 
     fn build_impl_definition(
-        interner: &StringInterner,
-        source: &str,
+        &self,
         type_params: &[TypeParam],
         target: &Spanned<TypeExpression>,
         items: &[Separated<Spanned<ImplItem>>],
     ) -> Node {
         let mut nodes = vec![Node::StaticText("impl ")];
-        Self::build_type_params(&mut nodes, interner, type_params);
+        self.build_type_params(&mut nodes, type_params);
         if !type_params.is_empty() {
             nodes.push(Node::StaticText(" "));
         }
-        nodes.push(Self::build_type_expression(interner, &target.inner));
+        nodes.push(self.build_type_expression(&target.inner));
         nodes.push(Node::StaticText(" {"));
 
         if !items.is_empty() {
             nodes.push(Node::Indent(Box::new(Node::Concat(
                 vec![
                     Node::HardLine,
-                    Self::build_impl_item_list(interner, source, items),
+                    self.build_impl_item_list(items),
                 ]
                 .into(),
             ))));
@@ -374,17 +426,16 @@ impl Builder {
     }
 
     fn build_impl_trait_definition(
-        interner: &StringInterner,
-        source: &str,
+        &self,
         trait_name: &Spanned<TypeExpression>,
         target: &Spanned<TypeExpression>,
         items: &[Separated<Spanned<ImplItem>>],
     ) -> Node {
         let mut nodes = vec![
             Node::StaticText("impl "),
-            Self::build_type_expression(interner, &trait_name.inner),
+            self.build_type_expression(&trait_name.inner),
             Node::StaticText(" for "),
-            Self::build_type_expression(interner, &target.inner),
+            self.build_type_expression(&target.inner),
             Node::StaticText(" {"),
         ];
 
@@ -392,7 +443,7 @@ impl Builder {
             nodes.push(Node::Indent(Box::new(Node::Concat(
                 vec![
                     Node::HardLine,
-                    Self::build_impl_item_list(interner, source, items),
+                    self.build_impl_item_list(items),
                 ]
                 .into(),
             ))));
@@ -403,23 +454,24 @@ impl Builder {
         Node::Group(Box::new(Node::Concat(nodes.into())))
     }
 
-    fn build_impl_item_list(
-        interner: &StringInterner,
-        source: &str,
-        items: &[Separated<Spanned<ImplItem>>],
-    ) -> Node {
+    fn build_impl_item_list(&self, items: &[Separated<Spanned<ImplItem>>]) -> Node {
         let mut nodes = Vec::new();
         for (index, item) in items.iter().enumerate() {
             if index > 0 {
                 nodes.push(Node::BlankLine);
+                let prev = &items[index - 1];
+                for c in self.comments.between(prev.inner.span.end, item.inner.span.start) {
+                    nodes.push(Node::HardLine);
+                    nodes.push(Node::SourceText(c.span));
+                }
                 nodes.push(Node::HardLine);
             }
-            nodes.push(Self::build_impl_item(interner, source, &item.inner.inner));
+            nodes.push(self.build_impl_item(&item.inner.inner));
         }
         Node::Concat(nodes.into())
     }
 
-    fn build_impl_item(interner: &StringInterner, source: &str, item: &ImplItem) -> Node {
+    fn build_impl_item(&self, item: &ImplItem) -> Node {
         match item {
             ImplItem::Method {
                 pub_span,
@@ -429,13 +481,13 @@ impl Builder {
                 ..
             } => {
                 let mut nodes = Vec::new();
-                Self::build_attributes(&mut nodes, interner, attributes);
+                self.build_attributes(&mut nodes, attributes);
                 if pub_span.is_some() {
                     nodes.push(Node::StaticText("pub "));
                 }
-                Self::build_function_signature(&mut nodes, interner, signature);
+                self.build_function_signature(&mut nodes, signature);
                 nodes.push(Node::StaticText(" "));
-                nodes.push(Self::build_expression(interner, source, block));
+                nodes.push(self.build_fn_body(block));
                 Node::Group(Box::new(Node::Concat(nodes.into())))
             }
             ImplItem::Const {
@@ -443,25 +495,25 @@ impl Builder {
             } => {
                 let mut nodes = vec![
                     Node::StaticText("const "),
-                    Self::symbol(interner, name.inner),
+                    self.symbol(name.inner),
                 ];
 
                 if let Some(ty) = ty {
                     nodes.push(Node::StaticText(": "));
-                    nodes.push(Self::build_type_expression(interner, &ty.inner));
+                    nodes.push(self.build_type_expression(&ty.inner));
                 }
 
                 nodes.push(Node::StaticText(" = "));
-                nodes.push(Self::build_expression(interner, source, value));
+                nodes.push(self.build_expression(value));
                 nodes.push(Node::StaticText(";"));
                 Node::Concat(nodes.into())
             }
             ImplItem::AssociatedType { name, ty, .. } => Node::Concat(
                 vec![
                     Node::StaticText("type "),
-                    Self::symbol(interner, name.inner),
+                    self.symbol(name.inner),
                     Node::StaticText(" = "),
-                    Self::build_type_expression(interner, &ty.inner),
+                    self.build_type_expression(&ty.inner),
                     Node::StaticText(";"),
                 ]
                 .into(),
@@ -470,8 +522,7 @@ impl Builder {
     }
 
     fn build_trait_definition(
-        interner: &StringInterner,
-        source: &str,
+        &self,
         pub_span: Option<TextSpan>,
         name: &Spanned<SymbolU32>,
         supertraits: &[Spanned<TypeExpression>],
@@ -482,7 +533,7 @@ impl Builder {
             nodes.push(Node::StaticText("pub "));
         }
         nodes.push(Node::StaticText("trait "));
-        nodes.push(Self::symbol(interner, name.inner));
+        nodes.push(self.symbol(name.inner));
 
         if !supertraits.is_empty() {
             nodes.push(Node::StaticText(": "));
@@ -490,7 +541,7 @@ impl Builder {
                 if index > 0 {
                     nodes.push(Node::StaticText(" + "));
                 }
-                nodes.push(Self::build_type_expression(interner, &supertrait.inner));
+                nodes.push(self.build_type_expression(&supertrait.inner));
             }
         }
 
@@ -500,7 +551,7 @@ impl Builder {
             nodes.push(Node::Indent(Box::new(Node::Concat(
                 vec![
                     Node::HardLine,
-                    Self::build_trait_item_list(interner, source, items),
+                    self.build_trait_item_list(items),
                 ]
                 .into(),
             ))));
@@ -511,23 +562,24 @@ impl Builder {
         Node::Group(Box::new(Node::Concat(nodes.into())))
     }
 
-    fn build_trait_item_list(
-        interner: &StringInterner,
-        source: &str,
-        items: &[Separated<Spanned<TraitItem>>],
-    ) -> Node {
+    fn build_trait_item_list(&self, items: &[Separated<Spanned<TraitItem>>]) -> Node {
         let mut nodes = Vec::new();
         for (index, item) in items.iter().enumerate() {
             if index > 0 {
                 nodes.push(Node::BlankLine);
+                let prev = &items[index - 1];
+                for c in self.comments.between(prev.inner.span.end, item.inner.span.start) {
+                    nodes.push(Node::HardLine);
+                    nodes.push(Node::SourceText(c.span));
+                }
                 nodes.push(Node::HardLine);
             }
-            nodes.push(Self::build_trait_item(interner, source, &item.inner.inner));
+            nodes.push(self.build_trait_item(&item.inner.inner));
         }
         Node::Concat(nodes.into())
     }
 
-    fn build_trait_item(interner: &StringInterner, source: &str, item: &TraitItem) -> Node {
+    fn build_trait_item(&self, item: &TraitItem) -> Node {
         match item {
             TraitItem::Function {
                 attributes,
@@ -536,12 +588,12 @@ impl Builder {
                 ..
             } => {
                 let mut nodes = Vec::new();
-                Self::build_attributes(&mut nodes, interner, attributes);
-                Self::build_function_signature(&mut nodes, interner, signature);
+                self.build_attributes(&mut nodes, attributes);
+                self.build_function_signature(&mut nodes, signature);
                 match body {
                     Some(body) => {
                         nodes.push(Node::StaticText(" "));
-                        nodes.push(Self::build_expression(interner, source, body));
+                        nodes.push(self.build_fn_body(body));
                         Node::Group(Box::new(Node::Concat(nodes.into())))
                     }
                     None => {
@@ -553,9 +605,9 @@ impl Builder {
             TraitItem::Const { name, ty, .. } => Node::Concat(
                 vec![
                     Node::StaticText("const "),
-                    Self::symbol(interner, name.inner),
+                    self.symbol(name.inner),
                     Node::StaticText(": "),
-                    Self::build_type_expression(interner, &ty.inner),
+                    self.build_type_expression(&ty.inner),
                     Node::StaticText(";"),
                 ]
                 .into(),
@@ -563,7 +615,7 @@ impl Builder {
             TraitItem::AssociatedType { name, bounds, .. } => {
                 let mut nodes = vec![
                     Node::StaticText("type "),
-                    Self::symbol(interner, name.inner),
+                    self.symbol(name.inner),
                 ];
 
                 if !bounds.is_empty() {
@@ -572,7 +624,7 @@ impl Builder {
                         if index > 0 {
                             nodes.push(Node::StaticText(" + "));
                         }
-                        nodes.push(Self::build_type_expression(interner, &bound.inner));
+                        nodes.push(self.build_type_expression(&bound.inner));
                     }
                 }
 
@@ -583,8 +635,7 @@ impl Builder {
     }
 
     fn build_const_definition(
-        interner: &StringInterner,
-        source: &str,
+        &self,
         pub_span: Option<TextSpan>,
         name: &Spanned<SymbolU32>,
         ty: &Option<Box<Spanned<TypeExpression>>>,
@@ -595,22 +646,21 @@ impl Builder {
             nodes.push(Node::StaticText("pub "));
         }
         nodes.push(Node::StaticText("const "));
-        nodes.push(Self::symbol(interner, name.inner));
+        nodes.push(self.symbol(name.inner));
 
         if let Some(ty) = ty {
             nodes.push(Node::StaticText(": "));
-            nodes.push(Self::build_type_expression(interner, &ty.inner));
+            nodes.push(self.build_type_expression(&ty.inner));
         }
 
         nodes.push(Node::StaticText(" = "));
-        nodes.push(Self::build_expression(interner, source, value));
+        nodes.push(self.build_expression(value));
         nodes.push(Node::StaticText(";"));
         Node::Concat(nodes.into())
     }
 
     fn build_enum_definition(
-        interner: &StringInterner,
-        source: &str,
+        &self,
         pub_span: Option<TextSpan>,
         repr: &Option<Box<Spanned<TypeExpression>>>,
         name: &Spanned<SymbolU32>,
@@ -621,11 +671,11 @@ impl Builder {
             nodes.push(Node::StaticText("pub "));
         }
         nodes.push(Node::StaticText("enum "));
-        nodes.push(Self::symbol(interner, name.inner));
+        nodes.push(self.symbol(name.inner));
 
         if let Some(repr) = repr {
             nodes.push(Node::StaticText(": "));
-            nodes.push(Self::build_type_expression(interner, &repr.inner));
+            nodes.push(self.build_type_expression(&repr.inner));
         }
 
         nodes.push(Node::StaticText(" {"));
@@ -636,11 +686,11 @@ impl Builder {
                 .enumerate()
                 .flat_map(|(index, variant)| {
                     let mut variant_nodes =
-                        vec![Self::symbol(interner, variant.inner.inner.name.inner)];
+                        vec![self.symbol(variant.inner.inner.name.inner)];
 
                     if let Some(value) = &variant.inner.inner.value {
                         variant_nodes.push(Node::StaticText(" = "));
-                        variant_nodes.push(Self::build_expression(interner, source, value));
+                        variant_nodes.push(self.build_expression(value));
                     }
 
                     if index + 1 < variants.len() {
@@ -670,7 +720,7 @@ impl Builder {
     }
 
     fn build_struct_declaration(
-        interner: &StringInterner,
+        &self,
         name: &Spanned<SymbolU32>,
         type_params: &[TypeParam],
         fields: &[Separated<Spanned<StructField>>],
@@ -681,8 +731,8 @@ impl Builder {
             items.push(Node::StaticText("pub "));
         }
         items.push(Node::StaticText("struct "));
-        items.push(Self::symbol(interner, name.inner));
-        Self::build_type_params(&mut items, interner, type_params);
+        items.push(self.symbol(name.inner));
+        self.build_type_params(&mut items, type_params);
         items.push(Node::StaticText(" {"));
 
         if !fields.is_empty() {
@@ -696,13 +746,11 @@ impl Builder {
                     if field.inner.inner.pub_span.is_some() {
                         nodes.push(Node::StaticText("pub "));
                     }
-                    nodes.push(Self::symbol(interner, field.inner.inner.name.inner));
+                    nodes.push(self.symbol(field.inner.inner.name.inner));
                     nodes.push(Node::StaticText(": "));
-                    nodes.push(Self::build_type_expression(
-                        interner,
-                        &field.inner.inner.ty.inner,
-                    ));
+                    nodes.push(self.build_type_expression(&field.inner.inner.ty.inner));
                     nodes.push(Node::StaticText(","));
+
                     let mut result = vec![Node::Concat(nodes.into())];
                     if index + 1 < field_count {
                         result.push(Node::HardLine);
@@ -723,10 +771,7 @@ impl Builder {
         Node::Concat(items.into())
     }
 
-    fn build_export_definition(
-        interner: &StringInterner,
-        entries: &[Separated<Spanned<ExportEntry>>],
-    ) -> Node {
+    fn build_export_definition(&self, entries: &[Separated<Spanned<ExportEntry>>]) -> Node {
         let mut items = Vec::new();
         items.push(Node::StaticText("export {"));
 
@@ -737,11 +782,11 @@ impl Builder {
                 .flat_map(|(index, entry)| {
                     let mut entry_nodes = Vec::new();
 
-                    entry_nodes.push(Self::symbol(interner, entry.inner.inner.name.inner));
+                    entry_nodes.push(self.symbol(entry.inner.inner.name.inner));
 
                     if let Some(alias) = &entry.inner.inner.alias {
                         entry_nodes.push(Node::StaticText(" as "));
-                        entry_nodes.push(Self::symbol(interner, alias.inner));
+                        entry_nodes.push(self.symbol(alias.inner));
                     }
 
                     if entry.separator.is_some() {
@@ -771,26 +816,26 @@ impl Builder {
         Node::Concat(items.into())
     }
 
-    fn build_attributes(out: &mut Vec<Node>, interner: &StringInterner, attributes: &[Attribute]) {
+    fn build_attributes(&self, out: &mut Vec<Node>, attributes: &[Attribute]) {
         for attr in attributes {
             out.push(Node::StaticText("#["));
-            out.push(Self::symbol(interner, attr.name.inner));
+            out.push(self.symbol(attr.name.inner));
             out.push(Node::StaticText("]"));
             out.push(Node::HardLine);
         }
     }
 
-    fn build_type_params(out: &mut Vec<Node>, interner: &StringInterner, type_params: &[TypeParam]) {
+    fn build_type_params(&self, out: &mut Vec<Node>, type_params: &[TypeParam]) {
         if type_params.is_empty() {
             return;
         }
         out.push(Node::StaticText("<"));
         for (index, param) in type_params.iter().enumerate() {
-            out.push(Self::symbol(interner, param.name.inner));
+            out.push(self.symbol(param.name.inner));
             if !param.bounds.is_empty() {
                 out.push(Node::StaticText(": "));
                 for (bi, bound) in param.bounds.iter().enumerate() {
-                    out.push(Self::build_type_expression(interner, &bound.inner));
+                    out.push(self.build_type_expression(&bound.inner));
                     if bi + 1 < param.bounds.len() {
                         out.push(Node::StaticText(" + "));
                     }
@@ -803,15 +848,11 @@ impl Builder {
         out.push(Node::StaticText(">"));
     }
 
-    fn build_function_signature(
-        out: &mut Vec<Node>,
-        interner: &StringInterner,
-        signature: &FunctionSignature,
-    ) {
+    fn build_function_signature(&self, out: &mut Vec<Node>, signature: &FunctionSignature) {
         out.push(Node::StaticText("fn "));
-        out.push(Self::symbol(interner, signature.name.inner));
+        out.push(self.symbol(signature.name.inner));
 
-        Self::build_type_params(out, interner, &signature.type_params);
+        self.build_type_params(out, &signature.type_params);
 
         out.push(Node::StaticText("("));
 
@@ -824,10 +865,10 @@ impl Builder {
                     if param.inner.inner.mut_span.is_some() {
                         params.push(Node::StaticText("mut "));
                     }
-                    params.push(Self::symbol(interner, param.inner.inner.name.inner));
+                    params.push(self.symbol(param.inner.inner.name.inner));
                     if let Some(ty) = &param.inner.inner.ty {
                         params.push(Node::StaticText(": "));
-                        params.push(Self::build_type_expression(interner, &ty.inner));
+                        params.push(self.build_type_expression(&ty.inner));
                     }
                     if index + 1 < signature.params.len() {
                         params.push(Node::StaticText(","));
@@ -845,13 +886,12 @@ impl Builder {
         out.push(Node::StaticText(")"));
         if let Some(result) = &signature.result {
             out.push(Node::StaticText(" -> "));
-            out.push(Self::build_type_expression(interner, &result.inner));
+            out.push(self.build_type_expression(&result.inner));
         }
     }
 
     fn build_global_definition(
-        interner: &StringInterner,
-        source: &str,
+        &self,
         pub_span: Option<TextSpan>,
         mut_span: Option<TextSpan>,
         name: &Spanned<SymbolU32>,
@@ -866,100 +906,178 @@ impl Builder {
         if mut_span.is_some() {
             items.push(Node::StaticText("mut "));
         }
-        items.push(Self::symbol(interner, name.inner));
+        items.push(self.symbol(name.inner));
 
         if let Some(annotation) = type_annotation {
             items.push(Node::StaticText(": "));
-            items.push(Self::build_type_expression(interner, &annotation.inner));
+            items.push(self.build_type_expression(&annotation.inner));
         }
 
         items.push(Node::StaticText(" = "));
-        items.push(Self::build_expression(interner, source, value));
+        items.push(self.build_expression(value));
         items.push(Node::StaticText(";"));
 
         Node::Concat(items.into())
     }
 
-    fn build_expression(
-        interner: &StringInterner,
-        source: &str,
-        expression: &Spanned<Expression>,
+    /// Builds a function/method/trait-method body — always multi-line.
+    fn build_fn_body(&self, block: &Spanned<Expression>) -> Node {
+        match &block.inner {
+            Expression::Block { statements } => self.build_block(statements, true),
+            _ => unreachable!("function body must be a block expression"),
+        }
+    }
+
+    /// `force_break` keeps the block always multi-line (used for function /
+    /// method / trait bodies).  When `false`, a single-statement block uses
+    /// `SoftLine` separators so the renderer can collapse it to one line when
+    /// the content fits within `max_line_width`.
+    fn build_block(
+        &self,
+        statements: &[Separated<Spanned<Statement>>],
+        force_break: bool,
     ) -> Node {
+        let mut items = Vec::new();
+        items.push(Node::StaticText("{"));
+
+        if !statements.is_empty() {
+            let single = !force_break && statements.len() == 1;
+            items.push(Node::Indent(Box::new({
+                let mut inner = Vec::new();
+                inner.push(if single {
+                    Node::SoftLine
+                } else {
+                    Node::HardLine
+                });
+
+                for (index, statement) in statements.iter().enumerate() {
+                    if index > 0 {
+                        let prev_end = statements[index - 1].inner.span.end as u32;
+                        let curr_start = statement.inner.span.start as u32;
+                        let gap_comments = self.comments.between(prev_end, curr_start);
+                        // Measure blank lines only up to the first comment so
+                        // the comment's own newline isn't counted as a blank line.
+                        let blank_end = gap_comments
+                            .first()
+                            .map_or(curr_start as usize, |c| c.span.start as usize);
+                        let blank_lines = Self::count_blank_lines(
+                            self.source,
+                            prev_end as usize,
+                            blank_end,
+                        );
+                        for _ in 0..blank_lines {
+                            inner.push(Node::HardLine);
+                        }
+                        // Emit comments that fall in the gap between the two statements.
+                        for c in gap_comments {
+                            inner.push(Node::SourceText(c.span));
+                            inner.push(Node::HardLine);
+                        }
+                    }
+                    inner.push(self.build_statement(&statement.inner.inner));
+                    if index + 1 == statements.len() {
+                        match statement.separator {
+                            Some(_) => inner.push(Node::StaticText(";")),
+                            None => {}
+                        }
+                    } else {
+                        let needs_semi = if statement.inner.inner.is_block_like() {
+                            statement.separator.is_some()
+                        } else {
+                            true
+                        };
+                        if needs_semi {
+                            inner.push(Node::StaticText(";"));
+                        }
+                        inner.push(Node::HardLine);
+                    }
+                }
+
+                Node::Concat(inner.into())
+            })));
+            items.push(if single {
+                Node::SoftLine
+            } else {
+                Node::HardLine
+            })
+        }
+
+        items.push(Node::StaticText("}"));
+        Node::Group(Box::new(Node::Concat(items.into())))
+    }
+
+    /// Append `(arg1, arg2, …)` to `out`.
+    ///
+    /// Flat mode: `(arg1, arg2, arg3)`
+    /// Break mode: `(\n    arg1,\n    arg2,\n    arg3,\n)`
+    fn build_call_args(&self, out: &mut Vec<Node>, arguments: &[Separated<Spanned<Expression>>]) {
+        out.push(Node::StaticText("("));
+        if !arguments.is_empty() {
+            let mut arg_nodes = vec![Node::Line];
+            for (index, arg) in arguments.iter().enumerate() {
+                arg_nodes.push(self.build_expression(&arg.inner));
+                if index + 1 < arguments.len() {
+                    arg_nodes.push(Node::StaticText(","));
+                    arg_nodes.push(Node::SoftLine);
+                } else {
+                    arg_nodes.push(Node::IfBreak(','));
+                }
+            }
+            out.push(Node::Indent(Box::new(Node::Concat(arg_nodes.into()))));
+            out.push(Node::Line);
+        }
+        out.push(Node::StaticText(")"));
+    }
+
+    fn build_expression(&self, expression: &Spanned<Expression>) -> Node {
         match &expression.inner {
-            Expression::Path(path) => Self::build_path(interner, path),
+            Expression::Path(path) => self.build_path(path),
             Expression::Binary {
                 left,
                 operator,
                 right,
-            } => Node::Concat(
-                vec![
-                    Self::build_expression(interner, source, left),
-                    Node::SoftLine,
-                    Node::StaticText(operator.inner.as_str()),
-                    Node::StaticText(" "),
-                    Self::build_expression(interner, source, right),
-                ]
-                .into(),
-            ),
-            Expression::Block { statements } => {
-                let mut items = Vec::new();
-                items.push(Node::StaticText("{"));
-
-                match statements.as_ref() {
-                    statements if statements.len() == 0 => {}
-                    statements => {
-                        items.push(Node::Indent(Box::new({
-                            let mut items = Vec::new();
-                            items.push(Node::HardLine);
-
-                            for (index, statement) in statements.iter().enumerate() {
-                                // Preserve blank lines between statements
-                                if index > 0 {
-                                    let prev_end = statements[index - 1].inner.span.end as usize;
-                                    let curr_start = statement.inner.span.start as usize;
-                                    let blank_lines =
-                                        Self::count_blank_lines(source, prev_end, curr_start);
-                                    for _ in 0..blank_lines {
-                                        items.push(Node::HardLine);
-                                    }
-                                }
-                                items.push(Self::build_statement(
-                                    interner,
-                                    source,
-                                    &statement.inner.inner,
-                                ));
-                                if index + 1 == statements.len() {
-                                    // Last statement: preserve original separator
-                                    match statement.separator {
-                                        Some(_) => {
-                                            items.push(Node::StaticText(";"));
-                                        }
-                                        None => {}
-                                    }
-                                } else {
-                                    // Non-last statement: non-block-like always gets `;`;
-                                    // block-like preserves an explicit `;` but doesn't add one.
-                                    let needs_semi = if statement.inner.inner.is_block_like() {
-                                        statement.separator.is_some()
-                                    } else {
-                                        true
-                                    };
-                                    if needs_semi {
-                                        items.push(Node::StaticText(";"));
-                                    }
-                                    items.push(Node::HardLine);
-                                }
-                            }
-
-                            Node::Concat(items.into())
-                        })));
-                        items.push(Node::HardLine);
+            } => {
+                // Flatten left-recursive chains of the same operator into one
+                // group so that all operands break together rather than one at
+                // a time from the inside out.
+                //
+                //   a | b | c | d   →  Group([a, Indent(SL | b), Indent(SL | c), Indent(SL | d)])
+                //
+                // In flat mode:  "a | b | c | d"
+                // In break mode: "a\n    | b\n    | c\n    | d"
+                let mut operands: Vec<&Spanned<Expression>> = vec![right, left];
+                let mut current = left;
+                while let Expression::Binary {
+                    left: l,
+                    operator: op,
+                    right: r,
+                } = &current.inner
+                {
+                    if op.inner == operator.inner {
+                        *operands.last_mut().unwrap() = r;
+                        operands.push(l);
+                        current = l;
+                    } else {
+                        break;
                     }
                 }
+                operands.reverse();
 
-                items.push(Node::StaticText("}"));
-                Node::Group(Box::new(Node::Concat(items.into())))
+                let mut parts = vec![self.build_expression(operands[0])];
+                for operand in &operands[1..] {
+                    parts.push(Node::Indent(Box::new(Node::Concat(
+                        vec![
+                            Node::SoftLine,
+                            Node::StaticText(operator.inner.as_str()),
+                            Node::StaticText(" "),
+                            self.build_expression(operand),
+                        ]
+                        .into(),
+                    ))));
+                }
+                Node::Group(Box::new(Node::Concat(parts.into())))
             }
+            Expression::Block { statements } => self.build_block(statements, false),
             Expression::Unreachable => Node::StaticText("unreachable"),
             Expression::IfElse {
                 condition,
@@ -968,12 +1086,12 @@ impl Builder {
             } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("if "));
-                items.push(Self::build_expression(interner, source, condition));
+                items.push(self.build_expression(condition));
                 items.push(Node::StaticText(" "));
-                items.push(Self::build_expression(interner, source, then_block));
+                items.push(self.build_expression(then_block));
                 if let Some(else_block) = else_block {
                     items.push(Node::StaticText(" else "));
-                    items.push(Self::build_expression(interner, source, else_block));
+                    items.push(self.build_expression(else_block));
                 }
 
                 Node::Group(Box::new(Node::Concat(items.into())))
@@ -981,7 +1099,7 @@ impl Builder {
             Expression::Loop { block } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("loop "));
-                items.push(Self::build_expression(interner, source, block));
+                items.push(self.build_expression(block));
 
                 Node::Group(Box::new(Node::Concat(items.into())))
             }
@@ -990,11 +1108,11 @@ impl Builder {
                 items.push(Node::StaticText("break"));
                 if let Some(label) = label {
                     items.push(Node::StaticText(" :"));
-                    items.push(Self::symbol(interner, label.inner));
+                    items.push(self.symbol(label.inner));
                 }
                 if let Some(value) = value {
                     items.push(Node::StaticText(" "));
-                    items.push(Self::build_expression(interner, source, value));
+                    items.push(self.build_expression(value));
                 }
 
                 Node::Concat(items.into())
@@ -1004,16 +1122,16 @@ impl Builder {
                 items.push(Node::StaticText("return"));
                 if let Some(value) = value {
                     items.push(Node::StaticText(" "));
-                    items.push(Self::build_expression(interner, source, value));
+                    items.push(self.build_expression(value));
                 }
 
                 Node::Concat(items.into())
             }
             Expression::Cast { value, ty } => {
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, source, value));
+                items.push(self.build_expression(value));
                 items.push(Node::StaticText(" as "));
-                items.push(Self::build_type_expression(interner, &ty.inner));
+                items.push(self.build_type_expression(&ty.inner));
 
                 Node::Concat(items.into())
             }
@@ -1022,7 +1140,7 @@ impl Builder {
                 items.push(Node::StaticText("continue"));
                 if let Some(label) = label {
                     items.push(Node::StaticText(" :"));
-                    items.push(Self::symbol(interner, label.inner));
+                    items.push(self.symbol(label.inner));
                 }
 
                 Node::Concat(items.into())
@@ -1038,64 +1156,48 @@ impl Builder {
             Expression::Grouping { value } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("("));
-                items.push(Self::build_expression(interner, source, value));
+                items.push(self.build_expression(value));
                 items.push(Node::StaticText(")"));
                 Node::Concat(items.into())
             }
             Expression::Call { callee, arguments } => {
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, source, callee));
-                items.push(Node::StaticText("("));
-
-                for (index, arg) in arguments.iter().enumerate() {
-                    items.push(Self::build_expression(interner, source, &arg.inner));
-                    if index + 1 < arguments.len() {
-                        items.push(Node::StaticText(", "));
-                    }
-                }
-
-                items.push(Node::StaticText(")"));
-                Node::Concat(items.into())
+                items.push(self.build_expression(callee));
+                self.build_call_args(&mut items, arguments);
+                Node::Group(Box::new(Node::Concat(items.into())))
             }
             Expression::MethodCall(mc) => {
                 let (object, method, type_args, arguments) =
                     (&mc.object, &mc.method, &mc.type_args, &mc.arguments);
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, source, object));
+                items.push(self.build_expression(object));
                 items.push(Node::StaticText("."));
-                items.push(Self::symbol(interner, method.inner));
+                items.push(self.symbol(method.inner));
                 if !type_args.is_empty() {
                     items.push(Node::StaticText("::<"));
                     for (i, arg) in type_args.iter().enumerate() {
                         if i > 0 {
                             items.push(Node::StaticText(", "));
                         }
-                        items.push(Self::build_type_expression(interner, &arg.inner));
+                        items.push(self.build_type_expression(&arg.inner));
                     }
                     items.push(Node::StaticText(">"));
                 }
-                items.push(Node::StaticText("("));
-                for (index, arg) in arguments.iter().enumerate() {
-                    items.push(Self::build_expression(interner, source, &arg.inner));
-                    if index + 1 < arguments.len() {
-                        items.push(Node::StaticText(", "));
-                    }
-                }
-                items.push(Node::StaticText(")"));
-                Node::Concat(items.into())
+                self.build_call_args(&mut items, arguments);
+                Node::Group(Box::new(Node::Concat(items.into())))
             }
             Expression::Label { label, block } => {
                 let mut items = Vec::new();
-                items.push(Self::symbol(interner, label.inner));
+                items.push(self.symbol(label.inner));
                 items.push(Node::StaticText(": "));
-                items.push(Self::build_expression(interner, source, block));
+                items.push(self.build_expression(block));
                 Node::Concat(items.into())
             }
             Expression::Error => unreachable!(),
             Expression::Unary { operator, operand } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText(operator.inner.as_str()));
-                items.push(Self::build_expression(interner, source, operand));
+                items.push(self.build_expression(operand));
 
                 Node::Concat(items.into())
             }
@@ -1104,21 +1206,21 @@ impl Builder {
             }
             Expression::ObjectAccess { object, member } => {
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, source, object));
+                items.push(self.build_expression(object));
                 items.push(Node::StaticText("."));
-                items.push(Self::symbol(interner, member.inner));
+                items.push(self.symbol(member.inner));
                 Node::Concat(items.into())
             }
             Expression::Deref { pointer } => Node::Concat(
                 vec![
-                    Self::build_expression(interner, source, pointer),
+                    self.build_expression(pointer),
                     Node::StaticText(".*"),
                 ]
                 .into(),
             ),
             Expression::StructInit { path, fields } => {
                 let mut items = Vec::new();
-                items.push(Self::build_path(interner, path));
+                items.push(self.build_path(path));
                 items.push(Node::StaticText("::{"));
 
                 let has_block_value = fields.iter().any(|f| {
@@ -1132,10 +1234,10 @@ impl Builder {
                     let field_count = fields.len();
                     let mut field_items: Vec<Node> = Vec::new();
                     for (index, field) in fields.iter().enumerate() {
-                        field_items.push(Self::symbol(interner, field.inner.inner.name.inner));
+                        field_items.push(self.symbol(field.inner.inner.name.inner));
                         if let Some(value) = &field.inner.inner.value {
                             field_items.push(Node::StaticText(": "));
-                            field_items.push(Self::build_expression(interner, source, value));
+                            field_items.push(self.build_expression(value));
                         }
                         let is_last = index + 1 == field_count;
                         if !is_last || has_block_value {
@@ -1177,13 +1279,13 @@ impl Builder {
             }
             Expression::TypeApplication { callee, args } => {
                 let mut items = Vec::new();
-                items.push(Self::build_expression(interner, source, callee));
+                items.push(self.build_expression(callee));
                 items.push(Node::StaticText("::<"));
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         items.push(Node::StaticText(", "));
                     }
-                    items.push(Self::build_type_expression(interner, &arg.inner));
+                    items.push(self.build_type_expression(&arg.inner));
                 }
                 items.push(Node::StaticText(">"));
                 Node::Concat(items.into())
@@ -1194,20 +1296,20 @@ impl Builder {
                 arguments,
             } => {
                 let mut items = Vec::new();
-                items.push(Self::symbol(interner, name.inner));
+                items.push(self.symbol(name.inner));
                 if !type_args.is_empty() {
                     items.push(Node::StaticText("::<"));
                     for (i, arg) in type_args.iter().enumerate() {
                         if i > 0 {
                             items.push(Node::StaticText(", "));
                         }
-                        items.push(Self::build_type_expression(interner, &arg.inner));
+                        items.push(self.build_type_expression(&arg.inner));
                     }
                     items.push(Node::StaticText(">"));
                 }
                 items.push(Node::StaticText("("));
                 for (index, arg) in arguments.iter().enumerate() {
-                    items.push(Self::build_expression(interner, source, &arg.inner));
+                    items.push(self.build_expression(&arg.inner));
                     if index + 1 < arguments.len() {
                         items.push(Node::StaticText(", "));
                     }
@@ -1221,35 +1323,35 @@ impl Builder {
                     if i > 0 {
                         items.push(Node::StaticText(", "));
                     }
-                    items.push(Self::build_expression(interner, source, element));
+                    items.push(self.build_expression(element));
                 }
                 items.push(Node::StaticText("]"));
                 Node::Concat(items.into())
             }
             Expression::ArrayRepeat { value, count } => Node::Concat(Box::new([
                 Node::StaticText("["),
-                Self::build_expression(interner, source, value),
+                self.build_expression(value),
                 Node::StaticText("; "),
-                Self::build_expression(interner, source, count),
+                self.build_expression(count),
                 Node::StaticText("]"),
             ])),
             Expression::Index { object, index } => Node::Concat(Box::new([
-                Self::build_expression(interner, source, object),
+                self.build_expression(object),
                 Node::StaticText("["),
-                Self::build_expression(interner, source, index),
+                self.build_expression(index),
                 Node::StaticText("]"),
             ])),
             Expression::SliceRange { object, start, end } => {
                 let mut parts = vec![
-                    Self::build_expression(interner, source, object),
+                    self.build_expression(object),
                     Node::StaticText("["),
                 ];
                 if let Some(s) = start {
-                    parts.push(Self::build_expression(interner, source, s));
+                    parts.push(self.build_expression(s));
                 }
                 parts.push(Node::StaticText(".."));
                 if let Some(e) = end {
-                    parts.push(Self::build_expression(interner, source, e));
+                    parts.push(self.build_expression(e));
                 }
                 parts.push(Node::StaticText("]"));
                 Node::Concat(parts.into_boxed_slice())
@@ -1265,7 +1367,7 @@ impl Builder {
                         .enumerate()
                         .flat_map(|(index, element)| {
                             let mut nodes = Vec::new();
-                            nodes.push(Self::build_expression(interner, source, element));
+                            nodes.push(self.build_expression(element));
 
                             if index < last_idx {
                                 nodes.push(Node::StaticText(","));
@@ -1305,7 +1407,8 @@ impl Builder {
                 if mut_span.is_some() {
                     out.push(Node::StaticText("mut "));
                 }
-                out.push(Self::symbol(interner, name.inner));
+                let len = interner.resolve(name.inner).unwrap().len() as u32;
+                out.push(Node::Symbol { symbol: name.inner, len });
             }
             Pattern::Tuple { elements } => {
                 out.push(Node::StaticText("("));
@@ -1318,7 +1421,8 @@ impl Builder {
                 out.push(Node::StaticText(")"));
             }
             Pattern::Struct { name, fields } => {
-                out.push(Self::symbol(interner, name.inner));
+                let len = interner.resolve(name.inner).unwrap().len() as u32;
+                out.push(Node::Symbol { symbol: name.inner, len });
                 out.push(Node::StaticText(" {"));
                 for (i, field) in fields.iter().enumerate() {
                     if i > 0 {
@@ -1326,7 +1430,8 @@ impl Builder {
                     } else {
                         out.push(Node::StaticText(" "));
                     }
-                    out.push(Self::symbol(interner, field.inner.inner.name.inner));
+                    let flen = interner.resolve(field.inner.inner.name.inner).unwrap().len() as u32;
+                    out.push(Node::Symbol { symbol: field.inner.inner.name.inner, len: flen });
                     if let Some(pat) = &field.inner.inner.pattern {
                         out.push(Node::StaticText(": "));
                         Self::build_pattern(out, interner, &pat.inner);
@@ -1340,11 +1445,9 @@ impl Builder {
         }
     }
 
-    fn build_statement(interner: &StringInterner, source: &str, statement: &Statement) -> Node {
+    fn build_statement(&self, statement: &Statement) -> Node {
         match statement {
-            Statement::Expression(expression) => {
-                Self::build_expression(interner, source, expression)
-            }
+            Statement::Expression(expression) => self.build_expression(expression),
             Statement::LocalDefinition {
                 pattern,
                 ty: type_annotation,
@@ -1352,20 +1455,24 @@ impl Builder {
             } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("local "));
-                Self::build_pattern(&mut items, interner, &pattern.inner);
+                Self::build_pattern(&mut items, self.interner, &pattern.inner);
                 if let Some(annotation) = type_annotation {
                     items.push(Node::StaticText(": "));
-                    items.push(Self::build_type_expression(interner, &annotation.inner));
+                    items.push(self.build_type_expression(&annotation.inner));
                 }
-                items.push(Node::StaticText(" = "));
-
-                // Only indent if it's not a block-like expression that manages its own
-                // indentation
-                let value_node = Self::build_expression(interner, source, value);
-                if !value.inner.is_block_like() {
-                    items.push(Node::Indent(Box::new(value_node)));
-                } else {
+                let value_node = self.build_expression(value);
+                if value.inner.is_block_like() {
+                    // Block-like values (if/else, loop, struct init, …) manage
+                    // their own indentation; keep " = " on the same line.
+                    items.push(Node::StaticText(" = "));
                     items.push(value_node);
+                } else {
+                    // Scalar/expression values: " =" then a SoftLine so the
+                    // value can move to the next line when it doesn't fit.
+                    items.push(Node::StaticText(" ="));
+                    items.push(Node::Indent(Box::new(Node::Concat(
+                        vec![Node::SoftLine, value_node].into(),
+                    ))));
                 }
 
                 Node::Group(Box::new(Node::Concat(items.into())))
@@ -1373,20 +1480,20 @@ impl Builder {
         }
     }
 
-    fn build_path(interner: &StringInterner, path: &Path) -> Node {
+    fn build_path(&self, path: &Path) -> Node {
         let mut items: Vec<Node> = Vec::new();
         for (i, seg) in path.segments.iter().enumerate() {
             if i > 0 {
                 items.push(Node::StaticText("::"));
             }
-            items.push(Self::symbol(interner, seg.ident.inner));
+            items.push(self.symbol(seg.ident.inner));
             if !seg.type_args.is_empty() {
                 items.push(Node::StaticText("::<"));
                 for (j, arg) in seg.type_args.iter().enumerate() {
                     if j > 0 {
                         items.push(Node::StaticText(", "));
                     }
-                    items.push(Self::build_type_expression(interner, &arg.inner));
+                    items.push(self.build_type_expression(&arg.inner));
                 }
                 items.push(Node::StaticText(">"));
             }
@@ -1394,10 +1501,10 @@ impl Builder {
         Node::Concat(items.into())
     }
 
-    fn build_type_expression(interner: &StringInterner, type_expression: &TypeExpression) -> Node {
+    fn build_type_expression(&self, type_expression: &TypeExpression) -> Node {
         match type_expression {
             TypeExpression::Infer => Node::StaticText("_"),
-            TypeExpression::Path(path) => Self::build_path(interner, path),
+            TypeExpression::Path(path) => self.build_path(path),
             TypeExpression::Function { params, result } => {
                 let mut items = Vec::new();
                 items.push(Node::StaticText("fn("));
@@ -1409,11 +1516,10 @@ impl Builder {
 
                         for (index, param) in params.iter().enumerate() {
                             if let Some(name) = &param.inner.inner.name {
-                                param_items.push(Self::symbol(interner, name.inner));
+                                param_items.push(self.symbol(name.inner));
                                 param_items.push(Node::StaticText(": "));
                             }
-                            param_items.push(Self::build_type_expression(
-                                interner,
+                            param_items.push(self.build_type_expression(
                                 &param.inner.inner.ty.inner,
                             ));
                             if index + 1 < params.len() {
@@ -1432,7 +1538,7 @@ impl Builder {
                 items.push(Node::StaticText(")"));
                 if let Some(result) = result {
                     items.push(Node::StaticText(" -> "));
-                    items.push(Self::build_type_expression(interner, &result.inner));
+                    items.push(self.build_type_expression(&result.inner));
                 }
 
                 Node::Group(Box::new(Node::Concat(items.into())))
@@ -1442,7 +1548,7 @@ impl Builder {
                 if mutability.is_some() {
                     items.push(Node::StaticText("mut "));
                 }
-                items.push(Self::build_type_expression(interner, &inner.inner));
+                items.push(self.build_type_expression(&inner.inner));
                 Node::Concat(items.into())
             }
             TypeExpression::Slice { mutability, inner } => {
@@ -1450,7 +1556,7 @@ impl Builder {
                 if mutability.is_some() {
                     items.push(Node::StaticText("mut "));
                 }
-                items.push(Self::build_type_expression(interner, &inner.inner));
+                items.push(self.build_type_expression(&inner.inner));
                 Node::Concat(items.into())
             }
             TypeExpression::Array {
@@ -1466,7 +1572,7 @@ impl Builder {
                 if mutability.is_some() {
                     items.push(Node::StaticText("mut "));
                 }
-                items.push(Self::build_type_expression(interner, &inner.inner));
+                items.push(self.build_type_expression(&inner.inner));
                 Node::Concat(items.into())
             }
             TypeExpression::Tuple { elements } => {
@@ -1480,7 +1586,7 @@ impl Builder {
                         .enumerate()
                         .flat_map(|(index, element)| {
                             let mut nodes =
-                                vec![Self::build_type_expression(interner, &element.inner)];
+                                vec![self.build_type_expression(&element.inner)];
 
                             if index < last_idx {
                                 nodes.push(Node::StaticText(","));
@@ -1511,9 +1617,9 @@ impl Builder {
             }
             TypeExpression::MemoryTagged { memory, inner } => Node::Concat(
                 vec![
-                    Self::build_path(interner, memory),
+                    self.build_path(memory),
                     Node::StaticText("::"),
-                    Self::build_type_expression(interner, &inner.inner),
+                    self.build_type_expression(&inner.inner),
                 ]
                 .into(),
             ),
@@ -1525,14 +1631,14 @@ impl Builder {
                     }
                     match &sep.inner.inner {
                         GenericArg::Type(ty) => {
-                            inner_parts.push(Self::build_type_expression(interner, &ty.inner));
+                            inner_parts.push(self.build_type_expression(&ty.inner));
                         }
                         GenericArg::Binding { name: key, ty } => {
                             inner_parts.push(Node::Concat(
                                 vec![
-                                    Self::symbol(interner, key.inner),
+                                    self.symbol(key.inner),
                                     Node::StaticText(" = "),
-                                    Self::build_type_expression(interner, &ty.inner),
+                                    self.build_type_expression(&ty.inner),
                                 ]
                                 .into(),
                             ));
@@ -1541,7 +1647,7 @@ impl Builder {
                 }
                 Node::Concat(
                     vec![
-                        Self::symbol(interner, name.inner),
+                        self.symbol(name.inner),
                         Node::StaticText("<"),
                         Node::Concat(inner_parts.into()),
                         Node::StaticText(">"),
@@ -1713,8 +1819,9 @@ pub fn format(
     source: &str,
     config: RendererConfig,
 ) -> String {
+    let builder = Builder { interner, source, comments: &ast.comments };
     let mut root_items = Vec::new();
-    root_items.push(Builder::build(ast, interner, source));
+    root_items.push(builder.build(ast));
     root_items.push(Node::HardLine);
 
     let root = Node::Concat(root_items.into());

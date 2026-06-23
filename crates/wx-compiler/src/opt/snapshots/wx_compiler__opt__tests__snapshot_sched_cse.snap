@@ -9,7 +9,6 @@ body:
   - LocalGet: 0
   - I32Const: 1
   - I32Add
-  - LocalSet: 1
-  - LocalGet: 1
+  - LocalTee: 1
   - LocalGet: 1
   - I32Add

@@ -38,6 +38,33 @@ impl Into<core::ops::Range<usize>> for TextSpan {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum CommentKind {
+    Line,
+    Doc,
+}
+
+#[derive(Clone, Copy)]
+pub struct Comment {
+    pub span: TextSpan,
+    pub kind: CommentKind,
+}
+
+pub struct CommentMap(pub Box<[Comment]>);
+
+impl CommentMap {
+    pub fn empty() -> Self {
+        Self(Box::new([]))
+    }
+
+    /// Returns all comments whose spans fall entirely within `[start, end)`.
+    pub fn between(&self, start: u32, end: u32) -> &[Comment] {
+        let lo = self.0.partition_point(|c| c.span.end <= start);
+        let hi = self.0.partition_point(|c| c.span.start < end);
+        &self.0[lo..hi]
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum Token {
@@ -92,6 +119,7 @@ pub enum Token {
     MinusRightArrow,
     // Special
     Comment,
+    DocComment,
     Whitespace,
     Unknown,
     Eof,
@@ -147,6 +175,7 @@ impl std::fmt::Display for Token {
             Hash => "#",
             MinusRightArrow => "->",
             Comment => "comment",
+            DocComment => "doc comment",
             Whitespace => "whitespace",
             Unknown => "unknown token",
             Eof => "end of file",
@@ -359,6 +388,7 @@ struct Lexer<'a> {
     chars: std::str::Chars<'a>,
     offset: usize,
     peeked: Option<Spanned<Token>>,
+    comments: Vec<Comment>,
 }
 
 const EOF: char = '\0';
@@ -369,6 +399,7 @@ impl<'a> Lexer<'a> {
             chars: input.chars(),
             offset: 0,
             peeked: None,
+            comments: Vec::new(),
         }
     }
 
@@ -409,7 +440,15 @@ impl<'a> Lexer<'a> {
         loop {
             let token = self.advance();
             match token.inner {
-                Token::Whitespace | Token::Comment => continue,
+                Token::Whitespace => continue,
+                Token::Comment => {
+                    self.comments.push(Comment { span: token.span, kind: CommentKind::Line });
+                    continue;
+                }
+                Token::DocComment => {
+                    self.comments.push(Comment { span: token.span, kind: CommentKind::Doc });
+                    continue;
+                }
                 Token::Unknown => {
                     unknown_span = match unknown_span {
                         Some(span) => Some(TextSpan::new(span.start, token.span.end)),
@@ -663,7 +702,18 @@ impl<'a> Lexer<'a> {
         let mut lookahead = self.chars.clone();
         match lookahead.next().unwrap_or(EOF) {
             '/' => {
-                _ = self.chars.next();
+                _ = self.chars.next(); // consume second /
+                // Peek at third char without advancing lookahead — advancing
+                // it here would put lookahead one step ahead of self.chars,
+                // causing the while loop below to drop the last comment char.
+                let is_doc = lookahead.clone().next().unwrap_or(EOF) == '/';
+                while let Some(ch) = lookahead.next() {
+                    match ch {
+                        '\n' | EOF => break,
+                        _ => { _ = self.chars.next(); }
+                    }
+                }
+                if is_doc { Token::DocComment } else { Token::Comment }
             }
             '=' => {
                 _ = self.chars.next();
@@ -671,17 +721,6 @@ impl<'a> Lexer<'a> {
             }
             _ => return Token::Slash,
         }
-
-        while let Some(ch) = lookahead.next() {
-            match ch {
-                '\n' | EOF => break,
-                _ => {
-                    _ = self.chars.next();
-                }
-            }
-        }
-
-        Token::Comment
     }
 }
 
@@ -1347,8 +1386,8 @@ pub enum ImportDeclaration {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct MemoryConfig {
-    pub min: Option<Spanned<u32>>,
-    pub max: Option<Spanned<u32>>,
+    pub min_pages: Option<Spanned<u32>>,
+    pub max_pages: Option<Spanned<u32>>,
 }
 
 /// Intermediate type used only during parsing of a `MemoryConfig` block.
@@ -1538,6 +1577,8 @@ pub struct AST {
     pub file_id: FileId,
     pub diagnostics: Vec<Diagnostic<FileId>>,
     pub items: Vec<Separated<Spanned<Item>>>,
+    #[cfg_attr(test, serde(skip))]
+    pub comments: CommentMap,
 }
 
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
@@ -1821,6 +1862,7 @@ impl<'ctx> Parser<'ctx> {
                 file_id,
                 diagnostics: Vec::new(),
                 items: Vec::new(),
+                comments: CommentMap::empty(),
             },
             id_generator,
         };
@@ -1885,6 +1927,8 @@ impl<'ctx> Parser<'ctx> {
             }
         }
 
+        let comments = CommentMap(std::mem::take(&mut parser.lexer.comments).into_boxed_slice());
+        parser.ast.comments = comments;
         parser.ast
     }
 
@@ -4552,8 +4596,8 @@ impl<'ctx> Parser<'ctx> {
             }
             .parse(parser)?;
 
-            let mut min: Option<Spanned<u32>> = None;
-            let mut max: Option<Spanned<u32>> = None;
+            let mut min_pages: Option<Spanned<u32>> = None;
+            let mut max_pages: Option<Spanned<u32>> = None;
 
             for field in fields.inner.iter() {
                 let field_name = parser
@@ -4561,11 +4605,11 @@ impl<'ctx> Parser<'ctx> {
                     .resolve(field.inner.inner.name.inner)
                     .unwrap_or("");
                 match field_name {
-                    "min" => {
-                        if min.is_some() {
+                    "min_pages" => {
+                        if min_pages.is_some() {
                             parser.ast.diagnostics.push(
                                 codespan_reporting::diagnostic::Diagnostic::error()
-                                    .with_message("duplicate memory property `min`")
+                                    .with_message("duplicate memory property `min_pages`")
                                     .with_label(codespan_reporting::diagnostic::Label::primary(
                                         parser.ast.file_id,
                                         field.inner.inner.name.span,
@@ -4573,17 +4617,17 @@ impl<'ctx> Parser<'ctx> {
                             );
                         } else {
                             let v = &field.inner.inner.value;
-                            min = Some(Spanned {
+                            min_pages = Some(Spanned {
                                 inner: v.inner,
                                 span: TextSpan::new(v.span.start, v.span.end),
                             });
                         }
                     }
-                    "max" => {
-                        if max.is_some() {
+                    "max_pages" => {
+                        if max_pages.is_some() {
                             parser.ast.diagnostics.push(
                                 codespan_reporting::diagnostic::Diagnostic::error()
-                                    .with_message("duplicate memory property `max`")
+                                    .with_message("duplicate memory property `max_pages`")
                                     .with_label(codespan_reporting::diagnostic::Label::primary(
                                         parser.ast.file_id,
                                         field.inner.inner.name.span,
@@ -4591,7 +4635,7 @@ impl<'ctx> Parser<'ctx> {
                             );
                         } else {
                             let v = &field.inner.inner.value;
-                            max = Some(Spanned {
+                            max_pages = Some(Spanned {
                                 inner: v.inner,
                                 span: TextSpan::new(v.span.start, v.span.end),
                             });
@@ -4601,7 +4645,7 @@ impl<'ctx> Parser<'ctx> {
                         parser.ast.diagnostics.push(
                             codespan_reporting::diagnostic::Diagnostic::error()
                                 .with_message(format!(
-                                    "unknown memory property `{field_name}`, expected `min` or `max`"
+                                    "unknown memory property `{field_name}`, expected `min_pages` or `max_pages`"
                                 ))
                                 .with_label(codespan_reporting::diagnostic::Label::primary(
                                     parser.ast.file_id,
@@ -4612,7 +4656,7 @@ impl<'ctx> Parser<'ctx> {
                 }
             }
 
-            Some(MemoryConfig { min, max })
+            Some(MemoryConfig { min_pages, max_pages })
         } else {
             None
         };

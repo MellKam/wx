@@ -60,11 +60,7 @@ impl <T, A: Allocator> Vec<T, A> {
 
     pub fn push(self: A::M::*mut Self, value: T) {
         if self.*.len == self.*.cap {
-            local new_cap = if self.*.cap == 0 {
-                4
-            } else {
-                self.*.cap * 2
-            };
+            local new_cap = if self.*.cap == 0 { 4 } else { self.*.cap * 2 };
             
             local layout = Layout::<A::M>::array::<T>(new_cap);
             local new_buf = self.*.alloc.alloc(layout).cast_mut();
@@ -72,9 +68,7 @@ impl <T, A: Allocator> Vec<T, A> {
             if self.*.cap != 0 {
                 local mut i: A::M::Size = 0;
                 loop {
-                    if i == self.*.len {
-                        break;
-                    };
+                    if i == self.*.len { break; };
                     
                     (new_buf).add(i).* = (self.*.buf).add(i).*;
                     i += 1;
@@ -110,9 +104,7 @@ pub fn demo() -> i32 {
     local mut sum: i32 = 0;
     local mut i: u32 = 0;
     loop {
-        if i == v.len() {
-            break sum
-        }
+        if i == v.len() { break sum }
         sum += v.get(i);
         i += 1;
     }

@@ -21,8 +21,7 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     f32.const 0x1.9p+6 (;=100;)
     f32.const 0x1p-1 (;=0.5;)
     call 0
-    local.set 0
-    local.get 0
+    local.tee 0
     f32.const 0x1.9p+5 (;=50;)
     f32.ne
     if (result f32) ;; label = @1
@@ -30,7 +29,6 @@ expression: "wasmprinter::print_bytes(&case.bytecode).unwrap()"
     else
       local.get 0
     end
-    local.set 0
-    local.get 0
+    local.tee 0
   )
 )

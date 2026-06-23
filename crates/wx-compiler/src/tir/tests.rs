@@ -325,7 +325,7 @@ fn test_local_with_pointer_type_annotation_dereference_recovers() {
     // When the RHS errors (e.g. `alloc` is undeclared), the local must still carry
     // the declared pointer type so that `n.*` doesn't cascade into a "not a pointer" error.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min: 1 }
+        memory heap: Memory<Size = u32> { min_pages: 1 }
         struct Node { x: i32 }
         fn write(x: i32) {
             local p: heap::*mut Node = alloc_node()
@@ -364,7 +364,7 @@ fn test_compare_mutable_pointer_with_null() {
     // (`heap::*mut Node`), even though null()'s return type is an immutable pointer.
     // Previously `infer_type_args` required matching mutability, causing E1002.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min: 1 }
+        memory heap: Memory<Size = u32> { min_pages: 1 }
         struct Node { x: i32 }
         fn is_null(p: heap::*mut Node) -> bool {
             p == null()
@@ -4945,7 +4945,7 @@ fn test_global_init_if_expression_resolves() {
 fn test_global_initialized_to_data_end_tir() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory<Size = u32> {
-            min: 1,
+            min_pages: 1,
         };
         global mut bump: heap::*mut u8 = heap::DATA_END;
         export { heap }

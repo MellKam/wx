@@ -511,19 +511,18 @@ fn test_sched_cse_spill() {
 
     assert_eq!(
         body.len(),
-        7,
-        "expected 7 instructions (spill + 2 reads); got {:#?}",
+        6,
+        "expected 6 instructions (tee + 1 read); got {:#?}",
         body
     );
-    // Compute x+1 and spill to local 1.
+    // Compute x+1 and tee-spill to local 1 (leaves copy on stack).
     assert!(matches!(body[0], Instruction::LocalGet(0))); // x
     assert!(matches!(body[1], Instruction::I32Const(1)));
     assert!(matches!(body[2], Instruction::I32Add));
-    assert!(matches!(body[3], Instruction::LocalSet(1))); // spill x+1
-    // Use spilled x+1 twice for the outer add.
+    assert!(matches!(body[3], Instruction::LocalTee(1))); // tee x+1 (first use on stack)
+    // Second use reads back from local.
     assert!(matches!(body[4], Instruction::LocalGet(1)));
-    assert!(matches!(body[5], Instruction::LocalGet(1)));
-    assert!(matches!(body[6], Instruction::I32Add));
+    assert!(matches!(body[5], Instruction::I32Add));
 }
 
 /// `fn max(a: i32, b: i32) -> i32 { if a > b { a } else { b } }` — the if-else
@@ -1348,10 +1347,10 @@ fn test_sched_struct_pointer_load_field_access() {
         body
     );
 
-    // The return value is a LocalGet — the spilled PointerLoadResult for x.
+    // The return value is a LocalGet or LocalTee — the spilled PointerLoadResult for x.
     assert!(
-        matches!(body.last(), Some(Instruction::LocalGet(_))),
-        "last instruction should be LocalGet (field x spilled to local); got {:#?}",
+        matches!(body.last(), Some(Instruction::LocalGet(_) | Instruction::LocalTee(_))),
+        "last instruction should be LocalGet or LocalTee (field x spilled to local); got {:#?}",
         body.last()
     );
 }
@@ -1567,25 +1566,11 @@ fn test_sched_call_result_spilled() {
         .position(|i| matches!(i, Instruction::Call(_)))
         .expect("expected a Call instruction");
 
-    // Immediately after Call: LocalSet (spill the return value).
+    // Immediately after Call: LocalTee (spill the return value and leave it on stack).
     assert!(
-        matches!(body[call_pos + 1], Instruction::LocalSet(_)),
-        "LocalSet must immediately follow Call to spill the result; got {:?}",
+        matches!(body[call_pos + 1], Instruction::LocalTee(_)),
+        "LocalTee must immediately follow Call to spill+forward the result; got {:?}",
         body[call_pos + 1]
-    );
-
-    // The spill local must be read back before Return.
-    let spill_local = match body[call_pos + 1] {
-        Instruction::LocalSet(l) => l,
-        _ => unreachable!(),
-    };
-    let has_get = body
-        .iter()
-        .any(|i| matches!(i, Instruction::LocalGet(l) if *l == spill_local));
-    assert!(
-        has_get,
-        "spilled call-result local {} must be read back before Return",
-        spill_local
     );
 
     assert!(

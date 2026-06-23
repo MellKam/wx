@@ -10,5 +10,4 @@ body:
   - LocalGet: 0
   - LocalGet: 1
   - Call: 7
-  - LocalSet: 2
-  - LocalGet: 2
+  - LocalTee: 2

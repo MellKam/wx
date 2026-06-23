@@ -13,5 +13,5 @@ wx-compiler = { path = "../wx-compiler" }
 
 
 [[bin]]
-name = "wx-compiler"
+name = "wx"
 path = "src/main.rs"
