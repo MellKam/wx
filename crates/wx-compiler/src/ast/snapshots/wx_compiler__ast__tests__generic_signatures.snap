@@ -13,19 +13,19 @@ items:
           attributes: []
           signature:
             name:
-              inner: 1
+              inner: 0
               span:
                 start: 3
                 end: 6
             type_params:
               - name:
-                  inner: 2
+                  inner: 1
                   span:
                     start: 7
                     end: 8
                 bounds: []
               - name:
-                  inner: 3
+                  inner: 2
                   span:
                     start: 10
                     end: 11
@@ -34,7 +34,7 @@ items:
                       Path:
                         segments:
                           - ident:
-                              inner: 4
+                              inner: 3
                               span:
                                 start: 13
                                 end: 17
@@ -49,7 +49,7 @@ items:
                       Path:
                         segments:
                           - ident:
-                              inner: 5
+                              inner: 4
                               span:
                                 start: 20
                                 end: 25
@@ -61,7 +61,7 @@ items:
                       start: 20
                       end: 25
               - name:
-                  inner: 6
+                  inner: 5
                   span:
                     start: 27
                     end: 28
@@ -70,7 +70,7 @@ items:
                       Path:
                         segments:
                           - ident:
-                              inner: 7
+                              inner: 6
                               span:
                                 start: 30
                                 end: 38
@@ -86,7 +86,7 @@ items:
                   inner:
                     mut_span: ~
                     name:
-                      inner: 8
+                      inner: 7
                       span:
                         start: 40
                         end: 44
@@ -95,7 +95,7 @@ items:
                         Path:
                           segments:
                             - ident:
-                                inner: 2
+                                inner: 1
                                 span:
                                   start: 46
                                   end: 47
@@ -116,7 +116,7 @@ items:
                   inner:
                     mut_span: ~
                     name:
-                      inner: 9
+                      inner: 8
                       span:
                         start: 49
                         end: 55
@@ -125,7 +125,7 @@ items:
                         Path:
                           segments:
                             - ident:
-                                inner: 3
+                                inner: 2
                                 span:
                                   start: 57
                                   end: 58
@@ -146,7 +146,7 @@ items:
                   inner:
                     mut_span: ~
                     name:
-                      inner: 10
+                      inner: 9
                       span:
                         start: 60
                         end: 65
@@ -155,7 +155,7 @@ items:
                         Path:
                           segments:
                             - ident:
-                                inner: 6
+                                inner: 5
                                 span:
                                   start: 67
                                   end: 68
@@ -175,7 +175,7 @@ items:
                 Path:
                   segments:
                     - ident:
-                        inner: 3
+                        inner: 2
                         span:
                           start: 73
                           end: 74
@@ -197,7 +197,7 @@ items:
                             Path:
                               segments:
                                 - ident:
-                                    inner: 9
+                                    inner: 8
                                     span:
                                       start: 81
                                       end: 87

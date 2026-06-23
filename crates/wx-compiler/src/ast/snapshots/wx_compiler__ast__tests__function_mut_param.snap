@@ -13,7 +13,7 @@ items:
           attributes: []
           signature:
             name:
-              inner: 1
+              inner: 0
               span:
                 start: 3
                 end: 11
@@ -25,7 +25,7 @@ items:
                       start: 12
                       end: 15
                     name:
-                      inner: 2
+                      inner: 1
                       span:
                         start: 16
                         end: 17
@@ -34,7 +34,7 @@ items:
                         Path:
                           segments:
                             - ident:
-                                inner: 3
+                                inner: 2
                                 span:
                                   start: 19
                                   end: 22
@@ -54,7 +54,7 @@ items:
                 Path:
                   segments:
                     - ident:
-                        inner: 3
+                        inner: 2
                         span:
                           start: 27
                           end: 30
@@ -79,7 +79,7 @@ items:
                                   start: 43
                                   end: 46
                                 name:
-                                  inner: 4
+                                  inner: 3
                                   span:
                                     start: 47
                                     end: 50
@@ -91,7 +91,7 @@ items:
                               Path:
                                 segments:
                                   - ident:
-                                      inner: 3
+                                      inner: 2
                                       span:
                                         start: 52
                                         end: 55
@@ -125,7 +125,7 @@ items:
                                   Path:
                                     segments:
                                       - ident:
-                                          inner: 4
+                                          inner: 3
                                           span:
                                             start: 65
                                             end: 68
@@ -146,7 +146,7 @@ items:
                                   Path:
                                     segments:
                                       - ident:
-                                          inner: 2
+                                          inner: 1
                                           span:
                                             start: 72
                                             end: 73
@@ -173,7 +173,7 @@ items:
                             Path:
                               segments:
                                 - ident:
-                                    inner: 4
+                                    inner: 3
                                     span:
                                       start: 79
                                       end: 82

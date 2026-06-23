@@ -76,7 +76,7 @@ pub fn pop_back() {
 }
 
 pub fn contains(x: i32, y: i32) -> bool {
-  local mut cur: heap::*Node = head;
+  local mut cur: *Node = head;
   loop {
     if cur.is_null() { break false }
     local n = cur.*;

@@ -1,5 +1,5 @@
 {
-	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"$schema": "https://json.schemastore.org/tmlanguage.json",
 	"name": "WX",
 	"patterns": [
 		{ "include": "#comments" },
@@ -24,8 +24,16 @@
 		"keywords": {
 			"patterns": [
 				{
+					"name": "storage.type.wx",
+					"match": "\\b(fn|struct|trait|impl|enum|type|typeset|memory|local|global|const|module|pub|mut)\\b"
+				},
+				{
 					"name": "keyword.control.wx",
-					"match": "\\b(fn|local|mut|if|else|loop|break|continue|return|export|import|global|enum|unreachable|as|impl|self|struct|pub|memory|const|module|trait|for|Self|type|typeset)\\b"
+					"match": "\\b(if|else|loop|break|continue|return|for|unreachable)\\b"
+				},
+				{
+					"name": "keyword.other.wx",
+					"match": "\\b(import|export|as|self|Self)\\b"
 				},
 				{
 					"name": "constant.language.wx",
@@ -36,16 +44,16 @@
 		"types": {
 			"patterns": [
 				{
-					"name": "storage.type.wx",
-					"match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|char|never|unit|string)\\b"
+					"name": "entity.name.namespace.wx",
+					"match": "\\b(i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|bool|char|never)\\b"
 				}
 			]
 		},
 		"pointers": {
 			"patterns": [
 				{
-					"name": "keyword.operator.pointer.wx",
-					"match": "\\*(?:mut\\b)?"
+					"name": "storage.modifier.wx",
+					"match": "\\*mut\\b"
 				}
 			]
 		},

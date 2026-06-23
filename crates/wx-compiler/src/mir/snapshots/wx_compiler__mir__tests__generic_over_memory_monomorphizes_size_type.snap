@@ -144,10 +144,10 @@ globals: []
 exports:
   - Function:
       id: 50
-      name: 93
+      name: 92
   - Function:
       id: 51
-      name: 94
+      name: 93
 imports: []
 memories:
   - id: 47

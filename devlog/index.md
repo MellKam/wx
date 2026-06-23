@@ -1,5 +1,9 @@
 # Session Index
 
+## 2026-06-24
+
+- [2026-06-24-vscode-extension-setup.md](2026-06-24-vscode-extension-setup.md) — CI publish workflow (cross-platform `.vsix`), `ExtensionMode`-based binary resolution, actionable error messages, config-change restart, FileSystemWatcher leak fix, tmLanguage keyword scope split, pointer/deref highlighting
+
 ## 2026-06-21
 
 - [2026-06-21-assoc-type-chains-comptime-inference.md](2026-06-21-assoc-type-chains-comptime-inference.md) — Nested `AssocTypeProjection` chains (`A::M::Size`), `are_scalar_compatible` for abstract-memory pointer casts, `null_mut` in std, formatter `::` before intrinsic type args, cross-branch comptime inference in if-else

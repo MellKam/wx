@@ -170,7 +170,7 @@ globals: []
 exports:
   - Function:
       id: 50
-      name: 89
+      name: 88
 imports: []
 memories: []
 aggregates: []

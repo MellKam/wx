@@ -1,6 +1,5 @@
 ---
 source: crates/wx-compiler/src/ast/tests.rs
-assertion_line: 321
 expression: case.ast
 ---
 file_id: 0
@@ -14,7 +13,7 @@ items:
           attributes: []
           signature:
             name:
-              inner: 1
+              inner: 0
               span:
                 start: 3
                 end: 4
@@ -33,7 +32,7 @@ items:
                               Binding:
                                 mut_span: ~
                                 name:
-                                  inner: 2
+                                  inner: 1
                                   span:
                                     start: 19
                                     end: 20
@@ -62,7 +61,7 @@ items:
                               Binding:
                                 mut_span: ~
                                 name:
-                                  inner: 3
+                                  inner: 2
                                   span:
                                     start: 39
                                     end: 40
@@ -73,7 +72,7 @@ items:
                           value:
                             inner:
                               Char:
-                                symbol: 4
+                                symbol: 3
                             span:
                               start: 43
                               end: 46
@@ -91,7 +90,7 @@ items:
                               Binding:
                                 mut_span: ~
                                 name:
-                                  inner: 5
+                                  inner: 4
                                   span:
                                     start: 58
                                     end: 59
@@ -102,7 +101,7 @@ items:
                           value:
                             inner:
                               String:
-                                symbol: 6
+                                symbol: 5
                             span:
                               start: 62
                               end: 69

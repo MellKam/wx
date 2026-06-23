@@ -31,7 +31,7 @@ type_pool:
       typeset_index: 1
   - AssociatedType:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
   - TypeParam:
       owner:
         Trait: 0
@@ -50,7 +50,7 @@ type_pool:
       param_index: 0
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 25
   - Function:
       signature:
@@ -60,7 +60,7 @@ type_pool:
         params_count: 1
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 24
   - Function:
       signature:
@@ -71,7 +71,7 @@ type_pool:
         params_count: 2
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 19
   - Function:
       signature:
@@ -86,7 +86,7 @@ type_pool:
       param_index: 0
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 32
   - Function:
       signature:
@@ -108,7 +108,7 @@ type_pool:
       memory: 35
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 35
   - Function:
       signature:
@@ -130,7 +130,7 @@ type_pool:
       memory: 40
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 40
   - Slice:
       of: 41
@@ -149,7 +149,7 @@ type_pool:
       param_index: 1
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 46
   - Function:
       signature:
@@ -162,7 +162,7 @@ type_pool:
       param_index: 1
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 49
   - Function:
       signature:
@@ -253,7 +253,7 @@ type_pool:
       memory: 67
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 67
   - Function:
       signature:
@@ -323,7 +323,7 @@ type_pool:
       memory: 83
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 83
   - Function:
       signature:
@@ -346,7 +346,7 @@ type_pool:
       memory: 88
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 88
   - Function:
       signature:
@@ -387,7 +387,7 @@ type_pool:
       memory: 97
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 97
   - Function:
       signature:
@@ -457,7 +457,7 @@ type_pool:
       memory: 113
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 113
   - Function:
       signature:
@@ -480,7 +480,7 @@ type_pool:
       memory: 118
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 118
   - Function:
       signature:
@@ -503,7 +503,7 @@ type_pool:
       memory: 123
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 123
   - Function:
       signature:
@@ -533,11 +533,11 @@ type_pool:
         params_count: 0
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 63
   - AssocTypeProjection:
       trait_index: 0
-      assoc_name: 10
+      assoc_name: 9
       base: 93
 diagnostics: []
 functions:
@@ -547,7 +547,7 @@ functions:
     pub_span: ~
     kind: Intrinsic
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 96
           end: 97
@@ -569,14 +569,14 @@ functions:
               end: 135
     signature_index: 31
     name:
-      inner: 5
+      inner: 4
       span:
         start: 83
         end: 95
     params:
       - mut_span: ~
         name:
-          inner: 8
+          inner: 7
           span:
             start: 107
             end: 110
@@ -587,7 +587,7 @@ functions:
             end: 113
       - mut_span: ~
         name:
-          inner: 9
+          inner: 8
           span:
             start: 115
             end: 120
@@ -615,7 +615,7 @@ functions:
     pub_span: ~
     kind: Trait
     type_params:
-      - name: 39
+      - name: 38
         name_span:
           start: 800
           end: 806
@@ -633,14 +633,14 @@ functions:
               end: 951
     signature_index: 29
     name:
-      inner: 40
+      inner: 39
       span:
         start: 914
         end: 918
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 919
             end: 923
@@ -651,7 +651,7 @@ functions:
             end: 923
       - mut_span: ~
         name:
-          inner: 9
+          inner: 8
           span:
             start: 925
             end: 930
@@ -676,7 +676,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 919
                     end: 923
@@ -688,7 +688,7 @@ functions:
                       end: 981
                     kind: Read
               - name:
-                  inner: 9
+                  inner: 8
                   span:
                     start: 925
                     end: 930
@@ -709,7 +709,7 @@ functions:
             result:
               kind:
                 IntrinsicCall:
-                  name: 5
+                  name: 4
                   type_arguments:
                     - 24
                   arguments:
@@ -743,7 +743,7 @@ functions:
     pub_span: ~
     kind: Trait
     type_params:
-      - name: 39
+      - name: 38
         name_span:
           start: 800
           end: 806
@@ -757,14 +757,14 @@ functions:
               end: 1030
     signature_index: 27
     name:
-      inner: 42
+      inner: 41
       span:
         start: 1012
         end: 1016
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1017
             end: 1021
@@ -789,7 +789,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1017
                     end: 1021
@@ -810,7 +810,7 @@ functions:
             result:
               kind:
                 IntrinsicCall:
-                  name: 11
+                  name: 10
                   type_arguments:
                     - 25
                   arguments:
@@ -836,7 +836,7 @@ functions:
     pub_span: ~
     kind: Intrinsic
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 163
           end: 164
@@ -854,14 +854,14 @@ functions:
               end: 186
     signature_index: 34
     name:
-      inner: 11
+      inner: 10
       span:
         start: 150
         end: 162
     params:
       - mut_span: ~
         name:
-          inner: 8
+          inner: 7
           span:
             start: 174
             end: 177
@@ -889,7 +889,7 @@ functions:
     pub_span: ~
     kind: Intrinsic
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 212
           end: 213
@@ -905,7 +905,7 @@ functions:
             span:
               start: 244
               end: 245
-      - name: 13
+      - name: 12
         name_span:
           start: 223
           end: 224
@@ -918,14 +918,14 @@ functions:
               end: 239
     signature_index: 39
     name:
-      inner: 12
+      inner: 11
       span:
         start: 201
         end: 211
     params:
       - mut_span: ~
         name:
-          inner: 14
+          inner: 13
           span:
             start: 226
             end: 231
@@ -953,7 +953,7 @@ functions:
     pub_span: ~
     kind: Intrinsic
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 278
           end: 279
@@ -973,7 +973,7 @@ functions:
             span:
               start: 322
               end: 323
-      - name: 13
+      - name: 12
         name_span:
           start: 289
           end: 290
@@ -990,14 +990,14 @@ functions:
               end: 328
     signature_index: 45
     name:
-      inner: 15
+      inner: 14
       span:
         start: 260
         end: 277
     params:
       - mut_span: ~
         name:
-          inner: 16
+          inner: 15
           span:
             start: 292
             end: 296
@@ -1008,7 +1008,7 @@ functions:
             end: 303
       - mut_span: ~
         name:
-          inner: 17
+          inner: 16
           span:
             start: 305
             end: 308
@@ -1031,14 +1031,14 @@ functions:
     pub_span: ~
     kind: Intrinsic
     type_params:
-      - name: 13
+      - name: 12
         name_span:
           start: 346
           end: 347
         bounds: []
         typeset_bound: ~
         accesses: []
-      - name: 6
+      - name: 5
         name_span:
           start: 349
           end: 350
@@ -1052,7 +1052,7 @@ functions:
               end: 366
     signature_index: 48
     name:
-      inner: 18
+      inner: 17
       span:
         start: 337
         end: 345
@@ -1091,14 +1091,14 @@ functions:
     pub_span: ~
     kind: Intrinsic
     type_params:
-      - name: 13
+      - name: 12
         name_span:
           start: 391
           end: 392
         bounds: []
         typeset_bound: ~
         accesses: []
-      - name: 6
+      - name: 5
         name_span:
           start: 394
           end: 395
@@ -1112,7 +1112,7 @@ functions:
               end: 411
     signature_index: 51
     name:
-      inner: 19
+      inner: 18
       span:
         start: 381
         end: 390
@@ -1133,14 +1133,14 @@ functions:
     type_params: []
     signature_index: 52
     name:
-      inner: 20
+      inner: 19
       span:
         start: 426
         end: 441
     params:
       - mut_span: ~
         name:
-          inner: 21
+          inner: 20
           span:
             start: 442
             end: 447
@@ -1165,14 +1165,14 @@ functions:
     type_params: []
     signature_index: 53
     name:
-      inner: 24
+      inner: 23
       span:
         start: 469
         end: 484
     params:
       - mut_span: ~
         name:
-          inner: 21
+          inner: 20
           span:
             start: 485
             end: 490
@@ -1197,14 +1197,14 @@ functions:
     type_params: []
     signature_index: 54
     name:
-      inner: 26
+      inner: 25
       span:
         start: 512
         end: 525
     params:
       - mut_span: ~
         name:
-          inner: 21
+          inner: 20
           span:
             start: 526
             end: 531
@@ -1229,7 +1229,7 @@ functions:
       end: 560
     kind: Free
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 569
           end: 570
@@ -1241,7 +1241,7 @@ functions:
             span:
               start: 588
               end: 589
-      - name: 13
+      - name: 12
         name_span:
           start: 580
           end: 581
@@ -1254,7 +1254,7 @@ functions:
               end: 593
     signature_index: 58
     name:
-      inner: 28
+      inner: 27
       span:
         start: 564
         end: 568
@@ -1301,7 +1301,7 @@ functions:
       end: 618
     kind: Free
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 631
           end: 632
@@ -1313,7 +1313,7 @@ functions:
             span:
               start: 650
               end: 651
-      - name: 13
+      - name: 12
         name_span:
           start: 642
           end: 643
@@ -1326,7 +1326,7 @@ functions:
               end: 659
     signature_index: 62
     name:
-      inner: 29
+      inner: 28
       span:
         start: 622
         end: 630
@@ -1373,7 +1373,7 @@ functions:
       end: 1116
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1074
           end: 1075
@@ -1385,7 +1385,7 @@ functions:
             span:
               start: 1088
               end: 1089
-      - name: 13
+      - name: 12
         name_span:
           start: 1085
           end: 1086
@@ -1398,14 +1398,14 @@ functions:
               end: 1093
     signature_index: 66
     name:
-      inner: 43
+      inner: 42
       span:
         start: 1117
         end: 1124
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1125
             end: 1129
@@ -1430,7 +1430,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1125
                     end: 1129
@@ -1500,7 +1500,7 @@ functions:
       end: 1181
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1074
           end: 1075
@@ -1516,7 +1516,7 @@ functions:
             span:
               start: 1196
               end: 1197
-      - name: 13
+      - name: 12
         name_span:
           start: 1085
           end: 1086
@@ -1529,14 +1529,14 @@ functions:
               end: 1093
     signature_index: 71
     name:
-      inner: 45
+      inner: 44
       span:
         start: 1182
         end: 1186
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1187
             end: 1191
@@ -1561,7 +1561,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1187
                     end: 1191
@@ -1600,7 +1600,7 @@ functions:
       end: 1239
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1074
           end: 1075
@@ -1616,7 +1616,7 @@ functions:
             span:
               start: 1258
               end: 1259
-      - name: 13
+      - name: 12
         name_span:
           start: 1085
           end: 1086
@@ -1633,14 +1633,14 @@ functions:
               end: 1267
     signature_index: 76
     name:
-      inner: 46
+      inner: 45
       span:
         start: 1240
         end: 1248
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1249
             end: 1253
@@ -1665,7 +1665,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1249
                     end: 1253
@@ -1704,7 +1704,7 @@ functions:
       end: 1303
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1074
           end: 1075
@@ -1720,7 +1720,7 @@ functions:
             span:
               start: 1321
               end: 1322
-      - name: 13
+      - name: 12
         name_span:
           start: 1085
           end: 1086
@@ -1731,7 +1731,7 @@ functions:
             span:
               start: 1092
               end: 1093
-      - name: 48
+      - name: 47
         name_span:
           start: 1309
           end: 1310
@@ -1744,14 +1744,14 @@ functions:
               end: 1326
     signature_index: 82
     name:
-      inner: 47
+      inner: 46
       span:
         start: 1304
         end: 1308
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1312
             end: 1316
@@ -1776,7 +1776,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1312
                     end: 1316
@@ -1815,7 +1815,7 @@ functions:
       end: 1362
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1074
           end: 1075
@@ -1839,7 +1839,7 @@ functions:
             span:
               start: 1441
               end: 1442
-      - name: 13
+      - name: 12
         name_span:
           start: 1085
           end: 1086
@@ -1860,14 +1860,14 @@ functions:
               end: 1439
     signature_index: 87
     name:
-      inner: 49
+      inner: 48
       span:
         start: 1363
         end: 1366
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1367
             end: 1371
@@ -1878,7 +1878,7 @@ functions:
             end: 1371
       - mut_span: ~
         name:
-          inner: 50
+          inner: 49
           span:
             start: 1373
             end: 1378
@@ -1903,7 +1903,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1367
                     end: 1371
@@ -1915,7 +1915,7 @@ functions:
                       end: 1409
                     kind: Read
               - name:
-                  inner: 50
+                  inner: 49
                   span:
                     start: 1373
                     end: 1378
@@ -1981,7 +1981,7 @@ functions:
                         right:
                           kind:
                             IntrinsicCall:
-                              name: 18
+                              name: 17
                               type_arguments:
                                 - 84
                                 - 83
@@ -2010,7 +2010,7 @@ functions:
       end: 1477
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1074
           end: 1075
@@ -2034,7 +2034,7 @@ functions:
             span:
               start: 1556
               end: 1557
-      - name: 13
+      - name: 12
         name_span:
           start: 1085
           end: 1086
@@ -2055,14 +2055,14 @@ functions:
               end: 1554
     signature_index: 92
     name:
-      inner: 51
+      inner: 50
       span:
         start: 1478
         end: 1481
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1482
             end: 1486
@@ -2073,7 +2073,7 @@ functions:
             end: 1486
       - mut_span: ~
         name:
-          inner: 50
+          inner: 49
           span:
             start: 1488
             end: 1493
@@ -2098,7 +2098,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1482
                     end: 1486
@@ -2110,7 +2110,7 @@ functions:
                       end: 1524
                     kind: Read
               - name:
-                  inner: 50
+                  inner: 49
                   span:
                     start: 1488
                     end: 1493
@@ -2176,7 +2176,7 @@ functions:
                         right:
                           kind:
                             IntrinsicCall:
-                              name: 18
+                              name: 17
                               type_arguments:
                                 - 89
                                 - 88
@@ -2205,7 +2205,7 @@ functions:
       end: 1625
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1579
           end: 1580
@@ -2217,7 +2217,7 @@ functions:
             span:
               start: 1593
               end: 1594
-      - name: 13
+      - name: 12
         name_span:
           start: 1590
           end: 1591
@@ -2230,14 +2230,14 @@ functions:
               end: 1602
     signature_index: 96
     name:
-      inner: 43
+      inner: 42
       span:
         start: 1626
         end: 1633
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1634
             end: 1638
@@ -2262,7 +2262,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1634
                     end: 1638
@@ -2332,7 +2332,7 @@ functions:
       end: 1692
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1579
           end: 1580
@@ -2348,7 +2348,7 @@ functions:
             span:
               start: 1707
               end: 1708
-      - name: 13
+      - name: 12
         name_span:
           start: 1590
           end: 1591
@@ -2361,14 +2361,14 @@ functions:
               end: 1602
     signature_index: 101
     name:
-      inner: 45
+      inner: 44
       span:
         start: 1693
         end: 1697
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1698
             end: 1702
@@ -2423,7 +2423,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1698
                     end: 1702
@@ -2462,7 +2462,7 @@ functions:
       end: 1750
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1579
           end: 1580
@@ -2478,7 +2478,7 @@ functions:
             span:
               start: 1771
               end: 1772
-      - name: 13
+      - name: 12
         name_span:
           start: 1590
           end: 1591
@@ -2495,14 +2495,14 @@ functions:
               end: 1776
     signature_index: 106
     name:
-      inner: 52
+      inner: 51
       span:
         start: 1751
         end: 1761
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1762
             end: 1766
@@ -2527,7 +2527,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1762
                     end: 1766
@@ -2566,7 +2566,7 @@ functions:
       end: 1812
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1579
           end: 1580
@@ -2582,7 +2582,7 @@ functions:
             span:
               start: 1830
               end: 1831
-      - name: 13
+      - name: 12
         name_span:
           start: 1590
           end: 1591
@@ -2593,7 +2593,7 @@ functions:
             span:
               start: 1601
               end: 1602
-      - name: 48
+      - name: 47
         name_span:
           start: 1818
           end: 1819
@@ -2606,14 +2606,14 @@ functions:
               end: 1839
     signature_index: 112
     name:
-      inner: 47
+      inner: 46
       span:
         start: 1813
         end: 1817
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1821
             end: 1825
@@ -2638,7 +2638,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1821
                     end: 1825
@@ -2677,7 +2677,7 @@ functions:
       end: 1875
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1579
           end: 1580
@@ -2701,7 +2701,7 @@ functions:
             span:
               start: 1958
               end: 1959
-      - name: 13
+      - name: 12
         name_span:
           start: 1590
           end: 1591
@@ -2722,14 +2722,14 @@ functions:
               end: 1956
     signature_index: 117
     name:
-      inner: 49
+      inner: 48
       span:
         start: 1876
         end: 1879
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1880
             end: 1884
@@ -2740,7 +2740,7 @@ functions:
             end: 1884
       - mut_span: ~
         name:
-          inner: 50
+          inner: 49
           span:
             start: 1886
             end: 1891
@@ -2765,7 +2765,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1880
                     end: 1884
@@ -2777,7 +2777,7 @@ functions:
                       end: 1926
                     kind: Read
               - name:
-                  inner: 50
+                  inner: 49
                   span:
                     start: 1886
                     end: 1891
@@ -2843,7 +2843,7 @@ functions:
                         right:
                           kind:
                             IntrinsicCall:
-                              name: 18
+                              name: 17
                               type_arguments:
                                 - 114
                                 - 113
@@ -2872,7 +2872,7 @@ functions:
       end: 1994
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 1579
           end: 1580
@@ -2896,7 +2896,7 @@ functions:
             span:
               start: 2077
               end: 2078
-      - name: 13
+      - name: 12
         name_span:
           start: 1590
           end: 1591
@@ -2917,14 +2917,14 @@ functions:
               end: 2075
     signature_index: 122
     name:
-      inner: 51
+      inner: 50
       span:
         start: 1995
         end: 1998
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 1999
             end: 2003
@@ -2935,7 +2935,7 @@ functions:
             end: 2003
       - mut_span: ~
         name:
-          inner: 50
+          inner: 49
           span:
             start: 2005
             end: 2010
@@ -2960,7 +2960,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 1999
                     end: 2003
@@ -2972,7 +2972,7 @@ functions:
                       end: 2045
                     kind: Read
               - name:
-                  inner: 50
+                  inner: 49
                   span:
                     start: 2005
                     end: 2010
@@ -3038,7 +3038,7 @@ functions:
                         right:
                           kind:
                             IntrinsicCall:
-                              name: 18
+                              name: 17
                               type_arguments:
                                 - 119
                                 - 118
@@ -3067,7 +3067,7 @@ functions:
       end: 2143
     kind: Impl
     type_params:
-      - name: 6
+      - name: 5
         name_span:
           start: 2100
           end: 2101
@@ -3083,7 +3083,7 @@ functions:
             span:
               start: 2157
               end: 2158
-      - name: 13
+      - name: 12
         name_span:
           start: 2111
           end: 2112
@@ -3096,14 +3096,14 @@ functions:
               end: 2120
     signature_index: 127
     name:
-      inner: 17
+      inner: 16
       span:
         start: 2144
         end: 2147
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 2148
             end: 2152
@@ -3128,7 +3128,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 2148
                     end: 2152
@@ -3149,7 +3149,7 @@ functions:
             result:
               kind:
                 IntrinsicCall:
-                  name: 12
+                  name: 11
                   type_arguments:
                     - 123
                     - 124
@@ -3180,14 +3180,14 @@ functions:
     type_params: []
     signature_index: 128
     name:
-      inner: 54
+      inner: 53
       span:
         start: 2228
         end: 2246
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 2247
             end: 2251
@@ -3212,7 +3212,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 2247
                     end: 2251
@@ -3344,14 +3344,14 @@ functions:
     type_params: []
     signature_index: 128
     name:
-      inner: 56
+      inner: 55
       span:
         start: 2401
         end: 2419
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 2420
             end: 2424
@@ -3376,7 +3376,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 2420
                     end: 2424
@@ -3508,14 +3508,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 58
+      inner: 57
       span:
         start: 2574
         end: 2582
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 2583
             end: 2587
@@ -3540,7 +3540,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 2583
                     end: 2587
@@ -3601,14 +3601,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 57
+      inner: 56
       span:
         start: 2651
         end: 2669
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 2670
             end: 2674
@@ -3638,7 +3638,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 2670
                     end: 2674
@@ -3744,14 +3744,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 55
+      inner: 54
       span:
         start: 2743
         end: 2761
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 2762
             end: 2766
@@ -3781,7 +3781,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 2762
                     end: 2766
@@ -3887,14 +3887,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 63
+      inner: 62
       span:
         start: 2835
         end: 2854
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 2855
             end: 2859
@@ -3919,7 +3919,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 2855
                     end: 2859
@@ -4115,14 +4115,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 64
+      inner: 63
       span:
         start: 2961
         end: 2975
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 2976
             end: 2980
@@ -4147,7 +4147,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 2976
                     end: 2980
@@ -4253,14 +4253,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 67
+      inner: 66
       span:
         start: 3049
         end: 3070
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 3071
             end: 3075
@@ -4285,7 +4285,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 3071
                     end: 3075
@@ -4571,14 +4571,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 68
+      inner: 67
       span:
         start: 3220
         end: 3239
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 3240
             end: 3244
@@ -4603,7 +4603,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 3240
                     end: 3244
@@ -4844,14 +4844,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 74
+      inner: 73
       span:
         start: 3364
         end: 3380
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 3381
             end: 3385
@@ -4876,7 +4876,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 3381
                     end: 3385
@@ -4982,14 +4982,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 76
+      inner: 75
       span:
         start: 3467
         end: 3484
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 3485
             end: 3489
@@ -5014,7 +5014,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 3485
                     end: 3489
@@ -5300,14 +5300,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 79
+      inner: 78
       span:
         start: 3634
         end: 3654
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 3655
             end: 3659
@@ -5332,7 +5332,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 3655
                     end: 3659
@@ -5708,14 +5708,14 @@ functions:
     type_params: []
     signature_index: 129
     name:
-      inner: 88
+      inner: 87
       span:
         start: 3841
         end: 3857
     params:
       - mut_span: ~
         name:
-          inner: 41
+          inner: 40
           span:
             start: 3858
             end: 3862
@@ -5740,7 +5740,7 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 41
+                  inner: 40
                   span:
                     start: 3858
                     end: 3862
@@ -5844,7 +5844,7 @@ functions:
     type_params: []
     signature_index: 131
     name:
-      inner: 92
+      inner: 91
       span:
         start: 53
         end: 57
@@ -5909,10 +5909,10 @@ module_decls: []
 import_decls: []
 enums: []
 exports:
-  92:
+  91:
     Function:
       internal_name:
-        inner: 92
+        inner: 91
         span:
           start: 109
           end: 113
@@ -5924,14 +5924,14 @@ structs:
     namespace: ~
     pub_span: ~
     name:
-      inner: 89
+      inner: 88
       span:
         start: 7
         end: 12
     type_params: []
     fields:
       - name:
-          inner: 90
+          inner: 89
           span:
             start: 23
             end: 24
@@ -5950,7 +5950,7 @@ structs:
               start: 84
               end: 85
       - name:
-          inner: 91
+          inner: 90
           span:
             start: 39
             end: 40
@@ -5969,8 +5969,8 @@ structs:
               start: 90
               end: 91
     lookup:
-      90: 0
-      91: 1
+      89: 0
+      90: 1
     accesses:
       - file_id: 1
         span:
@@ -5982,56 +5982,56 @@ structs:
           end: 80
 impl_members:
   17:
-    54:
+    53:
       Method: 26
-    55:
+    54:
       Method: 30
-    56:
+    55:
       Method: 27
-    57:
+    56:
       Method: 29
-    58:
+    57:
       Method: 28
-    63:
+    62:
       Method: 31
-    64:
+    63:
       Method: 32
-    67:
+    66:
       Method: 33
-    68:
+    67:
       Method: 34
-    74:
+    73:
       Method: 35
-    76:
+    75:
       Method: 36
-    79:
+    78:
       Method: 37
-    88:
+    87:
       Method: 38
 traits:
   - file_id: 0
     namespace: ~
     name:
-      inner: 7
+      inner: 6
       span:
         start: 800
         end: 806
     supertraits: []
     members:
-      10:
+      9:
         AssociatedType:
           ty: 21
-      37:
+      36:
         AssociatedConst:
           id: 16
           ty: 10
-      38:
+      37:
         AssociatedConst:
           id: 17
           ty: 23
-      40:
+      39:
         Method: 1
-      42:
+      41:
         Method: 2
 trait_impls: []
 trait_impl_lookup: {}
@@ -6042,7 +6042,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 1
+      inner: 0
       span:
         start: 6
         end: 21
@@ -6075,7 +6075,7 @@ constants:
       start: 41
       end: 44
     name:
-      inner: 3
+      inner: 2
       span:
         start: 51
         end: 60
@@ -6098,7 +6098,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 37
+      inner: 36
       span:
         start: 844
         end: 856
@@ -6114,7 +6114,7 @@ constants:
     namespace: ~
     pub_span: ~
     name:
-      inner: 38
+      inner: 37
       span:
         start: 871
         end: 879
@@ -6129,7 +6129,7 @@ typesets:
   - id: 13
     file_id: 0
     name:
-      inner: 30
+      inner: 29
       span:
         start: 684
         end: 691
@@ -6151,7 +6151,7 @@ typesets:
   - id: 14
     file_id: 0
     name:
-      inner: 34
+      inner: 33
       span:
         start: 745
         end: 756

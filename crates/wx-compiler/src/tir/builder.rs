@@ -7973,7 +7973,10 @@ impl<'ast> Builder<'ast, '_> {
         if a == b {
             return true;
         }
-        match (&self.tir.type_pool[a.as_usize()], &self.tir.type_pool[b.as_usize()]) {
+        match (
+            &self.tir.type_pool[a.as_usize()],
+            &self.tir.type_pool[b.as_usize()],
+        ) {
             (Type::Pointer { memory: a_mem, .. }, Type::Pointer { memory: b_mem, .. }) => {
                 a_mem == b_mem
             }
@@ -7982,17 +7985,21 @@ impl<'ast> Builder<'ast, '_> {
             }
             // Allow M::Size ↔ M::*T (both directions): same memory base, assoc type is "Size"
             (
-                Type::AssocTypeProjection { base: a_base, assoc_name, .. },
+                Type::AssocTypeProjection {
+                    base: a_base,
+                    assoc_name,
+                    ..
+                },
                 Type::Pointer { memory: b_mem, .. },
-            ) => {
-                a_base == b_mem && self.interner.resolve(*assoc_name) == Some("Size")
-            }
+            ) => a_base == b_mem && self.interner.resolve(*assoc_name) == Some("Size"),
             (
                 Type::Pointer { memory: a_mem, .. },
-                Type::AssocTypeProjection { base: b_base, assoc_name, .. },
-            ) => {
-                a_mem == b_base && self.interner.resolve(*assoc_name) == Some("Size")
-            }
+                Type::AssocTypeProjection {
+                    base: b_base,
+                    assoc_name,
+                    ..
+                },
+            ) => a_mem == b_base && self.interner.resolve(*assoc_name) == Some("Size"),
             _ => matches!(
                 (self.type_scalar(a), self.type_scalar(b)),
                 (Some(x), Some(y)) if x == y
@@ -10680,42 +10687,12 @@ impl<'ast> Builder<'ast, '_> {
                 (ty, error_expr)
             }
             Ok(mut value) => {
-                let ty = if expected_type == TypeIndex::INFER {
-                    if value.ty.is_comptime_number() {
-                        self.tir.diagnostics.push(report_type_annotation_required(
-                            SourceSpan::new(ctx.resolve_context.file_id, name.span),
-                        ));
-                        TypeIndex::ERROR
-                    } else {
-                        value.ty
-                    }
-                } else if value.ty == TypeIndex::ERROR {
-                    // RHS errored but we have a type annotation: use it so subsequent
-                    // accesses on this local don't produce cascading errors.
-                    expected_type
-                } else if value.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(
-                        ctx.resolve_context.file_id,
-                        &mut value,
-                        expected_type,
-                    )?;
-                    expected_type
-                } else if self.coercible_to(value.ty, expected_type)
-                    || (self.contains_infer(expected_type)
-                        && self.type_satisfies_annotation(value.ty, expected_type))
-                {
-                    value.ty
-                } else {
-                    self.tir.diagnostics.push(report_type_mistmatch(
-                        TypeFormatter::new(&self.tir, &self.interner),
-                        TypeMistmatchDiagnostic {
-                            expected_type,
-                            actual_type: value.ty,
-                            span: SourceSpan::new(ctx.resolve_context.file_id, value.span),
-                        },
-                    ));
-                    expected_type
-                };
+                let ty = self.resolve_local_type(
+                    ctx.resolve_context.file_id,
+                    name.span,
+                    &mut value,
+                    expected_type,
+                )?;
                 (ty, value)
             }
         };
@@ -10743,6 +10720,70 @@ impl<'ast> Builder<'ast, '_> {
         })
     }
 
+    fn resolve_local_type(
+        &mut self,
+        file_id: FileId,
+        name_span: TextSpan,
+        value: &mut Expression,
+        expected_type: TypeIndex,
+    ) -> Result<TypeIndex, ()> {
+        if expected_type == TypeIndex::INFER {
+            // TODO: impove diagnostic for case where value.ty contains infer
+            if value.ty.is_comptime_number() || self.contains_infer(value.ty) {
+                self.tir
+                    .diagnostics
+                    .push(report_type_annotation_required(SourceSpan::new(
+                        file_id, name_span,
+                    )));
+                return Ok(TypeIndex::ERROR);
+            }
+            return Ok(value.ty);
+        }
+
+        if value.ty == TypeIndex::ERROR {
+            return Ok(expected_type);
+        }
+
+        if value.ty.is_comptime_number() {
+            if self
+                .coerce_untyped_expr(file_id, value, expected_type)
+                .is_err()
+            {
+                return Ok(TypeIndex::ERROR);
+            }
+            return Ok(expected_type);
+        }
+
+        if self.contains_infer(expected_type) {
+            if self.type_satisfies_annotation(value.ty, expected_type) {
+                return Ok(value.ty);
+            }
+            self.tir.diagnostics.push(report_type_mistmatch(
+                TypeFormatter::new(&self.tir, &self.interner),
+                TypeMistmatchDiagnostic {
+                    expected_type,
+                    actual_type: value.ty,
+                    span: SourceSpan::new(file_id, value.span),
+                },
+            ));
+            return Ok(expected_type);
+        }
+
+        if self.coercible_to(value.ty, expected_type) {
+            return Ok(expected_type);
+        }
+
+        self.tir.diagnostics.push(report_type_mistmatch(
+            TypeFormatter::new(&self.tir, &self.interner),
+            TypeMistmatchDiagnostic {
+                expected_type,
+                actual_type: value.ty,
+                span: SourceSpan::new(file_id, value.span),
+            },
+        ));
+        Ok(expected_type)
+    }
+
     fn coerce_untyped_expr(
         &mut self,
         file_id: FileId,
@@ -10761,10 +10802,10 @@ impl<'ast> Builder<'ast, '_> {
                 self.coerce_untyped_binary_expression(file_id, expression, target_idx)
             }
             ExprKind::Block {
-                result: Some(ref mut r),
+                result: Some(ref mut result),
                 ..
             } => {
-                self.coerce_untyped_expr(file_id, r, target_idx)?;
+                self.coerce_untyped_expr(file_id, result, target_idx)?;
                 expression.ty = target_idx;
                 Ok(())
             }
@@ -10930,30 +10971,37 @@ impl<'ast> Builder<'ast, '_> {
                     file_id, expr.span,
                 )));
             Err(())
-        } else if matches!(self.tir.type_pool[target_idx.as_usize()], Type::Pointer { .. }) {
+        } else if matches!(
+            self.tir.type_pool[target_idx.as_usize()],
+            Type::Pointer { .. }
+        ) {
             match self.type_scalar(target_idx) {
                 Some(WasmScalar::I32) => {
                     if value < 0 || value > u32::MAX as i64 {
-                        self.tir.diagnostics.push(report_integer_literal_out_of_range(
-                            formatter,
-                            IntegerLiteralOutOfRangeDiagnostic {
-                                ty: TypeIndex::U32,
-                                value,
-                                span: SourceSpan::new(file_id, expr.span),
-                            },
-                        ));
+                        self.tir
+                            .diagnostics
+                            .push(report_integer_literal_out_of_range(
+                                formatter,
+                                IntegerLiteralOutOfRangeDiagnostic {
+                                    ty: TypeIndex::U32,
+                                    value,
+                                    span: SourceSpan::new(file_id, expr.span),
+                                },
+                            ));
                     }
                 }
                 Some(WasmScalar::I64) => {
                     if value < 0 {
-                        self.tir.diagnostics.push(report_integer_literal_out_of_range(
-                            formatter,
-                            IntegerLiteralOutOfRangeDiagnostic {
-                                ty: TypeIndex::U64,
-                                value,
-                                span: SourceSpan::new(file_id, expr.span),
-                            },
-                        ));
+                        self.tir
+                            .diagnostics
+                            .push(report_integer_literal_out_of_range(
+                                formatter,
+                                IntegerLiteralOutOfRangeDiagnostic {
+                                    ty: TypeIndex::U64,
+                                    value,
+                                    span: SourceSpan::new(file_id, expr.span),
+                                },
+                            ));
                     }
                 }
                 _ => {
@@ -10970,12 +11018,14 @@ impl<'ast> Builder<'ast, '_> {
                                 .resolve(ts.name.inner)
                                 .unwrap_or("PointerSize")
                                 .to_string();
-                            self.tir.diagnostics.push(report_integer_literal_out_of_typeset_range(
-                                value,
-                                &ts_name,
-                                &ts.intersection_range,
-                                SourceSpan::new(file_id, expr.span),
-                            ));
+                            self.tir
+                                .diagnostics
+                                .push(report_integer_literal_out_of_typeset_range(
+                                    value,
+                                    &ts_name,
+                                    &ts.intersection_range,
+                                    SourceSpan::new(file_id, expr.span),
+                                ));
                             return Err(());
                         }
                     }

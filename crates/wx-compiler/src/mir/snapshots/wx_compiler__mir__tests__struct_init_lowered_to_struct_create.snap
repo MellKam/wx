@@ -60,7 +60,7 @@ globals: []
 exports:
   - Function:
       id: 48
-      name: 92
+      name: 91
 imports: []
 memories: []
 aggregates:

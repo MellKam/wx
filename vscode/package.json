@@ -11,7 +11,7 @@
 	],
 	"activationEvents": [],
 	"main": "./out/extension.js",
-	"publisher": "melkam",
+	"publisher": "mellkam",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/MellKam/wx.git"
@@ -43,15 +43,15 @@
 				"path": "./syntaxes/wx.tmLanguage.json"
 			}
 		],
+		"configurationDefaults": {
+			"[wx]": {
+				"editor.formatOnSave": true
+			}
+		},
 		"configuration": {
 			"type": "object",
 			"title": "WX Language Configuration",
 			"properties": {
-				"wx.formatOnSave": {
-					"type": "boolean",
-					"default": true,
-					"description": "Automatically format WX files on save"
-				},
 				"wx.formatter.indentSize": {
 					"type": "number",
 					"default": 2,
@@ -61,7 +61,7 @@
 				},
 				"wx.formatter.maxWidth": {
 					"type": "number",
-					"default": 100,
+					"default": 80,
 					"description": "Maximum line width for formatting",
 					"minimum": 40,
 					"maximum": 200

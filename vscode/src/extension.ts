@@ -1,6 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { workspace, ExtensionContext, commands, window, Uri } from "vscode";
+import {
+	workspace,
+	ExtensionContext,
+	ExtensionMode,
+	commands,
+	window,
+	Uri,
+	FileSystemWatcher,
+} from "vscode";
 import {
 	LanguageClient,
 	LanguageClientOptions,
@@ -8,36 +16,39 @@ import {
 	TransportKind,
 } from "vscode-languageclient/node";
 
-let client: LanguageClient;
+let client: LanguageClient | null = null;
 
-function resolveServerBinary(context: ExtensionContext): string {
-	const devBinaryName =
-		process.platform === "win32" ? "wx-lsp-next.exe" : "wx-lsp-next";
-	const packagedBinaryName =
-		process.platform === "win32" ? "wx-lsp.exe" : "wx-lsp";
-	const devBinary = path.resolve(
-		context.extensionPath,
-		"..",
-		"target",
-		"debug",
-		devBinaryName,
-	);
-	const packagedBinary = context.asAbsolutePath(
-		path.join("bin", packagedBinaryName),
-	);
-
-	if (fs.existsSync(devBinary)) {
-		return devBinary;
+const resolveServerBinary = (context: ExtensionContext): string => {
+	if (context.extensionMode === ExtensionMode.Development) {
+		return path.resolve(
+			context.extensionPath,
+			"..",
+			"target",
+			"debug",
+			process.platform === "win32" ? "wx-lsp-next.exe" : "wx-lsp-next",
+		);
 	}
 
-	return packagedBinary;
-}
+	return context.asAbsolutePath(
+		path.join("bin", process.platform === "win32" ? "wx-lsp.exe" : "wx-lsp"),
+	);
+};
+
+let fileWatcher: FileSystemWatcher | null = null;
 
 async function startServer(serverModule: string) {
+	if (!fs.existsSync(serverModule)) {
+		window.showErrorMessage(`WX Language Server binary not found at: ${serverModule}`);
+		return;
+	}
+
 	const serverOptions: ServerOptions = {
 		command: serverModule,
 		transport: TransportKind.stdio,
 	};
+
+	fileWatcher?.dispose();
+	fileWatcher = workspace.createFileSystemWatcher("**/*.wx");
 
 	const clientOptions: LanguageClientOptions = {
 		documentSelector: [
@@ -45,7 +56,7 @@ async function startServer(serverModule: string) {
 			{ scheme: "wxstd", language: "wx" },
 		],
 		synchronize: {
-			fileEvents: workspace.createFileSystemWatcher("**/*.wx"),
+			fileEvents: fileWatcher,
 		},
 		outputChannelName: "WX Language Server",
 	};
@@ -57,14 +68,16 @@ async function startServer(serverModule: string) {
 		clientOptions,
 	);
 
-	console.log("Starting WX Language Server...");
 	try {
 		await client.start();
-		console.log("WX Language Server started successfully!");
-		window.showInformationMessage("WX Language Server is now active!");
 	} catch (error) {
-		console.error("Failed to start WX Language Server:", error);
-		window.showErrorMessage(`Failed to start WX Language Server: ${error}`);
+		const action = await window.showErrorMessage(
+			`Failed to start WX Language Server: ${error}`,
+			"Open Output",
+		);
+		if (action === "Open Output") {
+			client.outputChannel.show();
+		}
 	}
 }
 
@@ -72,9 +85,6 @@ export function activate(context: ExtensionContext) {
 	console.log("WX Language Server extension is activating...");
 
 	const serverModule = resolveServerBinary(context);
-	console.log("serverModule:", serverModule);
-
-	// Register restart server command
 	const restartCommand = commands.registerCommand(
 		"wx-vscode.restartServer",
 		async () => {
@@ -88,44 +98,30 @@ export function activate(context: ExtensionContext) {
 		},
 	);
 
-	context.subscriptions.push(restartCommand);
+	const configListener = workspace.onDidChangeConfiguration((e) => {
+		if (e.affectsConfiguration("wx")) {
+			commands.executeCommand("wx-vscode.restartServer");
+		}
+	});
 
-	// Start the language server
+	context.subscriptions.push(restartCommand, configListener);
 	startServer(serverModule);
 
 	// Provide content for wxstd:// virtual stdlib URIs (e.g. wxstd://std.wx)
 	context.subscriptions.push(
 		workspace.registerTextDocumentContentProvider("wxstd", {
-			provideTextDocumentContent(uri: Uri): Thenable<string> {
+			provideTextDocumentContent: (uri: Uri) => {
+				if (!client) return null;
 				return client.sendRequest("wx/virtualFileContent", {
 					uri: uri.toString(),
 				});
 			},
 		}),
 	);
-
-	// Set up format on save for WX files
-	context.subscriptions.push(
-		workspace.onWillSaveTextDocument((event) => {
-			const document = event.document;
-			if (document.languageId !== "wx") {
-				return;
-			}
-
-			const config = workspace.getConfiguration("wx");
-			const formatOnSave = config.get<boolean>("formatOnSave", true);
-
-			if (formatOnSave) {
-				console.log("Formatting document on save:", document.uri.toString());
-				event.waitUntil(
-					commands.executeCommand("editor.action.formatDocument"),
-				);
-			}
-		}),
-	);
 }
 
 export function deactivate() {
+	fileWatcher?.dispose();
 	if (!client) return;
 	return client.stop();
 }

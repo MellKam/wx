@@ -13,7 +13,7 @@ items:
           attributes: []
           signature:
             name:
-              inner: 1
+              inner: 0
               span:
                 start: 3
                 end: 4
@@ -23,7 +23,7 @@ items:
                   inner:
                     mut_span: ~
                     name:
-                      inner: 2
+                      inner: 1
                       span:
                         start: 5
                         end: 6
@@ -32,7 +32,7 @@ items:
                         Path:
                           segments:
                             - ident:
-                                inner: 3
+                                inner: 2
                                 span:
                                   start: 8
                                   end: 13
@@ -60,7 +60,7 @@ items:
                               Binding:
                                 mut_span: ~
                                 name:
-                                  inner: 4
+                                  inner: 3
                                   span:
                                     start: 27
                                     end: 28
@@ -79,7 +79,7 @@ items:
                                           Path:
                                             segments:
                                               - ident:
-                                                  inner: 2
+                                                  inner: 1
                                                   span:
                                                     start: 31
                                                     end: 32
@@ -91,7 +91,7 @@ items:
                                           start: 31
                                           end: 32
                                       member:
-                                        inner: 5
+                                        inner: 4
                                         span:
                                           start: 33
                                           end: 34
@@ -99,7 +99,7 @@ items:
                                     start: 31
                                     end: 34
                                 member:
-                                  inner: 6
+                                  inner: 5
                                   span:
                                     start: 35
                                     end: 36
@@ -120,7 +120,7 @@ items:
                               Binding:
                                 mut_span: ~
                                 name:
-                                  inner: 7
+                                  inner: 6
                                   span:
                                     start: 48
                                     end: 49
@@ -139,7 +139,7 @@ items:
                                           Path:
                                             segments:
                                               - ident:
-                                                  inner: 2
+                                                  inner: 1
                                                   span:
                                                     start: 52
                                                     end: 53
@@ -151,7 +151,7 @@ items:
                                           start: 52
                                           end: 53
                                       method:
-                                        inner: 8
+                                        inner: 7
                                         span:
                                           start: 54
                                           end: 57
@@ -161,7 +161,7 @@ items:
                                     start: 52
                                     end: 59
                                 member:
-                                  inner: 9
+                                  inner: 8
                                   span:
                                     start: 60
                                     end: 61

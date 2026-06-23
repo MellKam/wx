@@ -14,7 +14,7 @@ items:
               Path:
                 segments:
                   - ident:
-                      inner: 1
+                      inner: 0
                       span:
                         start: 5
                         end: 8
@@ -35,14 +35,14 @@ items:
                       end: 35
                     attributes:
                       - name:
-                          inner: 2
+                          inner: 1
                           span:
                             start: 17
                             end: 23
                         value: Word
                     signature:
                       name:
-                        inner: 3
+                        inner: 2
                         span:
                           start: 36
                           end: 42
@@ -52,7 +52,7 @@ items:
                             inner:
                               mut_span: ~
                               name:
-                                inner: 4
+                                inner: 3
                                 span:
                                   start: 43
                                   end: 47
@@ -66,7 +66,7 @@ items:
                           Path:
                             segments:
                               - ident:
-                                  inner: 1
+                                  inner: 0
                                   span:
                                     start: 52
                                     end: 55
@@ -91,7 +91,7 @@ items:
                                             Path:
                                               segments:
                                                 - ident:
-                                                    inner: 4
+                                                    inner: 3
                                                     span:
                                                       start: 66
                                                       end: 70

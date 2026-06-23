@@ -70,7 +70,7 @@ impl <T, A: Allocator> Vec<T, A> {
                 loop {
                     if i == self.*.len { break; };
                     
-                    (new_buf).add(i).* = (self.*.buf).add(i).*;
+                    new_buf.add(i).* = self.*.buf.add(i).*;
                     i += 1;
                 }
             };

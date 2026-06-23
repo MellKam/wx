@@ -2,15 +2,15 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"type": "typescript",
-			"tsconfig": "vscode/tsconfig.json",
-			"option": "watch",
-			"problemMatcher": ["$tsc-watch"],
+			"type": "npm",
+			"script": "watch",
+			"path": "vscode/",
+			"problemMatcher": "$tsc-watch",
 			"isBackground": true,
 			"presentation": {
 				"reveal": "never"
 			},
-			"label": "deno: watch",
+			"label": "npm: watch extension",
 			"group": {
 				"kind": "build",
 				"isDefault": true

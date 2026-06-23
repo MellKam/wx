@@ -13,7 +13,7 @@ items:
           attributes: []
           signature:
             name:
-              inner: 1
+              inner: 0
               span:
                 start: 3
                 end: 17
@@ -25,7 +25,7 @@ items:
                       start: 18
                       end: 21
                     name:
-                      inner: 2
+                      inner: 1
                       span:
                         start: 22
                         end: 23
@@ -34,7 +34,7 @@ items:
                         Path:
                           segments:
                             - ident:
-                                inner: 3
+                                inner: 2
                                 span:
                                   start: 25
                                   end: 28
@@ -54,7 +54,7 @@ items:
                 Path:
                   segments:
                     - ident:
-                        inner: 3
+                        inner: 2
                         span:
                           start: 33
                           end: 36
@@ -75,7 +75,7 @@ items:
                           inner:
                             Label:
                               label:
-                                inner: 4
+                                inner: 3
                                 span:
                                   start: 43
                                   end: 49
@@ -99,7 +99,7 @@ items:
                                                                   Path:
                                                                     segments:
                                                                       - ident:
-                                                                          inner: 2
+                                                                          inner: 1
                                                                           span:
                                                                             start: 69
                                                                             end: 70
@@ -135,7 +135,7 @@ items:
                                                                         inner:
                                                                           Break:
                                                                             label:
-                                                                              inner: 4
+                                                                              inner: 3
                                                                               span:
                                                                                 start: 96
                                                                                 end: 102
@@ -144,7 +144,7 @@ items:
                                                                                 Path:
                                                                                   segments:
                                                                                     - ident:
-                                                                                        inner: 2
+                                                                                        inner: 1
                                                                                         span:
                                                                                           start: 103
                                                                                           end: 104
@@ -185,7 +185,7 @@ items:
                                                             Path:
                                                               segments:
                                                                 - ident:
-                                                                    inner: 2
+                                                                    inner: 1
                                                                     span:
                                                                       start: 124
                                                                       end: 125

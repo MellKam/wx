@@ -81,7 +81,7 @@ globals: []
 exports:
   - Function:
       id: 49
-      name: 90
+      name: 89
 imports: []
 memories:
   - id: 47
