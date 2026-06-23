@@ -1,0 +1,73 @@
+---
+source: crates/wx-compiler/src/mir/tests.rs
+assertion_line: 137
+expression: case.mir
+---
+functions:
+  - id: 48
+    signature_index: 2
+    scopes:
+      - kind: Block
+        parent: ~
+        locals: []
+        result:
+          Aggregate:
+            aggregate_index: 0
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Aggregate:
+                  values:
+                    - kind:
+                        Int:
+                          value: 0
+                      ty: U32
+                    - kind:
+                        Int:
+                          value: 0
+                      ty: U32
+              ty:
+                Aggregate:
+                  aggregate_index: 0
+      ty:
+        Aggregate:
+          aggregate_index: 0
+    static_data: []
+signatures:
+  - items:
+      - U32
+      - Bool
+    params_count: 1
+  - items:
+      - U32
+      - U32
+    params_count: 1
+  - items:
+      - Aggregate:
+          aggregate_index: 0
+    params_count: 0
+globals: []
+exports:
+  - Function:
+      id: 48
+      name: 91
+imports: []
+memories: []
+aggregates:
+  - values:
+      - U32
+      - U32
+    offsets:
+      - 0
+      - 4
+    layout:
+      size: 8
+      align: 4
+    decl_to_phys:
+      - 0
+      - 1
+static_entries: []
+start_function: ~

@@ -1,0 +1,135 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 253
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Impl:
+          type_params: []
+          target:
+            inner:
+              Path:
+                segments:
+                  - ident:
+                      inner: 0
+                      span:
+                        start: 5
+                        end: 8
+                    type_args: []
+                span:
+                  start: 5
+                  end: 8
+            span:
+              start: 5
+              end: 8
+          items:
+            - inner:
+                inner:
+                  Method:
+                    id: 0
+                    pub_span:
+                      start: 33
+                      end: 35
+                    attributes:
+                      - name:
+                          inner: 1
+                          span:
+                            start: 17
+                            end: 23
+                        value: Word
+                    signature:
+                      name:
+                        inner: 2
+                        span:
+                          start: 36
+                          end: 42
+                      type_params: []
+                      params:
+                        - inner:
+                            inner:
+                              mut_span: ~
+                              name:
+                                inner: 3
+                                span:
+                                  start: 43
+                                  end: 47
+                              ty: ~
+                            span:
+                              start: 43
+                              end: 47
+                          separator: ~
+                      result:
+                        inner:
+                          Path:
+                            segments:
+                              - ident:
+                                  inner: 0
+                                  span:
+                                    start: 52
+                                    end: 55
+                                type_args: []
+                            span:
+                              start: 52
+                              end: 55
+                        span:
+                          start: 52
+                          end: 55
+                    block:
+                      inner:
+                        Block:
+                          statements:
+                            - inner:
+                                inner:
+                                  Expression:
+                                    inner:
+                                      Binary:
+                                        left:
+                                          inner:
+                                            Path:
+                                              segments:
+                                                - ident:
+                                                    inner: 3
+                                                    span:
+                                                      start: 66
+                                                      end: 70
+                                                  type_args: []
+                                              span:
+                                                start: 66
+                                                end: 70
+                                          span:
+                                            start: 66
+                                            end: 70
+                                        operator:
+                                          inner: Mul
+                                          span:
+                                            start: 71
+                                            end: 72
+                                        right:
+                                          inner:
+                                            Int:
+                                              value: 2
+                                          span:
+                                            start: 73
+                                            end: 74
+                                    span:
+                                      start: 66
+                                      end: 74
+                                span:
+                                  start: 66
+                                  end: 74
+                              separator: ~
+                      span:
+                        start: 56
+                        end: 80
+                span:
+                  start: 33
+                  end: 80
+              separator: ~
+      span:
+        start: 0
+        end: 82
+    separator: ~

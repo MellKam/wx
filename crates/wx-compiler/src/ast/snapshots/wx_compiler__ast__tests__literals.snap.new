@@ -1,0 +1,121 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 307
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          id: 0
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 0
+              span:
+                start: 3
+                end: 4
+            type_params: []
+            params: []
+            result: ~
+          block:
+            inner:
+              Block:
+                statements:
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 1
+                                  span:
+                                    start: 19
+                                    end: 20
+                            span:
+                              start: 19
+                              end: 20
+                          ty: ~
+                          value:
+                            inner:
+                              Float:
+                                value: 3.14
+                            span:
+                              start: 23
+                              end: 27
+                      span:
+                        start: 13
+                        end: 27
+                    separator:
+                      start: 27
+                      end: 28
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 2
+                                  span:
+                                    start: 39
+                                    end: 40
+                            span:
+                              start: 39
+                              end: 40
+                          ty: ~
+                          value:
+                            inner:
+                              Char:
+                                symbol: 3
+                            span:
+                              start: 43
+                              end: 46
+                      span:
+                        start: 33
+                        end: 46
+                    separator:
+                      start: 46
+                      end: 47
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 4
+                                  span:
+                                    start: 58
+                                    end: 59
+                            span:
+                              start: 58
+                              end: 59
+                          ty: ~
+                          value:
+                            inner:
+                              String:
+                                symbol: 5
+                            span:
+                              start: 62
+                              end: 69
+                      span:
+                        start: 52
+                        end: 69
+                    separator:
+                      start: 69
+                      end: 70
+            span:
+              start: 7
+              end: 72
+      span:
+        start: 0
+        end: 72
+    separator: ~

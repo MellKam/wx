@@ -1,0 +1,83 @@
+// Bump allocator — the simplest possible dynamic memory allocator.
+//
+// Strategy: maintain a `bump` pointer that starts right after static data
+// (heap::DATA_END) and advances with every allocation.  There is no free —
+// only reset.  Pages are grown on demand.
+//
+// Allocation layout (example — no free, sequential):
+//
+//   ┌──────────────┬──────────┬──────────┬──────────┬────── ·· ─┐
+//   │  static data │  alloc 0 │  alloc 1 │  alloc 2 │  (free)   │
+//   └──────────────┴──────────┴──────────┴──────────┴────── ·· ─┘
+//   0          DATA_END                            bump      heap end
+memory heap: Memory<Size = u32> { min_pages: 1 };
+// start with one 64 KiB page
+// ── allocator state ───────────────────────────────────────────────────────────
+global mut bump: heap::*mut u8 = heap::DATA_END;
+
+// ── core allocator ────────────────────────────────────────────────────────────
+// Allocates space for one T, respecting its alignment.
+pub fn alloc<T>() -> heap::*mut T {
+    local align = @align_of::<T, heap>();
+    local ptr = (bump as u32 + align - 1) / align * align;
+    local new_end = ptr + @size_of::<T, heap>();
+    local cur_end = heap.size() * PAGE_SIZE;
+    if new_end > cur_end {
+        local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        local _grew = heap.grow(needed);
+    }
+    bump = new_end as heap::*mut u8;
+    ptr as heap::*mut T
+}
+
+pub fn reset() {
+    bump = heap::DATA_END
+}
+
+pub fn bytes_used() -> u32 {
+    bump as u32
+}
+
+// ── linked list ───────────────────────────────────────────────────────────────
+struct Node {
+    value: i32,
+    next: heap::*Node,
+}
+
+pub fn node_new(value: i32, next: heap::*Node) -> heap::*mut Node {
+    local n: heap::*mut Node = alloc::<Node>();
+    n.* = Node::{ value: value, next: next };
+    n
+}
+
+pub fn node_value(n: heap::*Node) -> i32 {
+    n.*.value
+}
+
+pub fn node_next(n: heap::*Node) -> heap::*Node {
+    n.*.next
+}
+
+// ── demo entry point ──────────────────────────────────────────────────────────
+// Builds the list  3 → 2 → 1  and returns the sum of all node values.
+pub fn demo() -> i32 {
+    local n1 = node_new(1, null());
+    local n2 = node_new(2, n1);
+    local n3 = node_new(3, n2);
+    
+    local mut sum: i32 = 0;
+    local mut cur: heap::*Node = n3;
+    loop {
+        if cur.is_null() { break sum };
+        local node = cur.*;
+        sum += node.value;
+        cur = node.next;
+    }
+}
+
+export {
+    heap as "memory",
+    reset,
+    bytes_used,
+    demo,
+}

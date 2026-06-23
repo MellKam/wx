@@ -1,0 +1,166 @@
+---
+source: crates/wx-compiler/src/mir/tests.rs
+assertion_line: 305
+expression: case.mir
+---
+functions:
+  - id: 50
+    signature_index: 1
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: U32
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Call:
+                  callee:
+                    kind:
+                      Function:
+                        id: 52
+                    ty:
+                      Function:
+                        signature_index: 2
+                  arguments:
+                    - kind: Noop
+                      ty: Unit
+                    - kind:
+                        LocalGet:
+                          scope_index: 0
+                          local_index: 0
+                      ty: U32
+              ty: U32
+      ty: U32
+    static_data: []
+  - id: 51
+    signature_index: 4
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U64
+            mutability: Immutable
+        result: U64
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Call:
+                  callee:
+                    kind:
+                      Function:
+                        id: 53
+                    ty:
+                      Function:
+                        signature_index: 3
+                  arguments:
+                    - kind: Noop
+                      ty: Unit
+                    - kind:
+                        LocalGet:
+                          scope_index: 0
+                          local_index: 0
+                      ty: U64
+              ty: U64
+      ty: U64
+    static_data: []
+  - id: 52
+    signature_index: 2
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: Unit
+            mutability: Immutable
+          - ty: U32
+            mutability: Immutable
+        result: U32
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                LocalGet:
+                  scope_index: 0
+                  local_index: 1
+              ty: U32
+      ty: U32
+    static_data: []
+  - id: 53
+    signature_index: 3
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: Unit
+            mutability: Immutable
+          - ty: U64
+            mutability: Immutable
+        result: U64
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                LocalGet:
+                  scope_index: 0
+                  local_index: 1
+              ty: U64
+      ty: U64
+    static_data: []
+signatures:
+  - items:
+      - U32
+      - Bool
+    params_count: 1
+  - items:
+      - U32
+      - U32
+    params_count: 1
+  - items:
+      - Unit
+      - U32
+      - U32
+    params_count: 2
+  - items:
+      - Unit
+      - U64
+      - U64
+    params_count: 2
+  - items:
+      - U64
+      - U64
+    params_count: 1
+globals: []
+exports:
+  - Function:
+      id: 50
+      name: 92
+  - Function:
+      id: 51
+      name: 93
+imports: []
+memories:
+  - id: 47
+    source: Internal
+    kind: Memory32
+    min_pages: ~
+    max_pages: ~
+  - id: 48
+    source: Internal
+    kind: Memory64
+    min_pages: ~
+    max_pages: ~
+aggregates: []
+static_entries: []
+start_function: ~

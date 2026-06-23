@@ -10,7 +10,7 @@ license = "MIT"
 [dependencies]
 codespan-reporting = { version = "0.13.1", features = ["serialization"] }
 leb128fmt = "0.1.0"
-string-interner = "0.19.0"
+string-interner = "0.20.0"
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]

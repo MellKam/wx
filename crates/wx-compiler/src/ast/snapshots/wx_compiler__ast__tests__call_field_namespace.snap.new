@@ -1,0 +1,363 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 423
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          id: 0
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 0
+              span:
+                start: 3
+                end: 6
+            type_params: []
+            params:
+              - inner:
+                  inner:
+                    mut_span: ~
+                    name:
+                      inner: 1
+                      span:
+                        start: 7
+                        end: 8
+                    ty:
+                      inner:
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 2
+                                span:
+                                  start: 10
+                                  end: 13
+                              type_args: []
+                          span:
+                            start: 10
+                            end: 13
+                      span:
+                        start: 10
+                        end: 13
+                  span:
+                    start: 7
+                    end: 13
+                separator:
+                  start: 13
+                  end: 14
+              - inner:
+                  inner:
+                    mut_span: ~
+                    name:
+                      inner: 3
+                      span:
+                        start: 15
+                        end: 16
+                    ty:
+                      inner:
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 4
+                                span:
+                                  start: 18
+                                  end: 23
+                              type_args: []
+                          span:
+                            start: 18
+                            end: 23
+                      span:
+                        start: 18
+                        end: 23
+                  span:
+                    start: 15
+                    end: 23
+                separator: ~
+            result:
+              inner:
+                Path:
+                  segments:
+                    - ident:
+                        inner: 2
+                        span:
+                          start: 28
+                          end: 31
+                      type_args: []
+                  span:
+                    start: 28
+                    end: 31
+              span:
+                start: 28
+                end: 31
+          block:
+            inner:
+              Block:
+                statements:
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 5
+                                  span:
+                                    start: 44
+                                    end: 47
+                            span:
+                              start: 44
+                              end: 47
+                          ty: ~
+                          value:
+                            inner:
+                              Unary:
+                                operator:
+                                  inner: InvertSign
+                                  span:
+                                    start: 52
+                                    end: 53
+                                operand:
+                                  inner:
+                                    Path:
+                                      segments:
+                                        - ident:
+                                            inner: 1
+                                            span:
+                                              start: 53
+                                              end: 54
+                                          type_args: []
+                                      span:
+                                        start: 53
+                                        end: 54
+                                  span:
+                                    start: 53
+                                    end: 54
+                            span:
+                              start: 52
+                              end: 54
+                      span:
+                        start: 38
+                        end: 54
+                    separator:
+                      start: 54
+                      end: 55
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 6
+                                  span:
+                                    start: 66
+                                    end: 69
+                            span:
+                              start: 66
+                              end: 69
+                          ty: ~
+                          value:
+                            inner:
+                              Unary:
+                                operator:
+                                  inner: BitNot
+                                  span:
+                                    start: 74
+                                    end: 75
+                                operand:
+                                  inner:
+                                    Path:
+                                      segments:
+                                        - ident:
+                                            inner: 1
+                                            span:
+                                              start: 75
+                                              end: 76
+                                          type_args: []
+                                      span:
+                                        start: 75
+                                        end: 76
+                                  span:
+                                    start: 75
+                                    end: 76
+                            span:
+                              start: 74
+                              end: 76
+                      span:
+                        start: 60
+                        end: 76
+                    separator:
+                      start: 76
+                      end: 77
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 7
+                                  span:
+                                    start: 88
+                                    end: 93
+                            span:
+                              start: 88
+                              end: 93
+                          ty: ~
+                          value:
+                            inner:
+                              ObjectAccess:
+                                object:
+                                  inner:
+                                    Path:
+                                      segments:
+                                        - ident:
+                                            inner: 3
+                                            span:
+                                              start: 96
+                                              end: 97
+                                          type_args: []
+                                      span:
+                                        start: 96
+                                        end: 97
+                                  span:
+                                    start: 96
+                                    end: 97
+                                member:
+                                  inner: 1
+                                  span:
+                                    start: 98
+                                    end: 99
+                            span:
+                              start: 96
+                              end: 99
+                      span:
+                        start: 82
+                        end: 99
+                    separator:
+                      start: 99
+                      end: 100
+                  - inner:
+                      inner:
+                        LocalDefinition:
+                          pattern:
+                            inner:
+                              Binding:
+                                mut_span: ~
+                                name:
+                                  inner: 8
+                                  span:
+                                    start: 111
+                                    end: 113
+                            span:
+                              start: 111
+                              end: 113
+                          ty: ~
+                          value:
+                            inner:
+                              Path:
+                                segments:
+                                  - ident:
+                                      inner: 9
+                                      span:
+                                        start: 119
+                                        end: 126
+                                    type_args: []
+                                  - ident:
+                                      inner: 10
+                                      span:
+                                        start: 128
+                                        end: 131
+                                    type_args: []
+                                span:
+                                  start: 119
+                                  end: 131
+                            span:
+                              start: 119
+                              end: 131
+                      span:
+                        start: 105
+                        end: 131
+                    separator:
+                      start: 131
+                      end: 132
+                  - inner:
+                      inner:
+                        Expression:
+                          inner:
+                            Call:
+                              callee:
+                                inner:
+                                  Path:
+                                    segments:
+                                      - ident:
+                                          inner: 11
+                                          span:
+                                            start: 137
+                                            end: 140
+                                        type_args: []
+                                    span:
+                                      start: 137
+                                      end: 140
+                                span:
+                                  start: 137
+                                  end: 140
+                              arguments:
+                                - inner:
+                                    inner:
+                                      Path:
+                                        segments:
+                                          - ident:
+                                              inner: 7
+                                              span:
+                                                start: 141
+                                                end: 146
+                                            type_args: []
+                                        span:
+                                          start: 141
+                                          end: 146
+                                    span:
+                                      start: 141
+                                      end: 146
+                                  separator:
+                                    start: 146
+                                    end: 147
+                                - inner:
+                                    inner:
+                                      Path:
+                                        segments:
+                                          - ident:
+                                              inner: 5
+                                              span:
+                                                start: 148
+                                                end: 151
+                                            type_args: []
+                                        span:
+                                          start: 148
+                                          end: 151
+                                    span:
+                                      start: 148
+                                      end: 151
+                                  separator: ~
+                          span:
+                            start: 137
+                            end: 152
+                      span:
+                        start: 137
+                        end: 152
+                    separator: ~
+            span:
+              start: 32
+              end: 154
+      span:
+        start: 0
+        end: 154
+    separator: ~

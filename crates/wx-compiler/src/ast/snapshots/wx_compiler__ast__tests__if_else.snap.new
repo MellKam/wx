@@ -1,0 +1,163 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 321
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        Function:
+          id: 0
+          pub_span: ~
+          attributes: []
+          signature:
+            name:
+              inner: 0
+              span:
+                start: 3
+                end: 7
+            type_params: []
+            params:
+              - inner:
+                  inner:
+                    mut_span: ~
+                    name:
+                      inner: 1
+                      span:
+                        start: 8
+                        end: 9
+                    ty:
+                      inner:
+                        Path:
+                          segments:
+                            - ident:
+                                inner: 2
+                                span:
+                                  start: 11
+                                  end: 14
+                              type_args: []
+                          span:
+                            start: 11
+                            end: 14
+                      span:
+                        start: 11
+                        end: 14
+                  span:
+                    start: 8
+                    end: 14
+                separator: ~
+            result:
+              inner:
+                Path:
+                  segments:
+                    - ident:
+                        inner: 2
+                        span:
+                          start: 19
+                          end: 22
+                      type_args: []
+                  span:
+                    start: 19
+                    end: 22
+              span:
+                start: 19
+                end: 22
+          block:
+            inner:
+              Block:
+                statements:
+                  - inner:
+                      inner:
+                        Expression:
+                          inner:
+                            IfElse:
+                              condition:
+                                inner:
+                                  Binary:
+                                    left:
+                                      inner:
+                                        Path:
+                                          segments:
+                                            - ident:
+                                                inner: 1
+                                                span:
+                                                  start: 32
+                                                  end: 33
+                                              type_args: []
+                                          span:
+                                            start: 32
+                                            end: 33
+                                      span:
+                                        start: 32
+                                        end: 33
+                                    operator:
+                                      inner: Greater
+                                      span:
+                                        start: 34
+                                        end: 35
+                                    right:
+                                      inner:
+                                        Int:
+                                          value: 0
+                                      span:
+                                        start: 36
+                                        end: 37
+                                span:
+                                  start: 32
+                                  end: 37
+                              then_block:
+                                inner:
+                                  Block:
+                                    statements:
+                                      - inner:
+                                          inner:
+                                            Expression:
+                                              inner:
+                                                Int:
+                                                  value: 1
+                                              span:
+                                                start: 48
+                                                end: 49
+                                          span:
+                                            start: 48
+                                            end: 49
+                                        separator: ~
+                                span:
+                                  start: 38
+                                  end: 55
+                              else_block:
+                                inner:
+                                  Block:
+                                    statements:
+                                      - inner:
+                                          inner:
+                                            Expression:
+                                              inner:
+                                                Int:
+                                                  value: 0
+                                              span:
+                                                start: 71
+                                                end: 72
+                                          span:
+                                            start: 71
+                                            end: 72
+                                        separator: ~
+                                span:
+                                  start: 61
+                                  end: 78
+                          span:
+                            start: 29
+                            end: 78
+                      span:
+                        start: 29
+                        end: 78
+                    separator: ~
+            span:
+              start: 23
+              end: 80
+      span:
+        start: 0
+        end: 80
+    separator: ~

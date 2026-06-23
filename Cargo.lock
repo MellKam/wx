@@ -1405,6 +1405,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "string-interner"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad3df9b59e2eded8d825c7c4363ad339a20fb6bc0b9a4778560f518f59910b15"
+dependencies = [
+ "hashbrown 0.16.1",
+ "serde",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2287,6 +2297,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wx-cli"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "codespan-reporting 0.13.1",
+ "string-interner 0.19.0",
+ "wx-compiler",
+ "wx-fmt",
+]
+
+[[package]]
 name = "wx-compiler"
 version = "0.0.1"
 dependencies = [
@@ -2296,7 +2317,7 @@ dependencies = [
  "leb128fmt",
  "serde",
  "serde_json",
- "string-interner",
+ "string-interner 0.20.0",
  "wasmprinter",
  "wasmtime",
 ]
@@ -2307,7 +2328,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "codespan-reporting 0.13.1",
- "string-interner",
+ "string-interner 0.19.0",
  "wx-compiler",
 ]
 
@@ -2318,8 +2339,17 @@ dependencies = [
  "codespan-reporting 0.12.0",
  "serde",
  "serde-wasm-bindgen",
- "string-interner",
+ "string-interner 0.19.0",
  "wasm-bindgen",
+ "wx-compiler",
+]
+
+[[package]]
+name = "wx-fmt"
+version = "0.0.1"
+dependencies = [
+ "indoc",
+ "string-interner 0.20.0",
  "wx-compiler",
 ]
 
@@ -2329,9 +2359,21 @@ version = "0.0.1"
 dependencies = [
  "codespan-reporting 0.13.1",
  "serde",
- "string-interner",
+ "string-interner 0.20.0",
  "tokio",
  "tower-lsp-server",
+ "wx-compiler",
+]
+
+[[package]]
+name = "wx-wasm"
+version = "0.1.0"
+dependencies = [
+ "codespan-reporting 0.12.0",
+ "serde",
+ "serde-wasm-bindgen",
+ "string-interner 0.19.0",
+ "wasm-bindgen",
  "wx-compiler",
 ]
 

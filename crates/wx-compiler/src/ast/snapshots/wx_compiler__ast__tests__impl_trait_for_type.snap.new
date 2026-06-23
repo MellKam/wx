@@ -1,0 +1,175 @@
+---
+source: crates/wx-compiler/src/ast/tests.rs
+assertion_line: 266
+expression: case.ast
+---
+file_id: 0
+diagnostics: []
+items:
+  - inner:
+      inner:
+        ImplTrait:
+          id: 1
+          trait_name:
+            inner:
+              Path:
+                segments:
+                  - ident:
+                      inner: 0
+                      span:
+                        start: 5
+                        end: 13
+                    type_args: []
+                span:
+                  start: 5
+                  end: 13
+            span:
+              start: 5
+              end: 13
+          target:
+            inner:
+              Path:
+                segments:
+                  - ident:
+                      inner: 1
+                      span:
+                        start: 18
+                        end: 23
+                    type_args: []
+                span:
+                  start: 18
+                  end: 23
+            span:
+              start: 18
+              end: 23
+          items:
+            - inner:
+                inner:
+                  Method:
+                    id: 0
+                    pub_span: ~
+                    attributes: []
+                    signature:
+                      name:
+                        inner: 2
+                        span:
+                          start: 33
+                          end: 37
+                      type_params: []
+                      params:
+                        - inner:
+                            inner:
+                              mut_span: ~
+                              name:
+                                inner: 3
+                                span:
+                                  start: 38
+                                  end: 42
+                              ty: ~
+                            span:
+                              start: 38
+                              end: 42
+                          separator: ~
+                      result: ~
+                    block:
+                      inner:
+                        Block:
+                          statements:
+                            - inner:
+                                inner:
+                                  Expression:
+                                    inner:
+                                      Call:
+                                        callee:
+                                          inner:
+                                            Path:
+                                              segments:
+                                                - ident:
+                                                    inner: 4
+                                                    span:
+                                                      start: 54
+                                                      end: 64
+                                                  type_args: []
+                                              span:
+                                                start: 54
+                                                end: 64
+                                          span:
+                                            start: 54
+                                            end: 64
+                                        arguments:
+                                          - inner:
+                                              inner:
+                                                ObjectAccess:
+                                                  object:
+                                                    inner:
+                                                      Path:
+                                                        segments:
+                                                          - ident:
+                                                              inner: 3
+                                                              span:
+                                                                start: 65
+                                                                end: 69
+                                                            type_args: []
+                                                        span:
+                                                          start: 65
+                                                          end: 69
+                                                    span:
+                                                      start: 65
+                                                      end: 69
+                                                  member:
+                                                    inner: 5
+                                                    span:
+                                                      start: 70
+                                                      end: 71
+                                              span:
+                                                start: 65
+                                                end: 71
+                                            separator:
+                                              start: 71
+                                              end: 72
+                                          - inner:
+                                              inner:
+                                                ObjectAccess:
+                                                  object:
+                                                    inner:
+                                                      Path:
+                                                        segments:
+                                                          - ident:
+                                                              inner: 3
+                                                              span:
+                                                                start: 73
+                                                                end: 77
+                                                            type_args: []
+                                                        span:
+                                                          start: 73
+                                                          end: 77
+                                                    span:
+                                                      start: 73
+                                                      end: 77
+                                                  member:
+                                                    inner: 6
+                                                    span:
+                                                      start: 78
+                                                      end: 79
+                                              span:
+                                                start: 73
+                                                end: 79
+                                            separator: ~
+                                    span:
+                                      start: 54
+                                      end: 80
+                                span:
+                                  start: 54
+                                  end: 80
+                              separator: ~
+                      span:
+                        start: 44
+                        end: 86
+                span:
+                  start: 30
+                  end: 86
+              separator: ~
+      span:
+        start: 0
+        end: 88
+    separator: ~

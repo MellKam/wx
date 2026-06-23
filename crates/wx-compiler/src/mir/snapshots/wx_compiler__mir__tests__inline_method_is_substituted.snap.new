@@ -1,0 +1,179 @@
+---
+source: crates/wx-compiler/src/mir/tests.rs
+assertion_line: 181
+expression: case.mir
+---
+functions:
+  - id: 50
+    signature_index: 1
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: U32
+      - kind: Block
+        parent: 0
+        locals: []
+        result: U32
+      - kind: Block
+        parent: 1
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: U32
+      - kind: Block
+        parent: 2
+        locals: []
+        result: U32
+      - kind: Block
+        parent: 2
+        locals: []
+        result: U32
+      - kind: Block
+        parent: 2
+        locals: []
+        result: Bool
+      - kind: Block
+        parent: 5
+        locals:
+          - ty: U32
+            mutability: Immutable
+        result: Bool
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                Block:
+                  scope_index: 1
+                  expressions:
+                    - kind:
+                        LocalSet:
+                          scope_index: 2
+                          local_index: 0
+                          value:
+                            kind:
+                              LocalGet:
+                                scope_index: 0
+                                local_index: 0
+                            ty: U32
+                      ty: Unit
+                    - kind:
+                        Block:
+                          scope_index: 2
+                          expressions:
+                            - kind:
+                                IfElse:
+                                  condition:
+                                    kind:
+                                      Block:
+                                        scope_index: 5
+                                        expressions:
+                                          - kind:
+                                              LocalSet:
+                                                scope_index: 6
+                                                local_index: 0
+                                                value:
+                                                  kind:
+                                                    LocalGet:
+                                                      scope_index: 2
+                                                      local_index: 0
+                                                  ty: U32
+                                            ty: Unit
+                                          - kind:
+                                              Block:
+                                                scope_index: 6
+                                                expressions:
+                                                  - kind:
+                                                      And:
+                                                        left:
+                                                          kind:
+                                                            GreaterEq:
+                                                              left:
+                                                                kind:
+                                                                  LocalGet:
+                                                                    scope_index: 6
+                                                                    local_index: 0
+                                                                ty: U32
+                                                              right:
+                                                                kind:
+                                                                  Int:
+                                                                    value: 97
+                                                                ty: U32
+                                                          ty: Bool
+                                                        right:
+                                                          kind:
+                                                            LessEq:
+                                                              left:
+                                                                kind:
+                                                                  LocalGet:
+                                                                    scope_index: 6
+                                                                    local_index: 0
+                                                                ty: U32
+                                                              right:
+                                                                kind:
+                                                                  Int:
+                                                                    value: 122
+                                                                ty: U32
+                                                          ty: Bool
+                                                    ty: Bool
+                                            ty: Bool
+                                    ty: Bool
+                                  then_block:
+                                    kind:
+                                      Block:
+                                        scope_index: 3
+                                        expressions:
+                                          - kind:
+                                              BitXor:
+                                                left:
+                                                  kind:
+                                                    LocalGet:
+                                                      scope_index: 2
+                                                      local_index: 0
+                                                  ty: U8
+                                                right:
+                                                  kind:
+                                                    Int:
+                                                      value: 32
+                                                  ty: U8
+                                            ty: U32
+                                    ty: U32
+                                  else_block:
+                                    kind:
+                                      Block:
+                                        scope_index: 4
+                                        expressions:
+                                          - kind:
+                                              LocalGet:
+                                                scope_index: 2
+                                                local_index: 0
+                                            ty: U32
+                                    ty: U32
+                              ty: U32
+                      ty: U32
+              ty: U32
+      ty: U32
+    static_data: []
+signatures:
+  - items:
+      - U32
+      - Bool
+    params_count: 1
+  - items:
+      - U32
+      - U32
+    params_count: 1
+globals: []
+exports:
+  - Function:
+      id: 50
+      name: 88
+imports: []
+memories: []
+aggregates: []
+static_entries: []
+start_function: ~
