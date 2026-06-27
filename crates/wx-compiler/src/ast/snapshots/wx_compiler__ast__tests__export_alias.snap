@@ -30,16 +30,12 @@ items:
                     ty:
                       inner:
                         Path:
-                          segments:
-                            - ident:
-                                inner: 2
-                                span:
-                                  start: 10
-                                  end: 13
-                              type_args: []
-                          span:
-                            start: 10
-                            end: 13
+                          - ident:
+                              inner: 2
+                              span:
+                                start: 10
+                                end: 13
+                            type_args: []
                       span:
                         start: 10
                         end: 13
@@ -60,16 +56,12 @@ items:
                     ty:
                       inner:
                         Path:
-                          segments:
-                            - ident:
-                                inner: 2
-                                span:
-                                  start: 18
-                                  end: 21
-                              type_args: []
-                          span:
-                            start: 18
-                            end: 21
+                          - ident:
+                              inner: 2
+                              span:
+                                start: 18
+                                end: 21
+                            type_args: []
                       span:
                         start: 18
                         end: 21
@@ -80,16 +72,12 @@ items:
             result:
               inner:
                 Path:
-                  segments:
-                    - ident:
-                        inner: 2
-                        span:
-                          start: 26
-                          end: 29
-                      type_args: []
-                  span:
-                    start: 26
-                    end: 29
+                  - ident:
+                      inner: 2
+                      span:
+                        start: 26
+                        end: 29
+                    type_args: []
               span:
                 start: 26
                 end: 29
@@ -105,16 +93,12 @@ items:
                               left:
                                 inner:
                                   Path:
-                                    segments:
-                                      - ident:
-                                          inner: 1
-                                          span:
-                                            start: 32
-                                            end: 33
-                                        type_args: []
-                                    span:
-                                      start: 32
-                                      end: 33
+                                    - ident:
+                                        inner: 1
+                                        span:
+                                          start: 32
+                                          end: 33
+                                      type_args: []
                                 span:
                                   start: 32
                                   end: 33
@@ -126,16 +110,12 @@ items:
                               right:
                                 inner:
                                   Path:
-                                    segments:
-                                      - ident:
-                                          inner: 3
-                                          span:
-                                            start: 36
-                                            end: 37
-                                        type_args: []
-                                    span:
-                                      start: 36
-                                      end: 37
+                                    - ident:
+                                        inner: 3
+                                        span:
+                                          start: 36
+                                          end: 37
+                                      type_args: []
                                 span:
                                   start: 36
                                   end: 37

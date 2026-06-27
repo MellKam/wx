@@ -38,7 +38,9 @@ let fileWatcher: FileSystemWatcher | null = null;
 
 async function startServer(serverModule: string) {
 	if (!fs.existsSync(serverModule)) {
-		window.showErrorMessage(`WX Language Server binary not found at: ${serverModule}`);
+		window.showErrorMessage(
+			`WX Language Server binary not found at: ${serverModule}`,
+		);
 		return;
 	}
 
@@ -53,7 +55,7 @@ async function startServer(serverModule: string) {
 	const clientOptions: LanguageClientOptions = {
 		documentSelector: [
 			{ scheme: "file", language: "wx" },
-			{ scheme: "wxstd", language: "wx" },
+			{ scheme: "wx", language: "wx" },
 		],
 		synchronize: {
 			fileEvents: fileWatcher,
@@ -107,9 +109,9 @@ export function activate(context: ExtensionContext) {
 	context.subscriptions.push(restartCommand, configListener);
 	startServer(serverModule);
 
-	// Provide content for wxstd:// virtual stdlib URIs (e.g. wxstd://std.wx)
+	// Provide content for wx:// virtual stdlib URIs (e.g. wx://std/lib.wx)
 	context.subscriptions.push(
-		workspace.registerTextDocumentContentProvider("wxstd", {
+		workspace.registerTextDocumentContentProvider("wx", {
 			provideTextDocumentContent: (uri: Uri) => {
 				if (!client) return null;
 				return client.sendRequest("wx/virtualFileContent", {

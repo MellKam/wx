@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/tir/tests.rs
+assertion_line: 2480
 expression: case.tir
 ---
 type_pool:
@@ -357,22 +358,15 @@ type_pool:
           - 17
           - 16
         params_count: 1
-  - Struct:
-      struct_index: 0
-      args: []
   - TypeParam:
       owner:
-        Struct: 51
+        Function: 51
       param_index: 0
-  - Struct:
-      struct_index: 0
-      args:
-        - 11
   - Function:
       signature:
         items:
-          - 91
-          - 11
+          - 89
+          - 89
         params_count: 1
   - TypeParam:
       owner:
@@ -5337,43 +5331,55 @@ functions:
         span:
           start: 3872
           end: 3908
-  - id: 52
+  - id: 51
     file_id: 1
     namespace: ~
-    pub_span: ~
+    pub_span:
+      start: 12
+      end: 15
     kind: Free
-    type_params: []
+    type_params:
+      - name: 13
+        name_span:
+          start: 28
+          end: 29
+        bounds: []
+        typeset_bound: ~
+        accesses:
+          - file_id: 1
+            span:
+              start: 34
+              end: 35
+          - file_id: 1
+            span:
+              start: 40
+              end: 41
     type_param_parent: ~
     inherited_type_param_count: 0
-    signature_index: 92
+    signature_index: 90
     name:
-      inner: 90
+      inner: 89
       span:
-        start: 46
-        end: 49
+        start: 19
+        end: 27
     params:
       - mut_span: ~
         name:
-          inner: 91
+          inner: 90
           span:
-            start: 50
-            end: 51
+            start: 31
+            end: 32
         ty:
-          inner: 91
+          inner: 89
           span:
-            start: 53
-            end: 65
+            start: 34
+            end: 35
     result:
-      inner: 11
+      inner: 89
       span:
-        start: 70
-        end: 73
-    accesses:
-      - kind: Reference
-        file_id: 1
-        span:
-          start: 95
-          end: 98
+        start: 40
+        end: 41
+    accesses: []
     attributes: []
     body:
       stack:
@@ -5383,19 +5389,19 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 91
+                  inner: 90
                   span:
-                    start: 50
-                    end: 51
-                ty: 91
+                    start: 31
+                    end: 32
+                ty: 89
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 76
-                      end: 77
+                      start: 48
+                      end: 49
                     kind: Read
-            inferred_type: 11
-            expected_type: 11
+            inferred_type: 89
+            expected_type: 89
       block:
         kind:
           Block:
@@ -5403,29 +5409,17 @@ functions:
             expressions: []
             result:
               kind:
-                ObjectAccess:
-                  object:
-                    kind:
-                      Local:
-                        scope_index: 0
-                        local_index: 0
-                    ty: 91
-                    span:
-                      start: 76
-                      end: 77
-                  member:
-                    inner: 21
-                    span:
-                      start: 78
-                      end: 83
-              ty: 11
+                Local:
+                  scope_index: 0
+                  local_index: 0
+              ty: 89
               span:
-                start: 76
-                end: 83
-        ty: 11
+                start: 48
+                end: 49
+        ty: 89
         span:
-          start: 74
-          end: 85
+          start: 42
+          end: 51
 globals: []
 memories: []
 namespaces:
@@ -5530,63 +5524,8 @@ namespaces:
 module_decls: []
 import_decls: []
 enums: []
-exports:
-  90:
-    Function:
-      internal_name:
-        inner: 90
-        span:
-          start: 95
-          end: 98
-      external_name: ~
-      id: 52
-structs:
-  - id: 51
-    file_id: 1
-    namespace: ~
-    pub_span: ~
-    name:
-      inner: 89
-      span:
-        start: 19
-        end: 26
-    type_params:
-      - name: 13
-        name_span:
-          start: 27
-          end: 28
-        bounds: []
-        typeset_bound: ~
-        accesses:
-          - file_id: 1
-            span:
-              start: 39
-              end: 40
-    fields:
-      - name:
-          inner: 21
-          span:
-            start: 32
-            end: 37
-        ty:
-          inner: 90
-          span:
-            start: 39
-            end: 40
-        pub_span: ~
-        accesses:
-          - kind: Read
-            file_id: 1
-            span:
-              start: 78
-              end: 83
-    lookup:
-      21: 0
-    accesses:
-      - file_id: 1
-        span:
-          start: 53
-          end: 60
+exports: {}
+structs: []
 impl_members:
   17:
     54:

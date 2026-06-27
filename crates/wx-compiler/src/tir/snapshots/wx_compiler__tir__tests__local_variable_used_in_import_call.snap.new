@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/tir/tests.rs
+assertion_line: 282
 expression: case.tir
 ---
 type_pool:
@@ -357,23 +358,18 @@ type_pool:
           - 17
           - 16
         params_count: 1
-  - Struct:
-      struct_index: 0
-      args: []
-  - TypeParam:
-      owner:
-        Struct: 51
-      param_index: 0
-  - Struct:
-      struct_index: 0
-      args:
-        - 11
   - Function:
       signature:
         items:
-          - 91
-          - 11
-        params_count: 1
+          - 10
+          - 10
+          - 2
+        params_count: 2
+  - Function:
+      signature:
+        items:
+          - 2
+        params_count: 0
   - TypeParam:
       owner:
         Function: 18
@@ -382,7 +378,24 @@ type_pool:
       owner:
         Function: 19
       param_index: 0
-diagnostics: []
+  - Module:
+      namespace_idx: 1
+  - FunctionItem:
+      id: 51
+      type_args: []
+diagnostics:
+  - severity: Error
+    code: E1038
+    message: pointer dereference requires a linear memory
+    labels:
+      - style: Primary
+        file_id: 1
+        range:
+          start: 97
+          end: 103
+        message: ""
+    notes:
+      - "declare a memory in this module: `memory <name>: Memory where { Size = u32 };`"
 functions:
   - id: 2
     file_id: 0
@@ -5337,6 +5350,52 @@ functions:
         span:
           start: 3872
           end: 3908
+  - id: 51
+    file_id: 1
+    namespace: 1
+    pub_span: ~
+    kind: Free
+    type_params: []
+    type_param_parent: ~
+    inherited_type_param_count: 0
+    signature_index: 89
+    name:
+      inner: 90
+      span:
+        start: 38
+        end: 41
+    params:
+      - mut_span: ~
+        name:
+          inner: 91
+          span:
+            start: 42
+            end: 45
+        ty:
+          inner: 10
+          span:
+            start: 47
+            end: 50
+      - mut_span: ~
+        name:
+          inner: 17
+          span:
+            start: 52
+            end: 55
+        ty:
+          inner: 10
+          span:
+            start: 57
+            end: 60
+    result: ~
+    accesses:
+      - kind: DirectCall
+        file_id: 1
+        span:
+          start: 124
+          end: 127
+    attributes: []
+    body: ~
   - id: 52
     file_id: 1
     namespace: ~
@@ -5345,35 +5404,20 @@ functions:
     type_params: []
     type_param_parent: ~
     inherited_type_param_count: 0
-    signature_index: 92
+    signature_index: 90
     name:
-      inner: 90
+      inner: 92
       span:
-        start: 46
-        end: 49
-    params:
-      - mut_span: ~
-        name:
-          inner: 91
-          span:
-            start: 50
-            end: 51
-        ty:
-          inner: 91
-          span:
-            start: 53
-            end: 65
-    result:
-      inner: 11
-      span:
-        start: 70
+        start: 69
         end: 73
+    params: []
+    result: ~
     accesses:
       - kind: Reference
         file_id: 1
         span:
-          start: 95
-          end: 98
+          start: 152
+          end: 156
     attributes: []
     body:
       stack:
@@ -5383,49 +5427,90 @@ functions:
             parent: ~
             locals:
               - name:
-                  inner: 91
+                  inner: 93
                   span:
-                    start: 50
-                    end: 51
-                ty: 91
+                    start: 88
+                    end: 94
+                ty: 0
                 mut_span: ~
                 accesses:
                   - span:
-                      start: 76
-                      end: 77
+                      start: 131
+                      end: 137
                     kind: Read
-            inferred_type: 11
-            expected_type: 11
+            inferred_type: 2
+            expected_type: 2
       block:
         kind:
           Block:
             scope_index: 0
-            expressions: []
-            result:
-              kind:
-                ObjectAccess:
-                  object:
-                    kind:
-                      Local:
-                        scope_index: 0
-                        local_index: 0
-                    ty: 91
-                    span:
-                      start: 76
-                      end: 77
-                  member:
-                    inner: 21
-                    span:
-                      start: 78
-                      end: 83
-              ty: 11
-              span:
-                start: 76
-                end: 83
-        ty: 11
+            expressions:
+              - kind:
+                  LocalDeclaration:
+                    name:
+                      inner: 93
+                      span:
+                        start: 88
+                        end: 94
+                    scope_index: 0
+                    local_index: 0
+                    value:
+                      kind: Error
+                      ty: 0
+                      span:
+                        start: 97
+                        end: 109
+                ty: 2
+                span:
+                  start: 82
+                  end: 109
+              - kind:
+                  Call:
+                    callee:
+                      kind:
+                        NamespaceAccess:
+                          namespace:
+                            inner: 93
+                            span:
+                              start: 115
+                              end: 122
+                          member:
+                            kind:
+                              Function:
+                                id: 51
+                            ty: 94
+                            span:
+                              start: 124
+                              end: 127
+                      ty: 94
+                      span:
+                        start: 115
+                        end: 127
+                    arguments:
+                      - kind:
+                          Int:
+                            value: 0
+                        ty: 10
+                        span:
+                          start: 128
+                          end: 129
+                      - kind:
+                          Local:
+                            scope_index: 0
+                            local_index: 0
+                        ty: 0
+                        span:
+                          start: 131
+                          end: 137
+                ty: 2
+                span:
+                  start: 115
+                  end: 138
+            result: ~
+        ty: 2
         span:
-          start: 74
-          end: 85
+          start: 76
+          end: 141
 globals: []
 memories: []
 namespaces:
@@ -5527,66 +5612,47 @@ namespaces:
         span:
           start: 4
           end: 7
-module_decls: []
-import_decls: []
-enums: []
-exports:
-  90:
-    Function:
-      internal_name:
-        inner: 90
-        span:
-          start: 95
-          end: 98
-      external_name: ~
-      id: 52
-structs:
-  - id: 51
-    file_id: 1
-    namespace: ~
-    pub_span: ~
-    name:
-      inner: 89
-      span:
-        start: 19
-        end: 26
-    type_params:
-      - name: 13
-        name_span:
-          start: 27
-          end: 28
-        bounds: []
-        typeset_bound: ~
-        accesses:
-          - file_id: 1
-            span:
-              start: 39
-              end: 40
-    fields:
-      - name:
-          inner: 21
-          span:
-            start: 32
-            end: 37
-        ty:
-          inner: 90
-          span:
-            start: 39
-            end: 40
-        pub_span: ~
-        accesses:
-          - kind: Read
-            file_id: 1
-            span:
-              start: 78
-              end: 83
-    lookup:
-      21: 0
+  - name: 95
+    parent: ~
+    declaration:
+      Import: 0
+    symbols:
+      ? - Value
+        - 90
+      : Function:
+          func_index: 39
+    wildcard_imports: []
     accesses:
       - file_id: 1
         span:
-          start: 53
-          end: 60
+          start: 115
+          end: 122
+module_decls: []
+import_decls:
+  - namespace_idx: 1
+    file_id: 1
+    external_name:
+      inner: 95
+      span:
+        start: 19
+        end: 28
+    internal_name: ~
+    lookup:
+      90:
+        Function:
+          id: 51
+enums: []
+exports:
+  92:
+    Function:
+      internal_name:
+        inner: 92
+        span:
+          start: 152
+          end: 156
+      external_name: ~
+      id: 52
+structs: []
 impl_members:
   17:
     54:

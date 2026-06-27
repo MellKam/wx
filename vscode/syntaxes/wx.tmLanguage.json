@@ -25,7 +25,7 @@
 			"patterns": [
 				{
 					"name": "storage.type.wx",
-					"match": "\\b(fn|struct|trait|impl|enum|type|typeset|memory|local|global|const|module|pub|mut)\\b"
+					"match": "\\b(fn|struct|trait|impl|enum|type|typeset|memory|local|global|const|module|pub|mut|use|where)\\b"
 				},
 				{
 					"name": "keyword.control.wx",

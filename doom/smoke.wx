@@ -4,7 +4,7 @@
 //  2. Bit-shifts + OR to assemble multi-byte integers from raw bytes
 //  3. u8 pointer stores via *mut u8  (framebuffer pixel writes)
 //  4. Pointer arithmetic (.add()) to stride through a pixel buffer
-memory heap: Memory<Size = u32> { min_pages: 4 };
+memory heap: Memory where { Size = u32 } { min_pages: 4 };
 
 // ── WAD parsing primitives ────────────────────────────────────────────────────
 // Read a little-endian u16 from a byte slice.

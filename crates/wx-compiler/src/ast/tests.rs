@@ -104,7 +104,7 @@ fn test_top_level_items() {
             a + b
         }
 
-        memory MEM: Memory<Size = u32>;
+        memory MEM: Memory where { Size = u32 };
         global mut counter: i32 = 0;
         const MAX: i32 = 100;
 
@@ -151,8 +151,8 @@ fn test_enum_repr_after_name() {
     assert!(matches!(
         repr.as_deref().map(|repr| &repr.inner),
         Some(TypeExpression::Path(p))
-            if p.segments.len() == 1
-                && case.interner.resolve(p.segments[0].ident.inner) == Some("i32")
+            if p.len() == 1
+                && case.interner.resolve(p[0].ident.inner) == Some("i32")
     ));
     assert_eq!(variants.len(), 2);
 }
@@ -190,7 +190,6 @@ fn test_type_expression_forms() {
             array: [4]mut u8,
             tuple: (i32, u32),
             namespaced: math::Number,
-            constrained: Memory<Size = u32>,
         }
     "});
 
@@ -231,11 +230,7 @@ fn test_type_expression_forms() {
     ));
     assert!(matches!(
         Some(&fields[4].inner.inner.ty.inner),
-        Some(TypeExpression::Path(p)) if p.segments.len() == 2
-    ));
-    assert!(matches!(
-        Some(&fields[5].inner.inner.ty.inner),
-        Some(TypeExpression::GenericApplication { args, .. }) if args.len() == 1
+        Some(TypeExpression::Path(p)) if p.len() == 2
     ));
 }
 
@@ -377,8 +372,8 @@ fn test_generic_struct_init() {
         panic!("expected StructInit");
     };
     // path must be a single-segment path with one type arg: `Point::<f32>`
-    assert_eq!(path.segments.len(), 1);
-    assert_eq!(path.segments[0].type_args.len(), 1);
+    assert_eq!(path.len(), 1);
+    assert_eq!(path[0].type_args.len(), 1);
     assert_eq!(fields.len(), 2);
 }
 
@@ -854,7 +849,11 @@ fn test_module_pub_items_and_associated_types() {
     assert!(pub_span.is_some());
     assert!(matches!(
         trait_items[0].inner.inner,
-        TraitItem::AssociatedType { ref bounds, .. } if bounds.len() == 2
+        TraitItem::AssociatedType { ref bounds, .. }
+            if matches!(
+                bounds.as_ref().map(|b| &b.inner),
+                Some(BoundExpression::BoundList(list)) if list.len() == 2
+            )
     ));
 
     let Item::ImplTrait {
@@ -944,9 +943,9 @@ fn test_generic_struct() {
     assert_eq!(case.interner.resolve(name.inner), Some("Pair"));
     assert_eq!(type_params.len(), 2);
     assert_eq!(case.interner.resolve(type_params[0].name.inner), Some("T"));
-    assert!(type_params[0].bounds.is_empty());
+    assert!(type_params[0].bounds.is_none());
     assert_eq!(case.interner.resolve(type_params[1].name.inner), Some("U"));
-    assert!(type_params[1].bounds.is_empty());
+    assert!(type_params[1].bounds.is_none());
     assert_eq!(fields.len(), 2);
 }
 
@@ -962,7 +961,10 @@ fn test_generic_struct_with_bounds() {
         panic!("expected struct item")
     };
     assert_eq!(type_params.len(), 1);
-    assert_eq!(type_params[0].bounds.len(), 2);
+    assert!(matches!(
+        type_params[0].bounds.as_ref().map(|b| &b.inner),
+        Some(BoundExpression::BoundList(list)) if list.len() == 2
+    ));
 }
 
 #[test]
@@ -971,7 +973,7 @@ fn test_import_alias_and_entry_kinds() {
         import \"env\" as host {
             fn log(message: string);
             global mut counter: i32;
-            memory MEM: Memory<Size = u32>;
+            memory MEM: Memory where { Size = u32 };
         }
     "});
 
@@ -1038,28 +1040,52 @@ fn test_generic_application_type_args() {
         TypeExpression::GenericApplication { args, .. } if args.len() == 2
     ));
     if let TypeExpression::GenericApplication { args, .. } = param_ty {
-        assert!(matches!(&args[0].inner.inner, GenericArg::Type(_)));
-        assert!(matches!(&args[1].inner.inner, GenericArg::Type(_)));
+        assert!(matches!(&args[0].inner, Spanned { inner: TypeExpression::Path(_), .. }));
+        assert!(matches!(&args[1].inner, Spanned { inner: TypeExpression::Path(_), .. }));
     }
 }
 
 #[test]
-fn test_generic_application_binding_arg() {
+fn test_double_right_arrow_split() {
+    // Regression: `>>` in nested generics was eagerly lexed as `DoubleRightArrow`
+    // instead of two separate `>` tokens. Test across type expressions and
+    // turbofish in bounds.
     let case = TestCase::new(indoc! {"
-        struct Wrapper {
-            value: Memory<Size = u32>,
+        fn type_expr(x: Outer<Inner<u32>>) {}
+        fn bound_turbofish<T: Wrapper::<Inner<u32>>>(t: T) {}
+        fn method_turbofish(obj: Foo) { obj.transform::<Vec<u32>>() }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+}
+
+#[test]
+fn test_where_binding_parses_as_bound_with_bindings() {
+    let case = TestCase::new(indoc! {"
+        fn f<T: Memory where { Size = u32 }>(t: T) {}
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let Item::Function { signature, .. } = item(&case.ast, 0) else {
+        panic!("expected function")
+    };
+    let bounds = signature.type_params[0].bounds.as_ref().expect("expected bounds");
+    let BoundExpression::WithBindings { path, bindings } = &bounds.inner else {
+        panic!("expected WithBindings")
+    };
+    assert!(matches!(path.as_ref(), BoundExpression::Path(_)));
+    assert_eq!(bindings.len(), 1);
+}
+
+#[test]
+fn test_impl_trait_multi_segment_trait_name() {
+    // `impl gfx::Drawable for Point` — trait_name must be two path segments.
+    let case = TestCase::new(indoc! {"
+        impl gfx::Drawable for Point {
+            fn draw(self) {}
         }
     "});
     assert!(case.ast.diagnostics.is_empty());
-    let Item::Struct { fields, .. } = item(&case.ast, 0) else {
-        panic!("expected struct")
+    let Item::ImplTrait { trait_name, .. } = item(&case.ast, 0) else {
+        panic!("expected ImplTrait")
     };
-    let ty = &fields[0].inner.inner.ty.inner;
-    assert!(matches!(
-        ty,
-        TypeExpression::GenericApplication { args, .. } if args.len() == 1
-    ));
-    if let TypeExpression::GenericApplication { args, .. } = ty {
-        assert!(matches!(&args[0].inner.inner, GenericArg::Binding { .. }));
-    }
+    assert_eq!(trait_name.len(), 2, "expected two path segments: gfx, Drawable");
 }

@@ -5,7 +5,7 @@ use indoc::indoc;
 
 use super::*;
 use crate::tir::builder::{CharLiteralError, parse_char_literal, unescape_string};
-use crate::{STDLIB_SOURCE, vfs};
+use crate::vfs;
 
 #[allow(unused)]
 struct TestCase {
@@ -16,22 +16,12 @@ struct TestCase {
 impl TestCase {
     fn new(source: &str) -> Self {
         let mut builder = vfs::CompilationGraphBuilder::new();
-        let stdlib_id = builder
-            .load_crate(
-                "std.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([(
-                    "std.wx".to_string(),
-                    STDLIB_SOURCE.to_string(),
-                )])),
-            )
-            .unwrap();
+        let stdlib_id = builder.load_stdlib().unwrap();
+        let prefixed = format!("use std::*;\n{source}");
         let root_id = builder
-            .load_crate(
+            .load_binary(
                 "main.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([(
-                    "main.wx".to_string(),
-                    source.to_string(),
-                )])),
+                &vfs::VirtualFileSource::new(HashMap::from([("main.wx".to_string(), prefixed)])),
             )
             .unwrap();
         let mut graph = builder.build(root_id, stdlib_id);
@@ -40,23 +30,16 @@ impl TestCase {
     }
 
     fn new_multi_file(entry_path: &str, source: &str, extra_files: &[(&str, &str)]) -> Self {
-        let mut workspace_files = HashMap::from([(entry_path.to_string(), source.to_string())]);
+        let prefixed_entry = format!("use std::*;\n{source}");
+        let mut workspace_files = HashMap::from([(entry_path.to_string(), prefixed_entry)]);
         for (path, source) in extra_files {
             workspace_files.insert((*path).to_string(), (*source).to_string());
         }
 
         let mut builder = vfs::CompilationGraphBuilder::new();
-        let stdlib_id = builder
-            .load_crate(
-                "std.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([(
-                    "std.wx".to_string(),
-                    STD.to_string(),
-                )])),
-            )
-            .unwrap();
+        let stdlib_id = builder.load_stdlib().unwrap();
         let root_id = builder
-            .load_crate(
+            .load_binary(
                 entry_path.to_string(),
                 &vfs::VirtualFileSource::new(workspace_files),
             )
@@ -325,7 +308,7 @@ fn test_local_with_pointer_type_annotation_dereference_recovers() {
     // When the RHS errors (e.g. `alloc` is undeclared), the local must still carry
     // the declared pointer type so that `n.*` doesn't cascade into a "not a pointer" error.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min_pages: 1 }
+        memory heap: Memory where { Size = u32 } { min_pages: 1 }
         struct Node { x: i32 }
         fn write(x: i32) {
             local p: heap::*mut Node = alloc_node()
@@ -364,7 +347,7 @@ fn test_compare_mutable_pointer_with_null() {
     // (`heap::*mut Node`), even though null()'s return type is an immutable pointer.
     // Previously `infer_type_args` required matching mutability, causing E1002.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min_pages: 1 }
+        memory heap: Memory where { Size = u32 } { min_pages: 1 }
         struct Node { x: i32 }
         fn is_null(p: heap::*mut Node) -> bool {
             p == null()
@@ -1551,7 +1534,7 @@ fn test_memory_declaration_registers_kind() {
     let case32 = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory MEM: Memory<Size = u32>;
+        memory MEM: Memory where { Size = u32 };
     "},
         &[],
     );
@@ -1569,7 +1552,7 @@ fn test_memory_declaration_registers_kind() {
     let case64 = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory MEM: Memory<Size = u64>;
+        memory MEM: Memory where { Size = u64 };
     "},
         &[],
     );
@@ -1619,31 +1602,13 @@ fn test_intrinsic_fn_declaration_is_valid() {
     // For now skip until the crate-level access gate is implemented.
 }
 
-// ── Memory namespace resolution
-// ───────────────────────────────────────────────
-//
-// Minimal standard library preamble used by memory-related tests.
-
-const STD: &str = indoc! {"
-    typeset PointerSize { u32, u64 }
-
-    trait Memory {
-        type Size: PointerSize;
-        const MEMORY_INDEX: u32;
-
-        fn grow(self, delta: Self::Size) -> Self::Size;
-        fn size(self) -> Self::Size;
-    }
-
-"};
-
 #[test]
 fn test_memory_index_const_resolves() {
     // `MEM::MEMORY_INDEX` — namespace access to a memory constant resolves cleanly.
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory MEM: Memory<Size = u32>;
+        memory MEM: Memory where { Size = u32 };
         pub fn f() -> u32 { MEM::MEMORY_INDEX }
     "},
         &[],
@@ -1666,7 +1631,7 @@ fn test_memory_size_call_resolves() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory MEM: Memory<Size = u32>;
+        memory MEM: Memory where { Size = u32 };
         pub fn f() { _ = MEM.size(); }
     "},
         &[],
@@ -1689,7 +1654,7 @@ fn test_memory_grow_call_resolves() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory MEM: Memory<Size = u32>;
+        memory MEM: Memory where { Size = u32 };
         pub fn f() { _ = MEM.grow(1); }
     "},
         &[],
@@ -1710,7 +1675,7 @@ fn test_memory_unknown_member_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory MEM: Memory<Size = u32>;
+        memory MEM: Memory where { Size = u32 };
         fn f() { _ = MEM::pages; }
     "},
         &[],
@@ -1731,7 +1696,7 @@ fn test_memory_as_value_in_expression() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory MEM: Memory<Size = u32>;
+        memory MEM: Memory where { Size = u32 };
         fn f() { _ = MEM; }
     "},
         &[],
@@ -1893,6 +1858,55 @@ fn test_impl_trait_function_origin_is_trait_impl() {
         ),
         "function kind should be FunctionKind::TraitImpl"
     );
+}
+
+// ── trait duplicate definition ────────────────────────────────────────────────
+
+#[test]
+fn test_duplicate_trait_definition_is_error() {
+    let case = TestCase::new(indoc! {"
+        trait Foo { }
+        trait Foo { }
+        export { }
+    "});
+    assert!(
+        has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+        "expected duplicate definition error for two traits with same name, got: {:?}",
+        case.tir
+            .diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_local_trait_silently_shadows_wildcard_import() {
+    // Defining a trait with the same name as one from `use std::*` is allowed —
+    // local definitions always win over wildcard imports without a diagnostic.
+    let case = TestCase::new(indoc! {"
+        trait PointerSize { }
+        export { }
+    "});
+    assert!(
+        !has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+        "local trait shadowing wildcard import should not produce a duplicate error"
+    );
+}
+
+#[test]
+fn test_trait_default_body_referencing_sibling_method_does_not_panic() {
+    // Regression: ensure_signature for TraitFunction left a Pending entry in the
+    // namespace. When a default method body referenced another trait method by
+    // name, lookup_global_symbol returned that Pending, reaching an unreachable!()
+    // in global_symbol_to_expression.
+    let _case = TestCase::new(indoc! {"
+        trait Counter {
+            fn step() -> i32;
+            fn doubled() -> i32 { step() + step() }
+        }
+    "});
+    // Test passes as long as it does not panic.
 }
 
 // ── trait conformance check
@@ -2118,8 +2132,11 @@ fn test_supertrait_satisfied_impl_no_errors() {
 
 #[test]
 fn test_forward_ref_resolves_on_demand() {
-    // The query system resolves trait forward-references on demand, so declaring
-    // a function before the trait it references is valid.
+    // The query system resolves trait forward-references on demand. Using a trait
+    // name directly as a type is now invalid (traits are bounds, not types), but
+    // the resolution must still find the trait — producing ExpectedTrait (E1031),
+    // NOT UndeclaredType (E1021). E1021 would mean the forward reference was
+    // never resolved at all.
     let case = TestCase::new(indoc! {"
         fn uses_memory32(mem: Memory32, delta: u32) -> u32 {
             mem.grow(delta)
@@ -2136,6 +2153,13 @@ fn test_forward_ref_resolves_on_demand() {
             .iter()
             .any(|d| d.code.as_deref() == Some(DiagnosticCode::UndeclaredType.code())),
         "E1021 should not be emitted: the query system resolves traits on demand"
+    );
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::ExpectedTrait.code())),
+        "E1031 should be emitted: traits cannot be used directly as types"
     );
 }
 
@@ -2520,6 +2544,44 @@ fn test_generic_with_bound_resolves() {
 }
 
 #[test]
+fn test_type_param_referenced_in_binding_rhs_records_access() {
+    // When a type param appears as the RHS of a `where { AssocType = TypeParam }` binding,
+    // that reference must be recorded in TypeParamInfo.accesses so that:
+    //   (a) the "unused type param" warning is suppressed, and
+    //   (b) callers relying on accesses for liveness are correct.
+    //
+    // `T` below is only used in the binding — not in any param type or return type —
+    // so its accesses count must be exactly 1 after type-checking.
+    let case = TestCase::new(indoc! {"
+        trait Container {
+            type Item;
+        }
+        fn wrap<T, C: Container where { Item = T }>(c: C) -> C {
+            c
+        }
+    "});
+    no_errors(&case);
+    let func = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| {
+            case.graph
+                .interner
+                .resolve(f.name.inner)
+                .map(|n| n == "wrap")
+                .unwrap_or(false)
+        })
+        .expect("function 'wrap' not found in TIR");
+    assert_eq!(func.type_params.len(), 2, "expected two type params (T, C)");
+    assert_eq!(
+        func.type_params[0].accesses.len(),
+        1,
+        "T should have exactly 1 access recorded (from the binding `Item = T`)"
+    );
+}
+
+#[test]
 fn test_generic_unknown_bound_is_error() {
     // A bound that names an undeclared type should produce a diagnostic.
     let case = TestCase::new(indoc! {"
@@ -2762,6 +2824,23 @@ fn test_assoc_type_impl_bound_violation_is_error() {
 }
 
 #[test]
+fn test_assoc_type_where_binding_out_of_order_type_param_resolves() {
+    // `Src: Memory where { Size = S }` where `S` is defined AFTER `Src` —
+    // the two-pass resolution must find `S` in the full scope even though
+    // it wasn't yet built when the bound was first parsed.
+    let case = TestCase::new(indoc! {"
+        trait PointerSize {}
+        trait Memory {
+            type Size: PointerSize;
+        }
+        fn copy<Src: Memory where { Size = S }, S: PointerSize>() {
+            unreachable
+        }
+    "});
+    no_errors(&case);
+}
+
+#[test]
 fn test_assoc_type_unconstrained_no_error() {
     // An associated type with no bounds accepts any concrete type.
     let case = TestCase::new(indoc! {"
@@ -2858,7 +2937,7 @@ fn test_assoc_type_projection_in_pointer_wrapper() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             trait Container {
                 type Item;
             }
@@ -2883,7 +2962,7 @@ fn test_generic_over_memory_size_in_signature() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
                 n
             }
@@ -2899,7 +2978,7 @@ fn test_generic_over_memory_called_with_concrete_memory() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
                 n
             }
@@ -2918,7 +2997,7 @@ fn test_generic_over_memory_wrong_size_type_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
                 n
             }
@@ -2938,8 +3017,8 @@ fn test_generic_over_memory_two_concrete_memories() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
-            memory stack: Memory<Size = u64>;
+            memory heap: Memory where { Size = u32 };
+            memory stack: Memory where { Size = u64 };
             fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
                 n
             }
@@ -2965,7 +3044,7 @@ fn test_infer_placeholder_in_generic_type_arg() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             struct Layout<M: Memory> { size: M::Size }
             impl <M: Memory> Layout<M> {
                 pub fn new(size: M::Size) -> Layout<M> {
@@ -2989,7 +3068,7 @@ fn test_cannot_infer_generic_type_param_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             struct Layout<M: Memory> { size: M::Size }
             impl <M: Memory> Layout<M> {
                 pub fn array<T>(count: M::Size) -> Layout<M> {
@@ -3009,7 +3088,7 @@ fn test_cannot_infer_generic_type_param_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             struct Layout<M: Memory> { size: M::Size }
             impl <M: Memory> Layout<M> {
                 pub fn array<T>(count: M::Size) -> Layout<M> {
@@ -3144,7 +3223,7 @@ fn test_memory_tagged_pointer() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(p: heap::*i32) {
                 unreachable
             }
@@ -3185,7 +3264,7 @@ fn test_memory_tagged_mut_pointer() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(p: heap::*mut i64) {
                 unreachable
             }
@@ -3226,7 +3305,7 @@ fn test_memory_tagged_slice() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(s: heap::[]u8) {
                 unreachable
             }
@@ -3263,7 +3342,7 @@ fn test_memory_tagged_array() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]u8) {
                 unreachable
             }
@@ -3302,7 +3381,7 @@ fn test_memory_tagged_nested_array() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]heap::[4]u8) {
                 unreachable
             }
@@ -3352,7 +3431,7 @@ fn test_memory_tagged_non_pointer_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(x: heap::i32) {
                 unreachable
             }
@@ -3368,7 +3447,7 @@ fn test_untagged_and_tagged_pointer_resolve_to_same_type() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: *i32, b: heap::*i32) {
                 unreachable
             }
@@ -3695,7 +3774,7 @@ fn test_deref_load_through_pointer() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn read(ptr: heap::*i32) -> i32 { ptr.* }
     "},
         &[],
@@ -3708,7 +3787,7 @@ fn test_deref_store_through_mutable_pointer() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn write(ptr: heap::*mut i32) { ptr.* = 42 }
     "},
         &[],
@@ -3721,7 +3800,7 @@ fn test_deref_arithmetic_assignment_through_mutable_pointer() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn increment(ptr: heap::*mut i32) { ptr.* += 1 }
     "},
         &[],
@@ -3756,7 +3835,7 @@ fn test_deref_store_through_immutable_pointer_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn bad(ptr: heap::*i32) { ptr.* = 42 }
     "},
         &[],
@@ -3777,7 +3856,7 @@ fn test_deref_arithmetic_assignment_through_immutable_pointer_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn bad(ptr: heap::*i32) { ptr.* += 1 }
     "},
         &[],
@@ -3798,7 +3877,7 @@ fn test_deref_type_mismatch_on_store_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn bad(ptr: heap::*mut i32) { ptr.* = true }
     "},
         &[],
@@ -3968,7 +4047,7 @@ fn test_array_literal_basic() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() -> heap::[3]i32 {
                 local x: heap::[3]i32 = [1, 2, 3];
                 x
@@ -3984,7 +4063,7 @@ fn test_array_literal_mutable() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() -> heap::[3]mut i32 {
                 local x: heap::[3]mut i32 = [1, 2, 3];
                 x
@@ -4000,7 +4079,7 @@ fn test_array_literal_float_elements() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() -> heap::[2]f32 {
                 local x: heap::[2]f32 = [1.0, 2.0];
                 x
@@ -4016,7 +4095,7 @@ fn test_array_literal_empty_with_annotation() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() -> heap::[0]i32 {
                 local x: heap::[0]i32 = [];
                 x
@@ -4032,7 +4111,7 @@ fn test_array_literal_size_mismatch_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() {
                 local x: heap::[3]i32 = [1, 2];
             }
@@ -4052,7 +4131,7 @@ fn test_array_literal_no_annotation_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() {
                 local x = [1, 2, 3];
             }
@@ -4084,7 +4163,7 @@ fn test_array_literal_non_numeric_element_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() {
                 local x: heap::[2]i32 = [true, false];
             }
@@ -4100,7 +4179,7 @@ fn test_array_literal_mixed_element_types_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(b: bool) {
                 local x: heap::[2]bool = [b, b];
             }
@@ -4118,7 +4197,7 @@ fn test_array_repeat_basic() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() -> heap::[4]i32 {
                 local x: heap::[4]i32 = [0; 4];
                 x
@@ -4134,7 +4213,7 @@ fn test_array_repeat_float() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() -> heap::[8]f64 {
                 local x: heap::[8]f64 = [0.0; 8];
                 x
@@ -4150,7 +4229,7 @@ fn test_array_repeat_count_not_const_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(n: u32) {
                 local x: heap::[4]i32 = [0; n];
             }
@@ -4168,7 +4247,7 @@ fn test_array_repeat_size_mismatch_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() {
                 local x: heap::[4]i32 = [0; 3];
             }
@@ -4186,7 +4265,7 @@ fn test_array_repeat_no_annotation_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f() {
                 local x = [0; 4];
             }
@@ -4204,7 +4283,7 @@ fn test_array_repeat_non_numeric_value_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(b: bool) {
                 local x: heap::[4]i32 = [b; 4];
             }
@@ -4222,7 +4301,7 @@ fn test_index_read_from_array() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "},
         &[],
@@ -4235,7 +4314,7 @@ fn test_index_read_from_slice() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[]i32) -> i32 { a[0] }
         "},
         &[],
@@ -4256,11 +4335,11 @@ fn test_index_on_non_indexable_is_error() {
 
 #[test]
 fn test_index_wrong_index_type_is_error() {
-    // Memory<Size = u32> requires u32 index; passing i64 should be a type mismatch.
+    // Memory where { Size = u32 } requires u32 index; passing i64 should be a type mismatch.
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32, i: i64) -> i32 { a[i] }
         "},
         &[],
@@ -4281,7 +4360,7 @@ fn test_index_store_through_mutable_array() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]mut i32) { a[0] = 42 }
         "},
         &[],
@@ -4294,7 +4373,7 @@ fn test_index_store_through_immutable_array_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32) { a[0] = 42 }
         "},
         &[],
@@ -4315,7 +4394,7 @@ fn test_index_arithmetic_assignment_through_mutable_array() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]mut i32) { a[0] += 1 }
         "},
         &[],
@@ -4328,7 +4407,7 @@ fn test_index_arithmetic_assignment_through_immutable_array_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32) { a[0] += 1 }
         "},
         &[],
@@ -4349,7 +4428,7 @@ fn test_index_store_type_mismatch_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]mut i32) { a[0] = true }
         "},
         &[],
@@ -4362,7 +4441,7 @@ fn test_index_memory64_requires_u64_index() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u64>;
+            memory heap: Memory where { Size = u64 };
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "},
         &[],
@@ -4377,8 +4456,8 @@ fn test_index_ambiguous_memory_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
-            memory stack: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
+            memory stack: Memory where { Size = u32 };
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "},
         &[],
@@ -4393,7 +4472,7 @@ fn test_array_literal_runtime_element_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(x: i32) {
                 local arr: heap::[2]i32 = [x, 1];
             }
@@ -4411,7 +4490,7 @@ fn test_array_repeat_runtime_value_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(x: i32) {
                 local arr: heap::[4]i32 = [x; 4];
             }
@@ -4432,7 +4511,7 @@ fn test_index_concrete_memory32_typed_variable() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32, i: u32) -> i32 { a[i] }
         "},
         &[],
@@ -4446,7 +4525,7 @@ fn test_index_concrete_memory64_typed_variable() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u64>;
+            memory heap: Memory where { Size = u64 };
             fn f(a: heap::[4]i32, i: u64) -> i32 { a[i] }
         "},
         &[],
@@ -4460,7 +4539,7 @@ fn test_index_memory32_with_u64_variable_is_error() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32, i: u64) -> i32 { a[i] }
         "},
         &[],
@@ -4483,7 +4562,7 @@ fn test_index_generic_array_with_assoc_size_type() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn read<M: Memory>(arr: M::[4]i32, i: M::Size) -> i32 {
                 arr[i]
             }
@@ -4499,7 +4578,7 @@ fn test_index_generic_slice_with_assoc_size_type() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn read<M: Memory>(s: M::[]i32, i: M::Size) -> i32 {
                 s[i]
             }
@@ -4516,7 +4595,7 @@ fn test_index_generic_array_call_with_concrete_memory() {
     let case = TestCase::new_multi_file(
         "main.wx",
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
             fn read<M: Memory>(arr: M::[4]i32, i: M::Size) -> i32 {
                 arr[i]
             }
@@ -4749,13 +4828,13 @@ fn test_lang_items_registered() {
         case.tir.lang_items.contains_key(&trait_key),
         "trait lang item not registered"
     );
-    assert!(case.tir.function_index_lookup.contains_key(&fn_def_id));
+    assert!(case.tir.function_index(fn_def_id).is_some());
 }
 
 #[test]
 fn test_generic_impl_block_registers_and_dispatches() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         fn get_len(s: heap::[]u8) -> u32 {
             s.len()
@@ -4791,7 +4870,7 @@ fn test_generic_impl_bare_type_param_is_error() {
 #[test]
 fn test_slice_range_full_is_ok() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn f(s: heap::[]u8) -> heap::[]u8 {
             s[..]
         }
@@ -4807,7 +4886,7 @@ fn test_slice_range_full_is_ok() {
 #[test]
 fn test_slice_range_with_bounds_is_ok() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn f(s: heap::[]u8, i: u32, n: u32) -> heap::[]u8 {
             s[i..n]
         }
@@ -4823,7 +4902,7 @@ fn test_slice_range_with_bounds_is_ok() {
 #[test]
 fn test_slice_range_on_array_is_ok() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn f(arr: heap::[4]u8) -> heap::[]u8 {
             arr[1..3]
         }
@@ -4839,7 +4918,7 @@ fn test_slice_range_on_array_is_ok() {
 #[test]
 fn test_slice_range_on_non_indexable_is_error() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn f(x: i32) -> heap::[]i32 {
             x[..]
         }
@@ -4944,7 +5023,7 @@ fn test_global_init_if_expression_resolves() {
 #[test]
 fn test_global_initialized_to_data_end_tir() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
         global mut bump: heap::*mut u8 = heap::DATA_END;
@@ -5126,12 +5205,12 @@ fn test_type_position_inline_module_registers_module_access() {
     "});
     no_errors(&case);
     assert!(
-        !case.tir.module_decls.is_empty() && !case.tir.module_decls[0].accesses.is_empty(),
-        "expected at least one access registered on the `math` module decl, got: {:?}",
+        case.tir.namespaces.iter().any(|ns| !ns.accesses.is_empty()),
+        "expected at least one access registered on a namespace, got: {:?}",
         case.tir
-            .module_decls
+            .namespaces
             .iter()
-            .map(|m| m.accesses.len())
+            .map(|ns| ns.accesses.len())
             .collect::<Vec<_>>(),
     );
 }
@@ -5255,7 +5334,7 @@ fn test_struct_init_undeclared_type_in_module_path_is_error() {
 #[test]
 fn test_assoc_type_projection_normalised_across_functions() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         struct Layout<M: Memory> {
             pub size: M::Size,
@@ -5288,7 +5367,7 @@ fn test_assoc_type_as_memory_tag_in_trait() {
     // `Self::M` where M: Memory should be valid as a memory tag in pointer types
     // inside a trait definition.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         struct Layout<M: Memory> {
             size: M::Size,
@@ -5311,7 +5390,7 @@ fn test_assoc_type_memory_bound_satisfied_by_memory_decl() {
     // `impl Allocator for BumpAllocator { type M = heap; }` — concrete memory
     // satisfies the `M: Memory` bound on the associated type.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         struct Layout<M: Memory> {
             size: M::Size,
@@ -5409,7 +5488,7 @@ fn test_nested_assoc_type_projection_resolves() {
     // `A::M::Size` — associated type of an associated type — must resolve
     // without error when `type M: Memory` is declared in the Allocator trait.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         trait Allocator {
             type M: Memory;
             fn alloc(mut self, size: Self::M::Size) -> Self::M::*mut u8;
@@ -5507,6 +5586,23 @@ fn test_used_type_param_in_param_no_warn() {
 }
 
 #[test]
+fn test_implicit_self_type_param_in_trait_method_no_warn() {
+    let case = TestCase::new(indoc! {"
+        pub trait PointerSize {
+            fn size() -> u32;
+        }
+    "});
+    assert!(
+        !case
+            .tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedTypeParam.code())),
+        "implicit Self type param should not warn"
+    );
+}
+
+#[test]
 fn test_used_type_param_in_return_only_no_warn() {
     let case = TestCase::new(indoc! {"
         pub fn produce<T>() -> T { loop {} }
@@ -5591,5 +5687,194 @@ fn test_never_initialized_field_no_warn() {
             .iter()
             .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedStructField.code())),
         "fields that are never initialized should not warn (struct itself may be unused)"
+    );
+}
+
+#[test]
+fn test_type_param_multiple_bounds_both_enforced() {
+    // `T: Scalable + Printable` — BoundList must be flattened so both bounds
+    // end up in TypeParamInfo.bounds (exercises resolve_type_param_bounds).
+    let case = TestCase::new(indoc! {"
+        trait Scalable { fn scale(self, n: i32) -> i32; }
+        trait Printable { fn print(self); }
+        fn do_both<T: Scalable + Printable>(t: T) -> i32 {
+            t.print();
+            t.scale(1)
+        }
+    "});
+    no_errors(&case);
+
+    let func = case
+        .tir
+        .functions
+        .iter()
+        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("do_both"))
+        .expect("function 'do_both' not found");
+
+    assert_eq!(func.type_params.len(), 1);
+    assert_eq!(
+        func.type_params[0].bounds.len(),
+        2,
+        "T should have two bounds (Scalable and Printable)"
+    );
+}
+
+#[test]
+#[ignore = "TODO: TIR does not currently check trait bound satisfaction at generic call sites"]
+fn test_type_param_multiple_bounds_missing_impl_is_error() {
+    // Pass a type that only satisfies one of two bounds — should error once
+    // call-site trait bound checking is implemented.
+    let case = TestCase::new(indoc! {"
+        trait Scalable { fn scale(self, n: i32) -> i32; }
+        trait Printable { fn print(self); }
+        fn do_both<T: Scalable + Printable>(t: T) {}
+        struct Num {}
+        impl Scalable for Num { fn scale(self, n: i32) -> i32 { n } }
+        fn call() { do_both(Num::{}); }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "expected an error: Num does not implement Printable"
+    );
+}
+
+#[test]
+fn test_multiple_supertraits_both_resolved() {
+    // `trait Widget: Drawable + Sized` — both supertraits must appear in
+    // tir.traits[widget_idx].supertraits (exercises BoundList flattening in
+    // the supertrait resolution handler).
+    let case = TestCase::new(indoc! {"
+        trait Drawable { fn draw(self); }
+        trait Sized { const SIZE: u32; }
+        trait Widget: Drawable + Sized {}
+    "});
+    no_errors(&case);
+
+    let widget_idx = case
+        .tir
+        .traits
+        .iter()
+        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Widget"))
+        .expect("trait 'Widget' not found");
+    let drawable_idx = case
+        .tir
+        .traits
+        .iter()
+        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Drawable"))
+        .expect("trait 'Drawable' not found") as u32;
+    let sized_idx = case
+        .tir
+        .traits
+        .iter()
+        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Sized"))
+        .expect("trait 'Sized' not found") as u32;
+
+    let supertraits = &case.tir.traits[widget_idx].supertraits;
+    assert_eq!(supertraits.len(), 2, "Widget should have two supertraits");
+    assert!(supertraits.contains(&drawable_idx), "Drawable missing from supertraits");
+    assert!(supertraits.contains(&sized_idx), "Sized missing from supertraits");
+}
+
+#[test]
+fn test_multiple_supertraits_missing_one_impl_is_error() {
+    // impl Widget for Point without impl Sized for Point — must error.
+    let case = TestCase::new(indoc! {"
+        trait Drawable { fn draw(self); }
+        trait Sized { const SIZE: u32; }
+        trait Widget: Drawable + Sized {}
+        struct Point { x: i32 }
+        impl Drawable for Point { fn draw(self) {} }
+        impl Widget for Point {}
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingSupertraitImpl.code())),
+        "expected E1034 for missing Sized impl"
+    );
+}
+
+#[test]
+fn test_assoc_type_multiple_bounds_both_stored() {
+    // `type Elem: A + B` — both bounds must be stored in the associated-type
+    // entry (exercises BoundList flattening in TraitAssociatedType handler).
+    let case = TestCase::new(indoc! {"
+        trait A {}
+        trait B {}
+        trait Container {
+            type Elem: A + B;
+        }
+    "});
+    no_errors(&case);
+
+    let container = case
+        .tir
+        .traits
+        .iter()
+        .find(|t| case.graph.interner.resolve(t.name.inner) == Some("Container"))
+        .expect("trait 'Container' not found");
+
+    let elem_sym = case.graph.interner.get("Elem").expect("symbol 'Elem' not interned");
+    let assoc = container.assoc_types.get(&elem_sym).expect("assoc type 'Elem' not found");
+    assert_eq!(assoc.bounds.len(), 2, "Elem should have two trait bounds (A and B)");
+}
+
+#[test]
+fn test_assoc_type_multiple_bounds_violation_is_error() {
+    // Provide a concrete type that satisfies A but not B — must error.
+    let case = TestCase::new(indoc! {"
+        trait A {}
+        trait B {}
+        impl A for i32 {}
+        trait Container {
+            type Elem: A + B;
+        }
+        struct Bag {}
+        impl Container for Bag {
+            type Elem = i32;
+        }
+    "});
+    assert!(
+        case.tir.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        "expected an error: i32 does not implement B"
+    );
+}
+
+#[test]
+fn test_impl_module_trait_for_type_resolves() {
+    // `impl module::Drawable for Point` — multi-segment trait_name must be
+    // resolved via resolve_path_segments_as_type (not resolve_type).
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+            module shapes;
+            use shapes::*;
+            struct Point { x: i32 }
+            impl shapes::Drawable for Point {
+                fn draw(self) {}
+            }
+        "},
+        &[(
+            "shapes.wx",
+            indoc! {"
+                pub trait Drawable {
+                    pub fn draw(self);
+                }
+            "},
+        )],
+    );
+    no_errors(&case);
+
+    let draw_sym = case.graph.interner.get("draw").expect("symbol 'draw' not interned");
+    let ti = case
+        .tir
+        .trait_impls
+        .iter()
+        .find(|ti| ti.members.contains_key(&draw_sym))
+        .expect("no TraitImpl has 'draw' method");
+    assert!(
+        matches!(case.tir.type_pool[ti.target.as_usize()], Type::Struct { .. }),
+        "target should be Point (a struct)"
     );
 }

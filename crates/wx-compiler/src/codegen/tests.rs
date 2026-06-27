@@ -6,35 +6,6 @@ use indoc::indoc;
 
 use super::*;
 
-const STD: &str = indoc! {"
-    fn @memory_grow<M: Memory>(mem: M, delta: M::Size) -> M::Size;
-    fn @memory_size<M: Memory>(mem: M) -> M::Size;
-
-    typeset PointerSize { u32, u64 }
-
-    pub fn null<M: Memory, T>() -> M::*T { 0 as M::*T }
-
-    trait Memory {
-        type Size: PointerSize;
-        const MEMORY_INDEX: u32;
-        const DATA_END: Self::*mut u8;
-
-        #[inline]
-        fn grow(self, delta: Self::Size) -> Self::Size {
-            @memory_grow(self, delta)
-        }
-
-        #[inline]
-        fn size(self) -> Self::Size {
-            @memory_size(self)
-        }
-    }
-
-    pub struct string {
-        ptr: u32,
-        len: u32,
-    }
-"};
 use crate::{mir, tir, vfs};
 
 #[allow(unused)]
@@ -49,22 +20,12 @@ struct TestCase {
 impl<'case> TestCase {
     fn new(source: &str) -> Self {
         let mut builder = vfs::CompilationGraphBuilder::new();
-        let stdlib_id = builder
-            .load_crate(
-                "std.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([(
-                    "std.wx".to_string(),
-                    STD.to_string(),
-                )])),
-            )
-            .unwrap();
+        let stdlib_id = builder.load_stdlib().unwrap();
+        let prefixed = format!("use std::*;\n{source}");
         let root_id = builder
-            .load_crate(
+            .load_binary(
                 "main.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([(
-                    "main.wx".to_string(),
-                    source.to_string(),
-                )])),
+                &vfs::VirtualFileSource::new(HashMap::from([("main.wx".to_string(), prefixed)])),
             )
             .unwrap();
         let mut graph = builder.build(root_id, stdlib_id);
@@ -592,7 +553,7 @@ fn test_fibonacci() {
 #[test]
 fn test_imports() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         import \"console\" {
             fn log(value: []u8) -> ();
@@ -648,7 +609,7 @@ fn test_dead_function_strings_excluded_from_data_section() {
     // wasm data section. The static layout step only collects entries from
     // live functions, so dead code never contributes bytes to the binary.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         import \"env\" {
             fn log(message: []u8);
@@ -696,7 +657,9 @@ fn test_global_init_constant_executes() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    let get = instance
+        .get_typed_func::<(), i32>(&mut store, "get")
+        .unwrap();
     assert_eq!(get.call(&mut store, ()).unwrap(), 42);
 }
 
@@ -711,7 +674,9 @@ fn test_global_init_arithmetic_executes() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    let get = instance
+        .get_typed_func::<(), i32>(&mut store, "get")
+        .unwrap();
     assert_eq!(get.call(&mut store, ()).unwrap(), 5);
 }
 
@@ -727,7 +692,9 @@ fn test_global_init_function_call_executes() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    let get = instance
+        .get_typed_func::<(), i32>(&mut store, "get")
+        .unwrap();
     assert_eq!(get.call(&mut store, ()).unwrap(), 7);
 }
 
@@ -746,7 +713,9 @@ fn test_global_init_block_with_locals_executes() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    let get = instance
+        .get_typed_func::<(), i32>(&mut store, "get")
+        .unwrap();
     assert_eq!(get.call(&mut store, ()).unwrap(), 12);
 }
 
@@ -764,8 +733,12 @@ fn test_global_init_multiple_sequential_executes() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let get_g1 = instance.get_typed_func::<(), i32>(&mut store, "get_g1").unwrap();
-    let get_g2 = instance.get_typed_func::<(), i32>(&mut store, "get_g2").unwrap();
+    let get_g1 = instance
+        .get_typed_func::<(), i32>(&mut store, "get_g1")
+        .unwrap();
+    let get_g2 = instance
+        .get_typed_func::<(), i32>(&mut store, "get_g2")
+        .unwrap();
     assert_eq!(get_g1.call(&mut store, ()).unwrap(), 10);
     assert_eq!(get_g2.call(&mut store, ()).unwrap(), 11);
 }
@@ -788,8 +761,12 @@ fn test_global_init_reverse_order_sees_zero() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let get_g1 = instance.get_typed_func::<(), i32>(&mut store, "get_g1").unwrap();
-    let get_g2 = instance.get_typed_func::<(), i32>(&mut store, "get_g2").unwrap();
+    let get_g1 = instance
+        .get_typed_func::<(), i32>(&mut store, "get_g1")
+        .unwrap();
+    let get_g2 = instance
+        .get_typed_func::<(), i32>(&mut store, "get_g2")
+        .unwrap();
     assert_eq!(get_g1.call(&mut store, ()).unwrap(), 10);
     assert_eq!(get_g2.call(&mut store, ()).unwrap(), 1); // saw g1 == 0
 }
@@ -805,7 +782,9 @@ fn test_global_init_f64_executes() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let get = instance.get_typed_func::<(), f64>(&mut store, "get").unwrap();
+    let get = instance
+        .get_typed_func::<(), f64>(&mut store, "get")
+        .unwrap();
     assert_eq!(get.call(&mut store, ()).unwrap(), 3.5);
 }
 
@@ -821,7 +800,9 @@ fn test_global_init_if_expression_executes() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
-    let get = instance.get_typed_func::<(), i32>(&mut store, "get").unwrap();
+    let get = instance
+        .get_typed_func::<(), i32>(&mut store, "get")
+        .unwrap();
     assert_eq!(get.call(&mut store, ()).unwrap(), 100);
 }
 
@@ -831,7 +812,7 @@ fn test_global_init_generic_null_pointer_executes() {
     // null() is a generic function: null<M: Memory, T>() -> M::*T
     // Type params must be inferred from the global's declared type.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min_pages: 1 }
+        memory heap: Memory where { Size = u32 } { min_pages: 1 }
         struct Node { x: i32 }
         global mut head: heap::*Node = null()
         fn get_head() -> u32 { head as u32 }
@@ -841,7 +822,9 @@ fn test_global_init_generic_null_pointer_executes() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
-    let get_head = instance.get_typed_func::<(), i32>(&mut store, "get_head").unwrap();
+    let get_head = instance
+        .get_typed_func::<(), i32>(&mut store, "get_head")
+        .unwrap();
     assert_eq!(get_head.call(&mut store, ()).unwrap(), 0);
 }
 
@@ -1392,7 +1375,7 @@ fn test_struct_call_result_wat() {
 #[test]
 fn test_pointer_deref_load_and_store() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -1437,7 +1420,7 @@ fn test_pointer_deref_load_and_store() {
 #[test]
 fn test_pointer_deref_increment() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1
         }
 
@@ -1486,7 +1469,7 @@ fn test_struct_pointer_load_and_store() {
     // and that individual field loads return the correct values.
     // The WAT snapshot pins the emitted instruction shape.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1
         }
 
@@ -1570,7 +1553,7 @@ fn test_struct_field_write_through_pointer() {
     // `ptr.*.field = val` — field write through a mutable pointer.
     // Uses the byte-offset PointerStore path, not whole-struct assignment.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min_pages: 1 }
+        memory heap: Memory where { Size = u32 } { min_pages: 1 }
         struct Point { x: i32, y: i32 }
         fn set_x(ptr: heap::*mut Point, v: i32) { ptr.*.x = v }
         fn set_y(ptr: heap::*mut Point, v: i32) { ptr.*.y = v }
@@ -1582,10 +1565,18 @@ fn test_struct_field_write_through_pointer() {
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
-    let set_x = instance.get_typed_func::<(i32, i32), ()>(&mut store, "set_x").unwrap();
-    let set_y = instance.get_typed_func::<(i32, i32), ()>(&mut store, "set_y").unwrap();
-    let get_x = instance.get_typed_func::<i32, i32>(&mut store, "get_x").unwrap();
-    let get_y = instance.get_typed_func::<i32, i32>(&mut store, "get_y").unwrap();
+    let set_x = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "set_x")
+        .unwrap();
+    let set_y = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "set_y")
+        .unwrap();
+    let get_x = instance
+        .get_typed_func::<i32, i32>(&mut store, "get_x")
+        .unwrap();
+    let get_y = instance
+        .get_typed_func::<i32, i32>(&mut store, "get_y")
+        .unwrap();
     set_x.call(&mut store, (0, 42)).unwrap();
     set_y.call(&mut store, (0, 99)).unwrap();
     assert_eq!(get_x.call(&mut store, 0).unwrap(), 42);
@@ -1611,8 +1602,7 @@ fn test_local_struct_field_assignment() {
     let engine = wasmtime::Engine::default();
     let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
     let mut store = wasmtime::Store::new(&engine, ());
-    let instance =
-        wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
     let make = instance
         .get_typed_func::<(i32, i32), (i32, i32)>(&mut store, "make")
         .unwrap();
@@ -1846,7 +1836,7 @@ fn test_generic_struct_pointer_load_store() {
     // Codegen must emit the correct field offsets for the monomorphized aggregate
     // (x@0, y@4), going through the same path as the non-generic pointer tests.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1
         }
 
@@ -1916,7 +1906,7 @@ fn test_memory_grow_and_size() {
     // old page count and extends by n pages. Both route through @memory_size /
     // @memory_grow intrinsics via the Memory trait default methods.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -1960,7 +1950,7 @@ fn test_memory_size_before_grow_ordering() {
     // If MemorySize is treated as a floating data node, the scheduler may emit
     // memory.size after memory.grow, returning 2 instead of 1.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -1998,7 +1988,7 @@ fn test_array_literal_read_by_index() {
     // address 0; indexing it must return the right element via i32.load at
     // base + i * elem_size.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2030,7 +2020,7 @@ fn test_array_write_and_read_back() {
     // initialises a 4-element block at address 0, then the wx functions do
     // a round-trip write+read to verify PointerStore/PointerLoad addressing.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2079,7 +2069,7 @@ fn test_dead_array_excluded_from_data_section() {
     // DCE removes functions that are not reachable from exports.  The static
     // array owned by a dead function must not appear in the WASM data segment.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2106,7 +2096,7 @@ fn test_array_index_wat() {
     // WAT snapshot: pins the data segment placement and the load/store
     // instruction shape (i32.add + i32.mul offset arithmetic).
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2142,7 +2132,7 @@ fn test_slice_range_wat() {
     //   • bounds checking (out-of-range access is UB at runtime)
     //   • from > to produces a nonsensical negative length
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2176,7 +2166,7 @@ fn test_slice_range_array_wat() {
     // arr[..]    — ptr = array base, len = const 4 (array size)
     // arr[i..n]  — ptr = base + i*4, len = n − i
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2201,7 +2191,7 @@ fn test_narrow_pointer_deref_sign_extension_and_byte_isolation() {
     // 2. Sign-extension: reading 0xFF through *i8 must yield -1.
     // 3. Byte isolation: writing through *mut u8 must not touch adjacent bytes.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2217,10 +2207,18 @@ fn test_narrow_pointer_deref_sign_extension_and_byte_isolation() {
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
 
-    let mem = instance.get_memory(&mut store, "heap").expect("heap not exported");
-    let read_u8 = instance.get_typed_func::<i32, i32>(&mut store, "read_u8").expect("read_u8");
-    let read_i8 = instance.get_typed_func::<i32, i32>(&mut store, "read_i8").expect("read_i8");
-    let write_u8 = instance.get_typed_func::<(i32, i32), ()>(&mut store, "write_u8").expect("write_u8");
+    let mem = instance
+        .get_memory(&mut store, "heap")
+        .expect("heap not exported");
+    let read_u8 = instance
+        .get_typed_func::<i32, i32>(&mut store, "read_u8")
+        .expect("read_u8");
+    let read_i8 = instance
+        .get_typed_func::<i32, i32>(&mut store, "read_i8")
+        .expect("read_i8");
+    let write_u8 = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "write_u8")
+        .expect("write_u8");
 
     // Place 0xFF at address 0, 0x00 at address 1 via the host.
     mem.write(&mut store, 0, &[0xFF, 0x00]).unwrap();
@@ -2247,7 +2245,7 @@ fn test_global_read_before_write_returns_old_value() {
     // re-emits `global.get` after the `global.set`, yielding new_end instead
     // of the original ptr.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2267,13 +2265,15 @@ fn test_global_read_before_write_returns_old_value() {
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
 
-    let alloc = instance.get_typed_func::<i32, i32>(&mut store, "alloc").expect("alloc");
+    let alloc = instance
+        .get_typed_func::<i32, i32>(&mut store, "alloc")
+        .expect("alloc");
 
     let p0 = alloc.call(&mut store, 8).unwrap() as u32;
     let p1 = alloc.call(&mut store, 8).unwrap() as u32;
     let p2 = alloc.call(&mut store, 16).unwrap() as u32;
 
-    assert_eq!(p1, p0 + 8,  "second alloc must start right after first");
+    assert_eq!(p1, p0 + 8, "second alloc must start right after first");
     assert_eq!(p2, p0 + 16, "third alloc must start right after second");
 }
 
@@ -2283,7 +2283,7 @@ fn test_global_initialized_to_data_end() {
     // compile-time static-segment-end offset as its WASM init expression,
     // and reading it back at runtime must return that same value.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2300,15 +2300,23 @@ fn test_global_initialized_to_data_end() {
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
 
-    let get_bump = instance.get_typed_func::<(), i32>(&mut store, "get_bump").expect("get_bump");
-    let advance = instance.get_typed_func::<i32, ()>(&mut store, "advance").expect("advance");
+    let get_bump = instance
+        .get_typed_func::<(), i32>(&mut store, "get_bump")
+        .expect("get_bump");
+    let advance = instance
+        .get_typed_func::<i32, ()>(&mut store, "advance")
+        .expect("advance");
 
     let initial = get_bump.call(&mut store, ()).unwrap() as u32;
     // With the minimal STD stub (no string literals) DATA_END is 0.
     // The key invariant is that advance shifts bump by exactly the requested amount.
     advance.call(&mut store, 16).unwrap();
     let after = get_bump.call(&mut store, ()).unwrap() as u32;
-    assert_eq!(after, initial + 16, "advance must shift bump by exactly 16 bytes");
+    assert_eq!(
+        after,
+        initial + 16,
+        "advance must shift bump by exactly 16 bytes"
+    );
 }
 
 #[test]
@@ -2317,7 +2325,7 @@ fn test_null_pointer_comparison() {
     //  1. null() compares equal to another null() (the `node.next == null()` pattern)
     //  2. a non-zero pointer does NOT compare equal to null()
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> {
+        memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
 
@@ -2341,14 +2349,36 @@ fn test_null_pointer_comparison() {
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation");
 
-    let make_null = instance.get_typed_func::<(), i32>(&mut store, "make_null").expect("make_null");
-    let is_null_ptr = instance.get_typed_func::<i32, i32>(&mut store, "is_null_ptr").expect("is_null_ptr");
-    let ptr_from_addr = instance.get_typed_func::<(), i32>(&mut store, "ptr_from_addr").expect("ptr_from_addr");
+    let make_null = instance
+        .get_typed_func::<(), i32>(&mut store, "make_null")
+        .expect("make_null");
+    let is_null_ptr = instance
+        .get_typed_func::<i32, i32>(&mut store, "is_null_ptr")
+        .expect("is_null_ptr");
+    let ptr_from_addr = instance
+        .get_typed_func::<(), i32>(&mut store, "ptr_from_addr")
+        .expect("ptr_from_addr");
 
-    assert_eq!(make_null.call(&mut store, ()).unwrap(), 0, "null() must be 0");
-    assert_eq!(is_null_ptr.call(&mut store, 0).unwrap(), 1, "null ptr is null");
-    assert_eq!(is_null_ptr.call(&mut store, 4).unwrap(), 0, "non-null ptr is not null");
-    assert_eq!(ptr_from_addr.call(&mut store, ()).unwrap(), 4, "4 as *Node must be 4");
+    assert_eq!(
+        make_null.call(&mut store, ()).unwrap(),
+        0,
+        "null() must be 0"
+    );
+    assert_eq!(
+        is_null_ptr.call(&mut store, 0).unwrap(),
+        1,
+        "null ptr is null"
+    );
+    assert_eq!(
+        is_null_ptr.call(&mut store, 4).unwrap(),
+        0,
+        "non-null ptr is not null"
+    );
+    assert_eq!(
+        ptr_from_addr.call(&mut store, ()).unwrap(),
+        4,
+        "4 as *Node must be 4"
+    );
 }
 
 #[test]
@@ -2359,7 +2389,7 @@ fn test_size_of_and_align_of_intrinsics() {
         fn @size_of<T, M: Memory>() -> M::Size;
         fn @align_of<T, M: Memory>() -> M::Size;
 
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         fn size_u8() -> u32    { @size_of::<u8, heap>() }
         fn size_u16() -> u32   { @size_of::<u16, heap>() }
@@ -2377,7 +2407,11 @@ fn test_size_of_and_align_of_intrinsics() {
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation");
 
-    let mut get = |name: &str| instance.get_typed_func::<(), i32>(&mut store, name).unwrap();
+    let mut get = |name: &str| {
+        instance
+            .get_typed_func::<(), i32>(&mut store, name)
+            .unwrap()
+    };
     let size_u8 = get("size_u8");
     let size_u16 = get("size_u16");
     let size_u32 = get("size_u32");
@@ -2400,7 +2434,7 @@ fn test_check_wad_magic_wat() {
     // Constant slice indices 0-3 must all fold into `i32.load8_u offset=N`
     // with no runtime Add/Mul — the four loads become offset=0,1,2,3.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min_pages: 1 };
+        memory heap: Memory where { Size = u32 } { min_pages: 1 };
 
         pub fn check_wad_magic(data: heap::[]u8) -> bool {
             data[0] == 0x49
@@ -2419,7 +2453,7 @@ fn test_constant_index_offset_folding_wat() {
     // Constant array and slice indices must be folded directly into the WASM
     // memarg immediate (e.g. `i32.load offset=8`) with no runtime Add/Mul.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32> { min_pages: 1 };
+        memory heap: Memory where { Size = u32 } { min_pages: 1 };
 
         fn get_arr() -> i32 {
             local arr: [4]i32 = [10, 20, 30, 40];

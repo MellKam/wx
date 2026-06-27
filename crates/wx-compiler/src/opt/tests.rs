@@ -53,21 +53,14 @@ impl TestCase {
 impl TestCase {
     fn new(source: &str) -> Self {
         let mut builder = vfs::CompilationGraphBuilder::new();
-        let stdlib_id = builder
-            .load_crate(
-                "std.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([(
-                    "std.wx".to_string(),
-                    STD.to_string(),
-                )])),
-            )
-            .unwrap();
+        let stdlib_id = builder.load_stdlib().unwrap();
+        let prefixed = format!("use std::*;\n{source}");
         let root_id = builder
-            .load_crate(
+            .load_binary(
                 "main.wx".to_string(),
                 &vfs::VirtualFileSource::new(HashMap::from([(
                     "main.wx".to_string(),
-                    source.to_string(),
+                    prefixed,
                 )])),
             )
             .unwrap();
@@ -982,7 +975,7 @@ fn test_struct_pointer_load_expands_to_per_field_loads() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         struct Point { x: i32, y: i32 }
         fn load_point(ptr: heap::*Point) -> Point { ptr.* }
         export { load_point, heap }
@@ -1036,7 +1029,7 @@ fn test_struct_pointer_load_field_access_folds() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         struct Point { x: i32, y: i32 }
         fn get_x(ptr: heap::*Point) -> i32 {
             local p: Point = ptr.*;
@@ -1088,7 +1081,7 @@ fn test_struct_pointer_store_expands_to_per_field_stores() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         struct Point { x: i32, y: i32 }
         fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
             ptr.* = Point::{ x: x, y: y }
@@ -1281,7 +1274,7 @@ fn test_sched_struct_pointer_store() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         struct Point { x: i32, y: i32 }
         fn store_point(ptr: heap::*mut Point, x: i32, y: i32) {
             ptr.* = Point::{ x: x, y: y }
@@ -1323,7 +1316,7 @@ fn test_sched_struct_pointer_load_field_access() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         struct Point { x: i32, y: i32 }
         fn get_x(ptr: heap::*Point) -> i32 {
             local p: Point = ptr.*;
@@ -1361,7 +1354,7 @@ fn test_sched_struct_pointer_load_full_aggregate_keeps_all_loads() {
     let src = format!(
         "{STD}\n{}",
         indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         struct Point { x: i32, y: i32 }
         fn load_point(ptr: heap::*Point) -> Point { ptr.* }
         export { load_point, heap }
@@ -1596,7 +1589,7 @@ fn test_sched_narrow_loads_emit_correct_opcodes() {
     for (ptr_ty, ret_ty, is_expected) in cases {
         let src = format!(
             "{STD}
-memory heap: Memory<Size = u32>;
+memory heap: Memory where {{ Size = u32 }};
 fn read(ptr: heap::{ptr_ty}) -> {ret_ty} {{ ptr.* }}
 export {{ read, heap }}"
         );
@@ -1629,7 +1622,7 @@ fn test_sched_narrow_stores_emit_correct_opcodes() {
     for (ptr_ty, val_ty, is_expected) in cases {
         let src = format!(
             "{STD}
-memory heap: Memory<Size = u32>;
+memory heap: Memory where {{ Size = u32 }};
 fn write(ptr: heap::{ptr_ty}, val: {val_ty}) {{ ptr.* = val }}
 export {{ write, heap }}"
         );

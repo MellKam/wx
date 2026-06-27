@@ -1,26 +1,33 @@
-memory heap: Memory<Size = u32>;
-
-trait PointerSize {
-  fn size() -> u32;
-}
-
-impl PointerSize for i64 {
-  fn size() -> u32 {
-    4
+module test {
+  pub struct X {
+    foo: i32,
   }
 }
 
-struct Layout<M: Memory> {
-  size: M::Size,
-  align: M::Size,
+pub fn memory_fill<M: Memory>(dst: M::*mut u8, value: u8, len: M::Size) {}
+
+pub fn memory_copy<
+  Size: PointerSize,
+  SrcMem: Memory where { Size = Size },
+  DstMem: Memory where { Size = Size },
+>(
+  dst: DstMem::*mut u8,
+  src: SrcMem::*u8,
+  len: Size,
+) {}
+
+struct Y<
+  T,
+> {}
+
+impl <T> Y<T> {
+  fn test() -> T {}
 }
 
-impl <M: Memory> Layout<M> {
-  pub fn of<T>() -> Layout<M> {
-    Layout::{ size: @size_of::<T, _>(), align: @align_of::<T, _>() }
-  }
-}
+use std::*;
 
-fn main() {
-  _ = test::<i32, i32>(5);
+memory heap: Memory where { Size = u32 };
+
+fn main(f: test::X) -> i32 {
+  f.foo
 }

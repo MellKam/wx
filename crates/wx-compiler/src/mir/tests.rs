@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use indoc::indoc;
 
 use super::*;
-use crate::{STDLIB_SOURCE, tir, vfs};
+use crate::{tir, vfs};
 
 #[allow(unused)]
 struct TestCase {
@@ -15,21 +15,14 @@ struct TestCase {
 impl TestCase {
     fn new(source: &str) -> Self {
         let mut builder = vfs::CompilationGraphBuilder::new();
-        let stdlib_id = builder
-            .load_crate(
-                "std.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([(
-                    "std.wx".to_string(),
-                    STDLIB_SOURCE.to_string(),
-                )])),
-            )
-            .unwrap();
+        let stdlib_id = builder.load_stdlib().unwrap();
+        let prefixed = format!("use std::*;\n{source}");
         let root_id = builder
-            .load_crate(
+            .load_binary(
                 "main.wx".to_string(),
                 &vfs::VirtualFileSource::new(HashMap::from([(
                     "main.wx".to_string(),
-                    source.to_string(),
+                    prefixed,
                 )])),
             )
             .unwrap();
@@ -140,7 +133,6 @@ fn test_global_struct_type() {
 // ── associated consts
 // ─────────────────────────────────────────────────────────
 
-
 // ── string literals
 // ───────────────────────────────────────────────────────────
 
@@ -188,7 +180,7 @@ fn test_inline_method_is_substituted() {
 fn test_memory_grow_lowers_to_memory_grow() {
     // heap.grow(delta) → MemoryGrow { memory_index: 0, delta }
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         pub fn f(delta: u32) -> u32 {
             heap.grow(delta)
@@ -203,7 +195,7 @@ fn test_memory_grow_lowers_to_memory_grow() {
 fn test_memory_size_lowers_to_memory_size() {
     // heap.size() → MemorySize { memory_index: 0 }
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         pub fn f() -> u32 {
             heap.size()
@@ -218,7 +210,7 @@ fn test_memory_size_lowers_to_memory_size() {
 fn test_memory_data_end_lowers_to_memory_offset() {
     // heap::DATA_END → MemoryOffset { memory_index: 0 }
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         pub fn f() -> heap::*mut u8 {
             heap::DATA_END
@@ -233,7 +225,7 @@ fn test_memory_data_end_lowers_to_memory_offset() {
 fn test_memory_index_lowers_to_int() {
     // heap::MEMORY_INDEX → Int { value: 0 } (the wasm linear memory index)
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         pub fn f() -> u32 {
             heap::MEMORY_INDEX
@@ -249,7 +241,7 @@ fn test_memory_index_lowers_to_int() {
 #[test]
 fn test_slice_len_lowers_to_aggregate_get() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         pub fn f(s: heap::[]u8) -> u32 {
             @slice_len(s)
@@ -266,7 +258,7 @@ fn test_slice_len_lowers_to_aggregate_get() {
 #[test]
 fn test_slice_from_parts_lowers_to_aggregate() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         pub fn f(ptr: heap::*u8, len: u32) -> heap::[]u8 {
             @slice_from_parts(ptr, len)
@@ -285,8 +277,8 @@ fn test_generic_over_memory_monomorphizes_size_type() {
     // A generic fn<M: Memory> called with two concrete memories must produce
     // two monomorphized instances with the right concrete Size types (u32 / u64).
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
-        memory stack: Memory<Size = u64>;
+        memory heap: Memory where { Size = u32 };
+        memory stack: Memory where { Size = u64 };
 
         fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
             n
@@ -850,7 +842,7 @@ fn test_multiple_calls_to_generic_produce_single_mono_instance() {
 fn test_array_literal_bytes_are_little_endian() {
     // [1, 2, 3] as heap::[3]i32 → 12 bytes encoding each value as 32-bit LE.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn get() -> heap::[3]i32 {
             local arr: heap::[3]i32 = [1, 2, 3];
             arr
@@ -873,7 +865,7 @@ fn test_array_literal_bytes_are_little_endian() {
 fn test_array_repeat_bytes_repeated() {
     // [7; 4] as heap::[4]u8 → four bytes each equal to 7.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn get() -> heap::[4]u8 {
             local arr: heap::[4]u8 = [7; 4];
             arr
@@ -890,7 +882,7 @@ fn test_array_dce_removes_static_data_ownership() {
     // A dead function with an array literal is removed by DCE.
     // No live function should reference its static entry.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn live() -> i32 { 42 }
         fn dead() -> heap::[3]i32 {
             local arr: heap::[3]i32 = [1, 2, 3];
@@ -915,7 +907,7 @@ fn test_array_dce_removes_static_data_ownership() {
 fn test_static_entry_alignment_matches_element_type() {
     // i32 elements → align 4; f64 elements → align 8; u8 elements → align 1.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
         fn ints() -> heap::[2]i32 {
             local a: heap::[2]i32 = [10, 20];
             a
@@ -943,7 +935,7 @@ fn test_static_entry_alignment_matches_element_type() {
 #[test]
 fn test_size_of_lowers_to_const_int() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         fn size_u8() -> u32 { @size_of::<u8, heap>() }
         fn size_u32() -> u32 { @size_of::<u32, heap>() }
@@ -959,7 +951,7 @@ fn test_size_of_lowers_to_const_int() {
 #[test]
 fn test_align_of_lowers_to_const_int() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         fn align_u8() -> u32 { @align_of::<u8, heap>() }
         fn align_u32() -> u32 { @align_of::<u32, heap>() }
@@ -976,7 +968,7 @@ fn test_size_of_generic_monomorphizes() {
     // When T is a type param, size_of must substitute the concrete type at
     // monomorphization time and lower to distinct Int values per instance.
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         fn typed_size<T, M: Memory>() -> M::Size { @size_of::<T, M>() }
 
@@ -992,7 +984,7 @@ fn test_size_of_generic_monomorphizes() {
 #[test]
 fn test_generic_impl_slice_len_method_lowers_correctly() {
     let case = TestCase::new(indoc! {"
-        memory heap: Memory<Size = u32>;
+        memory heap: Memory where { Size = u32 };
 
         impl<M: Memory, T> M::[]T {
             pub fn len(self) -> M::Size {

@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
-use crate::STDLIB_SOURCE;
 
 fn temp_test_dir(test_name: &str) -> PathBuf {
     let unique = SystemTime::now()
@@ -28,7 +27,7 @@ fn load_crate_parses_entry_file() {
 
     let mut builder = CompilationGraphBuilder::new();
     let crate_id = builder
-        .load_crate(path.to_str().unwrap().to_string(), &NativeFileSource)
+        .load_binary(path.to_str().unwrap().to_string(), &NativeFileSource)
         .unwrap();
     let graph = &builder.crates[crate_id.as_u32() as usize];
 
@@ -56,7 +55,7 @@ fn load_crate_reports_missing_entry_file() {
     let path_str = path.to_str().unwrap().to_string();
 
     let mut builder = CompilationGraphBuilder::new();
-    match builder.load_crate(path_str.clone(), &NativeFileSource) {
+    match builder.load_binary(path_str.clone(), &NativeFileSource) {
         Err(LoadError::ReadFailed { path: failed_path }) => assert_eq!(failed_path, path_str),
         Err(other) => panic!("unexpected error: {other:?}"),
         Ok(_) => panic!("expected missing file error"),
@@ -77,7 +76,7 @@ fn load_crate_resolves_module_directory_file() {
 
     let mut builder = CompilationGraphBuilder::new();
     let crate_id = builder
-        .load_crate(path.to_str().unwrap().to_string(), &NativeFileSource)
+        .load_binary(path.to_str().unwrap().to_string(), &NativeFileSource)
         .unwrap();
     let graph = &builder.crates[crate_id.as_u32() as usize];
 
@@ -104,7 +103,7 @@ fn load_crate_rejects_ambiguous_module_paths() {
     fs::write(&directory_path, "fn from_dir() {}").unwrap();
 
     let mut builder = CompilationGraphBuilder::new();
-    match builder.load_crate(path.to_str().unwrap().to_string(), &NativeFileSource) {
+    match builder.load_binary(path.to_str().unwrap().to_string(), &NativeFileSource) {
         Err(LoadError::AmbiguousModule {
             file,
             directory_file,
@@ -126,17 +125,9 @@ fn load_crate_rejects_ambiguous_module_paths() {
 #[test]
 fn load_virtual_compilation_resolves_child_modules_from_workspace_files() {
     let mut builder = CompilationGraphBuilder::new();
-    let stdlib_id = builder
-        .load_crate(
-            "std.wx".to_string(),
-            &VirtualFileSource::new(HashMap::from([(
-                "std.wx".to_string(),
-                STDLIB_SOURCE.to_string(),
-            )])),
-        )
-        .expect("failed to load stdlib crate");
+    let stdlib_id = builder.load_stdlib().expect("failed to load stdlib crate");
     let root_id = builder
-        .load_crate(
+        .load_binary(
             "src/main.wx".to_string(),
             &VirtualFileSource::new(HashMap::from([
                 ("src/main.wx".to_string(), "module math;".to_string()),

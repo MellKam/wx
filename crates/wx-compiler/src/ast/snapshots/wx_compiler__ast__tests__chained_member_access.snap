@@ -30,16 +30,12 @@ items:
                     ty:
                       inner:
                         Path:
-                          segments:
-                            - ident:
-                                inner: 2
-                                span:
-                                  start: 8
-                                  end: 13
-                              type_args: []
-                          span:
-                            start: 8
-                            end: 13
+                          - ident:
+                              inner: 2
+                              span:
+                                start: 8
+                                end: 13
+                            type_args: []
                       span:
                         start: 8
                         end: 13
@@ -77,16 +73,12 @@ items:
                                       object:
                                         inner:
                                           Path:
-                                            segments:
-                                              - ident:
-                                                  inner: 1
-                                                  span:
-                                                    start: 31
-                                                    end: 32
-                                                type_args: []
-                                            span:
-                                              start: 31
-                                              end: 32
+                                            - ident:
+                                                inner: 1
+                                                span:
+                                                  start: 31
+                                                  end: 32
+                                              type_args: []
                                         span:
                                           start: 31
                                           end: 32
@@ -137,16 +129,12 @@ items:
                                       object:
                                         inner:
                                           Path:
-                                            segments:
-                                              - ident:
-                                                  inner: 1
-                                                  span:
-                                                    start: 52
-                                                    end: 53
-                                                type_args: []
-                                            span:
-                                              start: 52
-                                              end: 53
+                                            - ident:
+                                                inner: 1
+                                                span:
+                                                  start: 52
+                                                  end: 53
+                                              type_args: []
                                         span:
                                           start: 52
                                           end: 53

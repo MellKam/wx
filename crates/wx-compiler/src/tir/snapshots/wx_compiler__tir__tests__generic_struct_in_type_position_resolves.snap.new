@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/tir/tests.rs
+assertion_line: 2374
 expression: case.tir
 ---
 type_pool:

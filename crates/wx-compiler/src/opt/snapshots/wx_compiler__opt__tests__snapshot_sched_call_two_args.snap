@@ -9,5 +9,5 @@ locals:
 body:
   - LocalGet: 0
   - LocalGet: 1
-  - Call: 7
+  - Call: 52
   - LocalTee: 2

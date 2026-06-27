@@ -196,6 +196,8 @@ pub struct SourceModule {
     pub id: ModuleId,
     pub parent: Option<ModuleId>,
     pub children: Vec<ModuleId>,
+    /// Intra-crate path segment declared by `module foo;`. `None` for the crate
+    /// root — root items need no qualifier (`add`, not `root::add`).
     pub name: Option<SymbolU32>,
     pub file_id: FileId,
     pub file_path: String,
@@ -205,6 +207,9 @@ pub struct SourceModule {
 pub struct CrateGraph {
     pub id: CrateId,
     pub root: ModuleId,
+    /// Inter-crate namespace identifier (`std` in `std::Memory`). `None` for
+    /// binary/root crates that produce a WASM module and cannot be imported.
+    pub name: Option<SymbolU32>,
     pub entry_path: String,
     pub modules: Vec<SourceModule>,
     pub diagnostics: Vec<Diagnostic<FileId>>,
@@ -227,6 +232,8 @@ pub struct CompilationGraphBuilder {
     pub crates: Vec<CrateGraph>,
 }
 
+pub const STDLIB_SOURCE: &'static str = include_str!("../../std/lib.wx");
+
 impl CompilationGraphBuilder {
     pub fn new() -> Self {
         Self {
@@ -237,14 +244,56 @@ impl CompilationGraphBuilder {
         }
     }
 
-    pub fn load_crate(
+    pub fn load_stdlib(&mut self) -> Result<CrateId, LoadError> {
+        self.load_library(
+            "std",
+            "lib.wx".to_string(),
+            &VirtualFileSource::new(HashMap::from([(
+                "lib.wx".to_string(),
+                STDLIB_SOURCE.to_string(),
+            )])),
+        )
+    }
+
+    #[inline]
+    pub fn load_library(
+        &mut self,
+        name: &str,
+        entry_path: String,
+        file_source: &impl FileSource,
+    ) -> Result<CrateId, LoadError> {
+        let name = self.interner.get_or_intern(name);
+        self.load_crate(Some(name), entry_path, file_source)
+    }
+
+    #[inline]
+    pub fn load_binary(
         &mut self,
         entry_path: String,
         file_source: &impl FileSource,
     ) -> Result<CrateId, LoadError> {
+        self.load_crate(None, entry_path, file_source)
+    }
+
+    pub fn load_crate(
+        &mut self,
+        name: Option<SymbolU32>,
+        entry_path: String,
+        file_source: &impl FileSource,
+    ) -> Result<CrateId, LoadError> {
         let crate_id = CrateId(self.crates.len() as u32);
-        let crage_graph = CrateGraph::load(self, crate_id, entry_path, file_source)?;
-        self.crates.push(crage_graph);
+        let mut loader = Loader::new(self, crate_id, file_source);
+        let root = loader.load_module(entry_path.clone(), None, None)?;
+        let crate_graph = CrateGraph {
+            id: crate_id,
+            name,
+            root,
+            entry_path,
+            modules: loader.modules,
+            diagnostics: loader.diagnostics,
+            path_to_module: loader.path_to_module,
+        };
+        self.crates.push(crate_graph);
         Ok(crate_id)
     }
 
@@ -276,32 +325,6 @@ impl CrateGraph {
         path.reverse();
         path.into_boxed_slice()
     }
-
-    pub fn load(
-        ctx: &mut CompilationGraphBuilder,
-        crate_id: CrateId,
-        entry_path: String,
-        file_source: &impl FileSource,
-    ) -> Result<Self, LoadError> {
-        let mut loader = Loader {
-            crate_id,
-            file_source,
-            modules: Vec::new(),
-            diagnostics: Vec::new(),
-            path_to_module: HashMap::new(),
-            ctx,
-        };
-        let root = loader.load_module(entry_path.clone(), None, None)?;
-
-        Ok(CrateGraph {
-            id: crate_id,
-            root,
-            entry_path,
-            modules: loader.modules,
-            diagnostics: loader.diagnostics,
-            path_to_module: loader.path_to_module,
-        })
-    }
 }
 
 #[derive(Clone, PartialEq)]
@@ -317,7 +340,7 @@ pub enum LoadError {
     TooManyFiles,
 }
 
-struct Loader<'ctx, 'src, S: FileSource + ?Sized> {
+struct Loader<'ctx, 'src, S: FileSource> {
     crate_id: CrateId,
     file_source: &'src S,
     modules: Vec<SourceModule>,
@@ -326,12 +349,28 @@ struct Loader<'ctx, 'src, S: FileSource + ?Sized> {
     ctx: &'ctx mut CompilationGraphBuilder,
 }
 
-impl<'ctx, 'src, S: FileSource + ?Sized> Loader<'ctx, 'src, S> {
+impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
+    #[inline]
+    fn new(
+        ctx: &'ctx mut CompilationGraphBuilder,
+        crate_id: CrateId,
+        file_source: &'src Source,
+    ) -> Self {
+        Self {
+            crate_id,
+            ctx,
+            file_source,
+            diagnostics: Vec::new(),
+            modules: Vec::new(),
+            path_to_module: HashMap::new(),
+        }
+    }
+
     fn load_module(
         &mut self,
         file_path: String,
-        parent: Option<ModuleId>,
         name: Option<SymbolU32>,
+        parent: Option<ModuleId>,
     ) -> Result<ModuleId, LoadError> {
         if let Some(&module_id) = self.path_to_module.get(&file_path) {
             return Ok(module_id);
@@ -377,7 +416,7 @@ impl<'ctx, 'src, S: FileSource + ?Sized> Loader<'ctx, 'src, S> {
         let mut children = Vec::with_capacity(child_names.len());
         for child_name in child_names {
             let child_path = self.get_child_module_path(module_id, child_name)?;
-            let child_id = self.load_module(child_path, Some(module_id), Some(child_name))?;
+            let child_id = self.load_module(child_path, Some(child_name), Some(module_id))?;
             children.push(child_id);
         }
         self.modules[module_id.0 as usize].children = children;

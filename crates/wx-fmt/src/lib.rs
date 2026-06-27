@@ -38,6 +38,7 @@ define_text! {
         Impl    => "impl ",
         Trait   => "trait ",
         Module  => "module ",
+        Use     => "use ",
         Memory  => "memory ",
         Import  => "import ",
         Global  => "global ",
@@ -61,6 +62,7 @@ define_text! {
         DotStar          => ".*",
         DotDot           => "..",
         LBrace           => "{",
+        LBraceSpace      => "{ ",
         RBrace           => "}",
         LParen           => "(",
         RParen           => ")",
@@ -90,6 +92,7 @@ define_text! {
         SpaceLBrace      => " {",
         SpaceLBraceSpace => " { ",
         SpaceRBrace      => " }",
+        Where        => " where ",
         // compound tokens
         ExportLBrace => "export {",
         FnParen      => "fn(",
@@ -166,22 +169,32 @@ impl From<ast::UnaryOp> for Text {
 #[derive(Clone, Copy)]
 enum Node {
     Text(Text),
+    /// A slice of the original source addressed by span
     SourceText(ast::TextSpan),
+    /// An interned symbol resolved during rendering
     Symbol {
         symbol: SymbolU32,
         len: u32,
     },
+    /// A possible line break, otherwise rendered as a space
     SoftLine,
+    /// A possible line break, otherwise nothing
     Line,
+    /// Always emit a newline followed by indentation, regardless of mode
     HardLine,
+    /// Always emit a bare newline with no indentation — use to insert a blank line between items
     BlankLine,
+    /// A sequence of nodes concatenated together
     /// Children stored in `Arena::children[start .. start + len]`.
     Concat {
         start: u32,
         len: u32,
     },
+    /// All lines under this node must either break or not break together
     Group(NodeId),
+    /// Increases the indentation level for all lines within this node
     Indent(NodeId),
+    /// A trailing comma emitted only in Break mode
     IfBreakComma,
 }
 
@@ -448,7 +461,7 @@ impl<'a> Builder<'a> {
                 name, kind, config, ..
             } => {
                 let name_id = self.symbol(name.inner);
-                let kind_id = self.build_type_expression(&kind.inner);
+                let kind_id = self.build_bound_expression(&kind.inner);
                 let mut parts: Vec<NodeId> = vec![
                     self.text(Text::Memory),
                     name_id,
@@ -490,6 +503,7 @@ impl<'a> Builder<'a> {
                 type_params,
                 target,
                 items,
+                ..
             } => self.build_impl_definition(type_params, target, items),
             ast::Item::ImplTrait {
                 trait_name,
@@ -518,7 +532,7 @@ impl<'a> Builder<'a> {
                 supertraits,
                 items,
                 ..
-            } => self.build_trait_definition(*pub_span, name, supertraits, items),
+            } => self.build_trait_definition(*pub_span, name, supertraits.as_ref(), items),
             ast::Item::Struct {
                 id: _,
                 name,
@@ -549,6 +563,19 @@ impl<'a> Builder<'a> {
                 items.push(self.text(Text::SpaceRBrace));
                 let concat = self.arena.concat(items);
                 self.arena.group(concat)
+            }
+            ast::Item::Use { path } => {
+                let mut items: Vec<NodeId> = vec![self.text(Text::Use)];
+                for (i, segment) in path.iter().enumerate() {
+                    if i > 0 {
+                        items.push(self.text(Text::ColonColon));
+                    }
+                    items.push(self.symbol(segment.inner));
+                }
+                items.push(self.text(Text::ColonColon));
+                items.push(self.text(Text::Star));
+                items.push(self.text(Text::Semi));
+                self.arena.concat(items)
             }
         }
     }
@@ -601,7 +628,7 @@ impl<'a> Builder<'a> {
                         entry_nodes.push(self.text(Text::Memory));
                         entry_nodes.push(self.symbol(name.inner));
                         entry_nodes.push(self.text(Text::ColonSp));
-                        entry_nodes.push(self.build_type_expression(&kind.inner));
+                        entry_nodes.push(self.build_bound_expression(&kind.inner));
                     }
                 }
 
@@ -698,12 +725,12 @@ impl<'a> Builder<'a> {
 
     fn build_impl_trait_definition(
         &mut self,
-        trait_name: &ast::Spanned<ast::TypeExpression>,
+        trait_name: &[ast::PathSegment],
         target: &ast::Spanned<ast::TypeExpression>,
         items: &[ast::Separated<ast::Spanned<ast::ImplItem>>],
     ) -> NodeId {
         let impl_kw = self.text(Text::Impl);
-        let trait_id = self.build_type_expression(&trait_name.inner);
+        let trait_id = self.build_path_segments(trait_name);
         let for_kw = self.text(Text::ForKw);
         let target_id = self.build_type_expression(&target.inner);
         let brace = self.text(Text::SpaceLBrace);
@@ -796,7 +823,7 @@ impl<'a> Builder<'a> {
         &mut self,
         pub_span: Option<ast::TextSpan>,
         name: &ast::Spanned<SymbolU32>,
-        supertraits: &[ast::Spanned<ast::TypeExpression>],
+        supertraits: Option<&ast::Spanned<ast::BoundExpression>>,
         items: &[ast::Separated<ast::Spanned<ast::TraitItem>>],
     ) -> NodeId {
         let mut nodes: Vec<NodeId> = Vec::new();
@@ -806,14 +833,9 @@ impl<'a> Builder<'a> {
         nodes.push(self.text(Text::Trait));
         nodes.push(self.symbol(name.inner));
 
-        if !supertraits.is_empty() {
+        if let Some(spanned) = supertraits {
             nodes.push(self.text(Text::ColonSp));
-            for (index, supertrait) in supertraits.iter().enumerate() {
-                if index > 0 {
-                    nodes.push(self.text(Text::PlusSp));
-                }
-                nodes.push(self.build_type_expression(&supertrait.inner));
-            }
+            nodes.push(self.build_bound_expression(&spanned.inner));
         }
 
         nodes.push(self.text(Text::SpaceLBrace));
@@ -891,14 +913,9 @@ impl<'a> Builder<'a> {
             }
             ast::TraitItem::AssociatedType { name, bounds, .. } => {
                 let mut nodes: Vec<NodeId> = vec![self.text(Text::TypeKw), self.symbol(name.inner)];
-                if !bounds.is_empty() {
+                if let Some(b) = bounds {
                     nodes.push(self.text(Text::ColonSp));
-                    for (index, bound) in bounds.iter().enumerate() {
-                        if index > 0 {
-                            nodes.push(self.text(Text::PlusSp));
-                        }
-                        nodes.push(self.build_type_expression(&bound.inner));
-                    }
+                    nodes.push(self.build_bound_expression(&b.inner));
                 }
                 nodes.push(self.text(Text::Semi));
                 self.arena.concat(nodes)
@@ -1065,21 +1082,23 @@ impl<'a> Builder<'a> {
             return;
         }
         out.push(self.text(Text::Lt));
+        let mut inner: Vec<NodeId> = vec![self.line()];
         for (index, param) in type_params.iter().enumerate() {
-            out.push(self.symbol(param.name.inner));
-            if !param.bounds.is_empty() {
-                out.push(self.text(Text::ColonSp));
-                for (bi, bound) in param.bounds.iter().enumerate() {
-                    out.push(self.build_type_expression(&bound.inner));
-                    if bi + 1 < param.bounds.len() {
-                        out.push(self.text(Text::PlusSp));
-                    }
-                }
+            inner.push(self.symbol(param.name.inner));
+            if let Some(bounds) = &param.bounds {
+                inner.push(self.text(Text::ColonSp));
+                inner.push(self.build_bound_expression(&bounds.inner));
             }
             if index + 1 < type_params.len() {
-                out.push(self.text(Text::CommaSp));
+                inner.push(self.text(Text::Comma));
+                inner.push(self.soft_line());
+            } else {
+                inner.push(self.if_break_comma());
             }
         }
+        let inner_concat = self.arena.concat(inner);
+        out.push(self.arena.indent(inner_concat));
+        out.push(self.line());
         out.push(self.text(Text::Gt));
     }
 
@@ -1254,7 +1273,7 @@ impl<'a> Builder<'a> {
 
     fn build_expression(&mut self, expression: &ast::Spanned<ast::Expression>) -> NodeId {
         match &expression.inner {
-            ast::Expression::Path(path) => self.build_path(path),
+            ast::Expression::Path(path) => self.build_path_segments(path),
             ast::Expression::Binary {
                 left,
                 operator,
@@ -1413,7 +1432,7 @@ impl<'a> Builder<'a> {
                 self.arena.concat2(ptr_id, dot_star)
             }
             ast::Expression::StructInit { path, fields } => {
-                let path_id = self.build_path(path);
+                let path_id = self.build_path_segments(path);
                 let open = self.text(Text::ColonColonLBrace);
                 let mut items: Vec<NodeId> = vec![path_id, open];
 
@@ -1654,9 +1673,9 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn build_path(&mut self, path: &ast::Path) -> NodeId {
+    fn build_path_segments(&mut self, path: &[ast::PathSegment]) -> NodeId {
         let mut items: Vec<NodeId> = Vec::new();
-        for (i, seg) in path.segments.iter().enumerate() {
+        for (i, seg) in path.iter().enumerate() {
             if i > 0 {
                 items.push(self.text(Text::ColonColon));
             }
@@ -1675,10 +1694,45 @@ impl<'a> Builder<'a> {
         self.arena.concat(items)
     }
 
+    fn build_bound_expression(&mut self, bound: &ast::BoundExpression) -> NodeId {
+        match bound {
+            ast::BoundExpression::Path(segs) => self.build_path_segments(segs),
+            ast::BoundExpression::WithBindings { path, bindings } => {
+                let base_id = self.build_bound_expression(path);
+                let where_kw = self.text(Text::Where);
+                let open = self.text(Text::LBraceSpace);
+                let close = self.text(Text::SpaceRBrace);
+                let mut binding_parts: Vec<NodeId> = Vec::new();
+                for (i, binding) in bindings.iter().enumerate() {
+                    if i > 0 {
+                        binding_parts.push(self.text(Text::CommaSp));
+                    }
+                    let key = self.symbol(binding.name.inner);
+                    let eq = self.text(Text::EqSp);
+                    let ty = self.build_type_expression(&binding.ty.inner);
+                    binding_parts.push(self.arena.concat3(key, eq, ty));
+                }
+                let bindings_concat = self.arena.concat(binding_parts);
+                self.arena
+                    .concat5(base_id, where_kw, open, bindings_concat, close)
+            }
+            ast::BoundExpression::BoundList(items) => {
+                let mut parts: Vec<NodeId> = Vec::new();
+                for (i, b) in items.iter().enumerate() {
+                    if i > 0 {
+                        parts.push(self.text(Text::PlusSp));
+                    }
+                    parts.push(self.build_bound_expression(&b.inner));
+                }
+                self.arena.concat(parts)
+            }
+        }
+    }
+
     fn build_type_expression(&mut self, type_expression: &ast::TypeExpression) -> NodeId {
         match type_expression {
             ast::TypeExpression::Infer => self.text(Text::Underscore),
-            ast::TypeExpression::Path(path) => self.build_path(path),
+            ast::TypeExpression::Path(path) => self.build_path_segments(path),
             ast::TypeExpression::Function { params, result } => {
                 let mut items: Vec<NodeId> = vec![self.text(Text::FnParen)];
 
@@ -1774,7 +1828,7 @@ impl<'a> Builder<'a> {
                 self.arena.group(concat)
             }
             ast::TypeExpression::MemoryTagged { memory, inner } => {
-                let mem_id = self.build_path(memory);
+                let mem_id = self.build_path_segments(memory);
                 let sep = self.text(Text::ColonColon);
                 let ty = self.build_type_expression(&inner.inner);
                 self.arena.concat3(mem_id, sep, ty)
@@ -1785,17 +1839,7 @@ impl<'a> Builder<'a> {
                     if i > 0 {
                         inner_parts.push(self.text(Text::CommaSp));
                     }
-                    match &sep.inner.inner {
-                        ast::GenericArg::Type(ty) => {
-                            inner_parts.push(self.build_type_expression(&ty.inner));
-                        }
-                        ast::GenericArg::Binding { name: key, ty } => {
-                            let key_sym = self.symbol(key.inner);
-                            let eq = self.text(Text::EqSp);
-                            let ty_id = self.build_type_expression(&ty.inner);
-                            inner_parts.push(self.arena.concat3(key_sym, eq, ty_id));
-                        }
-                    }
+                    inner_parts.push(self.build_type_expression(&sep.inner.inner));
                 }
                 let name_sym = self.symbol(name.inner);
                 let open = self.text(Text::Lt);

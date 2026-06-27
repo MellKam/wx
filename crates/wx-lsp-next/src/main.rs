@@ -9,48 +9,57 @@ use codespan_reporting::files::Files as _;
 use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::{Error as JsonRpcError, Result};
 use tower_lsp_server::ls_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic,
+    DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
     DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
-    InsertTextFormat, Location, MarkupContent, MarkupKind, NumberOrString, OneOf,
-    ParameterInformation, ParameterLabel, Position, Range, ReferenceParams, RenameParams,
-    SemanticToken, SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
-    SignatureHelpParams, SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextEdit, Uri, WorkspaceEdit,
+    Location, MarkupContent, MarkupKind, NumberOrString, OneOf, ParameterInformation,
+    ParameterLabel, Position, Range, ReferenceParams, RenameParams, SemanticToken,
+    SemanticTokenType, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
+    SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, TextEdit, Uri, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use wx_compiler::ast;
 use wx_compiler::ast::TextSpan;
-use wx_compiler::tir::{SourceSpan, TIR, TypeParamInfo, TypeParamOwner};
+use wx_compiler::tir::{ModuleDeclarationKind, SourceSpan, TIR, TypeParamInfo, TypeParamOwner};
 use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
 
+mod completion;
 mod symbol_index;
 use symbol_index::{SymbolIndex, SymbolKind, build_symbol_index};
 
 /// Ordered list of token types declared in the semantic tokens legend.
+#[repr(u32)]
+enum TokenType {
+    Function = 0,
+    Variable = 1,
+    Enum = 2,
+    Struct = 3,
+    Namespace = 4,
+    Parameter = 5,
+    EnumMember = 6,
+    Interface = 7,
+    TypeParameter = 8,
+    Type = 9,
+}
+
 /// The index of each entry is what gets emitted as `token_type` in the data.
 const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
-    SemanticTokenType::FUNCTION,       // 0
-    SemanticTokenType::VARIABLE,       // 1
-    SemanticTokenType::ENUM,           // 2
-    SemanticTokenType::STRUCT,         // 3
-    SemanticTokenType::NAMESPACE,      // 4
-    SemanticTokenType::PARAMETER,      // 5
-    SemanticTokenType::ENUM_MEMBER,    // 6
-    SemanticTokenType::INTERFACE,      // 7
-    SemanticTokenType::TYPE_PARAMETER, // 8
-    SemanticTokenType::TYPE,           // 9
+    SemanticTokenType::FUNCTION,       // TokenType::Function
+    SemanticTokenType::VARIABLE,       // TokenType::Variable
+    SemanticTokenType::ENUM,           // TokenType::Enum
+    SemanticTokenType::STRUCT,         // TokenType::Struct
+    SemanticTokenType::NAMESPACE,      // TokenType::Namespace
+    SemanticTokenType::PARAMETER,      // TokenType::Parameter
+    SemanticTokenType::ENUM_MEMBER,    // TokenType::EnumMember
+    SemanticTokenType::INTERFACE,      // TokenType::Interface
+    SemanticTokenType::TYPE_PARAMETER, // TokenType::TypeParameter
+    SemanticTokenType::TYPE,           // TokenType::Type
 ];
-
-/// URI scheme used for virtual stdlib files, e.g. `wxstd://stdlib/std.wx`.
-const STDLIB_URI_SCHEME: &str = "wxstd";
-/// Fixed authority used in virtual stdlib URIs so VS Code can detect the `.wx`
-/// extension from the path.
-const STDLIB_URI_AUTHORITY: &str = "stdlib";
 
 #[derive(serde::Deserialize)]
 struct VirtualFileContentParams {
@@ -70,6 +79,7 @@ macro_rules! debug_log {
 #[derive(Clone)]
 struct OpenDocument {
     text: String,
+    lsp_version: i32,
 }
 
 #[derive(Clone)]
@@ -88,6 +98,8 @@ struct ServerState {
     /// Maps every known file URI (`file://` or `wxstd://stdlib/`) to its location.
     /// Single lookup point for all LSP handlers — no per-handler scheme checks.
     uri_to_location: HashMap<String, UriLocation>,
+    /// Parse-only cache (ASTs, no TIR) per crate root; consumed by TIR build on save.
+    parse_cache: HashMap<PathBuf, ParsedCrate>,
 }
 
 struct AnalysisResult {
@@ -95,17 +107,20 @@ struct AnalysisResult {
     owned_files: HashSet<PathBuf>,
 }
 
-#[derive(Clone, Copy)]
-struct ModuleLoc {
-    crate_idx: usize,
-    module_idx: usize,
-}
-
 struct CompiledRoot {
     graph: vfs::CompilationGraph,
     tir: TIR,
     symbol_index: SymbolIndex,
-    path_to_module_loc: HashMap<PathBuf, ModuleLoc>,
+    /// LSP version of each file in the crate at the time TIR was last built.
+    /// `None` means the file was on disk (not open via LSP) at compile time.
+    compiled_versions: HashMap<PathBuf, Option<std::num::NonZeroI32>>,
+}
+
+struct ParsedCrate {
+    graph: vfs::CompilationGraph,
+    /// LSP version of each file in the crate at the time it was last parsed.
+    /// `None` means the file was on disk (not open via LSP) at parse time.
+    file_versions: HashMap<PathBuf, Option<std::num::NonZeroI32>>,
 }
 
 struct OverlayFileSource<'a> {
@@ -142,7 +157,7 @@ struct Backend {
 
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        debug_log!("wx-lsp-next initializing");
+        debug_log!("[wx-lsp] initializing...");
         let workspace_folders = params
             .workspace_folders
             .iter()
@@ -152,8 +167,13 @@ impl LanguageServer for Backend {
         self.state.lock().await.workspace_folders = workspace_folders;
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
+                        save: Some(TextDocumentSyncSaveOptions::Supported(true)),
+                        ..Default::default()
+                    },
                 )),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions {
@@ -187,7 +207,7 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        debug_log!("wx-lsp-next initialized");
+        debug_log!("[wx-lsp] initialized");
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -202,6 +222,7 @@ impl LanguageServer for Backend {
                     path.clone(),
                     OpenDocument {
                         text: params.text_document.text,
+                        lsp_version: params.text_document.version,
                     },
                 );
                 compute_refresh(&mut state, &path)
@@ -213,15 +234,26 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(path) = uri_to_path(&params.text_document.uri) {
             if let Some(change) = params.content_changes.into_iter().last() {
-                let publications = {
-                    let mut state = self.state.lock().await;
-                    state
-                        .open_documents
-                        .insert(path.clone(), OpenDocument { text: change.text });
-                    compute_refresh(&mut state, &path)
-                };
-                self.publish_all(publications).await;
+                let mut state = self.state.lock().await;
+                state.open_documents.insert(
+                    path.clone(),
+                    OpenDocument {
+                        text: change.text,
+                        lsp_version: params.text_document.version,
+                    },
+                );
+                // TIR is only rebuilt on save; diagnostics are deferred to did_save.
             }
+        }
+    }
+
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        if let Some(path) = uri_to_path(&params.text_document.uri) {
+            let publications = {
+                let mut state = self.state.lock().await;
+                compute_refresh(&mut state, &path)
+            };
+            self.publish_all(publications).await;
         }
     }
 
@@ -388,46 +420,70 @@ impl LanguageServer for Backend {
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
-        let state = self.state.lock().await;
-        Ok((|| {
-            let path = uri_to_path(&params.text_document.uri)?;
-            let root = discover_crate_root(&state.open_documents, &state.workspace_folders, &path)?;
-            let compiled = state.cached.get(&root)?;
-            let module = module_for_path(compiled, &path)?;
-            let source = compiled
-                .graph
-                .files
-                .get(module.file_id)
-                .ok()?
-                .source
-                .as_str();
-            let has_errors = module.ast.diagnostics.iter().any(|d| {
-                matches!(
-                    d.severity,
-                    codespan_reporting::diagnostic::Severity::Error
-                        | codespan_reporting::diagnostic::Severity::Bug
-                )
-            });
-            if has_errors {
-                return None;
-            }
-            let config = wx_compiler::fmt::RendererConfig {
-                indent_width: params.options.tab_size as u8,
-                ..Default::default()
-            };
-            let formatted = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                wx_compiler::fmt::format(&module.ast, &compiled.graph.interner, source, config)
-            }))
-            .ok()?;
-            let end = byte_to_position(&compiled.graph.files, module.file_id, source.len())?;
-            Some(vec![TextEdit {
-                range: Range {
-                    start: Position::default(),
-                    end,
-                },
-                new_text: formatted,
-            }])
-        })())
+        let mut state = self.state.lock().await;
+        let Some(path) = uri_to_path(&params.text_document.uri) else {
+            return Ok(None);
+        };
+        let Some(root) =
+            discover_crate_root(&state.open_documents, &state.workspace_folders, &path)
+        else {
+            return Ok(None);
+        };
+
+        // Ensure the parse cache is fresh for this crate root. format-on-save fires before
+        // `didSave`, so `cached` reflects the previous save; the parse cache always reflects
+        // the current in-memory text.
+        if ensure_parse_cache(&mut state, &root).is_err() {
+            return Ok(None);
+        }
+
+        let Some(parsed) = state.parse_cache.get(&root) else {
+            return Ok(None);
+        };
+        let Some(module) = parsed
+            .graph
+            .crates
+            .iter()
+            .flat_map(|cg| cg.modules.iter())
+            .find(|m| Path::new(&m.file_path) == path.as_path())
+        else {
+            return Ok(None);
+        };
+        let has_errors = module.ast.diagnostics.iter().any(|d| {
+            matches!(
+                d.severity,
+                codespan_reporting::diagnostic::Severity::Error
+                    | codespan_reporting::diagnostic::Severity::Bug
+            )
+        });
+        if has_errors {
+            return Ok(None);
+        }
+        let Ok(file) = parsed.graph.files.get(module.file_id) else {
+            return Ok(None);
+        };
+        let source = file.source.as_str();
+        let config = wx_fmt::RendererConfig {
+            indent_width: params.options.tab_size as u8,
+            ..Default::default()
+        };
+        let fmt_start = std::time::Instant::now();
+        let Ok(formatted) = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            wx_fmt::format(&module.ast, &parsed.graph.interner, source, config)
+        })) else {
+            return Ok(None);
+        };
+        debug_log!("[wx-lsp] formatting took {:?}", fmt_start.elapsed());
+        let Some(end) = byte_to_position(&parsed.graph.files, module.file_id, source.len()) else {
+            return Ok(None);
+        };
+        Ok(Some(vec![TextEdit {
+            range: Range {
+                start: Position::default(),
+                end,
+            },
+            new_text: formatted,
+        }]))
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
@@ -456,7 +512,7 @@ impl LanguageServer for Backend {
             let SymbolKind::Function(def_id) = &info.kind else {
                 return None;
             };
-            let fi = *compiled.tir.function_index_lookup.get(def_id)? as usize;
+            let fi = compiled.tir.function_index(*def_id)? as usize;
             let func = &compiled.tir.functions[fi];
             let fmt = compiled.tir.formatter(&compiled.graph.interner);
             let interner = &compiled.graph.interner;
@@ -561,7 +617,7 @@ impl LanguageServer for Backend {
                 delta_line,
                 delta_start,
                 length,
-                token_type,
+                token_type: token_type as u32,
                 token_modifiers_bitset: 0,
             });
             prev_line = pos.line;
@@ -578,28 +634,49 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let state = self.state.lock().await;
-        let Some(loc) = state
-            .uri_to_location
-            .get(params.text_document_position.text_document.uri.as_str())
-        else {
+        let uri = &params.text_document_position.text_document.uri;
+        let Some(loc) = state.uri_to_location.get(uri.as_str()) else {
             return Ok(None);
         };
         let Some(compiled) = state.cached.get(&loc.root) else {
             return Ok(None);
         };
         let file_id = loc.file_id;
-        let Ok(file) = compiled.graph.files.get(file_id) else {
-            return Ok(None);
+        let position = params.text_document_position.position;
+
+        // Use current in-memory text (unsaved edits) for prefix/context classification;
+        // fall back to the compiled source if the document isn't open.
+        let path = uri_to_path(uri);
+        let items = if let Some(doc) = path.as_ref().and_then(|p| state.open_documents.get(p)) {
+            let source = doc.text.as_str();
+            let Some(offset) = position_to_offset_in_str(source, position) else {
+                return Ok(None);
+            };
+            completion::completion_items(
+                &compiled.tir,
+                &compiled.graph.interner,
+                &compiled.symbol_index,
+                file_id,
+                source,
+                offset,
+            )
+        } else {
+            let Ok(file) = compiled.graph.files.get(file_id) else {
+                return Ok(None);
+            };
+            let source = file.source.as_str();
+            let Some(offset) = position_to_offset(&compiled.graph.files, file_id, position) else {
+                return Ok(None);
+            };
+            completion::completion_items(
+                &compiled.tir,
+                &compiled.graph.interner,
+                &compiled.symbol_index,
+                file_id,
+                source,
+                offset as usize,
+            )
         };
-        let source = file.source.as_str();
-        let Some(offset) = position_to_offset(
-            &compiled.graph.files,
-            file_id,
-            params.text_document_position.position,
-        ) else {
-            return Ok(None);
-        };
-        let items = completion_items(compiled, file_id, source, offset as usize);
         Ok(Some(CompletionResponse::Array(items)))
     }
 }
@@ -617,12 +694,11 @@ impl Backend {
 
     async fn virtual_file_content(&self, params: VirtualFileContentParams) -> Result<String> {
         debug_log!("virtual_file_content uri={}", params.uri);
-        let prefix = format!("{}://{}/", STDLIB_URI_SCHEME, STDLIB_URI_AUTHORITY);
-        let filename = params.uri.strip_prefix(&prefix).ok_or_else(|| {
+        let filename = params.uri.strip_prefix("wx://std/").ok_or_else(|| {
             JsonRpcError::invalid_params(format!("not a wxstd URI: {}", params.uri))
         })?;
         match filename {
-            "std.wx" => Ok(wx_compiler::STDLIB_SOURCE.to_string()),
+            "lib.wx" => Ok(wx_compiler::vfs::STDLIB_SOURCE.to_string()),
             other => Err(JsonRpcError::invalid_params(format!(
                 "unknown stdlib file: {other}"
             ))),
@@ -632,7 +708,7 @@ impl Backend {
 
 #[tokio::main]
 async fn main() {
-    debug_log!("wx-lsp-next starting");
+    debug_log!("[wx-lsp] starting...");
     let (service, socket) = LspService::build(|client| Backend {
         client,
         state: Arc::new(Mutex::new(ServerState::default())),
@@ -679,33 +755,62 @@ pub(crate) fn compute_refresh(
 }
 
 pub(crate) fn analyze_root(state: &mut ServerState, root: &Path) -> AnalysisResult {
-    match compile_root(state, root) {
-        Ok(compiled) => {
-            let result = analysis_from_compiled_root(&compiled);
-            // Rebuild URI map for this root (clear stale entries first).
-            state.uri_to_location.retain(|_, loc| loc.root != root);
-            for crate_graph in &compiled.graph.crates {
-                for module in &crate_graph.modules {
-                    if let Some(uri) = file_id_to_uri(&compiled, module.file_id) {
-                        state.uri_to_location.insert(
-                            uri.as_str().to_string(),
-                            UriLocation {
-                                root: root.to_path_buf(),
-                                file_id: module.file_id,
-                            },
-                        );
-                    }
+    // Skip TIR rebuild if no open file's version has advanced since last compile.
+    if let Some(compiled) = state.cached.get(root) {
+        let tir_stale = compiled
+            .compiled_versions
+            .iter()
+            .any(|(path, compiled_ver)| {
+                match (state.open_documents.get(path), compiled_ver) {
+                    (Some(doc), Some(v)) => doc.lsp_version > v.get(),
+                    (Some(_), None) => true, // was on disk, now open
+                    (None, Some(_)) => true, // was open, now closed
+                    (None, None) => false,   // still on disk
                 }
-            }
-            state.cached.insert(root.to_path_buf(), compiled);
-            result
-        }
-        Err(error) => {
-            state.cached.remove(root);
-            state.uri_to_location.retain(|_, loc| loc.root != root);
-            analysis_from_load_error(root, error)
+            });
+        if !tir_stale {
+            debug_log!("[wx-lsp] TIR cache hit for {:?}", root);
+            return analysis_from_compiled_root(compiled);
         }
     }
+
+    // Ensure the parse cache is fresh before handing the graph to TIR.
+    if let Err(error) = ensure_parse_cache(state, root) {
+        state.cached.remove(root);
+        state.parse_cache.remove(root);
+        state.uri_to_location.retain(|_, loc| loc.root != root);
+        return analysis_from_load_error(root, error);
+    }
+
+    // Move the graph out of the parse cache — TIR::build needs ownership.
+    let Some(parsed) = state.parse_cache.remove(root) else {
+        state.cached.remove(root);
+        state.uri_to_location.retain(|_, loc| loc.root != root);
+        return AnalysisResult {
+            diagnostics_by_file: Default::default(),
+            owned_files: Default::default(),
+        };
+    };
+
+    let compiled = compile_root(state, parsed.graph);
+    let result = analysis_from_compiled_root(&compiled);
+    // Rebuild URI map for this root (clear stale entries first).
+    state.uri_to_location.retain(|_, loc| loc.root != root);
+    for crate_graph in &compiled.graph.crates {
+        for module in &crate_graph.modules {
+            if let Some(uri) = file_id_to_uri(&compiled, module.file_id) {
+                state.uri_to_location.insert(
+                    uri.as_str().to_string(),
+                    UriLocation {
+                        root: root.to_path_buf(),
+                        file_id: module.file_id,
+                    },
+                );
+            }
+        }
+    }
+    state.cached.insert(root.to_path_buf(), compiled);
+    result
 }
 
 fn collect_publish_operations(
@@ -764,49 +869,79 @@ fn collect_clear_operations(
     }
 }
 
-fn compile_root(state: &ServerState, root: &Path) -> std::result::Result<CompiledRoot, LoadError> {
-    let overlay_source = OverlayFileSource::new(&state.open_documents);
-    let mut builder = vfs::CompilationGraphBuilder::new();
-    let stdlib_id = builder.load_crate(
-        "std.wx".to_string(),
-        &vfs::VirtualFileSource::new(std::collections::HashMap::from([(
-            "std.wx".to_string(),
-            wx_compiler::STDLIB_SOURCE.to_string(),
-        )])),
-    )?;
-    let root_id = builder.load_crate(
-        root.to_str().unwrap_or_default().to_string(),
-        &overlay_source,
-    )?;
-    let mut graph = builder.build(root_id, stdlib_id);
-    let tir = TIR::build(&mut graph);
-    let symbol_index = build_symbol_index(&tir, &graph.interner);
-    let path_to_module_loc = graph
+fn compile_root(state: &ServerState, mut graph: vfs::CompilationGraph) -> CompiledRoot {
+    let compiled_versions = graph
         .crates
         .iter()
-        .enumerate()
-        .flat_map(|(ci, crate_graph)| {
-            crate_graph
-                .modules
-                .iter()
-                .enumerate()
-                .map(move |(mi, module)| {
-                    (
-                        PathBuf::from(&module.file_path),
-                        ModuleLoc {
-                            crate_idx: ci,
-                            module_idx: mi,
-                        },
-                    )
-                })
+        .flat_map(|cg| cg.modules.iter())
+        .map(|m| {
+            let path = PathBuf::from(&m.file_path);
+            let ver = state
+                .open_documents
+                .get(&path)
+                .and_then(|doc| std::num::NonZeroI32::new(doc.lsp_version));
+            (path, ver)
         })
         .collect();
-    Ok(CompiledRoot {
+    let tir_start = std::time::Instant::now();
+    let tir = TIR::build(&mut graph);
+    debug_log!("[wx-lsp] typechecking took {:?}", tir_start.elapsed());
+    let symbol_index = build_symbol_index(&tir, &graph.interner);
+    CompiledRoot {
         graph,
         tir,
         symbol_index,
-        path_to_module_loc,
-    })
+        compiled_versions,
+    }
+}
+
+fn ensure_parse_cache(state: &mut ServerState, root: &Path) -> std::result::Result<(), LoadError> {
+    let is_stale = match state.parse_cache.get(root) {
+        None => true,
+        Some(cached) => cached.file_versions.iter().any(|(path, cached_ver)| {
+            match (state.open_documents.get(path), cached_ver) {
+                (Some(doc), Some(v)) => doc.lsp_version > v.get(),
+                (Some(_), None) => true, // was on disk, now open
+                (None, Some(_)) => true, // was open, now closed
+                (None, None) => false,   // still on disk
+            }
+        }),
+    };
+
+    if !is_stale {
+        return Ok(());
+    }
+
+    let overlay = OverlayFileSource::new(&state.open_documents);
+    let mut builder = vfs::CompilationGraphBuilder::new();
+    let parse_start = std::time::Instant::now();
+    let stdlib_id = builder.load_stdlib()?;
+    let root_id = builder.load_binary(root.to_str().unwrap_or_default().to_string(), &overlay)?;
+    let graph = builder.build(root_id, stdlib_id);
+    debug_log!("[wx-lsp] parsing took {:?}", parse_start.elapsed());
+
+    let file_versions = graph
+        .crates
+        .iter()
+        .flat_map(|cg| cg.modules.iter())
+        .map(|m| {
+            let path = PathBuf::from(&m.file_path);
+            let ver = state
+                .open_documents
+                .get(&path)
+                .and_then(|doc| std::num::NonZeroI32::new(doc.lsp_version));
+            (path, ver)
+        })
+        .collect();
+
+    state.parse_cache.insert(
+        root.to_path_buf(),
+        ParsedCrate {
+            graph,
+            file_versions,
+        },
+    );
+    Ok(())
 }
 
 fn analysis_from_compiled_root(compiled: &CompiledRoot) -> AnalysisResult {
@@ -1057,11 +1192,11 @@ fn push_type_params(
             s.push_str(", ");
         }
         s.push_str(interner.resolve(tp.name).unwrap_or("?"));
-        for (bi, &bound_idx) in tp.bounds.iter().enumerate() {
+        for (bi, trait_bound) in tp.bounds.iter().enumerate() {
             s.push_str(if bi == 0 { ": " } else { " + " });
             s.push_str(
                 interner
-                    .resolve(tir.traits[bound_idx as usize].name.inner)
+                    .resolve(tir.traits[trait_bound.trait_index as usize].name.inner)
                     .unwrap_or("?"),
             );
         }
@@ -1077,7 +1212,7 @@ fn symbol_hover_text(
     let fmt = tir.formatter(interner);
     match kind {
         SymbolKind::Function(def_id) => {
-            let fi = *tir.function_index_lookup.get(def_id)? as usize;
+            let fi = tir.function_index(*def_id)? as usize;
             let func = &tir.functions[fi];
             let fmt = fmt.with_type_params(&func.type_params);
             let name = interner.resolve(func.name.inner).unwrap_or("?");
@@ -1103,7 +1238,7 @@ fn symbol_hover_text(
             Some(s)
         }
         SymbolKind::Global(def_id) => {
-            let gi = *tir.global_index_lookup.get(def_id)? as usize;
+            let gi = tir.global_index(*def_id)? as usize;
             let global = &tir.globals[gi];
             let name = interner.resolve(global.name.inner).unwrap_or("?");
             let type_str = fmt.display_type(global.ty.inner).unwrap();
@@ -1119,8 +1254,8 @@ fn symbol_hover_text(
             };
             Some(format!("{pub_prefix}global {mut_kw}{name}: {type_str}"))
         }
-        SymbolKind::Struct(struct_idx) => {
-            let struct_ = tir.structs.get(*struct_idx as usize)?;
+        SymbolKind::Struct(def_id) => {
+            let struct_ = tir.structs.get(tir.struct_index(*def_id)? as usize)?;
             let name = interner.resolve(struct_.name.inner).unwrap_or("?");
             let pub_prefix = if struct_.pub_span.is_some() {
                 "pub "
@@ -1131,8 +1266,8 @@ fn symbol_hover_text(
             push_type_params(&mut s, tir, interner, &struct_.type_params);
             Some(s)
         }
-        SymbolKind::Enum(enum_idx) => {
-            let enum_ = tir.enums.get(*enum_idx as usize)?;
+        SymbolKind::Enum(def_id) => {
+            let enum_ = tir.enums.get(tir.enum_index(*def_id)? as usize)?;
             let name = interner.resolve(enum_.name.inner).unwrap_or("?");
             let pub_prefix = if enum_.pub_span.is_some() { "pub " } else { "" };
             let repr = fmt.display_type(enum_.ty).unwrap();
@@ -1143,7 +1278,7 @@ fn symbol_hover_text(
             scope_idx,
             local_idx,
         } => {
-            let fi = *tir.function_index_lookup.get(func_id)? as usize;
+            let fi = tir.function_index(*func_id)? as usize;
             let body = tir.functions[fi].body.as_ref()?;
             let local = body
                 .stack
@@ -1157,7 +1292,7 @@ fn symbol_hover_text(
             Some(format!("local {mut_kw}{name}: {type_str}"))
         }
         SymbolKind::Param { func_id, param_idx } => {
-            let fi = *tir.function_index_lookup.get(func_id)? as usize;
+            let fi = tir.function_index(*func_id)? as usize;
             let param = tir.functions[fi].params.get(*param_idx as usize)?;
             let name = interner.resolve(param.name.inner).unwrap_or("_");
             let type_str = fmt.display_type(param.ty.inner).unwrap();
@@ -1165,43 +1300,63 @@ fn symbol_hover_text(
             Some(format!("{mut_kw}{name}: {type_str}"))
         }
         SymbolKind::EnumVariant {
-            enum_idx,
+            enum_id,
             variant_idx,
         } => {
-            let enum_ = tir.enums.get(*enum_idx as usize)?;
+            let enum_ = tir.enums.get(tir.enum_index(*enum_id)? as usize)?;
             let variant = enum_.variants.get(*variant_idx as usize)?;
             let enum_name = interner.resolve(enum_.name.inner).unwrap_or("?");
             let variant_name = interner.resolve(variant.name.inner).unwrap_or("?");
             Some(format!("{enum_name}::{variant_name}"))
         }
-        SymbolKind::Module(decl_idx) => {
-            let decl = tir.module_decls.get(*decl_idx as usize)?;
-            let name = interner.resolve(decl.name.inner).unwrap_or("?");
-            let pub_prefix = if decl.pub_span.is_some() { "pub " } else { "" };
-            Some(format!("{pub_prefix}module {name}"))
-        }
-        SymbolKind::ImportModule(decl_idx) => {
-            let decl = tir.import_decls.get(*decl_idx as usize)?;
-            let external = interner.resolve(decl.external_name.inner).unwrap_or("?");
-            match &decl.internal_name {
-                Some(alias) => {
-                    let alias_name = interner.resolve(alias.inner).unwrap_or("?");
-                    Some(format!("import \"{external}\" as {alias_name}"))
+        SymbolKind::Namespace(ns_idx) => {
+            let ns = tir.namespaces.get(*ns_idx as usize)?;
+            match ns.declaration {
+                ModuleDeclarationKind::Module(decl_idx) => {
+                    let decl = tir.module_decls.get(decl_idx as usize)?;
+                    let name = interner.resolve(decl.name.inner).unwrap_or("?");
+                    let pub_prefix = if decl.pub_span.is_some() { "pub " } else { "" };
+                    Some(format!("{pub_prefix}module {name}"))
                 }
-                None => Some(format!("import \"{external}\"")),
+                ModuleDeclarationKind::Import(import_idx) => {
+                    let decl = tir.import_decls.get(import_idx as usize)?;
+                    let external = interner.resolve(decl.external_name.inner).unwrap_or("?");
+                    match &decl.internal_name {
+                        Some(alias) => {
+                            let alias_name = interner.resolve(alias.inner).unwrap_or("?");
+                            Some(format!("import \"{external}\" as {alias_name}"))
+                        }
+                        None => Some(format!("import \"{external}\"")),
+                    }
+                }
+                ModuleDeclarationKind::Crate(_, _) => {
+                    let name = interner.resolve(ns.name).unwrap_or("?");
+                    Some(format!("crate {name}"))
+                }
             }
         }
         SymbolKind::TypeParam { owner, param_index } => {
-            let tp = match owner {
+            let param_index = *param_index as usize;
+            let tp: &TypeParamInfo = match owner {
                 TypeParamOwner::Function(def_id) => {
-                    let fi = *tir.function_index_lookup.get(def_id)? as usize;
-                    tir.functions[fi].type_params.get(*param_index as usize)?
+                    let fi = tir.function_index(*def_id)? as usize;
+                    let func = &tir.functions[fi];
+                    let local = param_index.checked_sub(func.inherited_type_param_count)?;
+                    func.type_params.get(local)?
                 }
                 TypeParamOwner::Struct(def_id) => {
-                    let si = *tir.struct_index_lookup.get(def_id)? as usize;
-                    tir.structs[si].type_params.get(*param_index as usize)?
+                    let si = tir.struct_index(*def_id)? as usize;
+                    tir.structs[si].type_params.get(param_index)?
                 }
-                TypeParamOwner::Trait(_) => return Some("Self".to_string()),
+                TypeParamOwner::ImplBlock(block_idx) => tir
+                    .generic_impl_list
+                    .get(*block_idx)?
+                    .type_params
+                    .get(param_index)?,
+                TypeParamOwner::Trait(trait_idx) => {
+                    let t = tir.traits.get(*trait_idx as usize)?;
+                    &t.self_type_param
+                }
             };
             let name = interner.resolve(tp.name).unwrap_or("?");
             if tp.bounds.is_empty() {
@@ -1210,7 +1365,7 @@ fn symbol_hover_text(
                 let bounds = tp
                     .bounds
                     .iter()
-                    .filter_map(|&ti| tir.traits.get(ti as usize))
+                    .filter_map(|trait_bound| tir.traits.get(trait_bound.trait_index as usize))
                     .map(|t| interner.resolve(t.name.inner).unwrap_or("?"))
                     .collect::<Vec<_>>()
                     .join(" + ");
@@ -1218,8 +1373,8 @@ fn symbol_hover_text(
             }
         }
         SymbolKind::Label { .. } => None,
-        SymbolKind::Trait(trait_idx) => {
-            let trait_ = tir.traits.get(*trait_idx as usize)?;
+        SymbolKind::Trait(def_id) => {
+            let trait_ = tir.traits.get(tir.trait_index(*def_id)? as usize)?;
             let name = interner.resolve(trait_.name.inner).unwrap_or("?");
             let mut s = format!("trait {name}");
             if !trait_.supertraits.is_empty() {
@@ -1238,8 +1393,13 @@ fn symbol_hover_text(
             }
             Some(s)
         }
+        SymbolKind::TypeSet(def_id) => {
+            let typeset = tir.typesets.get(tir.typeset_index(*def_id)? as usize)?;
+            let name = interner.resolve(typeset.name.inner).unwrap_or("?");
+            Some(format!("typeset {name} {{ ... }}"))
+        }
         SymbolKind::Const(def_id) => {
-            let ci = *tir.const_index_lookup.get(def_id)? as usize;
+            let ci = tir.const_index(*def_id)? as usize;
             let constant = &tir.constants[ci];
             let name = interner.resolve(constant.name.inner).unwrap_or("?");
             let type_str = fmt.display_type(constant.ty.inner).unwrap();
@@ -1251,10 +1411,10 @@ fn symbol_hover_text(
             Some(format!("{pub_prefix}const {name}: {type_str}"))
         }
         SymbolKind::StructField {
-            struct_idx,
+            struct_id,
             field_idx,
         } => {
-            let struct_ = tir.structs.get(*struct_idx as usize)?;
+            let struct_ = tir.structs.get(tir.struct_index(*struct_id)? as usize)?;
             let field = struct_.fields.get(*field_idx as usize)?;
             let fmt = fmt.with_type_params(&struct_.type_params);
             let name = interner.resolve(field.name.inner).unwrap_or("?");
@@ -1263,10 +1423,10 @@ fn symbol_hover_text(
             Some(format!("{pub_prefix}{name}: {type_str}"))
         }
         SymbolKind::AssocType {
-            trait_index,
+            trait_id,
             assoc_name,
         } => {
-            let trait_ = tir.traits.get(*trait_index as usize)?;
+            let trait_ = tir.traits.get(tir.trait_index(*trait_id)? as usize)?;
             let at = trait_.assoc_types.get(assoc_name)?;
             let name = interner.resolve(*assoc_name).unwrap_or("?");
             if at.bounds.is_empty() {
@@ -1347,38 +1507,52 @@ fn find_active_call(source: &str, offset: usize) -> Option<ActiveCall> {
     })
 }
 
-fn symbol_kind_to_token_type(kind: &SymbolKind) -> Option<u32> {
-    let idx = match kind {
-        SymbolKind::Function(_) => 0,
-        SymbolKind::Global(_) | SymbolKind::Const(_) | SymbolKind::Local { .. } => 1,
-        SymbolKind::Enum(_) => 2,
-        SymbolKind::Struct(_) => 3,
-        SymbolKind::Module(_) | SymbolKind::ImportModule(_) => 4,
-        SymbolKind::Param { .. } => 5,
-        SymbolKind::EnumVariant { .. } => 6,
-        SymbolKind::Trait(_) => 7,
-        SymbolKind::TypeParam { .. } => 8,
-        SymbolKind::AssocType { .. } => 9,
-        SymbolKind::StructField { .. } => 1,
+fn symbol_kind_to_token_type(kind: &SymbolKind) -> Option<TokenType> {
+    let tt = match kind {
+        SymbolKind::Function(_) => TokenType::Function,
+        SymbolKind::Global(_)
+        | SymbolKind::Const(_)
+        | SymbolKind::Local { .. }
+        | SymbolKind::StructField { .. } => TokenType::Variable,
+        SymbolKind::Enum(_) => TokenType::Enum,
+        SymbolKind::Struct(_) => TokenType::Struct,
+        SymbolKind::Namespace(_) => TokenType::Namespace,
+        SymbolKind::Param { .. } => TokenType::Parameter,
+        SymbolKind::EnumVariant { .. } => TokenType::EnumMember,
+        SymbolKind::Trait(_) => TokenType::Interface,
+        SymbolKind::TypeParam { .. } => TokenType::TypeParameter,
+        SymbolKind::AssocType { .. } | SymbolKind::TypeSet(_) => TokenType::Type,
         SymbolKind::Label { .. } => return None,
     };
-    Some(idx)
+    Some(tt)
 }
 
 // ── Helpers
 // ───────────────────────────────────────────────────────────────────
 
-fn module_for_path<'a>(compiled: &'a CompiledRoot, path: &Path) -> Option<&'a vfs::SourceModule> {
-    let &ModuleLoc {
-        crate_idx,
-        module_idx,
-    } = compiled.path_to_module_loc.get(path)?;
-    Some(&compiled.graph.crates[crate_idx].modules[module_idx])
-}
-
 fn position_to_offset(files: &vfs::Files, file_id: FileId, position: Position) -> Option<u32> {
     let line_range = files.line_range(file_id, position.line as usize).ok()?;
     Some((line_range.start + position.character as usize) as u32)
+}
+
+/// Converts an LSP `Position` to a byte offset directly in a source string,
+/// without needing a compiled file index. Returns `None` if the line is out of range.
+fn position_to_offset_in_str(source: &str, position: Position) -> Option<usize> {
+    let mut line = 0u32;
+    let mut byte_offset = 0;
+    for ch in source.chars() {
+        if line == position.line {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+        }
+        byte_offset += ch.len_utf8();
+    }
+    if line < position.line {
+        return None;
+    }
+    Some((byte_offset + position.character as usize).min(source.len()))
 }
 
 fn span_to_range(files: &vfs::Files, source: SourceSpan) -> Option<Range> {
@@ -1441,112 +1615,21 @@ fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
 }
 
 /// Converts a `FileId` to a URI. Real files get a `file://` URI; virtual
-/// files (non-absolute names, i.e. stdlib) get a `wxstd://stdlib/<name>` URI.
+/// files (non-absolute names, i.e. stdlib) get a `wx://std/<name>` URI.
 fn file_id_to_uri(compiled: &CompiledRoot, file_id: FileId) -> Option<Uri> {
     let name = compiled.graph.files.name(file_id).ok()?;
-    let path = Path::new(name);
-    if let Some(uri) = Uri::from_file_path(path) {
+    if let Some(uri) = Uri::from_file_path(Path::new(name)) {
         Some(uri)
     } else {
-        Uri::from_str(&format!(
-            "{}://{}/{}",
-            STDLIB_URI_SCHEME, STDLIB_URI_AUTHORITY, name
-        ))
-        .ok()
+        Uri::from_str(&format!("wx://std/{}", name)).ok()
     }
 }
 
 // ── Completion
 // ────────────────────────────────────────────────────────────
 
-fn completion_items(
-    compiled: &CompiledRoot,
-    _file_id: FileId,
-    source: &str,
-    offset: usize,
-) -> Vec<CompletionItem> {
-    let prefix_start = source[..offset]
-        .bytes()
-        .rposition(|b| !b.is_ascii_alphanumeric() && b != b'_')
-        .map_or(0, |i| i + 1);
-    let prefix = &source[prefix_start..offset];
-
-    let interner = &compiled.graph.interner;
-    let tir = &compiled.tir;
-
-    let lower = compiled
-        .symbol_index
-        .defs_by_name
-        .partition_point(|(sym, _)| interner.resolve(*sym).unwrap_or("") < prefix);
-
-    compiled.symbol_index.defs_by_name[lower..]
-        .iter()
-        .take_while(|(sym, _)| interner.resolve(*sym).unwrap_or("").starts_with(prefix))
-        .filter_map(|(sym, info)| {
-            let name = interner.resolve(*sym)?.to_string();
-            let item = match &info.kind {
-                SymbolKind::Function(def_id) => {
-                    let fi = *tir.function_index_lookup.get(def_id)? as usize;
-                    let func = &tir.functions[fi];
-                    let (insert_text, insert_text_format) = if func.params.is_empty() {
-                        (format!("{}()", name), InsertTextFormat::PLAIN_TEXT)
-                    } else {
-                        (format!("{}($1)", name), InsertTextFormat::SNIPPET)
-                    };
-                    CompletionItem {
-                        label: name,
-                        kind: Some(CompletionItemKind::FUNCTION),
-                        insert_text: Some(insert_text),
-                        insert_text_format: Some(insert_text_format),
-                        ..Default::default()
-                    }
-                }
-                SymbolKind::Global(_) => CompletionItem {
-                    label: name,
-                    kind: Some(CompletionItemKind::VARIABLE),
-                    ..Default::default()
-                },
-                SymbolKind::Const(_) => CompletionItem {
-                    label: name,
-                    kind: Some(CompletionItemKind::CONSTANT),
-                    ..Default::default()
-                },
-                SymbolKind::Struct(_) => CompletionItem {
-                    label: name,
-                    kind: Some(CompletionItemKind::STRUCT),
-                    ..Default::default()
-                },
-                SymbolKind::Enum(_) => CompletionItem {
-                    label: name,
-                    kind: Some(CompletionItemKind::ENUM),
-                    ..Default::default()
-                },
-                SymbolKind::EnumVariant { .. } => CompletionItem {
-                    label: name,
-                    kind: Some(CompletionItemKind::ENUM_MEMBER),
-                    ..Default::default()
-                },
-                SymbolKind::Module(_) | SymbolKind::ImportModule(_) => CompletionItem {
-                    label: name,
-                    kind: Some(CompletionItemKind::MODULE),
-                    ..Default::default()
-                },
-                SymbolKind::Trait(_) => CompletionItem {
-                    label: name,
-                    kind: Some(CompletionItemKind::INTERFACE),
-                    ..Default::default()
-                },
-                SymbolKind::AssocType { .. } => CompletionItem {
-                    label: name,
-                    kind: Some(CompletionItemKind::TYPE_PARAMETER),
-                    ..Default::default()
-                },
-                _ => return None,
-            };
-            Some(item)
-        })
-        .collect()
-}
+/// Returns the index into `tir.functions` of the function whose body contains `cursor_offset`,
+/// or `None` if the cursor is not inside any function body.
 
 #[cfg(test)]
 mod tests;

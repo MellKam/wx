@@ -32,31 +32,23 @@ items:
                               callee:
                                 inner:
                                   Path:
-                                    segments:
-                                      - ident:
-                                          inner: 1
+                                    - ident:
+                                        inner: 1
+                                        span:
+                                          start: 16
+                                          end: 24
+                                      type_args:
+                                        - inner:
+                                            Path:
+                                              - ident:
+                                                  inner: 2
+                                                  span:
+                                                    start: 27
+                                                    end: 30
+                                                type_args: []
                                           span:
-                                            start: 16
-                                            end: 24
-                                        type_args:
-                                          - inner:
-                                              Path:
-                                                segments:
-                                                  - ident:
-                                                      inner: 2
-                                                      span:
-                                                        start: 27
-                                                        end: 30
-                                                    type_args: []
-                                                span:
-                                                  start: 27
-                                                  end: 30
-                                            span:
-                                              start: 27
-                                              end: 30
-                                    span:
-                                      start: 16
-                                      end: 24
+                                            start: 27
+                                            end: 30
                                 span:
                                   start: 16
                                   end: 24

@@ -1,4 +1,4 @@
-memory heap: Memory<Size = u32>;
+memory heap: Memory where { Size = u32 };
 
 global mut bump: heap::*mut u8 = heap::DATA_END;
 

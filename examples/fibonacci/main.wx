@@ -1,4 +1,5 @@
-memory heap: Memory<Size = u32>;
+use std::*;
+memory heap: Memory where { Size = u32 };
 
 import "console" {
   fn log(message: heap::[]u8);

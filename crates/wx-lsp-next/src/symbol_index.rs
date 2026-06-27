@@ -1,8 +1,8 @@
 use string_interner::symbol::SymbolU32;
 use wx_compiler::ast::{DefId, StringInterner, TextSpan};
 use wx_compiler::tir::{
-    EnumVariantIndex, ExportItem, FieldAccessKind, LocalIndex, ScopeIndex, SourceSpan, TIR,
-    TraitIndex, TypeParamOwner,
+    EnumVariantIndex, ExportItem, FieldAccessKind, LocalIndex, ModuleDeclarationKind,
+    NamespaceIndex, ScopeIndex, SourceSpan, TIR, TypeParamOwner,
 };
 use wx_compiler::vfs::FileId;
 
@@ -12,10 +12,9 @@ pub enum SymbolKind {
     Function(DefId),
     Global(DefId),
     Const(DefId),
-    Enum(u32),
-    Struct(u32),
-    Module(u32),
-    ImportModule(u32),
+    Enum(DefId),
+    Struct(DefId),
+    Namespace(NamespaceIndex),
     Local {
         func_id: DefId,
         scope_idx: ScopeIndex,
@@ -26,24 +25,25 @@ pub enum SymbolKind {
         param_idx: u32,
     },
     EnumVariant {
-        enum_idx: u32,
+        enum_id: DefId,
         variant_idx: EnumVariantIndex,
     },
     Label {
         func_id: DefId,
         scope_idx: ScopeIndex,
     },
-    Trait(TraitIndex),
+    Trait(DefId),
+    TypeSet(DefId),
     TypeParam {
         owner: TypeParamOwner,
         param_index: u32,
     },
     AssocType {
-        trait_index: TraitIndex,
+        trait_id: DefId,
         assoc_name: SymbolU32,
     },
     StructField {
-        struct_idx: u32,
+        struct_id: DefId,
         field_idx: u32,
     },
 }
@@ -221,17 +221,17 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
         }
     }
 
-    for (struct_idx, struct_) in tir.structs.iter().enumerate() {
+    for struct_ in tir.structs.iter() {
         let info = SpanInfo {
             source: SourceSpan::new(struct_.file_id, struct_.name.span),
-            kind: SymbolKind::Struct(struct_idx as u32),
+            kind: SymbolKind::Struct(struct_.id),
         };
         index.defs_by_name.push((struct_.name.inner, info.clone()));
         index.definitions.push(info);
         for access in &struct_.accesses {
             index.references.push(SpanInfo {
                 source: *access,
-                kind: SymbolKind::Struct(struct_idx as u32),
+                kind: SymbolKind::Struct(struct_.id),
             });
         }
         for (param_index, tp) in struct_.type_params.iter().enumerate() {
@@ -253,7 +253,7 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 
         for (field_idx, field) in struct_.fields.iter().enumerate() {
             let kind = SymbolKind::StructField {
-                struct_idx: struct_idx as u32,
+                struct_id: struct_.id,
                 field_idx: field_idx as u32,
             };
             index.definitions.push(SpanInfo {
@@ -271,16 +271,16 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
         }
     }
 
-    for (enum_idx, enum_) in tir.enums.iter().enumerate() {
+    for enum_ in tir.enums.iter() {
         let info = SpanInfo {
             source: SourceSpan::new(enum_.file_id, enum_.name.span),
-            kind: SymbolKind::Enum(enum_idx as u32),
+            kind: SymbolKind::Enum(enum_.id),
         };
         index.defs_by_name.push((enum_.name.inner, info.clone()));
         index.definitions.push(info);
         for (variant_idx, variant) in enum_.variants.iter().enumerate() {
             let variant_kind = SymbolKind::EnumVariant {
-                enum_idx: enum_idx as u32,
+                enum_id: enum_.id,
                 variant_idx: variant_idx as EnumVariantIndex,
             };
             let variant_info = SpanInfo {
@@ -317,45 +317,43 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
         }
     }
 
-    for (decl_idx, decl) in tir.module_decls.iter().enumerate() {
-        let kind = SymbolKind::Module(decl_idx as u32);
-        let def_source = match decl.own_file_id {
-            Some(fid) => SourceSpan::new(fid, TextSpan::new(0, 0)),
-            None => SourceSpan::new(decl.declaring_file_id, decl.name.span),
+    for (ns_idx, ns) in tir.namespaces.iter().enumerate() {
+        let kind = SymbolKind::Namespace(ns_idx as NamespaceIndex);
+        let (def_source, name_sym) = match ns.declaration {
+            ModuleDeclarationKind::Module(decl_idx) => {
+                let decl = &tir.module_decls[decl_idx as usize];
+                let source = match decl.own_file_id {
+                    Some(fid) => SourceSpan::new(fid, TextSpan::new(0, 0)),
+                    None => SourceSpan::new(decl.declaring_file_id, decl.name.span),
+                };
+                // The `module foo;` name in the declaring file is itself a reference.
+                if decl.own_file_id.is_some() {
+                    index.references.push(SpanInfo {
+                        source: SourceSpan::new(decl.declaring_file_id, decl.name.span),
+                        kind: kind.clone(),
+                    });
+                }
+                (source, decl.name.inner)
+            }
+            ModuleDeclarationKind::Import(import_idx) => {
+                let decl = &tir.import_decls[import_idx as usize];
+                let (name_sym, span) = match &decl.internal_name {
+                    Some(n) => (n.inner, n.span),
+                    None => (decl.external_name.inner, decl.external_name.span),
+                };
+                (SourceSpan::new(decl.file_id, span), name_sym)
+            }
+            ModuleDeclarationKind::Crate(_, file_id) => {
+                (SourceSpan::new(file_id, TextSpan::new(0, 0)), ns.name)
+            }
         };
         let info = SpanInfo {
             source: def_source,
             kind: kind.clone(),
         };
-        index.defs_by_name.push((decl.name.inner, info.clone()));
-        index.definitions.push(info);
-        if decl.own_file_id.is_some() {
-            index.references.push(SpanInfo {
-                source: SourceSpan::new(decl.declaring_file_id, decl.name.span),
-                kind: kind.clone(),
-            });
-        }
-        for access in &decl.accesses {
-            index.references.push(SpanInfo {
-                source: *access,
-                kind: kind.clone(),
-            });
-        }
-    }
-
-    for (decl_idx, decl) in tir.import_decls.iter().enumerate() {
-        let kind = SymbolKind::ImportModule(decl_idx as u32);
-        let (name_sym, span) = match &decl.internal_name {
-            Some(n) => (n.inner, n.span),
-            None => (decl.external_name.inner, decl.external_name.span),
-        };
-        let info = SpanInfo {
-            source: SourceSpan::new(decl.file_id, span),
-            kind: kind.clone(),
-        };
         index.defs_by_name.push((name_sym, info.clone()));
         index.definitions.push(info);
-        for access in &decl.accesses {
+        for access in &ns.accesses {
             index.references.push(SpanInfo {
                 source: *access,
                 kind: kind.clone(),
@@ -363,9 +361,8 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
         }
     }
 
-    for (trait_idx, trait_) in tir.traits.iter().enumerate() {
-        let trait_index = trait_idx as TraitIndex;
-        let kind = SymbolKind::Trait(trait_index);
+    for trait_ in tir.traits.iter() {
+        let kind = SymbolKind::Trait(trait_.id);
         let info = SpanInfo {
             source: SourceSpan::new(trait_.file_id, trait_.name.span),
             kind: kind.clone(),
@@ -381,7 +378,7 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 
         for (assoc_name, at) in &trait_.assoc_types {
             let at_kind = SymbolKind::AssocType {
-                trait_index,
+                trait_id: trait_.id,
                 assoc_name: *assoc_name,
             };
             let at_info = SpanInfo {
@@ -399,12 +396,28 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
         }
     }
 
+    for typeset in tir.typesets.iter() {
+        let kind = SymbolKind::TypeSet(typeset.id);
+        let info = SpanInfo {
+            source: SourceSpan::new(typeset.file_id, typeset.name.span),
+            kind: kind.clone(),
+        };
+        index.defs_by_name.push((typeset.name.inner, info.clone()));
+        index.definitions.push(info);
+        for access in &typeset.accesses {
+            index.references.push(SpanInfo {
+                source: *access,
+                kind: kind.clone(),
+            });
+        }
+    }
+
     for export in tir.exports.values() {
         match export {
             ExportItem::Function {
                 internal_name, id, ..
             } => {
-                if let Some(&fi) = tir.function_index_lookup.get(id) {
+                if let Some(fi) = tir.function_index(*id) {
                     index.references.push(SpanInfo {
                         source: SourceSpan::new(
                             tir.functions[fi as usize].file_id,
@@ -417,7 +430,7 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
             ExportItem::Global {
                 internal_name, id, ..
             } => {
-                if let Some(&gi) = tir.global_index_lookup.get(id) {
+                if let Some(gi) = tir.global_index(*id) {
                     index.references.push(SpanInfo {
                         source: SourceSpan::new(
                             tir.globals[gi as usize].file_id,

@@ -673,10 +673,10 @@ fn test_format_local_definition_wraps() {
     // Using FB_WIDTH (a named constant) makes the expression exceed 80 cols.
     assert_eq!(
         fmt(
-            "memory heap: Memory<Size = u32>; fn set_pixel(x: u32, y: u32) { local base: heap::*mut u8 = (fb_ptr() + (y * FB_WIDTH + x) * 3) as heap::*mut u8; }"
+            "memory heap: Memory where { Size = u32 }; fn set_pixel(x: u32, y: u32) { local base: heap::*mut u8 = (fb_ptr() + (y * FB_WIDTH + x) * 3) as heap::*mut u8; }"
         ),
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
 
             fn set_pixel(x: u32, y: u32) {
                 local base: heap::*mut u8 =
@@ -721,10 +721,10 @@ fn test_format_inline_blocks() {
     // Single-statement if guard: fits → inline.
     assert_eq!(
         fmt(
-            "memory heap: Memory<Size = u32>; fn check(data: heap::[]u8) -> bool { if data.len() < 4 { return false }; true }"
+            "memory heap: Memory where { Size = u32 }; fn check(data: heap::[]u8) -> bool { if data.len() < 4 { return false }; true }"
         ),
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
 
             fn check(data: heap::[]u8) -> bool {
                 if data.len() < 4 { return false };
@@ -790,26 +790,26 @@ fn test_format_memory_config() {
 
     // No config block
     assert_eq!(
-        fmt("memory heap: Memory<Size = u32>;"),
-        "memory heap: Memory<Size = u32>;\n",
+        fmt("memory heap: Memory where { Size = u32 };"),
+        "memory heap: Memory where { Size = u32 };\n",
     );
 
     // min_pages only
     assert_eq!(
-        fmt("memory heap: Memory<Size = u32> { min_pages: 4 };"),
-        "memory heap: Memory<Size = u32> { min_pages: 4 };\n",
+        fmt("memory heap: Memory where { Size = u32 } { min_pages: 4 };"),
+        "memory heap: Memory where { Size = u32 } { min_pages: 4 };\n",
     );
 
     // max_pages only
     assert_eq!(
-        fmt("memory heap: Memory<Size = u32> { max_pages: 10 };"),
-        "memory heap: Memory<Size = u32> { max_pages: 10 };\n",
+        fmt("memory heap: Memory where { Size = u32 } { max_pages: 10 };"),
+        "memory heap: Memory where { Size = u32 } { max_pages: 10 };\n",
     );
 
     // both fields
     assert_eq!(
-        fmt("memory heap: Memory<Size = u32> { min_pages: 1, max_pages: 10 };"),
-        "memory heap: Memory<Size = u32> { min_pages: 1, max_pages: 10 };\n",
+        fmt("memory heap: Memory where { Size = u32 } { min_pages: 1, max_pages: 10 };"),
+        "memory heap: Memory where { Size = u32 } { min_pages: 1, max_pages: 10 };\n",
     );
 }
 
@@ -842,10 +842,10 @@ fn test_format_binary_chain_breaks_at_line_limit() {
     // Long chain: exceeds 80 columns, each operand on its own line.
     assert_eq!(
         fmt(
-            "memory heap: Memory<Size = u32>; fn read(data: heap::[]u8, off: u32) -> i32 { (data[off] as i32) | ((data[off + 1] as i32) << 8) | ((data[off + 2] as i32) << 16) | ((data[off + 3] as i32) << 24) }"
+            "memory heap: Memory where { Size = u32 }; fn read(data: heap::[]u8, off: u32) -> i32 { (data[off] as i32) | ((data[off + 1] as i32) << 8) | ((data[off + 2] as i32) << 16) | ((data[off + 3] as i32) << 24) }"
         ),
         indoc! {"
-            memory heap: Memory<Size = u32>;
+            memory heap: Memory where { Size = u32 };
 
             fn read(data: heap::[]u8, off: u32) -> i32 {
                 (data[off] as i32)
@@ -945,5 +945,66 @@ fn test_format_comments_preserved() {
                 a + b
             }
         "},
+    );
+}
+
+#[test]
+fn test_format_long_type_params_wrap() {
+    let case = TestCase::new(indoc! {"
+        pub fn memory_copy<Size: PointerSize, SrcMem: Memory where { Size = Size }, DstMem: Memory where { Size = Size }>(dst: DstMem::*mut u8, src: SrcMem::*u8, len: Size) {}
+    "});
+    let output = format(
+        &case.ast,
+        &case.interner,
+        &case.files.get(case.ast.file_id).unwrap().source,
+        RendererConfig {
+            max_line_width: 80,
+            indent_width: 4,
+            trailing_comma: true,
+        },
+    );
+    assert_eq!(
+        output,
+        indoc! {"
+            pub fn memory_copy<
+                Size: PointerSize,
+                SrcMem: Memory where { Size = Size },
+                DstMem: Memory where { Size = Size },
+            >(
+                dst: DstMem::*mut u8,
+                src: SrcMem::*u8,
+                len: Size,
+            ) {}
+        "},
+    );
+}
+
+#[test]
+fn test_format_impl_trait_multi_segment() {
+    // Multi-segment trait name in `impl a::b::Trait for Type` must be
+    // rendered with `::` separators (exercises build_path_segments for
+    // the ImplTrait trait_name field).
+    let case = TestCase::new(indoc! {"
+        impl module::Drawable for Point {
+            fn draw(self) {}
+        }
+    "});
+    let output = format(
+        &case.ast,
+        &case.interner,
+        &case.files.get(case.ast.file_id).unwrap().source,
+        RendererConfig {
+            max_line_width: 80,
+            indent_width: 4,
+            trailing_comma: true,
+        },
+    );
+    assert_eq!(
+        output,
+        indoc! {"
+            impl module::Drawable for Point {
+                fn draw(self) {}
+            }
+        "}
     );
 }

@@ -452,14 +452,14 @@ impl MIR {
         };
 
         // MIR functions: live defined (Internal) monomorphic functions only.
-        // Generic functions (type_params non-empty) are lowered on demand by the
+        // Generic functions (own or inherited type params) are lowered on demand by the
         // mono pass below. Wasm index ordering (imports first) is codegen's
         // responsibility.
         let mut functions: Vec<Function> = Vec::new();
         let mut inline_functions: HashSet<ast::DefId> = HashSet::new();
         for func in &tir.functions {
             if func.body.is_some()
-                && func.type_params.is_empty()
+                && func.total_type_param_count() == 0
                 && !tir.is_import_namespace(func.namespace)
             {
                 if func
@@ -500,7 +500,7 @@ impl MIR {
             work_cursor = current_len;
 
             for (orig_id, subst, mono_id) in pending {
-                let tir_idx = tir.function_index_lookup[&orig_id];
+                let tir_idx = tir.expect_function_index(orig_id);
                 let tir_func = &tir.functions[tir_idx as usize];
                 let is_inline = tir_func
                     .attributes
@@ -536,7 +536,7 @@ impl MIR {
                     .iter()
                     .map(|(symbol, value)| match value {
                         tir::ImportValue::Function { id } => {
-                            let tir_idx = tir.function_index_lookup[id];
+                            let tir_idx = tir.expect_function_index(*id);
                             let tir_func = &tir.functions[tir_idx as usize];
                             let signature_index =
                                 builder.intern_tir_function_type(tir_func.signature_index);
@@ -794,7 +794,7 @@ impl<'tir> Builder<'tir> {
             }
             tir::Type::Pointer { memory, .. } | tir::Type::Array { memory, .. } => {
                 let id = self.resolve_memory_id(*memory);
-                let tir_idx = self.tir.memory_index_lookup[&id] as usize;
+                let tir_idx = self.tir.expect_memory_index(id) as usize;
                 let pointer_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: pointer_size,
@@ -803,7 +803,7 @@ impl<'tir> Builder<'tir> {
             }
             tir::Type::Slice { memory, .. } => {
                 let id = self.resolve_memory_id(*memory);
-                let tir_idx = self.tir.memory_index_lookup[&id] as usize;
+                let tir_idx = self.tir.expect_memory_index(id) as usize;
                 let pointer_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: pointer_size * 2,
@@ -876,7 +876,7 @@ impl<'tir> Builder<'tir> {
             Type::U16 | Type::I16 => Layout { size: 2, align: 2 },
             Type::Unit | Type::Never => Layout { size: 0, align: 1 },
             Type::Pointer { memory } => {
-                let tir_idx = self.tir.memory_index_lookup[&memory] as usize;
+                let tir_idx = self.tir.expect_memory_index(memory) as usize;
                 let ptr_size = self.tir.memories[tir_idx].kind.pointer_size();
                 Layout {
                     size: ptr_size,
@@ -967,7 +967,7 @@ impl<'tir> Builder<'tir> {
                 signature_index: self.intern_tir_function_type(type_idx),
             },
             tir::Type::FunctionItem { id, type_args } => {
-                let fi = self.tir.function_index_lookup[&id] as usize;
+                let fi = self.tir.expect_function_index(id) as usize;
                 let sig_idx = self.tir.functions[fi].signature_index;
                 if type_args.is_empty() {
                     Type::Function {
@@ -1002,7 +1002,7 @@ impl<'tir> Builder<'tir> {
             }
             tir::Type::Slice { memory, .. } => {
                 let memory = self.resolve_memory_id(memory);
-                let tir_idx = self.tir.memory_index_lookup[&memory] as usize;
+                let tir_idx = self.tir.expect_memory_index(memory) as usize;
                 let aggregate_index = self.ensure_aggregate(Box::new([
                     Type::Pointer { memory },
                     match self.tir.memories[tir_idx].kind {
@@ -1012,9 +1012,7 @@ impl<'tir> Builder<'tir> {
                 ]));
                 Type::Aggregate { aggregate_index }
             }
-            tir::Type::Memory { .. } | tir::Type::Trait { .. } | tir::Type::TypeSet { .. } => {
-                Type::Unit
-            }
+            tir::Type::Memory { .. } => Type::Unit,
             tir::Type::Struct { struct_index, args } => {
                 let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
                 Type::Aggregate { aggregate_index }
@@ -1499,7 +1497,7 @@ impl<'tir> Builder<'tir> {
                             .mono_registry
                             .get_or_insert(fn_id, concrete_args.clone());
                         self.record_call_edge(mono_id);
-                        let fi = self.tir.function_index_lookup[&fn_id] as usize;
+                        let fi = self.tir.expect_function_index(fn_id) as usize;
                         let sig_idx = self.tir.functions[fi].signature_index;
                         let saved =
                             std::mem::replace(&mut self.current_substitutions, concrete_args);
@@ -1592,7 +1590,7 @@ impl<'tir> Builder<'tir> {
                 // Intern the callee's concrete signature with the resolved
                 // substitutions active, then restore previous substitutions.
                 let tir_func_sig_idx = {
-                    let tir_idx = self.tir.function_index_lookup[id];
+                    let tir_idx = self.tir.expect_function_index(*id);
                     self.tir.functions[tir_idx as usize].signature_index
                 };
                 let saved_subs =
@@ -1623,7 +1621,7 @@ impl<'tir> Builder<'tir> {
                 type_args,
                 arguments,
             } => {
-                let tir_idx = self.tir.function_index_lookup[id];
+                let tir_idx = self.tir.expect_function_index(*id);
                 let tir_func = &self.tir.functions[tir_idx as usize];
 
                 // Resolve any TypeParam entries in type_args through active substitutions.
@@ -1698,7 +1696,7 @@ impl<'tir> Builder<'tir> {
             }
             tir::ExprKind::MethodCall { arguments, id } => {
                 self.record_call_edge(*id);
-                let tir_idx = self.tir.function_index_lookup[id];
+                let tir_idx = self.tir.expect_function_index(*id);
                 let callee_sig_idx = self
                     .intern_tir_function_type(self.tir.functions[tir_idx as usize].signature_index);
                 let callee = Box::new(Expression {
@@ -1718,7 +1716,7 @@ impl<'tir> Builder<'tir> {
             }
             tir::ExprKind::NamespaceAccess { namespace, member } => {
                 if let tir::ExprKind::Const { id } = &member.kind {
-                    let const_idx = *self.tir.const_index_lookup.get(id).unwrap() as usize;
+                    let const_idx = self.tir.expect_const_index(*id) as usize;
                     let result_ty = self.lower_type_index(expr.ty);
                     if let Some(value_expr) = &self.tir.constants[const_idx].value {
                         match &value_expr.kind {
@@ -1757,7 +1755,7 @@ impl<'tir> Builder<'tir> {
                 }
             }
             tir::ExprKind::Const { id } => {
-                let const_idx = *self.tir.const_index_lookup.get(id).unwrap() as usize;
+                let const_idx = self.tir.expect_const_index(*id) as usize;
                 let result_ty = self.lower_type_index(expr.ty);
                 match &self.tir.constants[const_idx].value {
                     Some(value_expr) => match &value_expr.kind {
@@ -2302,10 +2300,11 @@ impl<'tir> Builder<'tir> {
                     tir::Type::Array { of, .. } | tir::Type::Slice { of, .. } => *of,
                     _ => unreachable!("index lowering only supported on arrays and slices"),
                 };
-                let (ptr, offset) = match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
-                    IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
-                    IndexAddress::Dynamic(ptr) => (ptr, 0),
-                };
+                let (ptr, offset) =
+                    match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
+                        IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
+                        IndexAddress::Dynamic(ptr) => (ptr, 0),
+                    };
                 Expression {
                     kind: ExprKind::PointerLoad {
                         pointer: Box::new(ptr),
@@ -2328,7 +2327,7 @@ impl<'tir> Builder<'tir> {
                 let elem_size = self.compute_layout(elem_tir_ty).size;
                 let memory_id = self.resolve_memory_id(mem_tir_ty);
                 let ptr_ty = Type::Pointer { memory: memory_id };
-                let tir_mem_idx = self.tir.memory_index_lookup[&memory_id] as usize;
+                let tir_mem_idx = self.tir.expect_memory_index(memory_id) as usize;
                 let idx_ty = match self.tir.memories[tir_mem_idx].kind {
                     tir::MemoryKind::Memory32 => Type::U32,
                     tir::MemoryKind::Memory64 => Type::U64,
@@ -2599,10 +2598,11 @@ impl<'tir> Builder<'tir> {
                     tir::Type::Array { of, .. } | tir::Type::Slice { of, .. } => *of,
                     _ => unreachable!("index assignment only supported on arrays and slices"),
                 };
-                let (ptr, offset) = match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
-                    IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
-                    IndexAddress::Dynamic(ptr) => (ptr, 0),
-                };
+                let (ptr, offset) =
+                    match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
+                        IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
+                        IndexAddress::Dynamic(ptr) => (ptr, 0),
+                    };
                 ExprKind::PointerStore {
                     pointer: Box::new(ptr),
                     value: Box::new(self.lower_expression(func_ctx, right, sink)),
@@ -2734,10 +2734,11 @@ impl<'tir> Builder<'tir> {
                         "index compound assignment only supported on arrays and slices"
                     ),
                 };
-                let (ptr, offset) = match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
-                    IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
-                    IndexAddress::Dynamic(ptr) => (ptr, 0),
-                };
+                let (ptr, offset) =
+                    match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
+                        IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
+                        IndexAddress::Dynamic(ptr) => (ptr, 0),
+                    };
                 ExprKind::PointerStore {
                     pointer: Box::new(ptr),
                     value: Box::new(binary_expr),

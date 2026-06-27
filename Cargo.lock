@@ -2341,6 +2341,7 @@ dependencies = [
  "tokio",
  "tower-lsp-server",
  "wx-compiler",
+ "wx-fmt",
 ]
 
 [[package]]

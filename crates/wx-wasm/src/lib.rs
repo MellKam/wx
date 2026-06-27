@@ -7,16 +7,10 @@ use wx_compiler::*;
 pub fn compile(filename: String, source: String) -> Result<Vec<u8>, JsValue> {
     let mut builder = vfs::CompilationGraphBuilder::new();
     let stdlib_id = builder
-        .load_crate(
-            "std.wx".to_string(),
-            &vfs::VirtualFileSource::new(HashMap::from([(
-                "std.wx".to_string(),
-                STDLIB_SOURCE.to_string(),
-            )])),
-        )
+        .load_stdlib()
         .map_err(|err| serde_wasm_bindgen::to_value(&format!("{err:?}")).unwrap())?;
     let root_id = builder
-        .load_crate(
+        .load_binary(
             filename.clone(),
             &vfs::VirtualFileSource::new(HashMap::from([(filename, source)])),
         )

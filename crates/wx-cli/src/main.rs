@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 
@@ -72,16 +71,8 @@ fn parse_display_style(s: &str) -> DisplayStyle {
 
 fn load_compilation(file_path: &str) -> vfs::CompilationGraph {
     let mut builder = vfs::CompilationGraphBuilder::new();
-    let stdlib_id = builder
-        .load_crate(
-            "std.wx".to_string(),
-            &vfs::VirtualFileSource::new(HashMap::from([(
-                "std.wx".to_string(),
-                STDLIB_SOURCE.to_string(),
-            )])),
-        )
-        .unwrap();
-    match builder.load_crate(file_path.to_string(), &vfs::NativeFileSource) {
+    let stdlib_id = builder.load_stdlib().unwrap();
+    match builder.load_binary(file_path.to_string(), &vfs::NativeFileSource) {
         Ok(root_id) => builder.build(root_id, stdlib_id),
         Err(vfs::LoadError::ReadFailed { path }) => {
             eprintln!("error: cannot read file '{path}'");
