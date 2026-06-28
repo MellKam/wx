@@ -23,7 +23,7 @@ fn pointer_sub<M: Memory, T: Sized>(
   n: M::Size
 ) -> M::*T;
 
-impl<M: Memory, T: Sized> M::*T {
+impl<M: Memory, T: Sized> M|*T {
   #[inline]
   fn add(self, n: M::Size) -> Self {
     pointer_add(self, n)

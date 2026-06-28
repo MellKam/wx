@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use string_interner::symbol::SymbolU32;
 
 use crate::ast::{self, DefIdGenerator};
-use crate::tir;
+use crate::tir::{self, ItemAttribute};
 
 pub type LocalIndex = u32;
 pub type ScopeIndex = u32;
@@ -200,6 +200,21 @@ pub enum ExprKind {
     MemoryGrow {
         memory: ast::DefId,
         delta: Box<Expression>,
+    },
+    /// `memory.fill` — fill a region of linear memory with a byte value.
+    MemoryFill {
+        memory: ast::DefId,
+        dst: Box<Expression>,
+        val: Box<Expression>,
+        len: Box<Expression>,
+    },
+    /// `memory.copy` — copy a region between (possibly different) linear memories.
+    MemoryCopy {
+        dst_memory: ast::DefId,
+        src_memory: ast::DefId,
+        dst: Box<Expression>,
+        src: Box<Expression>,
+        len: Box<Expression>,
     },
     /// Load a value from the address held in `pointer`.
     PointerLoad {
@@ -461,6 +476,10 @@ impl MIR {
             if func.body.is_some()
                 && func.total_type_param_count() == 0
                 && !tir.is_import_namespace(func.namespace)
+                && !func
+                    .attributes
+                    .iter()
+                    .any(|attr| *attr == ItemAttribute::Intrinsic)
             {
                 if func
                     .attributes
@@ -1565,6 +1584,22 @@ impl<'tir> Builder<'tir> {
                 type_args,
                 arguments,
             } => {
+                let func_index = self.tir.expect_function_index(*id);
+                let func = &self.tir.functions[func_index as usize];
+                if func.attributes.iter().any(|attr| match attr {
+                    tir::ItemAttribute::Intrinsic => true,
+                    _ => false,
+                }) {
+                    return self.lower_intrinsic(
+                        func_ctx,
+                        func.name.inner,
+                        expr.ty,
+                        type_args,
+                        arguments,
+                        sink,
+                    );
+                }
+
                 // Substitute any TypeParam entries in type_args through
                 // current_substitutions.  Without this, a generic calling another
                 // generic (e.g. `call_wrap<T>` calling `wrap<T>`) would register
@@ -1615,7 +1650,6 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
-
             tir::ExprKind::GenericMethodCall {
                 id,
                 type_args,
@@ -1682,9 +1716,28 @@ impl<'tir> Builder<'tir> {
                     ty: self.lower_type_index(expr.ty),
                 }
             }
-
             tir::ExprKind::Call { callee, arguments } => {
                 let callee = Box::new(self.lower_expression(func_ctx, callee, sink));
+                match callee.kind {
+                    ExprKind::Function { id } => {
+                        let func_index = self.tir.expect_function_index(id);
+                        let func = &self.tir.functions[func_index as usize];
+                        if func.attributes.iter().any(|attr| match attr {
+                            tir::ItemAttribute::Intrinsic => true,
+                            _ => false,
+                        }) {
+                            return self.lower_intrinsic(
+                                func_ctx,
+                                func.name.inner,
+                                expr.ty,
+                                &[],
+                                arguments,
+                                sink,
+                            );
+                        }
+                    }
+                    _ => {}
+                };
                 let arguments = arguments
                     .iter()
                     .map(|arg| self.lower_expression(func_ctx, arg, sink))
@@ -1858,162 +1911,6 @@ impl<'tir> Builder<'tir> {
                 Expression {
                     kind: ExprKind::Aggregate { values },
                     ty: Type::Aggregate { aggregate_index },
-                }
-            }
-            tir::ExprKind::IntrinsicCall {
-                name,
-                type_arguments: type_args,
-                arguments,
-            } => {
-                let name_str = self.interner.resolve(*name).unwrap_or("");
-                match name_str {
-                    "@memory_grow" => {
-                        let raw_ty = type_args[0];
-                        let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
-                            tir::Type::TypeParam { param_index, .. } => self
-                                .current_substitutions
-                                .get(*param_index as usize)
-                                .copied()
-                                .unwrap_or(raw_ty),
-                            _ => raw_ty,
-                        };
-                        let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
-                            tir::Type::Memory { id, .. } => *id,
-                            _ => unreachable!("@memory_grow type arg must be a Memory type"),
-                        };
-                        let delta = Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
-                        Expression {
-                            kind: ExprKind::MemoryGrow { memory, delta },
-                            ty: self.lower_type_index(expr.ty),
-                        }
-                    }
-                    "@memory_size" => {
-                        let raw_ty = type_args[0];
-                        let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
-                            tir::Type::TypeParam { param_index, .. } => self
-                                .current_substitutions
-                                .get(*param_index as usize)
-                                .copied()
-                                .unwrap_or(raw_ty),
-                            _ => raw_ty,
-                        };
-                        let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
-                            tir::Type::Memory { id, .. } => *id,
-                            _ => unreachable!("@memory_size type arg must be a Memory type"),
-                        };
-                        Expression {
-                            kind: ExprKind::MemorySize { memory },
-                            ty: self.lower_type_index(expr.ty),
-                        }
-                    }
-                    "@slice_len" => {
-                        let result_ty = self.lower_type_index(expr.ty);
-                        let slice_arg = &arguments[0];
-                        match &slice_arg.kind {
-                            tir::ExprKind::Local {
-                                scope_index,
-                                local_index,
-                            } => Expression {
-                                kind: ExprKind::AggregateGet {
-                                    scope_index: *scope_index,
-                                    local_index: *local_index,
-                                    value_index: 1,
-                                },
-                                ty: result_ty,
-                            },
-                            _ => {
-                                let slice_ty = self.lower_type_index(slice_arg.ty);
-                                let lowered = self.lower_expression(func_ctx, slice_arg, sink);
-                                let temp_idx = func_ctx.frame[0].locals.len() as u32;
-                                func_ctx.frame[0].locals.push(Local {
-                                    ty: slice_ty,
-                                    mutability: Mutability::Immutable,
-                                });
-                                sink.push(Expression {
-                                    kind: ExprKind::LocalSet {
-                                        scope_index: 0,
-                                        local_index: temp_idx,
-                                        value: Box::new(lowered),
-                                    },
-                                    ty: Type::Unit,
-                                });
-                                Expression {
-                                    kind: ExprKind::AggregateGet {
-                                        scope_index: 0,
-                                        local_index: temp_idx,
-                                        value_index: 1,
-                                    },
-                                    ty: result_ty,
-                                }
-                            }
-                        }
-                    }
-                    "@slice_from_parts" => {
-                        let data = self.lower_expression(func_ctx, &arguments[0], sink);
-                        let len = self.lower_expression(func_ctx, &arguments[1], sink);
-                        let result_ty = self.lower_type_index(expr.ty);
-                        Expression {
-                            kind: ExprKind::Aggregate {
-                                values: Box::new([data, len]),
-                            },
-                            ty: result_ty,
-                        }
-                    }
-                    "@size_of" => {
-                        let raw_ty = type_args[0];
-                        let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {
-                            tir::Type::TypeParam { param_index, .. } => self
-                                .current_substitutions
-                                .get(*param_index as usize)
-                                .copied()
-                                .unwrap_or(raw_ty),
-                            _ => raw_ty,
-                        };
-                        let layout = self.compute_layout(concrete_t);
-                        Expression {
-                            kind: ExprKind::Int {
-                                value: layout.size as i64,
-                            },
-                            ty: self.lower_type_index(expr.ty),
-                        }
-                    }
-                    "@align_of" => {
-                        let raw_ty = type_args[0];
-                        let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {
-                            tir::Type::TypeParam { param_index, .. } => self
-                                .current_substitutions
-                                .get(*param_index as usize)
-                                .copied()
-                                .unwrap_or(raw_ty),
-                            _ => raw_ty,
-                        };
-                        let layout = self.compute_layout(concrete_t);
-                        Expression {
-                            kind: ExprKind::Int {
-                                value: layout.align as i64,
-                            },
-                            ty: self.lower_type_index(expr.ty),
-                        }
-                    }
-                    "@i64_extend_i32" => Expression {
-                        kind: ExprKind::I64ExtendI32S {
-                            value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
-                        },
-                        ty: self.lower_type_index(expr.ty),
-                    },
-                    "@u64_extend_u32" => Expression {
-                        kind: ExprKind::I64ExtendI32U {
-                            value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
-                        },
-                        ty: self.lower_type_index(expr.ty),
-                    },
-                    "@i32_wrap_i64" => Expression {
-                        kind: ExprKind::I32WrapI64 {
-                            value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
-                        },
-                        ty: self.lower_type_index(expr.ty),
-                    },
-                    name => todo!("MIR lowering for intrinsic '{name}'"),
                 }
             }
             tir::ExprKind::TupleInit { elements } => {
@@ -2563,6 +2460,225 @@ impl<'tir> Builder<'tir> {
         }
     }
 
+    fn lower_intrinsic(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        name: SymbolU32,
+        expr_ty: tir::TypeIndex,
+        type_args: &[tir::TypeIndex],
+        arguments: &[tir::Expression],
+        sink: &mut Vec<Expression>,
+    ) -> Expression {
+        let name_str = self.interner.resolve(name).unwrap();
+        match name_str {
+            "memory_grow" => {
+                let raw_ty = type_args[0];
+                let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+                    tir::Type::TypeParam { param_index, .. } => self
+                        .current_substitutions
+                        .get(*param_index as usize)
+                        .copied()
+                        .unwrap_or(raw_ty),
+                    _ => raw_ty,
+                };
+                let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
+                    tir::Type::Memory { id, .. } => *id,
+                    _ => unreachable!("memory_grow type arg must be a Memory type"),
+                };
+                let delta = Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
+                Expression {
+                    kind: ExprKind::MemoryGrow { memory, delta },
+                    ty: self.lower_type_index(expr_ty),
+                }
+            }
+            "memory_size" => {
+                let raw_ty = type_args[0];
+                let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+                    tir::Type::TypeParam { param_index, .. } => self
+                        .current_substitutions
+                        .get(*param_index as usize)
+                        .copied()
+                        .unwrap_or(raw_ty),
+                    _ => raw_ty,
+                };
+                let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
+                    tir::Type::Memory { id, .. } => *id,
+                    _ => unreachable!("memory_size type arg must be a Memory type"),
+                };
+                Expression {
+                    kind: ExprKind::MemorySize { memory },
+                    ty: self.lower_type_index(expr_ty),
+                }
+            }
+            "slice_len" => {
+                let result_ty = self.lower_type_index(expr_ty);
+                let slice_arg = &arguments[0];
+                match &slice_arg.kind {
+                    tir::ExprKind::Local {
+                        scope_index,
+                        local_index,
+                    } => Expression {
+                        kind: ExprKind::AggregateGet {
+                            scope_index: *scope_index,
+                            local_index: *local_index,
+                            value_index: 1,
+                        },
+                        ty: result_ty,
+                    },
+                    _ => {
+                        let slice_ty = self.lower_type_index(slice_arg.ty);
+                        let lowered = self.lower_expression(func_ctx, slice_arg, sink);
+                        let temp_idx = func_ctx.frame[0].locals.len() as u32;
+                        func_ctx.frame[0].locals.push(Local {
+                            ty: slice_ty,
+                            mutability: Mutability::Immutable,
+                        });
+                        sink.push(Expression {
+                            kind: ExprKind::LocalSet {
+                                scope_index: 0,
+                                local_index: temp_idx,
+                                value: Box::new(lowered),
+                            },
+                            ty: Type::Unit,
+                        });
+                        Expression {
+                            kind: ExprKind::AggregateGet {
+                                scope_index: 0,
+                                local_index: temp_idx,
+                                value_index: 1,
+                            },
+                            ty: result_ty,
+                        }
+                    }
+                }
+            }
+            "slice_from_parts" => {
+                let data = self.lower_expression(func_ctx, &arguments[0], sink);
+                let len = self.lower_expression(func_ctx, &arguments[1], sink);
+                let result_ty = self.lower_type_index(expr_ty);
+                Expression {
+                    kind: ExprKind::Aggregate {
+                        values: Box::new([data, len]),
+                    },
+                    ty: result_ty,
+                }
+            }
+            "size_of" => {
+                let raw_ty = type_args[0];
+                let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {
+                    tir::Type::TypeParam { param_index, .. } => self
+                        .current_substitutions
+                        .get(*param_index as usize)
+                        .copied()
+                        .unwrap_or(raw_ty),
+                    _ => raw_ty,
+                };
+                let layout = self.compute_layout(concrete_t);
+                Expression {
+                    kind: ExprKind::Int {
+                        value: layout.size as i64,
+                    },
+                    ty: self.lower_type_index(expr_ty),
+                }
+            }
+            "align_of" => {
+                let raw_ty = type_args[0];
+                let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {
+                    tir::Type::TypeParam { param_index, .. } => self
+                        .current_substitutions
+                        .get(*param_index as usize)
+                        .copied()
+                        .unwrap_or(raw_ty),
+                    _ => raw_ty,
+                };
+                let layout = self.compute_layout(concrete_t);
+                Expression {
+                    kind: ExprKind::Int {
+                        value: layout.align as i64,
+                    },
+                    ty: self.lower_type_index(expr_ty),
+                }
+            }
+            "i64_extend_i32" => Expression {
+                kind: ExprKind::I64ExtendI32S {
+                    value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
+                },
+                ty: self.lower_type_index(expr_ty),
+            },
+            "u64_extend_u32" => Expression {
+                kind: ExprKind::I64ExtendI32U {
+                    value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
+                },
+                ty: self.lower_type_index(expr_ty),
+            },
+            "i32_wrap_i64" => Expression {
+                kind: ExprKind::I32WrapI64 {
+                    value: Box::new(self.lower_expression(func_ctx, &arguments[0], sink)),
+                },
+                ty: self.lower_type_index(expr_ty),
+            },
+            "memory_fill" => {
+                let raw_ty = type_args[0];
+                let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+                    tir::Type::TypeParam { param_index, .. } => self
+                        .current_substitutions
+                        .get(*param_index as usize)
+                        .copied()
+                        .unwrap_or(raw_ty),
+                    _ => raw_ty,
+                };
+                let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
+                    tir::Type::Memory { id, .. } => *id,
+                    _ => unreachable!("memory_fill type arg must be a Memory type"),
+                };
+                let dst = Box::new(self.lower_expression(func_ctx, &arguments[0], sink));
+                let val = Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
+                let len = Box::new(self.lower_expression(func_ctx, &arguments[2], sink));
+                Expression {
+                    kind: ExprKind::MemoryFill {
+                        memory,
+                        dst,
+                        val,
+                        len,
+                    },
+                    ty: Type::Unit,
+                }
+            }
+            "memory_copy" => {
+                let resolve_memory = |raw_ty: tir::TypeIndex| {
+                    let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+                        tir::Type::TypeParam { param_index, .. } => self
+                            .current_substitutions
+                            .get(*param_index as usize)
+                            .copied()
+                            .unwrap_or(raw_ty),
+                        _ => raw_ty,
+                    };
+                    match &self.tir.type_pool[mem_ty.as_usize()] {
+                        tir::Type::Memory { id, .. } => *id,
+                        _ => unreachable!("memory_copy type arg must be a Memory type"),
+                    }
+                };
+                let src_memory = resolve_memory(type_args[1]);
+                let dst_memory = resolve_memory(type_args[2]);
+                let dst = Box::new(self.lower_expression(func_ctx, &arguments[0], sink));
+                let src = Box::new(self.lower_expression(func_ctx, &arguments[1], sink));
+                let len = Box::new(self.lower_expression(func_ctx, &arguments[2], sink));
+                Expression {
+                    kind: ExprKind::MemoryCopy {
+                        dst_memory,
+                        src_memory,
+                        dst,
+                        src,
+                        len,
+                    },
+                    ty: Type::Unit,
+                }
+            }
+            name => unreachable!("cannot lower unknown intrinsic `{name}`"),
+        }
+    }
+
     fn lower_assignment(
         &mut self,
         func_ctx: &mut FunctionContext,
@@ -2744,6 +2860,41 @@ impl<'tir> Builder<'tir> {
                     value: Box::new(binary_expr),
                     offset,
                     memory: self.resolve_memory_id(*memory),
+                }
+            }
+            tir::ExprKind::ObjectAccess { object, member } => {
+                let (struct_index, args) = match &self.tir.type_pool[object.ty.as_usize()] {
+                    tir::Type::Struct { struct_index, args } => (*struct_index, args.clone()),
+                    _ => unreachable!("ObjectAccess on non-struct type"),
+                };
+                let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
+                let decl_index =
+                    self.tir.structs[struct_index as usize].lookup[&member.inner] as usize;
+                let phys_index =
+                    self.aggregates[aggregate_index as usize].decl_to_phys[decl_index] as usize;
+                match &object.kind {
+                    tir::ExprKind::Deref { pointer, memory } => {
+                        let field_offset =
+                            self.aggregates[aggregate_index as usize].offsets[phys_index];
+                        ExprKind::PointerStore {
+                            pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
+                            value: Box::new(binary_expr),
+                            offset: field_offset,
+                            memory: self.resolve_memory_id(*memory),
+                        }
+                    }
+                    tir::ExprKind::Local {
+                        scope_index,
+                        local_index,
+                    } => ExprKind::AggregateSet {
+                        scope_index: *scope_index,
+                        local_index: *local_index,
+                        value_index: phys_index as u32,
+                        value: Box::new(binary_expr),
+                    },
+                    _ => unreachable!(
+                        "ObjectAccess compound assignment with unsupported object kind"
+                    ),
                 }
             }
             _ => unreachable!(),
@@ -2948,6 +3099,30 @@ fn rewrite_body(
             memory,
             delta: rw_box(delta),
         },
+        ExprKind::MemoryFill {
+            memory,
+            dst,
+            val,
+            len,
+        } => ExprKind::MemoryFill {
+            memory,
+            dst: rw_box(dst),
+            val: rw_box(val),
+            len: rw_box(len),
+        },
+        ExprKind::MemoryCopy {
+            dst_memory,
+            src_memory,
+            dst,
+            src,
+            len,
+        } => ExprKind::MemoryCopy {
+            dst_memory,
+            src_memory,
+            dst: rw_box(dst),
+            src: rw_box(src),
+            len: rw_box(len),
+        },
         ExprKind::PointerLoad {
             pointer,
             offset,
@@ -3146,6 +3321,16 @@ fn inline_expr(
         }
         ExprKind::MemoryGrow { delta, .. } => {
             inline_expr(delta, caller_scopes, inline_id, inline_body, current_scope)
+        }
+        ExprKind::MemoryFill { dst, val, len, .. } => {
+            inline_expr(dst, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(val, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(len, caller_scopes, inline_id, inline_body, current_scope);
+        }
+        ExprKind::MemoryCopy { dst, src, len, .. } => {
+            inline_expr(dst, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(src, caller_scopes, inline_id, inline_body, current_scope);
+            inline_expr(len, caller_scopes, inline_id, inline_body, current_scope);
         }
         ExprKind::PointerLoad { pointer, .. } => inline_expr(
             pointer,

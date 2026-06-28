@@ -1,0 +1,121 @@
+---
+source: crates/wx-compiler/src/mir/tests.rs
+expression: case.mir
+---
+functions:
+  - id: 47
+    signature_index: 2
+    scopes:
+      - kind: Block
+        parent: ~
+        locals:
+          - ty:
+              Pointer:
+                memory: 45
+            mutability: Immutable
+          - ty:
+              Aggregate:
+                aggregate_index: 0
+            mutability: Immutable
+        result: Unit
+    block:
+      kind:
+        Block:
+          scope_index: 0
+          expressions:
+            - kind:
+                LocalSet:
+                  scope_index: 0
+                  local_index: 1
+                  value:
+                    kind:
+                      PointerLoad:
+                        pointer:
+                          kind:
+                            LocalGet:
+                              scope_index: 0
+                              local_index: 0
+                          ty:
+                            Pointer:
+                              memory: 45
+                        offset: 0
+                        memory: 45
+                    ty:
+                      Aggregate:
+                        aggregate_index: 0
+              ty: Unit
+            - kind:
+                PointerStore:
+                  pointer:
+                    kind:
+                      LocalGet:
+                        scope_index: 0
+                        local_index: 0
+                    ty:
+                      Pointer:
+                        memory: 45
+                  value:
+                    kind:
+                      Add:
+                        left:
+                          kind:
+                            AggregateGet:
+                              scope_index: 0
+                              local_index: 1
+                              value_index: 1
+                          ty: U32
+                        right:
+                          kind:
+                            Int:
+                              value: 1
+                          ty: U32
+                    ty: U32
+                  offset: 4
+                  memory: 45
+              ty: Unit
+      ty: Unit
+    static_data: []
+signatures:
+  - items:
+      - U32
+      - Bool
+    params_count: 1
+  - items:
+      - U32
+      - U32
+    params_count: 1
+  - items:
+      - Pointer:
+          memory: 45
+      - Unit
+    params_count: 1
+globals: []
+exports:
+  - Function:
+      id: 47
+      name: 76
+imports: []
+memories:
+  - id: 45
+    source: Internal
+    kind: Memory32
+    min_pages: ~
+    max_pages: ~
+aggregates:
+  - values:
+      - U32
+      - U32
+      - U32
+    offsets:
+      - 0
+      - 4
+      - 8
+    layout:
+      size: 12
+      align: 4
+    decl_to_phys:
+      - 0
+      - 1
+      - 2
+static_entries: []
+start_function: ~

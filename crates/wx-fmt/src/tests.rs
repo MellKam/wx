@@ -349,6 +349,38 @@ fn test_format_struct_items() {
 }
 
 #[test]
+fn test_format_generic_struct_stays_inline() {
+    let case = TestCase::new(indoc! {"
+        struct Pair<A, B> { first: A, second: B }
+
+        struct Wrapper<T> { value: T }
+    "});
+    let output = format(
+        &case.ast,
+        &case.interner,
+        &case.files.get(case.ast.file_id).unwrap().source,
+        RendererConfig {
+            max_line_width: 80,
+            indent_width: 4,
+            trailing_comma: true,
+        },
+    );
+    assert_eq!(
+        output,
+        indoc! {"
+            struct Pair<A, B> {
+                first: A,
+                second: B,
+            }
+
+            struct Wrapper<T> {
+                value: T,
+            }
+        "}
+    );
+}
+
+#[test]
 fn test_format_generic_function() {
     let case = TestCase::new(indoc! {"
         fn identity<T>(value: T) -> T {
@@ -970,11 +1002,7 @@ fn test_format_long_type_params_wrap() {
                 Size: PointerSize,
                 SrcMem: Memory where { Size = Size },
                 DstMem: Memory where { Size = Size },
-            >(
-                dst: DstMem::*mut u8,
-                src: SrcMem::*u8,
-                len: Size,
-            ) {}
+            >(dst: DstMem::*mut u8, src: SrcMem::*u8, len: Size) {}
         "},
     );
 }

@@ -212,7 +212,7 @@ fn test_memory_data_end_lowers_to_memory_offset() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
-        pub fn f() -> heap::*mut u8 {
+        pub fn f() -> heap::*u8 {
             heap::DATA_END
         }
 
@@ -244,7 +244,7 @@ fn test_slice_len_lowers_to_aggregate_get() {
         memory heap: Memory where { Size = u32 };
 
         pub fn f(s: heap::[]u8) -> u32 {
-            @slice_len(s)
+            slice_len(s)
         }
 
         export { f }
@@ -261,7 +261,7 @@ fn test_slice_from_parts_lowers_to_aggregate() {
         memory heap: Memory where { Size = u32 };
 
         pub fn f(ptr: heap::*u8, len: u32) -> heap::[]u8 {
-            @slice_from_parts(ptr, len)
+            slice_from_parts(ptr, len)
         }
 
         export { f }
@@ -937,10 +937,10 @@ fn test_size_of_lowers_to_const_int() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
-        fn size_u8() -> u32 { @size_of::<u8, heap>() }
-        fn size_u32() -> u32 { @size_of::<u32, heap>() }
-        fn size_u64() -> u32 { @size_of::<u64, heap>() }
-        fn size_u16() -> u32 { @size_of::<u16, heap>() }
+        fn size_u8() -> u32 { size_of::<u8, heap>() }
+        fn size_u32() -> u32 { size_of::<u32, heap>() }
+        fn size_u64() -> u32 { size_of::<u64, heap>() }
+        fn size_u16() -> u32 { size_of::<u16, heap>() }
 
         export { size_u8, size_u32, size_u64, size_u16 }
     "});
@@ -953,9 +953,9 @@ fn test_align_of_lowers_to_const_int() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
-        fn align_u8() -> u32 { @align_of::<u8, heap>() }
-        fn align_u32() -> u32 { @align_of::<u32, heap>() }
-        fn align_u64() -> u32 { @align_of::<u64, heap>() }
+        fn align_u8() -> u32 { align_of::<u8, heap>() }
+        fn align_u32() -> u32 { align_of::<u32, heap>() }
+        fn align_u64() -> u32 { align_of::<u64, heap>() }
 
         export { align_u8, align_u32, align_u64 }
     "});
@@ -970,7 +970,7 @@ fn test_size_of_generic_monomorphizes() {
     let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
-        fn typed_size<T, M: Memory>() -> M::Size { @size_of::<T, M>() }
+        fn typed_size<T, M: Memory>() -> M::Size { size_of::<T, M>() }
 
         fn call_u8() -> u32 { typed_size::<u8, heap>() }
         fn call_u32() -> u32 { typed_size::<u32, heap>() }
@@ -988,7 +988,7 @@ fn test_generic_impl_slice_len_method_lowers_correctly() {
 
         impl<M: Memory, T> M::[]T {
             pub fn len(self) -> M::Size {
-                @slice_len(self)
+                slice_len(self)
             }
         }
 
@@ -999,5 +999,63 @@ fn test_generic_impl_slice_len_method_lowers_correctly() {
         export { get_len }
     "});
     assert!(case.tir.diagnostics.is_empty());
+    insta::assert_yaml_snapshot!(case.mir);
+
+}
+
+#[test]
+fn test_compound_assign_through_ptr_deref_on_struct_field() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+
+        struct Vec {
+            buf: u32,
+            len: u32,
+            cap: u32,
+        }
+
+        fn increment_len(p: heap::*mut Vec) {
+            p.*.len += 1;
+        }
+
+        export { increment_len }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected TIR diagnostics: {:?}",
+        case.tir.diagnostics
+    );
+    insta::assert_yaml_snapshot!(case.mir);
+}
+
+#[test]
+#[ignore = "method lookup for pointer receivers not yet implemented"]
+fn test_generic_compound_assign_through_ptr_deref() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+
+        struct Vec<T> {
+            buf: u32,
+            len: u32,
+            cap: u32,
+        }
+
+        impl<T> Vec<T> {
+            pub fn increment_len(self: heap::*mut Self) {
+                self.*.len += 1;
+            }
+        }
+
+        fn call_it(p: heap::*mut Vec<u32>) {
+            p.increment_len();
+        }
+
+        export { call_it }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected TIR diagnostics: {:?}",
+        case.tir.diagnostics
+    );
     insta::assert_yaml_snapshot!(case.mir);
 }

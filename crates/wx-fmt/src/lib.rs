@@ -35,7 +35,7 @@ define_text! {
         Fn      => "fn ",
         Pub     => "pub ",
         Struct  => "struct ",
-        Impl    => "impl ",
+        Impl    => "impl",
         Trait   => "trait ",
         Module  => "module ",
         Use     => "use ",
@@ -437,12 +437,6 @@ impl<'a> Builder<'a> {
                 items.push(self.text(Text::Semi));
                 self.arena.concat(items)
             }
-            ast::Item::IntrinsicFunction { signature, .. } => {
-                let mut items: Vec<NodeId> = Vec::new();
-                self.build_function_signature(&mut items, signature);
-                items.push(self.text(Text::Semi));
-                self.arena.concat(items)
-            }
             ast::Item::Global {
                 pub_span,
                 mut_span,
@@ -704,9 +698,7 @@ impl<'a> Builder<'a> {
     ) -> NodeId {
         let mut nodes: Vec<NodeId> = vec![self.text(Text::Impl)];
         self.build_type_params(&mut nodes, type_params);
-        if !type_params.is_empty() {
-            nodes.push(self.text(Text::Space));
-        }
+        nodes.push(self.text(Text::Space));
         nodes.push(self.build_type_expression(&target.inner));
         nodes.push(self.text(Text::SpaceLBrace));
 
@@ -730,11 +722,12 @@ impl<'a> Builder<'a> {
         items: &[ast::Separated<ast::Spanned<ast::ImplItem>>],
     ) -> NodeId {
         let impl_kw = self.text(Text::Impl);
+        let sp = self.text(Text::Space);
         let trait_id = self.build_path_segments(trait_name);
         let for_kw = self.text(Text::ForKw);
         let target_id = self.build_type_expression(&target.inner);
         let brace = self.text(Text::SpaceLBrace);
-        let mut nodes: Vec<NodeId> = vec![impl_kw, trait_id, for_kw, target_id, brace];
+        let mut nodes: Vec<NodeId> = vec![impl_kw, sp, trait_id, for_kw, target_id, brace];
 
         if !items.is_empty() {
             let body = self.build_impl_item_list(items);
@@ -1072,6 +1065,10 @@ impl<'a> Builder<'a> {
         for attr in attributes {
             out.push(self.text(Text::HashLBracket));
             out.push(self.symbol(attr.name.inner));
+            if let ast::AttributeValue::NameValue(value) = &attr.value {
+                out.push(self.text(Text::EqSp));
+                out.push(self.symbol(value.inner));
+            }
             out.push(self.text(Text::RBracket));
             out.push(self.hard_line());
         }
@@ -1081,7 +1078,7 @@ impl<'a> Builder<'a> {
         if type_params.is_empty() {
             return;
         }
-        out.push(self.text(Text::Lt));
+        let mut nodes: Vec<NodeId> = vec![self.text(Text::Lt)];
         let mut inner: Vec<NodeId> = vec![self.line()];
         for (index, param) in type_params.iter().enumerate() {
             inner.push(self.symbol(param.name.inner));
@@ -1097,9 +1094,11 @@ impl<'a> Builder<'a> {
             }
         }
         let inner_concat = self.arena.concat(inner);
-        out.push(self.arena.indent(inner_concat));
-        out.push(self.line());
-        out.push(self.text(Text::Gt));
+        nodes.push(self.arena.indent(inner_concat));
+        nodes.push(self.line());
+        nodes.push(self.text(Text::Gt));
+        let concat = self.arena.concat(nodes);
+        out.push(self.arena.group(concat));
     }
 
     fn build_function_signature(
@@ -1110,7 +1109,7 @@ impl<'a> Builder<'a> {
         out.push(self.text(Text::Fn));
         out.push(self.symbol(signature.name.inner));
         self.build_type_params(out, &signature.type_params);
-        out.push(self.text(Text::LParen));
+        let mut paren_nodes: Vec<NodeId> = vec![self.text(Text::LParen)];
 
         if !signature.params.is_empty() {
             let mut params: Vec<NodeId> = vec![self.line()];
@@ -1131,11 +1130,13 @@ impl<'a> Builder<'a> {
                 }
             }
             let params_concat = self.arena.concat(params);
-            out.push(self.arena.indent(params_concat));
-            out.push(self.line());
+            paren_nodes.push(self.arena.indent(params_concat));
+            paren_nodes.push(self.line());
         }
 
-        out.push(self.text(Text::RParen));
+        paren_nodes.push(self.text(Text::RParen));
+        let paren_concat = self.arena.concat(paren_nodes);
+        out.push(self.arena.group(paren_concat));
         if let Some(result) = &signature.result {
             out.push(self.text(Text::Arrow));
             out.push(self.build_type_expression(&result.inner));
@@ -1417,7 +1418,7 @@ impl<'a> Builder<'a> {
                 let operand_id = self.build_expression(operand);
                 self.arena.concat2(op_id, operand_id)
             }
-            ast::Expression::String { .. } | ast::Expression::Char { .. } => {
+            ast::Expression::String | ast::Expression::Char => {
                 self.source_text(expression.span)
             }
             ast::Expression::ObjectAccess { object, member } => {
@@ -1499,32 +1500,6 @@ impl<'a> Builder<'a> {
                     items.push(self.build_type_expression(&arg.inner));
                 }
                 items.push(self.text(Text::Gt));
-                self.arena.concat(items)
-            }
-            ast::Expression::IntrinsicCall {
-                name,
-                type_args,
-                arguments,
-            } => {
-                let mut items: Vec<NodeId> = vec![self.symbol(name.inner)];
-                if !type_args.is_empty() {
-                    items.push(self.text(Text::ColonColonLt));
-                    for (i, arg) in type_args.iter().enumerate() {
-                        if i > 0 {
-                            items.push(self.text(Text::CommaSp));
-                        }
-                        items.push(self.build_type_expression(&arg.inner));
-                    }
-                    items.push(self.text(Text::Gt));
-                }
-                items.push(self.text(Text::LParen));
-                for (index, arg) in arguments.iter().enumerate() {
-                    items.push(self.build_expression(&arg.inner));
-                    if index + 1 < arguments.len() {
-                        items.push(self.text(Text::CommaSp));
-                    }
-                }
-                items.push(self.text(Text::RParen));
                 self.arena.concat(items)
             }
             ast::Expression::ArrayList { elements } => {

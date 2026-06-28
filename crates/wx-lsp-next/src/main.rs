@@ -1192,13 +1192,11 @@ fn push_type_params(
             s.push_str(", ");
         }
         s.push_str(interner.resolve(tp.name).unwrap_or("?"));
-        for (bi, trait_bound) in tp.bounds.iter().enumerate() {
-            s.push_str(if bi == 0 { ": " } else { " + " });
-            s.push_str(
-                interner
-                    .resolve(tir.traits[trait_bound.trait_index as usize].name.inner)
-                    .unwrap_or("?"),
-            );
+        let has_bounds = !tp.bounds.traits.is_empty() || tp.bounds.typeset.is_some();
+        if has_bounds {
+            s.push_str(": ");
+            let fmt = tir.formatter(interner);
+            s.push_str(&fmt.display_bounds(&tp.bounds).unwrap_or_default());
         }
     }
     s.push('>');
@@ -1350,7 +1348,7 @@ fn symbol_hover_text(
                 }
                 TypeParamOwner::ImplBlock(block_idx) => tir
                     .generic_impl_list
-                    .get(*block_idx)?
+                    .get(*block_idx as usize)?
                     .type_params
                     .get(param_index)?,
                 TypeParamOwner::Trait(trait_idx) => {
@@ -1359,17 +1357,11 @@ fn symbol_hover_text(
                 }
             };
             let name = interner.resolve(tp.name).unwrap_or("?");
-            if tp.bounds.is_empty() {
+            let bounds_str = fmt.display_bounds(&tp.bounds).unwrap_or_default();
+            if bounds_str.is_empty() {
                 Some(name.to_string())
             } else {
-                let bounds = tp
-                    .bounds
-                    .iter()
-                    .filter_map(|trait_bound| tir.traits.get(trait_bound.trait_index as usize))
-                    .map(|t| interner.resolve(t.name.inner).unwrap_or("?"))
-                    .collect::<Vec<_>>()
-                    .join(" + ");
-                Some(format!("{name}: {bounds}"))
+                Some(format!("{name}: {bounds_str}"))
             }
         }
         SymbolKind::Label { .. } => None,
@@ -1429,19 +1421,11 @@ fn symbol_hover_text(
             let trait_ = tir.traits.get(tir.trait_index(*trait_id)? as usize)?;
             let at = trait_.assoc_types.get(assoc_name)?;
             let name = interner.resolve(*assoc_name).unwrap_or("?");
-            if at.bounds.is_empty() {
+            let bounds_str = fmt.display_bounds(&at.bounds).unwrap_or_default();
+            if bounds_str.is_empty() {
                 Some(format!("type {name}"))
             } else {
-                let bounds: Vec<&str> = at
-                    .bounds
-                    .iter()
-                    .filter_map(|&ti| {
-                        tir.traits
-                            .get(ti as usize)
-                            .and_then(|t| interner.resolve(t.name.inner))
-                    })
-                    .collect();
-                Some(format!("type {name}: {}", bounds.join(" + ")))
+                Some(format!("type {name}: {bounds_str}"))
             }
         }
     }

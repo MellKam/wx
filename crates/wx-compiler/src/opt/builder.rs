@@ -708,6 +708,32 @@ impl<'mir> Builder<'mir> {
                 );
                 StackResult::Value(result_node)
             }
+            ExprKind::MemoryFill { memory, dst, val, len } => {
+                let dst = self.build_expr(block_idx, bindings, dst).unwrap_value();
+                let val = self.build_expr(block_idx, bindings, val).unwrap_value();
+                let len = self.build_expr(block_idx, bindings, len).unwrap_value();
+                self.push_stmt(
+                    block_idx,
+                    ControlNode::MemoryFill { memory: *memory, dst, val, len },
+                );
+                StackResult::Unit
+            }
+            ExprKind::MemoryCopy { dst_memory, src_memory, dst, src, len } => {
+                let dst = self.build_expr(block_idx, bindings, dst).unwrap_value();
+                let src = self.build_expr(block_idx, bindings, src).unwrap_value();
+                let len = self.build_expr(block_idx, bindings, len).unwrap_value();
+                self.push_stmt(
+                    block_idx,
+                    ControlNode::MemoryCopy {
+                        dst_memory: *dst_memory,
+                        src_memory: *src_memory,
+                        dst,
+                        src,
+                        len,
+                    },
+                );
+                StackResult::Unit
+            }
         }
     }
 

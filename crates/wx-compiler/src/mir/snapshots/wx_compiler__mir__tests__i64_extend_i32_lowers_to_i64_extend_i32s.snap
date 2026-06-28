@@ -3,29 +3,30 @@ source: crates/wx-compiler/src/mir/tests.rs
 expression: case.mir
 ---
 functions:
-  - id: 46
+  - id: 45
     signature_index: 2
     scopes:
       - kind: Block
         parent: ~
         locals:
-          - ty:
-              Aggregate:
-                aggregate_index: 0
+          - ty: I32
             mutability: Immutable
-        result: U32
+        result: I64
     block:
       kind:
         Block:
           scope_index: 0
           expressions:
             - kind:
-                AggregateGet:
-                  scope_index: 0
-                  local_index: 0
-                  value_index: 0
-              ty: U32
-      ty: U32
+                I64ExtendI32S:
+                  value:
+                    kind:
+                      LocalGet:
+                        scope_index: 0
+                        local_index: 0
+                    ty: I32
+              ty: I64
+      ty: I64
     static_data: []
 signatures:
   - items:
@@ -37,29 +38,16 @@ signatures:
       - U32
     params_count: 1
   - items:
-      - Aggregate:
-          aggregate_index: 0
-      - U32
+      - I32
+      - I64
     params_count: 1
 globals: []
 exports:
   - Function:
-      id: 46
-      name: 75
+      id: 45
+      name: 72
 imports: []
 memories: []
-aggregates:
-  - values:
-      - U32
-      - U32
-    offsets:
-      - 0
-      - 4
-    layout:
-      size: 8
-      align: 4
-    decl_to_phys:
-      - 0
-      - 1
+aggregates: []
 static_entries: []
 start_function: ~

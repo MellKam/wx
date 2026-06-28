@@ -181,6 +181,8 @@ pub enum Instruction {
     // Memory
     MemorySize(crate::ast::DefId),
     MemoryGrow(crate::ast::DefId),
+    MemoryFill(crate::ast::DefId),
+    MemoryCopy { dst: crate::ast::DefId, src: crate::ast::DefId },
     /// Wasm linear-memory index as an `i32.const`, resolved at codegen.
     MemoryIndex {
         memory: crate::ast::DefId,
@@ -598,6 +600,20 @@ impl<'f> Scheduler<'f> {
                 let local = self.alloc_local(scalar_ty);
                 self.node_to_local.insert(*result, local);
                 self.body.push(Instruction::LocalSet(local));
+            }
+
+            ControlNode::MemoryFill { memory, dst, val, len } => {
+                self.emit_value(*dst);
+                self.emit_value(*val);
+                self.emit_value(*len);
+                self.body.push(Instruction::MemoryFill(*memory));
+            }
+
+            ControlNode::MemoryCopy { dst_memory, src_memory, dst, src, len } => {
+                self.emit_value(*dst);
+                self.emit_value(*src);
+                self.emit_value(*len);
+                self.body.push(Instruction::MemoryCopy { dst: *dst_memory, src: *src_memory });
             }
 
             ControlNode::PointerStore {

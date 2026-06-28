@@ -11,7 +11,7 @@ WX is a Rust-implemented compiler for a language that targets WebAssembly. Synta
 ```bash
 # Build
 cargo build -p wx-compiler           # core library
-cargo build --release -p wx-compiler-cli  # CLI binary → target/release/wx-compiler
+cargo build --release -p wx-cli  # CLI binary → target/release/wx-compiler
 
 # Inspect WASM output (WABT is installed)
 wasm2wat output.wasm                 # disassemble to WAT text format

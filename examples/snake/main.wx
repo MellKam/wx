@@ -1,18 +1,18 @@
 memory heap: Memory where { Size = u32 };
 
-global mut bump: heap::*mut u8 = heap::DATA_END;
+global mut bump: heap::*u8 = heap::DATA_END;
 
-pub fn alloc<T>() -> heap::*mut T {
-  local align = @align_of::<T, heap>();
+pub fn alloc<T>() -> heap::*T {
+  local align = align_of::<T, heap>();
   local ptr = (bump as u32 + align - 1) / align * align;
-  local new_end = ptr + @size_of::<T, heap>();
+  local new_end = ptr + size_of::<T, heap>();
   local cur_end = heap.size() * PAGE_SIZE;
   if new_end > cur_end {
     local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
     _ = heap.grow(needed);
   }
-  bump = new_end as heap::*mut u8;
-  ptr as heap::*mut T
+  bump = new_end as heap::*u8;
+  ptr as heap::*T
 }
 
 import "host" {
@@ -30,10 +30,10 @@ const STEP_MS: i64 = 120;
 struct Node {
   x: i32,
   y: i32,
-  next: heap::*mut Node,
+  next: heap::*Node,
 }
 
-global mut head: heap::*mut Node = null_mut();
+global mut head: heap::*Node = ptr::null();
 global mut len: i32 = 0;
 global mut dir: i32 = 0;
 global mut food_x: i32 = 16;
@@ -43,9 +43,9 @@ global mut acc_ms: i64 = 0;
 pub fn node_new(
   value_x: i32,
   value_y: i32,
-  next: heap::*mut Node,
-) -> heap::*mut Node {
-  local n: heap::*mut Node = alloc::<Node>();
+  next: heap::*Node,
+) -> heap::*Node {
+  local n: heap::*Node = alloc::<Node>();
   n.* = Node::{ x: value_x, y: value_y, next: next };
   n
 }
@@ -58,15 +58,15 @@ pub fn push_front(x: i32, y: i32) {
 pub fn pop_back() {
   if head.is_null() { return; }
   if head.*.next.is_null() {
-    head = null_mut();
+    head = ptr::null();
     len = 0;
     return;
   }
-  local mut cur = head as *mut Node;
+  local mut cur = head as *Node;
   loop {
     local mut n = cur.*;
     if n.next.*.next.is_null() {
-      n.next = null_mut();
+      n.next = ptr::null();
       cur.* = n;
       len -= 1;
       break;
@@ -87,8 +87,8 @@ pub fn contains(x: i32, y: i32) -> bool {
 
 pub fn place_food() {
   local t = host::get_time_ms();
-  local mut fx = (@i32_wrap_i64(t) % GRID_W + GRID_W) % GRID_W;
-  local fy = ((@i32_wrap_i64(t) / 13) % GRID_H + GRID_H) % GRID_H;
+  local mut fx = (i32_wrap_i64(t) % GRID_W + GRID_W) % GRID_W;
+  local fy = ((i32_wrap_i64(t) / 13) % GRID_H + GRID_H) % GRID_H;
   if contains(fx, fy) { fx = (fx + 3) % GRID_W; }
   food_x = fx;
   food_y = fy;
@@ -106,7 +106,7 @@ pub fn start() {
 
 pub fn reset() {
   bump = heap::DATA_END;
-  head = null_mut();
+  head = ptr::null();
   len = 0;
   acc_ms = 0;
 }

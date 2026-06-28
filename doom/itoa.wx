@@ -1,0 +1,96 @@
+use std::*;
+
+memory heap: Memory where { Size = u32 } { min_pages: 1 };
+
+import "console" {
+  fn log(message: heap::[]u8);
+}
+
+// ── bump allocator ────────────────────────────────────────────────────────────
+
+global mut bump: heap::*u8 = heap::DATA_END;
+
+fn alloc_bytes(size: u32, align: u32) -> heap::*mut u8 {
+    local ptr = (bump as u32 + align - 1) / align * align;
+    local new_end = ptr + size;
+    local cur_end = heap.size() * PAGE_SIZE;
+    if new_end > cur_end {
+        local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        _ = heap.grow(needed);
+    }
+    bump = new_end as heap::*u8;
+    ptr as heap::*mut u8
+}
+
+fn alloc_array<T>(count: u32) -> heap::*mut T {
+    alloc_bytes(size_of::<T, heap>() * count, align_of::<T, heap>()) as _
+}
+
+#[inline]
+pub fn reset() {
+    bump = heap::DATA_END;
+}
+
+// ── integer -> string conversion ──────────────────────────────────────────────
+
+fn itoa(value: i32) -> heap::[]u8 {
+    local buf: heap::*mut u8 = alloc_array::<u8>(12);
+    local mut ptr: heap::*mut u8 = buf;
+    local mut len: u32 = 0;
+
+    local mut x: i64 = i64_extend_i32(value);
+    local mut neg: bool = false;
+    if x < 0 {
+        neg = true;
+        x = -x;
+    }
+
+    loop {
+        if x == 0 { break; }
+        local digit: i32 = i32_wrap_i64(x % 10);
+        ptr.* = (digit as u8) + ('0' as u8);
+        ptr = ptr::add_mut(ptr, 1);
+        len += 1;
+        x = x / 10;
+    };
+
+    if len == 0 {
+        ptr.* = '0' as u8;
+        ptr = ptr::add_mut(ptr, 1);
+        len = 1;
+    }
+
+    if neg {
+        ptr.* = '-' as u8;
+        ptr = ptr::add_mut(ptr, 1);
+        len += 1;
+    }
+
+    // Reverse the collected characters.
+    local mut i: u32 = 0;
+    loop {
+        if i * 2 >= len { break; }
+        local a = ptr::add(buf, i).*;
+        local b = ptr::add(buf, len - 1 - i).*;
+        ptr::add_mut(buf, i).* = b;
+        ptr::add_mut(buf, len - 1 - i).* = a;
+        i += 1;
+    };
+
+    slice_from_parts(buf, len)
+}
+
+pub fn demo() -> i32 {
+    console::log(itoa(0));
+    console::log(itoa(12345));
+    console::log(itoa(-98765));
+
+    reset();
+    0
+}
+
+export {
+    heap as "memory",
+    reset,
+    demo,
+}

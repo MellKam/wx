@@ -185,9 +185,9 @@ fn test_fn_pointer_param() {
 fn test_type_expression_forms() {
     let case = TestCase::new(indoc! {"
         struct TypeForms {
-            ptr: *mut u8,
-            slice: []mut u8,
-            array: [4]mut u8,
+            ptr: *u8,
+            slice: []u8,
+            array: [4]u8,
             tuple: (i32, u32),
             namespaced: math::Number,
         }
@@ -204,23 +204,16 @@ fn test_type_expression_forms() {
 
     assert!(matches!(
         Some(&fields[0].inner.inner.ty.inner),
-        Some(TypeExpression::Pointer {
-            mutability: Some(_),
-            ..
-        })
+        Some(TypeExpression::Pointer { .. })
     ));
     assert!(matches!(
         Some(&fields[1].inner.inner.ty.inner),
-        Some(TypeExpression::Slice {
-            mutability: Some(_),
-            ..
-        })
+        Some(TypeExpression::Slice { .. })
     ));
     assert!(matches!(
         Some(&fields[2].inner.inner.ty.inner),
         Some(TypeExpression::Array {
             size: Spanned { inner: 4, .. },
-            mutability: Some(_),
             ..
         })
     ));

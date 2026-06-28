@@ -808,13 +808,13 @@ fn test_global_init_if_expression_executes() {
 
 #[test]
 fn test_global_init_generic_null_pointer_executes() {
-    // global mut head: heap::*Node = null()
+    // global mut head: heap::*Node = ptr::null()
     // null() is a generic function: null<M: Memory, T>() -> M::*T
     // Type params must be inferred from the global's declared type.
     let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 } { min_pages: 1 }
         struct Node { x: i32 }
-        global mut head: heap::*Node = null()
+        global mut head: heap::*Node = ptr::null()
         fn get_head() -> u32 { head as u32 }
         export { get_head }
     "});
@@ -1832,7 +1832,7 @@ fn test_generic_struct_chained_calls() {
 
 #[test]
 fn test_generic_struct_pointer_load_store() {
-    // Memory load/store via a pointer to a generic struct `heap::*mut Point<i32>`.
+    // Memory load/store via a pointer to a generic struct `heap::*Point<i32>`.
     // Codegen must emit the correct field offsets for the monomorphized aggregate
     // (x@0, y@4), going through the same path as the non-generic pointer tests.
     let case = TestCase::new(indoc! {"
@@ -2189,7 +2189,7 @@ fn test_narrow_pointer_deref_sign_extension_and_byte_isolation() {
     //
     // 1. Zero-extension: reading 0xFF through *u8 must yield 255, not -1.
     // 2. Sign-extension: reading 0xFF through *i8 must yield -1.
-    // 3. Byte isolation: writing through *mut u8 must not touch adjacent bytes.
+    // 3. Byte isolation: writing through *u8 must not touch adjacent bytes.
     let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 } {
             min_pages: 1,
@@ -2249,12 +2249,12 @@ fn test_global_read_before_write_returns_old_value() {
             min_pages: 1,
         };
 
-        global mut bump: heap::*mut u8 = heap::DATA_END;
+        global mut bump: heap::*u8 = heap::DATA_END;
 
-        fn alloc(size: u32) -> heap::*mut u8 {
+        fn alloc(size: u32) -> heap::*u8 {
             local ptr: u32 = bump as u32;
-            bump = (ptr + size) as heap::*mut u8;
-            ptr as heap::*mut u8
+            bump = (ptr + size) as heap::*u8;
+            ptr as heap::*u8
         }
 
         export { heap, alloc }
@@ -2287,10 +2287,10 @@ fn test_global_initialized_to_data_end() {
             min_pages: 1,
         };
 
-        global mut bump: heap::*mut u8 = heap::DATA_END;
+        global mut bump: heap::*u8 = heap::DATA_END;
 
         fn get_bump() -> u32 { bump as u32 }
-        fn advance(n: u32) { bump = (bump as u32 + n) as heap::*mut u8 }
+        fn advance(n: u32) { bump = (bump as u32 + n) as heap::*u8 }
 
         export { heap, get_bump, advance }
     "});
@@ -2322,7 +2322,7 @@ fn test_global_initialized_to_data_end() {
 #[test]
 fn test_null_pointer_comparison() {
     // null<M, T>() returns a zero pointer. Verify that:
-    //  1. null() compares equal to another null() (the `node.next == null()` pattern)
+    //  1. null() compares equal to another null() (the `node.next == ptr::null()` pattern)
     //  2. a non-zero pointer does NOT compare equal to null()
     let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 } {
@@ -2331,8 +2331,8 @@ fn test_null_pointer_comparison() {
 
         struct Node { value: i32, next: *Node }
 
-        fn make_null() -> *Node { null() }
-        fn is_null_ptr(p: *Node) -> bool { p == null() }
+        fn make_null() -> *Node { ptr::null() }
+        fn is_null_ptr(p: *Node) -> bool { p == ptr::null() }
         fn ptr_from_addr() -> *Node { 4 as heap::*Node }
 
         export { heap, make_null, is_null_ptr, ptr_from_addr }
@@ -2383,21 +2383,18 @@ fn test_null_pointer_comparison() {
 
 #[test]
 fn test_size_of_and_align_of_intrinsics() {
-    // @size_of and @align_of are inlined to compile-time Int nodes by MIR
+    // size_of and align_of are inlined to compile-time Int nodes by MIR
     // lowering, so the exported functions are simple i32.const returns.
     let case = TestCase::new(indoc! {"
-        fn @size_of<T, M: Memory>() -> M::Size;
-        fn @align_of<T, M: Memory>() -> M::Size;
-
         memory heap: Memory where { Size = u32 };
 
-        fn size_u8() -> u32    { @size_of::<u8, heap>() }
-        fn size_u16() -> u32   { @size_of::<u16, heap>() }
-        fn size_u32() -> u32   { @size_of::<u32, heap>() }
-        fn size_u64() -> u32   { @size_of::<u64, heap>() }
-        fn align_u8() -> u32   { @align_of::<u8, heap>() }
-        fn align_u16() -> u32  { @align_of::<u16, heap>() }
-        fn align_u32() -> u32  { @align_of::<u32, heap>() }
+        fn size_u8() -> u32    { size_of::<u8, heap>() }
+        fn size_u16() -> u32   { size_of::<u16, heap>() }
+        fn size_u32() -> u32   { size_of::<u32, heap>() }
+        fn size_u64() -> u32   { size_of::<u64, heap>() }
+        fn align_u8() -> u32   { align_of::<u8, heap>() }
+        fn align_u16() -> u32  { align_of::<u16, heap>() }
+        fn align_u32() -> u32  { align_of::<u32, heap>() }
 
         export { size_u8, size_u16, size_u32, size_u64, align_u8, align_u16, align_u32 }
     "});

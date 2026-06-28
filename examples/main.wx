@@ -4,24 +4,22 @@ module test {
   }
 }
 
-pub fn memory_fill<M: Memory>(dst: M::*mut u8, value: u8, len: M::Size) {}
+pub fn memory_fill<M: Memory>(dst: M::*u8, value: u8, len: M::Size) {}
 
 pub fn memory_copy<
   Size: PointerSize,
   SrcMem: Memory where { Size = Size },
   DstMem: Memory where { Size = Size },
->(
-  dst: DstMem::*mut u8,
-  src: SrcMem::*u8,
-  len: Size,
-) {}
+>(dst: DstMem::*u8, src: SrcMem::*u8, len: Size) {}
 
-struct Y<
-  T,
-> {}
+struct Y<T> {
+  foo: T,
+}
 
-impl <T> Y<T> {
-  fn test() -> T {}
+impl<T> Y<T> {
+  fn test() -> T {
+    unreachable
+  }
 }
 
 use std::*;
@@ -29,5 +27,7 @@ use std::*;
 memory heap: Memory where { Size = u32 };
 
 fn main(f: test::X) -> i32 {
-  f.foo
+  memory_copy(0, 0, 5);
+  
+  0
 }

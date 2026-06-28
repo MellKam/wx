@@ -83,6 +83,16 @@ fn mark_block_roots(
                 mark_node_live(*address, live, worklist);
                 mark_node_live(*value, live, worklist);
             }
+            ControlNode::MemoryFill { dst, val, len, .. } => {
+                mark_node_live(*dst, live, worklist);
+                mark_node_live(*val, live, worklist);
+                mark_node_live(*len, live, worklist);
+            }
+            ControlNode::MemoryCopy { dst, src, len, .. } => {
+                mark_node_live(*dst, live, worklist);
+                mark_node_live(*src, live, worklist);
+                mark_node_live(*len, live, worklist);
+            }
         }
     }
 }

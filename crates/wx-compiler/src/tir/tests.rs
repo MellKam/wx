@@ -343,14 +343,14 @@ fn test_assign_to_undeclared_identifier_no_e1013() {
 
 #[test]
 fn test_compare_mutable_pointer_with_null() {
-    // `cur == null()` must infer M and T for null<M,T>() from the type of `cur`
-    // (`heap::*mut Node`), even though null()'s return type is an immutable pointer.
+    // `cur == ptr::null()` must infer M and T for null<M,T>() from the type of `cur`
+    // (`heap::*Node`), even though null()'s return type is an immutable pointer.
     // Previously `infer_type_args` required matching mutability, causing E1002.
     let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 } { min_pages: 1 }
         struct Node { x: i32 }
-        fn is_null(p: heap::*mut Node) -> bool {
-            p == null()
+        fn is_null(p: heap::*Node) -> bool {
+            p == ptr::null()
         }
         export { is_null }
     "});
@@ -1277,24 +1277,10 @@ fn test_stdlib_struct_field_access() {
     );
 }
 
-/// Methods on built-in types can be defined via inline `impl` blocks.
+/// Methods on built-in types defined in stdlib are callable from user code.
 #[test]
 fn test_stdlib_method_callable() {
     let case = TestCase::new(indoc! {"
-        impl char {
-            pub fn is_ascii_lowercase(self) -> bool {
-                self >= 'a' && self <= 'z'
-            }
-
-            pub fn to_ascii_uppercase(self) -> char {
-                if self.is_ascii_lowercase() {
-                    ((self as u8) ^ 0b0010_0000) as char
-                } else {
-                    self
-                }
-            }
-        }
-
         fn uppercase(c: char) -> char {
             c.to_ascii_uppercase()
         }
@@ -1596,13 +1582,6 @@ fn test_fn_declaration_without_body_is_error() {
 }
 
 #[test]
-#[ignore = "TODO: restrict fn @name() declarations to the stdlib crate only"]
-fn test_intrinsic_fn_declaration_is_valid() {
-    // fn @name() intrinsic declarations should be limited to the stdlib.
-    // For now skip until the crate-level access gate is implemented.
-}
-
-#[test]
 fn test_memory_index_const_resolves() {
     // `MEM::MEMORY_INDEX` — namespace access to a memory constant resolves cleanly.
     let case = TestCase::new_multi_file(
@@ -1850,13 +1829,12 @@ fn test_impl_trait_function_origin_is_trait_impl() {
         Some(ImplEntry::Method(fi)) => *fi,
         other => panic!("expected Method entry, got {:?}", other),
     };
-
     assert!(
         matches!(
-            case.tir.functions[func_index as usize].kind,
-            FunctionKind::TraitImpl { .. }
+            case.tir.functions[func_index as usize].type_param_parent,
+            None
         ),
-        "function kind should be FunctionKind::TraitImpl"
+        "method inside trait impl block doens't need to inherit self"
     );
 }
 
@@ -2474,7 +2452,7 @@ fn test_generic_identity_resolves() {
         Some("T")
     );
     assert!(
-        func.type_params[0].bounds.is_empty(),
+        func.type_params[0].bounds.traits.is_empty(),
         "T should have no bounds"
     );
     insta::assert_yaml_snapshot!(case.tir);
@@ -2537,7 +2515,7 @@ fn test_generic_with_bound_resolves() {
     let func = func.expect("function 'call_scale' not found in TIR");
     assert_eq!(func.type_params.len(), 1);
     assert_eq!(
-        func.type_params[0].bounds.len(),
+        func.type_params[0].bounds.traits.len(),
         1,
         "T should have one bound (Scalable)"
     );
@@ -2603,6 +2581,41 @@ fn test_generic_unknown_bound_is_error() {
 // ── NamespaceAccess / associated type projection ────────────────────────────
 
 fn no_errors(case: &TestCase) {
+    use codespan_reporting::diagnostic::Severity;
+    use codespan_reporting::term;
+    use codespan_reporting::term::DisplayStyle;
+    use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
+    let writer = StandardStream::stderr(ColorChoice::Always);
+    let config = term::Config {
+        display_style: DisplayStyle::Rich,
+        ..term::Config::default()
+    };
+    for crate_ in &case.graph.crates {
+        for diagnostic in crate_
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| match diagnostic.severity {
+                Severity::Error | Severity::Bug => true,
+                _ => false,
+            })
+        {
+            term::emit_to_write_style(&mut writer.lock(), &config, &case.graph.files, diagnostic)
+                .unwrap();
+        }
+    }
+    for diagnostic in case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| match diagnostic.severity {
+            Severity::Error | Severity::Bug => true,
+            _ => false,
+        })
+    {
+        term::emit_to_write_style(&mut writer.lock(), &config, &case.graph.files, diagnostic)
+            .unwrap();
+    }
+
     assert!(
         !case
             .tir
@@ -2744,7 +2757,7 @@ fn test_assoc_type_bare_name_suggests_self_prefix() {
     let case = TestCase::new(indoc! {"
         trait Memory {
             type Size;
-            fn alloc(n: Size) -> *mut u8;
+            fn alloc(n: Size) -> *u8;
         }
     "});
     // report_bare_assoc_type emits E1021 with message "cannot find type `Size` in
@@ -3242,59 +3255,14 @@ fn test_memory_tagged_pointer() {
 
     let param_ty = f.params[0].ty.inner;
     let is_heap_ptr = match &case.tir.type_pool[param_ty.as_usize()] {
-        Type::Pointer {
-            mutable: false,
-            memory,
-            ..
-        } => {
+        Type::Pointer { memory, .. } => {
             matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
         }
         _ => false,
     };
     assert!(
         is_heap_ptr,
-        "expected heap::*i32 (immutable pointer tagged with heap), got index {}",
-        param_ty.as_u32()
-    );
-}
-
-#[test]
-fn test_memory_tagged_mut_pointer() {
-    // `heap::*mut i64` — mutable pointer tagged with heap memory
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
-            memory heap: Memory where { Size = u32 };
-            fn f(p: heap::*mut i64) {
-                unreachable
-            }
-        "},
-        &[],
-    );
-    no_errors(&case);
-
-    let heap_id = case.tir.memories[0].id;
-    let f = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
-        .expect("function 'f' not found");
-
-    let param_ty = f.params[0].ty.inner;
-    let is_heap_ptr = match &case.tir.type_pool[param_ty.as_usize()] {
-        Type::Pointer {
-            mutable: true,
-            memory,
-            ..
-        } => {
-            matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
-        }
-        _ => false,
-    };
-    assert!(
-        is_heap_ptr,
-        "expected heap::*mut i64 (mutable pointer tagged with heap), got index {}",
+        "expected heap::*i32 (pointer tagged with heap), got index {}",
         param_ty.as_u32()
     );
 }
@@ -4016,7 +3984,6 @@ fn test_generic_struct_concrete_impl() {
 }
 
 #[test]
-#[ignore = "generic struct methods not yet supported"]
 fn test_generic_struct_method() {
     // impl Point<T> — generic impl; T in scope, field access returns T
     let case = TestCase::new(indoc! {"
@@ -4025,13 +3992,13 @@ fn test_generic_struct_method() {
             y: T,
         }
 
-        impl Point<T> {
-            pub fn x_val(self) -> T { self.x }
+        impl<T> Point<T> {
+            pub fn get_x(self) -> T { self.x }
         }
 
         fn run() -> i32 {
             local p: Point<i32> = Point::{ x: 3, y: 4 };
-            p.x_val()
+            p.get_x()
         }
 
         export { run }
@@ -4064,8 +4031,8 @@ fn test_array_literal_mutable() {
         "main.wx",
         indoc! {"
             memory heap: Memory where { Size = u32 };
-            fn f() -> heap::[3]mut i32 {
-                local x: heap::[3]mut i32 = [1, 2, 3];
+            fn f() -> heap::[3]i32 {
+                local x: heap::[3]i32 = [1, 2, 3];
                 x
             }
         "},
@@ -5026,7 +4993,7 @@ fn test_global_initialized_to_data_end_tir() {
         memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
-        global mut bump: heap::*mut u8 = heap::DATA_END;
+        global mut bump: heap::*u8 = heap::DATA_END;
         export { heap }
     "});
     // Only warning expected: "never used" (no functions read bump in this test).
@@ -5054,15 +5021,18 @@ fn test_typeset_definition_registers_in_tir() {
     );
     // At least stdlib Integer + user Numbers typesets are registered
     assert!(!case.tir.typesets.is_empty());
-    // The generic function has one type param with one typeset bound
+    // The user-defined identity function has one type param with one typeset bound
     let identity = case
         .tir
         .functions
         .iter()
-        .find(|f| f.type_params.iter().any(|tp| tp.typeset_bound.is_some()))
-        .expect("no function with typeset bounds found");
+        .find(|f| {
+            case.graph.interner.resolve(f.name.inner) == Some("identity")
+                && f.type_params.iter().any(|tp| tp.bounds.typeset.is_some())
+        })
+        .expect("no identity function with typeset bounds found");
     assert_eq!(identity.type_params.len(), 1);
-    assert!(identity.type_params[0].typeset_bound.is_some());
+    assert!(identity.type_params[0].bounds.typeset.is_some());
 }
 
 #[test]
@@ -5343,11 +5313,11 @@ fn test_assoc_type_projection_normalised_across_functions() {
 
         impl<M: Memory> Layout<M> {
             pub fn of<T>() -> Layout<M> {
-                Layout::{ size: @size_of::<T, M>(), align: @align_of::<T, M>() }
+                Layout::{ size: size_of::<T, M>(), align: align_of::<T, M>() }
             }
 
             pub fn array<T>(count: M::Size) -> Layout<M> {
-                Layout::{ size: @size_of::<T, M>() * count, align: @align_of::<T, M>() }
+                Layout::{ size: size_of::<T, M>() * count, align: align_of::<T, M>() }
             }
         }
     "});
@@ -5377,9 +5347,9 @@ fn test_assoc_type_as_memory_tag_in_trait() {
         trait Allocator {
             type M: Memory;
 
-            fn alloc(self: *mut Self, layout: Layout<Self::M>) -> Self::M::*mut u8;
+            fn alloc(self: *Self, layout: Layout<Self::M>) -> Self::M::*u8;
 
-            fn dealloc(self: *mut Self, ptr: Self::M::*mut u8, layout: Layout<Self::M>);
+            fn dealloc(self: *Self, ptr: Self::M::*u8, layout: Layout<Self::M>);
         }
     "});
     no_errors(&case);
@@ -5400,7 +5370,7 @@ fn test_assoc_type_memory_bound_satisfied_by_memory_decl() {
         trait Allocator {
             type M: Memory;
 
-            fn alloc(self: *mut Self, layout: Layout<Self::M>) -> Self::M::*mut u8;
+            fn alloc(self: *Self, layout: Layout<Self::M>) -> Self::M::*u8;
         }
 
         struct BumpAllocator {}
@@ -5408,7 +5378,7 @@ fn test_assoc_type_memory_bound_satisfied_by_memory_decl() {
         impl Allocator for BumpAllocator {
             type M = heap;
 
-            fn alloc(self: *mut Self, layout: Layout<Self::M>) -> Self::M::*mut u8 {
+            fn alloc(self: *Self, layout: Layout<Self::M>) -> Self::M::*u8 {
                 unreachable
             }
         }
@@ -5491,7 +5461,7 @@ fn test_nested_assoc_type_projection_resolves() {
         memory heap: Memory where { Size = u32 };
         trait Allocator {
             type M: Memory;
-            fn alloc(mut self, size: Self::M::Size) -> Self::M::*mut u8;
+            fn alloc(mut self, size: Self::M::Size) -> Self::M::*u8;
         }
         struct Vec<T, A: Allocator> {
             len: A::M::Size,
@@ -5713,7 +5683,7 @@ fn test_type_param_multiple_bounds_both_enforced() {
 
     assert_eq!(func.type_params.len(), 1);
     assert_eq!(
-        func.type_params[0].bounds.len(),
+        func.type_params[0].bounds.traits.len(),
         2,
         "T should have two bounds (Scalable and Printable)"
     );
@@ -5733,7 +5703,10 @@ fn test_type_param_multiple_bounds_missing_impl_is_error() {
         fn call() { do_both(Num::{}); }
     "});
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
         "expected an error: Num does not implement Printable"
     );
 }
@@ -5771,8 +5744,14 @@ fn test_multiple_supertraits_both_resolved() {
 
     let supertraits = &case.tir.traits[widget_idx].supertraits;
     assert_eq!(supertraits.len(), 2, "Widget should have two supertraits");
-    assert!(supertraits.contains(&drawable_idx), "Drawable missing from supertraits");
-    assert!(supertraits.contains(&sized_idx), "Sized missing from supertraits");
+    assert!(
+        supertraits.contains(&drawable_idx),
+        "Drawable missing from supertraits"
+    );
+    assert!(
+        supertraits.contains(&sized_idx),
+        "Sized missing from supertraits"
+    );
 }
 
 #[test]
@@ -5815,9 +5794,20 @@ fn test_assoc_type_multiple_bounds_both_stored() {
         .find(|t| case.graph.interner.resolve(t.name.inner) == Some("Container"))
         .expect("trait 'Container' not found");
 
-    let elem_sym = case.graph.interner.get("Elem").expect("symbol 'Elem' not interned");
-    let assoc = container.assoc_types.get(&elem_sym).expect("assoc type 'Elem' not found");
-    assert_eq!(assoc.bounds.len(), 2, "Elem should have two trait bounds (A and B)");
+    let elem_sym = case
+        .graph
+        .interner
+        .get("Elem")
+        .expect("symbol 'Elem' not interned");
+    let assoc = container
+        .assoc_types
+        .get(&elem_sym)
+        .expect("assoc type 'Elem' not found");
+    assert_eq!(
+        assoc.bounds.traits.len(),
+        2,
+        "Elem should have two trait bounds (A and B)"
+    );
 }
 
 #[test]
@@ -5836,7 +5826,10 @@ fn test_assoc_type_multiple_bounds_violation_is_error() {
         }
     "});
     assert!(
-        case.tir.diagnostics.iter().any(|d| d.severity == Severity::Error),
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error),
         "expected an error: i32 does not implement B"
     );
 }
@@ -5866,7 +5859,11 @@ fn test_impl_module_trait_for_type_resolves() {
     );
     no_errors(&case);
 
-    let draw_sym = case.graph.interner.get("draw").expect("symbol 'draw' not interned");
+    let draw_sym = case
+        .graph
+        .interner
+        .get("draw")
+        .expect("symbol 'draw' not interned");
     let ti = case
         .tir
         .trait_impls
@@ -5874,7 +5871,442 @@ fn test_impl_module_trait_for_type_resolves() {
         .find(|ti| ti.members.contains_key(&draw_sym))
         .expect("no TraitImpl has 'draw' method");
     assert!(
-        matches!(case.tir.type_pool[ti.target.as_usize()], Type::Struct { .. }),
+        matches!(
+            case.tir.type_pool[ti.target.as_usize()],
+            Type::Struct { .. }
+        ),
         "target should be Point (a struct)"
+    );
+}
+
+#[test]
+fn test_invalid_self_type_rejected() {
+    let case = TestCase::new(indoc! {"
+        struct Foo { x: i32 }
+        impl Foo {
+            pub fn bad(self: u32) -> i32 { 0 }
+        }
+        export { }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1053")),
+        "expected InvalidSelfType diagnostic, got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_valid_self_types_accepted() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Foo { x: i32 }
+        impl Foo {
+            pub fn by_value(self) -> i32 { 0 }
+            pub fn by_const_ptr(self: heap::*Foo) -> i32 { 0 }
+            pub fn by_mut_ptr(self: heap::*Foo) -> i32 { 0 }
+        }
+        export { }
+    "});
+    no_errors(&case);
+}
+
+#[test]
+fn test_duplicate_method_name_in_impl_rejected() {
+    let case = TestCase::new(indoc! {"
+        struct Foo { x: i32 }
+        impl Foo {
+            pub fn bar(self) -> i32 { 0 }
+            pub fn bar(self) -> i32 { 1 }
+        }
+        export { }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1000")),
+        "expected DuplicateDefinition diagnostic, got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_duplicate_method_name_in_generic_impl_rejected() {
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Vec<T> { len: u32 }
+        impl<T> Vec<T> {
+            pub fn len(self) -> u32 { 0 }
+            pub fn len(self) -> u32 { 1 }
+        }
+        export { }
+    "});
+    assert!(
+        case.tir
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_deref() == Some("E1000")),
+        "expected DuplicateDefinition diagnostic, got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+// ── Tree mutability verification ──────────────────────────────────────────────
+
+#[test]
+fn test_tree_mut_binding_mut_does_not_grant_write_through() {
+    // `mut` on binding does NOT grant write-through — pointer type must be `*mut T`.
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        fn bad(mut ptr: heap::*i32) { ptr.* = 42 }
+    "},
+        &[],
+    );
+    assert!(
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+        "mut binding + *i32 should NOT allow write-through; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_tree_mut_immutable_binding_mutable_pointer_write_ok() {
+    // Immutable binding + `*mut T` IS sufficient for write-through.
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        fn ok(ptr: heap::*mut i32) { ptr.* = 42 }
+    "},
+        &[],
+    );
+    no_errors(&case);
+}
+
+#[test]
+fn test_tree_mut_nested_inner_immutable_blocks_deep_write() {
+    // `p: *mut *i32` — outer `*mut` allows storing a pointer, but inner `*i32` blocks write-through.
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        fn bad(p: heap::*mut heap::*i32) { p.*.* = 99 }
+    "},
+        &[],
+    );
+    assert!(
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+        "p.*.* write should error: inner *i32 is immutable; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_tree_mut_nested_both_mutable_write_ok() {
+    // `p: *mut *mut i32` — both levels mutable, p.*.* = val should work.
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        fn ok(p: heap::*mut heap::*mut i32) { p.*.* = 99 }
+    "},
+        &[],
+    );
+    no_errors(&case);
+}
+
+#[test]
+fn test_tree_mut_struct_field_through_immutable_ptr_is_error() {
+    // `ptr: *Node` — cannot write any field through it.
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { x: i32 }
+        fn bad(ptr: heap::*Node) { ptr.*.x = 1 }
+    "},
+        &[],
+    );
+    assert!(
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+        "field write through *Node should error; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_tree_mut_struct_field_through_mutable_ptr_ok() {
+    // `ptr: *mut Node` — can write fields.
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { x: i32 }
+        fn ok(ptr: heap::*mut Node) { ptr.*.x = 1 }
+    "},
+        &[],
+    );
+    no_errors(&case);
+}
+
+#[test]
+fn test_tree_mut_mutable_ptr_coerces_to_immutable_param() {
+    // Passing `*mut T` where `*T` is expected is allowed (safe downgrade).
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        fn read(ptr: heap::*i32) -> i32 { ptr.* }
+        fn call(p: heap::*mut i32) -> i32 { read(p) }
+    "},
+        &[],
+    );
+    no_errors(&case);
+}
+
+#[test]
+fn test_tree_mut_immutable_ptr_cannot_satisfy_mutable_param() {
+    // Passing `*T` where `*mut T` is expected is NOT allowed.
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        fn write(ptr: heap::*mut i32) { ptr.* = 1 }
+        fn call(p: heap::*i32) { write(p) }
+    "},
+        &[],
+    );
+    assert!(
+        !case.tir.diagnostics.is_empty(),
+        "passing *i32 to *mut i32 param must error; got no diagnostics"
+    );
+}
+
+#[test]
+fn test_tree_mut_binding_mut_allows_reassign_but_not_write_through() {
+    // `local mut p: *i32` — can reassign p, but cannot write through p.*.
+    let case = TestCase::new_multi_file(
+        "main.wx",
+        indoc! {"
+        memory heap: Memory where { Size = u32 };
+        fn bad(a: heap::*i32, b: heap::*i32) {
+            local mut p: heap::*i32 = a;
+            p = b;
+            p.* = 99
+        }
+    "},
+        &[],
+    );
+    // Reassign `p = b` is ok (mut binding). Write `p.* = 99` must error (pointer type immutable).
+    assert!(
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+        "write through *i32 must error even with mut binding; got: {:?}",
+        case.tir.diagnostics
+    );
+    let errors: Vec<_> = case
+        .tir
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "expected exactly 1 error (write-through only, not the reassign); got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_calls_method_on_inner_type() {
+    // `ptr.value()` on a concrete struct should resolve via auto-deref.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { value: i32 }
+        impl Node {
+            pub fn value(self: heap::*Node) -> i32 { self.*.value }
+        }
+        fn get(n: heap::*Node) -> i32 { n.value() }
+        export { get }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "auto-deref method call should succeed; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_mutable_ptr_calls_mut_self_method() {
+    // `ptr.set()` on `*mut Node` should resolve to a method taking `self: heap::*mut Self`.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { value: i32 }
+        impl Node {
+            pub fn set(self: heap::*mut Node, v: i32) { self.*.value = v }
+        }
+        fn update(n: heap::*mut Node) { n.set(42) }
+        export { update }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "auto-deref mut method call should succeed; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_mutable_ptr_coerces_to_immutable_self() {
+    // `*mut T` calling a method with `self: *T` should succeed via `*mut T → *T` coercion.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { val: i32 }
+        impl Node {
+            pub fn read(self: heap::*Node) -> i32 { self.*.val }
+        }
+        fn get(n: heap::*mut Node) -> i32 { n.read() }
+        export { get }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "mutable pointer calling immutable-self method must succeed; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_immutable_ptr_rejects_mut_self_method() {
+    // `ptr.set()` on `*Node` (immutable) with `self: *mut Node` should be a type mismatch.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { value: i32 }
+        impl Node {
+            pub fn set(self: heap::*mut Node, v: i32) { self.*.value = v }
+        }
+        fn bad(n: heap::*Node) { n.set(42) }
+        export { bad }
+    "});
+    assert!(
+        !case.tir.diagnostics.is_empty(),
+        "immutable pointer calling mut-self method must error"
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_owned_self_reports_mismatch() {
+    // Calling a method with `self: Node` (owned) via a pointer should report a type mismatch,
+    // not "method not found". The user is expected to write `ptr.*.method()` to deref first.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { value: i32 }
+        impl Node {
+            pub fn owned(self: Node) -> i32 { self.value }
+        }
+        fn bad(n: heap::*Node) -> i32 { n.owned() }
+        export { bad }
+    "});
+    assert!(
+        !case.tir.diagnostics.is_empty(),
+        "calling owned-self method via pointer must error"
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_generic_impl_method() {
+    // Auto-deref through a pointer to a generic struct should find the generic impl method.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Wrapper<T> { inner: T }
+        impl <T> Wrapper<T> {
+            pub fn get(self: heap::*Wrapper<T>) -> T { self.*.inner }
+        }
+        fn unwrap(w: heap::*Wrapper<i32>) -> i32 { w.get() }
+        export { unwrap }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "auto-deref on generic impl method should succeed; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_memory_qualifier_mismatch_errors() {
+    // `other::*Node` calling a method with `self: heap::*Node` — the inner type `Node`
+    // is found, but the self-param check fails because the memory qualifiers differ.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        memory other: Memory where { Size = u32 };
+        struct Node { val: i32 }
+        impl Node {
+            pub fn read(self: heap::*Node) -> i32 { self.*.val }
+        }
+        fn bad(n: other::*Node) -> i32 { n.read() }
+        export { bad }
+    "});
+    assert!(
+        !case.tir.diagnostics.is_empty(),
+        "calling heap method via other-memory pointer must error"
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_double_pointer_not_found() {
+    // `**Node` — auto-deref is one level only. The inner type is `*Node`, which has no
+    // impl block, so the method is not found.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { val: i32 }
+        impl Node {
+            pub fn read(self: heap::*Node) -> i32 { self.*.val }
+        }
+        fn bad(n: heap::*heap::*Node) -> i32 { n.read() }
+        export { bad }
+    "});
+    assert!(
+        !case.tir.diagnostics.is_empty(),
+        "double-pointer auto-deref must error — only one level deep"
+    );
+}
+
+#[test]
+fn test_ptr_field_access_does_not_auto_deref() {
+    // `ptr.field` (no `.*`) — field access does NOT auto-deref pointers.
+    // The user must write `ptr.*.field`.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { val: i32 }
+        fn bad(n: heap::*Node) -> i32 { n.val }
+        export { bad }
+    "});
+    assert!(
+        !case.tir.diagnostics.is_empty(),
+        "field access through pointer without deref must error"
+    );
+}
+
+#[test]
+fn test_ptr_autoderef_chained_calls() {
+    // `ptr.next().get_val()` — `next()` returns `*Node`, then `get_val()` auto-derefs
+    // the returned pointer. Each call goes through resolve_method_call independently.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Node { val: i32 }
+        impl Node {
+            pub fn next(self: heap::*Node) -> heap::*Node { self }
+            pub fn get_val(self: heap::*Node) -> i32 { self.*.val }
+        }
+        fn chain(n: heap::*Node) -> i32 { n.next().get_val() }
+        export { chain }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "chained auto-deref method calls should succeed; got: {:?}",
+        case.tir.diagnostics
     );
 }

@@ -17,7 +17,7 @@ memory heap: Memory where { Size = u32 } {
 
 // ── allocator state ───────────────────────────────────────────────────────────
 
-global mut bump: heap::*mut u8 = heap::DATA_END;
+global mut bump: heap::*u8 = heap::DATA_END;
 
 // ── core allocator ────────────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ pub fn alloc<T>() -> heap::*mut T {
         local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
         local _grew = heap.grow(needed);
     }
-    bump = new_end as heap::*mut u8;
+    bump = new_end as heap::*u8;
     ptr as heap::*mut T
 }
 
@@ -47,10 +47,10 @@ pub fn bytes_used() -> u32 {
 
 struct Node {
     value: i32,
-    next: heap::*Node,   // null() when there is no next node
+    next: heap::*Node,   // ptr::null() when there is no next node
 }
 
-pub fn node_new(value: i32, next: heap::*Node) -> heap::*mut Node {
+pub fn node_new(value: i32, next: heap::*Node) -> heap::*Node {
     local n: heap::*mut Node = alloc::<Node>();
     n.* = Node::{ value: value, next: next };
     n
@@ -68,14 +68,14 @@ pub fn node_next(n: heap::*Node) -> heap::*Node {
 
 // Builds the list  3 → 2 → 1  and returns the sum of all node values.
 pub fn demo() -> i32 {
-    local n1 = node_new(1, null());
+    local n1 = node_new(1, ptr::null());
     local n2 = node_new(2, n1);
     local n3 = node_new(3, n2);
 
     local mut sum: i32 = 0;
     local mut cur: heap::*Node = n3;
     loop {
-        if cur == null() { break sum };
+        if cur == ptr::null() { break sum };
         local node = cur.*;
         sum += node.value;
         cur = node.next;

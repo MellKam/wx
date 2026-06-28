@@ -582,13 +582,22 @@ impl Builder {
                 .globals
                 .iter()
                 .map(|global| {
-                    let init_value = match (global.const_init, ValueType::try_from(global.ty).unwrap()) {
-                        (mir::ConstInit::Int(v), ValueType::I32) => Expression::I32Const { value: v as i32 },
-                        (mir::ConstInit::Int(v), ValueType::I64) => Expression::I64Const { value: v },
-                        (mir::ConstInit::Float(v), ValueType::F32) => Expression::F32Const { value: v as f32 },
-                        (mir::ConstInit::Float(v), ValueType::F64) => Expression::F64Const { value: v },
-                        _ => unreachable!(),
-                    };
+                    let init_value =
+                        match (global.const_init, ValueType::try_from(global.ty).unwrap()) {
+                            (mir::ConstInit::Int(v), ValueType::I32) => {
+                                Expression::I32Const { value: v as i32 }
+                            }
+                            (mir::ConstInit::Int(v), ValueType::I64) => {
+                                Expression::I64Const { value: v }
+                            }
+                            (mir::ConstInit::Float(v), ValueType::F32) => {
+                                Expression::F32Const { value: v as f32 }
+                            }
+                            (mir::ConstInit::Float(v), ValueType::F64) => {
+                                Expression::F64Const { value: v }
+                            }
+                            _ => unreachable!(),
+                        };
                     Global {
                         ty: ValueType::try_from(global.ty).unwrap(),
                         mutability: match global.mutability {
@@ -882,6 +891,20 @@ impl Builder {
                 sink.push(Instruction::MemoryGrow as u8);
                 mi.encode(sink);
             }
+            SI::MemoryFill(id) => {
+                let mi = self.memories[&id].wasm_index;
+                sink.push(Instruction::BulkMemoryPrefix as u8);
+                0x0Bu32.encode(sink); // memory.fill secondary opcode
+                mi.encode(sink);
+            }
+            SI::MemoryCopy { dst, src } => {
+                let dst_mi = self.memories[&dst].wasm_index;
+                let src_mi = self.memories[&src].wasm_index;
+                sink.push(Instruction::BulkMemoryPrefix as u8);
+                0x0Au32.encode(sink); // memory.copy secondary opcode
+                dst_mi.encode(sink);
+                src_mi.encode(sink);
+            }
             SI::MemoryIndex { memory } => {
                 let mi = self.memories[&memory].wasm_index as i32;
                 sink.push(Instruction::I32Const as u8);
@@ -1024,7 +1047,6 @@ impl Builder {
             BlockType::Value(vt) => ValueType::from(vt).encode(sink),
         }
     }
-
 }
 
 #[allow(unused)]
@@ -1252,6 +1274,9 @@ enum Instruction {
     I64ReinterpretF64 = 0xBD,
     F32ReinterpretI32 = 0xBE,
     F64ReinterpretI64 = 0xBF,
+    // Bulk memory extension prefix (memory.copy, memory.fill, etc.).
+    // Secondary opcode is a separate LEB128 u32 immediately following.
+    BulkMemoryPrefix = 0xFC,
 }
 
 trait Encode {

@@ -1,6 +1,6 @@
 memory heap: Memory where { Size = u32 };
 
-global mut bump: heap::*mut u8 = heap::DATA_END;
+global mut bump: heap::*u8 = heap::DATA_END;
 
 struct Layout<M: Memory> {
     size: M::Size,
@@ -38,7 +38,7 @@ impl Allocator for BumpAllocator {
         if new_end > cur_end {
             local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
         }
-        bump = new_end as heap::*mut u8;
+        bump = new_end as heap::*u8;
         ptr as heap::*mut u8
     }
 
@@ -46,7 +46,7 @@ impl Allocator for BumpAllocator {
 }
 
 struct Vec<T, A: Allocator> {
-    pub buf: A::M::*mut T,
+    pub buf: A::M::*T,
     len: A::M::Size,
     cap: A::M::Size,
     alloc: A,
@@ -55,15 +55,15 @@ struct Vec<T, A: Allocator> {
 impl <T, A: Allocator> Vec<T, A> {
     #[inline]
     pub fn new(alloc: A) -> Vec<T, A> {
-        Vec::{ buf: null_mut(), len: 0, cap: 0, alloc }
+        Vec::{ buf: ptr::null(), len: 0, cap: 0, alloc }
     }
 
-    pub fn push(self: A::M::*mut Self, value: T) {
+    pub fn push(mut self: A::M::*Self, value: T) {
         if self.*.len == self.*.cap {
             local new_cap = if self.*.cap == 0 { 4 } else { self.*.cap * 2 };
             
             local layout = Layout::<A::M>::array::<T>(new_cap);
-            local new_buf = self.*.alloc.alloc(layout).cast_mut();
+            local new_buf = self.*.alloc.alloc(layout);
             
             if self.*.cap != 0 {
                 local mut i: A::M::Size = 0;
@@ -83,12 +83,12 @@ impl <T, A: Allocator> Vec<T, A> {
         self.*.len = self.*.len + 1;
     }
 
-    pub fn get(self: A::M::*mut Self, index: A::M::Size) -> T {
+    pub fn get(self: A::M::*Self, index: A::M::Size) -> T {
         self.*.buf.add(index).*
     }
 
     #[inline]
-    pub fn len(self: A::M::*mut Self) -> A::M::Size {
+    pub fn len(self: A::M::*Self) -> A::M::Size {
         self.*.len
     }
 }

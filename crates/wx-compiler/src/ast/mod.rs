@@ -970,12 +970,14 @@ impl<T: Copy> Copy for Spanned<T> {}
 /// statement sequences. The `separator` field holds the token that follows this
 /// item (e.g., `,` or `;`), if present.
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct Separated<T> {
     pub inner: T,
     pub separator: Option<TextSpan>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum Expression {
     Error,
     /// `1`
@@ -1062,14 +1064,10 @@ pub enum Expression {
     },
     /// `unreachable`
     Unreachable,
-    /// "hello world"
-    String {
-        symbol: SymbolU32,
-    },
-    /// 'a'
-    Char {
-        symbol: SymbolU32,
-    },
+    /// "hello world" — raw source text (including quotes) is recovered from span
+    String,
+    /// 'a' — raw source text (including quotes) is recovered from span
+    Char,
     /// A `::` separated path: `foo`, `module::Point`, `module::Point::<i32>`.
     /// Replaces bare `Identifier`, `NamespaceAccess`, and path-typed
     /// `TypeApplication` as the canonical representation for named references.
@@ -1082,12 +1080,6 @@ pub enum Expression {
     /// `(a, b, c)` or `()`
     Tuple {
         elements: Box<[Spanned<Expression>]>,
-    },
-    /// `@name::<T, U>(args)`
-    IntrinsicCall {
-        name: Spanned<SymbolU32>,
-        type_args: Box<[Spanned<TypeExpression>]>,
-        arguments: Box<[Separated<Spanned<Expression>>]>,
     },
     /// `[a, b, c]`
     ArrayList {
@@ -1116,6 +1108,7 @@ pub enum Expression {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct MethodCallExpr {
     pub object: Box<Spanned<Expression>>,
     pub method: Spanned<SymbolU32>,
@@ -1124,6 +1117,7 @@ pub struct MethodCallExpr {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct StructInitField {
     pub name: Spanned<SymbolU32>,
     /// `None` means shorthand: `{ field }` is equivalent to `{ field: field }`
@@ -1134,6 +1128,7 @@ pub struct StructInitField {
 /// `Point` → `PathSegment { ident: "Point", type_args: [] }`
 /// `Point::<i32>` → `PathSegment { ident: "Point", type_args: [i32] }`
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct PathSegment {
     pub ident: Spanned<SymbolU32>,
     /// Turbofish args (`::<T, U>`). Empty when no type args are provided.
@@ -1142,6 +1137,7 @@ pub struct PathSegment {
 
 /// A trait or typeset bound expression.
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum BoundExpression {
     /// `Trait` or `module::Trait`
     Path(Box<[PathSegment]>),
@@ -1169,6 +1165,7 @@ impl Expression {
 
 /// A generic type parameter declaration: `T` or `T: Bound1 + Bound2`.
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct TypeParam {
     pub name: Spanned<SymbolU32>,
     /// Trait bounds. `None` = unconstrained.
@@ -1176,6 +1173,7 @@ pub struct TypeParam {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct FunctionTypeParam {
     pub name: Option<Spanned<SymbolU32>>,
     pub ty: Box<Spanned<TypeExpression>>,
@@ -1183,12 +1181,14 @@ pub struct FunctionTypeParam {
 
 /// `Size = u32` inside a `where { }` block — binds an associated type.
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct AssocTypeBinding {
     pub name: Spanned<SymbolU32>,
     pub ty: Spanned<TypeExpression>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum TypeExpression {
     /// `_` — explicit inference placeholder; resolved to `TypeIndex::INFER`.
     Infer,
@@ -1199,17 +1199,17 @@ pub enum TypeExpression {
         params: Box<[Separated<Spanned<FunctionTypeParam>>]>,
         result: Option<Box<Spanned<TypeExpression>>>,
     },
-    /// `*mut u8`
+    /// `*u8` or `*mut u8`
     Pointer {
         mutability: Option<TextSpan>,
         inner: Box<Spanned<TypeExpression>>,
     },
-    /// `[]mut u8`
+    /// `[]u8` or `[]mut u8`
     Slice {
         mutability: Option<TextSpan>,
         inner: Box<Spanned<TypeExpression>>,
     },
-    /// `[5]mut u8`
+    /// `[5]u8` or `[5]mut u8`
     Array {
         size: Spanned<usize>,
         mutability: Option<TextSpan>,
@@ -1234,6 +1234,7 @@ pub enum TypeExpression {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct PatternField {
     pub name: Spanned<SymbolU32>,
     /// `None` = shorthand `{ x }`, same as `{ x: x }`
@@ -1241,6 +1242,7 @@ pub struct PatternField {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum Pattern {
     /// `_`
     Wildcard,
@@ -1261,6 +1263,7 @@ pub enum Pattern {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum Statement {
     /// `{expr}`
     Expression(Box<Spanned<Expression>>),
@@ -1282,6 +1285,7 @@ impl Statement {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct FunctionParam {
     pub mut_span: Option<TextSpan>,
     pub name: Spanned<SymbolU32>,
@@ -1290,6 +1294,7 @@ pub struct FunctionParam {
 
 /// The payload of an attribute, following the meta item grammar.
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum AttributeValue {
     /// `#[inline]` — name only, no payload.
     Word,
@@ -1299,12 +1304,14 @@ pub enum AttributeValue {
 
 /// A single attribute on an item, e.g. `#[inline]` or `#[lang = "memory"]`.
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct Attribute {
     pub name: Spanned<SymbolU32>,
     pub value: AttributeValue,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum ImplItem {
     Method {
         id: DefId,
@@ -1337,6 +1344,7 @@ impl ImplItem {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum TraitItem {
     /// A method with an optional default body.
     Function {
@@ -1376,6 +1384,7 @@ impl TraitItem {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct FunctionSignature {
     pub name: Spanned<SymbolU32>,
     /// Generic type parameters `<T, U: Bound>`. Empty = monomorphic.
@@ -1385,12 +1394,14 @@ pub struct FunctionSignature {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct ExportEntry {
     pub name: Spanned<SymbolU32>,
     pub alias: Option<Spanned<SymbolU32>>,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum ImportDeclaration {
     Function {
         id: DefId,
@@ -1410,6 +1421,7 @@ pub enum ImportDeclaration {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct MemoryConfig {
     pub min_pages: Option<Spanned<u32>>,
     pub max_pages: Option<Spanned<u32>>,
@@ -1423,12 +1435,14 @@ pub struct MemoryConfigField {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct ImportEntry {
     pub external_name: Option<Spanned<SymbolU32>>,
     pub declaration: ImportDeclaration,
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct EnumVariant {
     pub name: Spanned<SymbolU32>,
     pub value: Option<Box<Spanned<Expression>>>,
@@ -1466,6 +1480,7 @@ impl DefIdGenerator {
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum Item {
     Function {
         id: DefId,
@@ -1562,16 +1577,12 @@ pub enum Item {
         name: Spanned<SymbolU32>,
         members: Box<[Separated<Spanned<TypeExpression>>]>,
     },
-    /// `fn @name<T>(params) -> Ret;` — compiler-provided intrinsic, no body.
-    IntrinsicFunction {
-        id: DefId,
-        signature: FunctionSignature,
-    },
     /// `use path::*;` — wildcard import; brings all public items from the namespace into scope.
     Use { path: Box<[Spanned<SymbolU32>]> },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub struct StructField {
     pub pub_span: Option<TextSpan>,
     pub name: Spanned<SymbolU32>,
@@ -1585,7 +1596,6 @@ impl Item {
             | Item::Const { .. }
             | Item::Memory { .. }
             | Item::FunctionDeclaration { .. }
-            | Item::IntrinsicFunction { .. }
             | Item::ModuleDeclaration { .. }
             | Item::Use { .. } => false,
             Item::Function { .. }
@@ -2169,7 +2179,7 @@ impl<'ctx> Parser<'ctx> {
         let fn_span = self.lexer.next();
         let name_token = self.lexer.peek();
         let name_span = match name_token.inner {
-            Token::Identifier | Token::AtIdent => self.lexer.next().span,
+            Token::Identifier => self.lexer.next().span,
             _ => {
                 return Err(self.ast.diagnostics.push(report_unexpected_token(
                     self.ast.file_id,
@@ -2402,25 +2412,11 @@ impl<'ctx> Parser<'ctx> {
 
     fn parse_function_definition_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
         let signature = Parser::parse_function_signature(parser)?;
-
-        let is_intrinsic = signature
-            .inner
-            .name
-            .span
-            .extract_str(parser.source)
-            .starts_with('@');
-
-        if is_intrinsic {
-            return Ok(Spanned {
-                span: signature.span,
-                inner: Item::IntrinsicFunction {
-                    id: parser.id_generator.generate(),
-                    signature: signature.inner,
-                },
-            });
-        }
-
-        let block = Parser::parse_block_expression(parser).ok().map(Box::new);
+        let block = if parser.lexer.peek().inner == Token::OpenBrace {
+            Some(Box::new(Parser::parse_block_expression(parser)?))
+        } else {
+            None
+        };
         let span = TextSpan::new(
             signature.span.start,
             match &block {
@@ -2869,10 +2865,6 @@ impl<'ctx> Parser<'ctx> {
             }
             Token::String => Some((Parser::parse_string_expression, BindingPower::Primary)),
             Token::Char => Some((Parser::parse_char_expression, BindingPower::Primary)),
-            Token::AtIdent => Some((
-                Parser::parse_intrinsic_call_expression,
-                BindingPower::Primary,
-            )),
             Token::OpenBracket => Some((Parser::parse_array_expression, BindingPower::Primary)),
             _ => None,
         }
@@ -3187,22 +3179,16 @@ impl<'ctx> Parser<'ctx> {
 
     fn parse_string_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
         let token = parser.lexer.next();
-        let string_content = token.span.extract_str(parser.source);
-        let symbol = parser.interner.get_or_intern(string_content);
-
         Ok(Spanned {
-            inner: Expression::String { symbol },
+            inner: Expression::String,
             span: token.span,
         })
     }
 
     fn parse_char_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
         let token = parser.lexer.next();
-        let raw = token.span.extract_str(parser.source);
-        let symbol = parser.interner.get_or_intern(raw);
-
         Ok(Spanned {
-            inner: Expression::Char { symbol },
+            inner: Expression::Char,
             span: token.span,
         })
     }
@@ -3584,43 +3570,6 @@ impl<'ctx> Parser<'ctx> {
             .diagnostics
             .push(report_invalid_namespace(parser.ast.file_id, bad.span));
         Err(())
-    }
-
-    fn parse_intrinsic_call_expression(parser: &mut Parser) -> Result<Spanned<Expression>, ()> {
-        let token = parser.lexer.next(); // consume @ident
-        let name = Spanned {
-            inner: parser
-                .interner
-                .get_or_intern(token.span.extract_str(parser.source)),
-            span: token.span,
-        };
-
-        let type_args = if parser.lexer.peek().inner == Token::ColonColon {
-            parser.lexer.next(); // consume `::`
-            let (args, _) = parser.parse_type_args()?;
-            args
-        } else {
-            Box::new([])
-        };
-
-        let arguments = SeparatedGroup {
-            open_token: Token::OpenParen,
-            close_token: Token::CloseParen,
-            separator_token: Token::Comma,
-            item_handler: |parser| parser.parse_expression(BindingPower::Default),
-            should_warn_missing_separator: None,
-        }
-        .parse(parser)?;
-
-        let span = TextSpan::new(token.span.start, arguments.span.end);
-        Ok(Spanned {
-            inner: Expression::IntrinsicCall {
-                name,
-                type_args,
-                arguments: arguments.inner,
-            },
-            span,
-        })
     }
 
     fn parse_call_expression(
@@ -4596,12 +4545,12 @@ impl<'ctx> Parser<'ctx> {
         match keyword {
             Some(Keyword::Fn) => {
                 let mut item = Parser::parse_function_definition_item(parser)?;
-                if let Item::Function {
-                    pub_span: ref mut ps,
-                    ..
-                } = item.inner
-                {
-                    *ps = Some(pub_span);
+                match &mut item.inner {
+                    Item::Function { pub_span: ps, .. }
+                    | Item::FunctionDeclaration { pub_span: ps, .. } => {
+                        *ps = Some(pub_span);
+                    }
+                    _ => unreachable!(),
                 }
                 Ok(item)
             }
@@ -4986,7 +4935,7 @@ impl<'ctx> Parser<'ctx> {
                 close_token: Token::CloseBrace,
                 separator_token: Token::SemiColon,
                 item_handler: Parser::parse_module_body_item,
-                should_warn_missing_separator: None,
+                should_warn_missing_separator: Some(|item: &Item| !item.is_block_like()),
             }
             .parse(parser)?;
 

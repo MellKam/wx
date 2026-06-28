@@ -70,9 +70,7 @@ items:
                               end: 40
                           ty: ~
                           value:
-                            inner:
-                              Char:
-                                symbol: 3
+                            inner: Char
                             span:
                               start: 43
                               end: 46
@@ -90,7 +88,7 @@ items:
                               Binding:
                                 mut_span: ~
                                 name:
-                                  inner: 4
+                                  inner: 3
                                   span:
                                     start: 58
                                     end: 59
@@ -99,9 +97,7 @@ items:
                               end: 59
                           ty: ~
                           value:
-                            inner:
-                              String:
-                                symbol: 5
+                            inner: String
                             span:
                               start: 62
                               end: 69

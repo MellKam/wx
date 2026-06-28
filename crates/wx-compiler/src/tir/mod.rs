@@ -61,7 +61,7 @@ pub enum TypeParamOwner {
     Trait(TraitIndex),
     /// Non-trait generic impl block: `impl<Params> Target { }`.
     /// Value is the index into `TIR::generic_impl_list`.
-    ImplBlock(usize),
+    ImplBlock(u32),
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -115,19 +115,19 @@ pub enum Type {
     },
     Pointer {
         to: TypeIndex,
-        mutable: bool,
         memory: TypeIndex,
+        mutable: bool,
     },
     Array {
         of: TypeIndex,
         size: u32,
-        mutable: bool,
         memory: TypeIndex,
+        mutable: bool,
     },
     Slice {
         of: TypeIndex,
-        mutable: bool,
         memory: TypeIndex,
+        mutable: bool,
     },
     Module {
         namespace_idx: u32,
@@ -301,8 +301,7 @@ pub struct Constant {
 pub struct TraitAssocType {
     pub id: ast::DefId,
     pub name_span: ast::TextSpan,
-    pub bounds: Box<[TraitIndex]>,
-    pub typeset_bound: Option<TypesetIndex>,
+    pub bounds: Bounds,
     pub accesses: Vec<SourceSpan>,
 }
 
@@ -576,11 +575,6 @@ pub enum ExprKind {
     },
     TupleInit {
         elements: Box<[Expression]>,
-    },
-    IntrinsicCall {
-        name: SymbolU32,
-        type_arguments: Box<[TypeIndex]>,
-        arguments: Box<[Expression]>,
     },
     /// `[a, b, c]` — all elements are compile-time constants; placed in static data.
     ArrayLiteral {
@@ -988,6 +982,7 @@ pub enum ImplEntry {
 pub struct GenericImplBlock {
     /// Synthetic `DefId` used to demand-drive this block's `ensure_signature`.
     pub id: ast::DefId,
+    pub file_id: FileId,
     pub type_params: Box<[TypeParamInfo]>,
     /// `TypeIndex::ERROR` until `ensure_signature` for this block runs.
     pub target: TypeIndex,
@@ -1001,18 +996,17 @@ pub struct GenericImplBlock {
 #[cfg_attr(debug_assertions, derive(Debug))]
 pub enum GenericImplTargetKind {
     Slice,
-    Pointer,
     Array,
     Struct(u32),
 }
 
 impl GenericImplTargetKind {
     /// Extracts the outer type constructor from `ty`, returning `None` for bare
-    /// type params (rejected at registration) or other non-dispatchable types.
+    /// type params, pointer types (impl on pointers is disallowed), or other
+    /// non-dispatchable types.
     pub fn from_type(ty: &Type) -> Option<Self> {
         match ty {
             Type::Slice { .. } => Some(Self::Slice),
-            Type::Pointer { .. } => Some(Self::Pointer),
             Type::Array { .. } => Some(Self::Array),
             Type::Struct { struct_index, .. } => Some(Self::Struct(*struct_index)),
             _ => None,
@@ -1025,22 +1019,8 @@ impl GenericImplTargetKind {
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ItemAttribute {
     Inline,
+    Intrinsic,
     Lang(SymbolU32),
-}
-
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub enum FunctionAccessKind {
-    DirectCall,
-    Reference,
-}
-
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub struct FunctionAccess {
-    pub kind: FunctionAccessKind,
-    pub file_id: FileId,
-    pub span: ast::TextSpan,
 }
 
 #[derive(PartialEq, Eq)]
@@ -1051,7 +1031,6 @@ pub enum FunctionKind {
     Impl,
     Trait,
     TraitImpl { trait_impl_index: TraitImplIndex },
-    Intrinsic,
 }
 
 #[derive(Clone)]
@@ -1064,14 +1043,21 @@ pub struct TraitBound {
     pub bindings: Box<[(SymbolU32, TypeIndex)]>,
 }
 
+#[derive(Clone, Default)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct Bounds {
+    pub traits: Box<[TraitBound]>,
+    pub typeset: Option<TypesetIndex>,
+}
+
 #[derive(Clone)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TypeParamInfo {
     pub name: SymbolU32,
     pub name_span: ast::TextSpan,
-    pub bounds: Box<[TraitBound]>,
-    pub typeset_bound: Option<TypesetIndex>,
+    pub bounds: Bounds,
     pub accesses: Vec<SourceSpan>,
 }
 
@@ -1080,8 +1066,7 @@ impl TypeParamInfo {
         Self {
             name,
             name_span,
-            bounds: Box::new([]),
-            typeset_bound: None,
+            bounds: Bounds::default(),
             accesses: Vec::new(),
         }
     }
@@ -1102,7 +1087,6 @@ pub struct Function {
     pub file_id: FileId,
     pub namespace: Option<NamespaceIndex>,
     pub pub_span: Option<ast::TextSpan>,
-    pub kind: FunctionKind,
     /// Own type parameters only — does not include params inherited from a
     /// parent impl block. For the full ordered list, prepend the params from
     /// `type_param_parent`. Empty for monomorphic functions.
@@ -1118,7 +1102,7 @@ pub struct Function {
     pub name: ast::Spanned<SymbolU32>,
     pub params: Box<[FunctionParam]>,
     pub result: Option<Spanned<TypeIndex>>,
-    pub accesses: Vec<FunctionAccess>,
+    pub accesses: Vec<SourceSpan>,
     pub attributes: Box<[ItemAttribute]>,
     pub body: Option<FunctionBody>,
 }
@@ -1232,6 +1216,7 @@ define_diagnostic_codes! {
         NotAMethod => "E1050",
         InferInSignature => "E1051",
         MissingElseBlock => "E1052",
+        InvalidSelfType => "E1053",
     }
 }
 
@@ -1349,6 +1334,12 @@ impl<'a> TypeFormatter<'a> {
         Ok(buffer)
     }
 
+    pub fn display_bounds(&self, bounds: &Bounds) -> Result<String, std::fmt::Error> {
+        let mut buffer = String::new();
+        self.write_bounds(&mut buffer, bounds)?;
+        Ok(buffer)
+    }
+
     fn write_type(&self, f: &mut impl std::fmt::Write, idx: TypeIndex) -> std::fmt::Result {
         match &self.tir.type_pool[idx.as_usize()] {
             Type::Integer => f.write_str("{integer}"),
@@ -1371,8 +1362,8 @@ impl<'a> TypeFormatter<'a> {
             Type::U64 => f.write_str("u64"),
             Type::Pointer {
                 to,
-                mutable,
                 memory,
+                mutable,
             } => {
                 self.write_type(f, *memory)?;
                 f.write_str("::*")?;
@@ -1384,8 +1375,8 @@ impl<'a> TypeFormatter<'a> {
             }
             Type::Slice {
                 of,
-                mutable,
                 memory,
+                mutable,
             } => {
                 self.write_type(f, *memory)?;
                 f.write_str("::[]")?;
@@ -1398,8 +1389,8 @@ impl<'a> TypeFormatter<'a> {
             Type::Array {
                 of,
                 size,
-                mutable,
                 memory,
+                mutable,
             } => {
                 self.write_type(f, *memory)?;
                 write!(f, "::[{}]{}", size, if *mutable { "mut " } else { "" })?;
@@ -1480,6 +1471,12 @@ impl<'a> TypeFormatter<'a> {
                             .resolve(param_info.name)
                             .ok_or(std::fmt::Error)
                             .and_then(|name| f.write_str(name))?;
+                        let has_bounds = !param_info.bounds.traits.is_empty()
+                            || param_info.bounds.typeset.is_some();
+                        if has_bounds {
+                            f.write_str(": ")?;
+                            self.write_bounds(f, &param_info.bounds)?;
+                        }
                     }
                     f.write_char('>')?;
                 }
@@ -1518,8 +1515,8 @@ impl<'a> TypeFormatter<'a> {
                         self.interner.resolve(symbol).ok_or(std::fmt::Error)?
                     }
                     TypeParamOwner::ImplBlock(block_idx) => {
-                        let symbol = self.tir.generic_impl_list[*block_idx]
-                            .type_params[*param_index as usize]
+                        let symbol = self.tir.generic_impl_list[*block_idx as usize].type_params
+                            [*param_index as usize]
                             .name;
                         self.interner.resolve(symbol).ok_or(std::fmt::Error)?
                     }
@@ -1554,6 +1551,45 @@ impl<'a> TypeFormatter<'a> {
                 Ok(())
             }
         }
+    }
+
+    fn write_bounds(&self, f: &mut impl std::fmt::Write, bounds: &Bounds) -> std::fmt::Result {
+        let mut first = true;
+        for trait_bound in bounds.traits.iter() {
+            if !first {
+                f.write_str(" + ")?;
+            }
+            first = false;
+            self.interner
+                .resolve(self.tir.traits[trait_bound.trait_index as usize].name.inner)
+                .ok_or(std::fmt::Error)
+                .and_then(|name| f.write_str(name))?;
+            if !trait_bound.bindings.is_empty() {
+                f.write_str(" where { ")?;
+                for (i, (assoc_name, assoc_type)) in trait_bound.bindings.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    self.interner
+                        .resolve(*assoc_name)
+                        .ok_or(std::fmt::Error)
+                        .and_then(|name| f.write_str(name))?;
+                    f.write_str(" = ")?;
+                    self.write_type(f, *assoc_type)?;
+                }
+                f.write_str(" }")?;
+            }
+        }
+        if let Some(typeset_idx) = bounds.typeset {
+            if !first {
+                f.write_str(" + ")?;
+            }
+            self.interner
+                .resolve(self.tir.typesets[typeset_idx as usize].name.inner)
+                .ok_or(std::fmt::Error)
+                .and_then(|name| f.write_str(name))?;
+        }
+        Ok(())
     }
 }
 
@@ -1613,6 +1649,7 @@ pub struct TIR {
 }
 
 impl TIR {
+    #[inline]
     pub fn function_index(&self, id: ast::DefId) -> Option<FunctionIndex> {
         match self.item_lookup.get(&id)? {
             ItemIndex::Function(i) => Some(*i),
@@ -1620,13 +1657,18 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_function_index(&self, id: ast::DefId) -> FunctionIndex {
         match self.item_lookup[&id] {
             ItemIndex::Function(i) => i,
-            other => panic!("expected Function for {id:?}, found {other:?}"),
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected Function for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
+    #[inline]
     pub fn struct_index(&self, id: ast::DefId) -> Option<u32> {
         match self.item_lookup.get(&id)? {
             ItemIndex::Struct(i) => Some(*i),
@@ -1634,13 +1676,18 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_struct_index(&self, id: ast::DefId) -> u32 {
         match self.item_lookup[&id] {
             ItemIndex::Struct(i) => i,
-            other => panic!("expected Struct for {id:?}, found {other:?}"),
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected Struct for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
+    #[inline]
     pub fn const_index(&self, id: ast::DefId) -> Option<ConstIndex> {
         match self.item_lookup.get(&id)? {
             ItemIndex::Const(i) => Some(*i),
@@ -1648,13 +1695,18 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_const_index(&self, id: ast::DefId) -> ConstIndex {
         match self.item_lookup[&id] {
             ItemIndex::Const(i) => i,
-            other => panic!("expected Const for {id:?}, found {other:?}"),
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected Const for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
+    #[inline]
     pub fn global_index(&self, id: ast::DefId) -> Option<GlobalIndex> {
         match self.item_lookup.get(&id)? {
             ItemIndex::Global(i) => Some(*i),
@@ -1662,13 +1714,18 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_global_index(&self, id: ast::DefId) -> GlobalIndex {
         match self.item_lookup[&id] {
             ItemIndex::Global(i) => i,
-            other => panic!("expected Global for {id:?}, found {other:?}"),
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected Global for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
+    #[inline]
     pub fn memory_index(&self, id: ast::DefId) -> Option<MemoryIndex> {
         match self.item_lookup.get(&id)? {
             ItemIndex::Memory(i) => Some(*i),
@@ -1676,13 +1733,18 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_memory_index(&self, id: ast::DefId) -> MemoryIndex {
         match self.item_lookup[&id] {
             ItemIndex::Memory(i) => i,
-            other => panic!("expected Memory for {id:?}, found {other:?}"),
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected Memory for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
+    #[inline]
     pub fn typeset_index(&self, id: ast::DefId) -> Option<TypesetIndex> {
         match self.item_lookup.get(&id)? {
             ItemIndex::TypeSet(i) => Some(*i),
@@ -1690,13 +1752,18 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_typeset_index(&self, id: ast::DefId) -> TypesetIndex {
         match self.item_lookup[&id] {
             ItemIndex::TypeSet(i) => i,
-            other => panic!("expected TypeSet for {id:?}, found {other:?}"),
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected TypeSet for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
+    #[inline]
     pub fn trait_index(&self, id: ast::DefId) -> Option<TraitIndex> {
         match self.item_lookup.get(&id)? {
             ItemIndex::Trait(i) => Some(*i),
@@ -1704,13 +1771,18 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_trait_index(&self, id: ast::DefId) -> TraitIndex {
         match self.item_lookup[&id] {
             ItemIndex::Trait(i) => i,
-            other => panic!("expected Trait for {id:?}, found {other:?}"),
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected Trait for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
+    #[inline]
     pub fn trait_impl_index(&self, id: ast::DefId) -> Option<TraitImplIndex> {
         match self.item_lookup.get(&id)? {
             ItemIndex::TraitImpl(i) => Some(*i),
@@ -1718,13 +1790,18 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_trait_impl_index(&self, id: ast::DefId) -> TraitImplIndex {
         match self.item_lookup[&id] {
             ItemIndex::TraitImpl(i) => i,
-            other => panic!("expected TraitImpl for {id:?}, found {other:?}"),
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected TraitImpl for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
+    #[inline]
     pub fn enum_index(&self, id: ast::DefId) -> Option<EnumIndex> {
         match self.item_lookup.get(&id)? {
             ItemIndex::Enum(i) => Some(*i),
@@ -1732,10 +1809,14 @@ impl TIR {
         }
     }
 
+    #[inline]
     pub fn expect_enum_index(&self, id: ast::DefId) -> EnumIndex {
         match self.item_lookup[&id] {
-            ItemIndex::Enum(i) => i,
-            other => panic!("expected Enum for {id:?}, found {other:?}"),
+            ItemIndex::Enum(index) => index,
+            #[cfg(debug_assertions)]
+            other => unreachable!("expected Enum for {id:?}, found {other:?}"),
+            #[cfg(not(debug_assertions))]
+            _ => unreachable!(),
         }
     }
 
@@ -1749,7 +1830,7 @@ impl TIR {
     pub fn type_param_info(&self, owner: TypeParamOwner, abs_index: usize) -> &TypeParamInfo {
         match owner {
             TypeParamOwner::ImplBlock(block_idx) => {
-                &self.generic_impl_list[block_idx].type_params[abs_index]
+                &self.generic_impl_list[block_idx as usize].type_params[abs_index]
             }
             TypeParamOwner::Function(id) => {
                 let func_idx = self.expect_function_index(id) as usize;
@@ -1775,7 +1856,7 @@ impl TIR {
     ) -> &mut TypeParamInfo {
         match owner {
             TypeParamOwner::ImplBlock(block_idx) => {
-                &mut self.generic_impl_list[block_idx].type_params[abs_index]
+                &mut self.generic_impl_list[block_idx as usize].type_params[abs_index]
             }
             TypeParamOwner::Function(id) => {
                 let func_idx = self.expect_function_index(id) as usize;
@@ -1804,7 +1885,7 @@ impl TIR {
         let func = &self.functions[func_index as usize];
         let parent_params: &[TypeParamInfo] = match func.type_param_parent {
             Some(TypeParamOwner::ImplBlock(block_idx)) => {
-                &self.generic_impl_list[block_idx].type_params
+                &self.generic_impl_list[block_idx as usize].type_params
             }
             Some(TypeParamOwner::Trait(trait_idx)) => {
                 std::slice::from_ref(&self.traits[trait_idx as usize].self_type_param)

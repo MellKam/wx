@@ -1,82 +1,232 @@
 use std::*;
 
-// Smoke test: exercises the primitives needed for DOOM
-//
-//  1. u8 array element reads  (WAD parsing needs these)
-//  2. Bit-shifts + OR to assemble multi-byte integers from raw bytes
-//  3. u8 pointer stores via *mut u8  (framebuffer pixel writes)
-//  4. Pointer arithmetic (.add()) to stride through a pixel buffer
-memory heap: Memory where { Size = u32 } { min_pages: 4 };
+memory heap: Memory where { Size = u32 } { min_pages: 1 };
 
-// ── WAD parsing primitives ────────────────────────────────────────────────────
-// Read a little-endian u16 from a byte slice.
-pub fn read_u16_le(data: heap::[]u8, off: u32) -> u32 {
-    (data[off] as u32) | ((data[off + 1] as u32) << 8)
+struct Layout<M: Memory> {
+    size: M::Size,
+    align: M::Size,
 }
 
-// Read a little-endian i32 from a byte slice.
-pub fn read_i32_le(data: heap::[]u8, off: u32) -> i32 {
-    (data[off] as i32)
-        | ((data[off + 1] as i32) << 8)
-        | ((data[off + 2] as i32) << 16)
-        | ((data[off + 3] as i32) << 24)
-}
+impl<M: Memory> Layout<M> {
+    fn of<T>() -> Self {
+        Self::{ size: size_of::<T>(), align: align_of::<T>() }
+    }
 
-// Check the 4-byte WAD magic: "IWAD" = [0x49, 0x57, 0x41, 0x44]
-pub fn check_wad_magic(data: heap::[]u8) -> bool {
-    if data.len() < 4 { return false };
-    data[0] == 0x49 && data[1] == 0x57 && data[2] == 0x41 && data[3] == 0x44
-}
-
-// ── Framebuffer ───────────────────────────────────────────────────────────────
-const FB_WIDTH: u32 = 320;
-const FB_HEIGHT: u32 = 200;
-
-// Framebuffer lives right after static data, 3 bytes per pixel (RGB8).
-pub fn fb_ptr() -> u32 {
-    heap::DATA_END as u32
-}
-
-// Write one RGB pixel.
-pub fn set_pixel(x: u32, y: u32, r: u8, g: u8, b: u8) {
-    local base: heap::*mut u8 =
-        (fb_ptr() + (y * FB_WIDTH + x) * 3) as heap::*mut u8;
-    base.* = r;
-    base.add(1).* = g;
-    base.add(2).* = b;
-}
-
-// Fill the whole framebuffer with a single color.
-pub fn clear(r: u8, g: u8, b: u8) {
-    local mut y: u32 = 0;
-    loop {
-        if y >= FB_HEIGHT { break };
-        local mut x: u32 = 0;
-        loop {
-            if x >= FB_WIDTH { break };
-            set_pixel(x, y, r, g, b);
-            x += 1;
-        };
-        y += 1;
+    fn array<T>(count: M::Size) -> Self {
+        Self::{ size: size_of::<T>() * count, align: align_of::<T>() }
     }
 }
 
-pub fn memory_fill<M: Memory>(dst: M::*mut u8, val: u8, len: M::Size) {}
+trait Allocator {
+    type M: Memory;
 
-pub fn memory_copy<Size: PointerSize, SrcMem: Memory where { Size = Size }, DstMem: Memory where { Size = Size }>(
-    dst: DstMem::*mut u8,
-    src: SrcMem::*u8,
-    len: Size,
-) {
-    unreachable
+    fn alloc(self: Self::M::*mut Self, layout: Layout<Self::M>) -> *mut u8;
+}
+
+struct BumpAllocator<M: Memory> {
+    bump: M::Size,
+}
+
+impl<M: Memory> BumpAllocator<M> {
+    fn new() {}
+}
+
+impl Allocator for BumpAllocator<heap> {
+    type M = heap;
+
+    fn alloc(self: Self::M::*mut Self, layout: Layout<Self::M>) -> *mut u8 {
+        local align_mask = layout.align - 1;
+        local start = (self.*.bump + align_mask) & ^align_mask;
+        
+        // 2. Calculate the end address of this allocation
+        local end = start + layout.size;
+        
+        // 3. Check if we have exceeded the current WebAssembly memory size.
+        // `heap.size()` returns pages, so we multiply by your PAGE_SIZE constant (65536).
+        local current_bytes = heap.size() * PAGE_SIZE;
+        
+        if end > current_bytes {
+            local bytes_needed = end - current_bytes;
+            local pages_needed = (bytes_needed + PAGE_SIZE - 1) / PAGE_SIZE;
+            
+            // Grow the WebAssembly memory
+            // (Note: In a production language, you should check if `grow` 
+            // returns -1 to handle Out-Of-Memory errors).
+            _ = heap.grow(pages_needed);
+        };
+        
+        // 4. Advance the bump pointer to the end of this allocation
+        self.*.bump = end;
+        
+        // 5. Cast and return the starting address
+        start as _
+    }
+}
+
+fn main() {
+    local bump: BumpAllocator<heap> = unreachable;
+    local ptr = bump.alloc(Layout::{ size: 4, align: 1 });
+}
+
+// ── bump allocator ────────────────────────────────────────────────────────────
+global mut bump: heap::*u8 = heap::DATA_END;
+
+fn alloc_bytes(size: u32, align: u32) -> heap::*mut u8 {
+    local ptr = (bump as u32 + align - 1) / align * align;
+    local new_end = ptr + size;
+    local cur_end = heap.size() * PAGE_SIZE;
+    if new_end > cur_end {
+        local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        _ = heap.grow(needed);
+    }
+    bump = new_end as heap::*u8;
+    ptr as heap::*mut u8
+}
+
+fn alloc_array<T>(count: u32) -> heap::*mut T {
+    alloc_bytes(size_of::<T, heap>() * count, align_of::<T, heap>()) as _
+}
+
+pub fn reset() {
+    bump = heap::DATA_END;
+}
+
+// ── Vec<T> ────────────────────────────────────────────────────────────────────
+struct Vec<T> {
+    buf: heap::*mut T,
+    len: u32,
+    cap: u32,
+}
+
+impl<T> Vec<T> {
+    #[inline]
+    pub fn new() -> Vec<T> {
+        Vec::{ buf: ptr::null_mut(), len: 0, cap: 0 }
+    }
+
+    // Appends a value; grows the buffer if needed (doubles capacity each time).
+    pub fn push(self: heap::*mut Self, value: T) {
+        if self.*.len == self.*.cap {
+            local new_cap = if self.*.cap == 0 { 4 } else { self.*.cap * 2 };
+            local new_buf = alloc_array::<T>(new_cap);
+            if self.*.cap != 0 {
+                local bytes = self.*.len * size_of::<T, heap>();
+                memory_copy(
+                    new_buf as heap::*mut u8,
+                    self.*.buf as heap::*u8,
+                    bytes,
+                );
+            };
+            self.*.buf = new_buf;
+            self.*.cap = new_cap;
+        };
+        ptr::add_mut(self.*.buf, self.*.len).* = value;
+        self.*.len += 1;
+    }
+
+    // Removes and returns the last element. Caller must ensure len > 0.
+    pub fn pop(self: heap::*mut Self) -> T {
+        self.*.len -= 1;
+        ptr::add(self.*.buf, self.*.len).*
+    }
+
+    // Removes the element at index, shifting everything after it left. O(n).
+    pub fn remove(self: heap::*mut Self, index: u32) -> T {
+        local val = ptr::add(self.*.buf, index).*;
+        local mut i: u32 = index;
+        loop {
+            if i + 1 == self.*.len { break; };
+            ptr::add_mut(self.*.buf, i).* = ptr::add(self.*.buf, i + 1).*;
+            i += 1;
+        };
+        self.*.len -= 1;
+        val
+    }
+
+    // Removes the element at index by swapping it with the last. O(1), no order.
+    pub fn swap_remove(self: heap::*mut Self, index: u32) -> T {
+        local val = ptr::add(self.*.buf, index).*;
+        self.*.len -= 1;
+        if index != self.*.len {
+            ptr::add_mut(self.*.buf, index).*
+                = ptr::add(self.*.buf, self.*.len).*;
+        };
+        val
+    }
+
+    pub fn get(self: heap::*Self, index: u32) -> T {
+        ptr::add(self.*.buf, index).*
+    }
+
+    pub fn set(self: heap::*mut Self, index: u32, value: T) {
+        ptr::add_mut(self.*.buf, index).* = value;
+    }
+
+    pub fn swap(self: heap::*mut Self, a: u32, b: u32) {
+        local tmp = ptr::add(self.*.buf, a).*;
+        ptr::add_mut(self.*.buf, a).* = ptr::add(self.*.buf, b).*;
+        ptr::add_mut(self.*.buf, b).* = tmp;
+    }
+
+    pub fn first(self: heap::*Self) -> T {
+        self.*.buf.*
+    }
+
+    pub fn last(self: heap::*Self) -> T {
+        ptr::add(self.*.buf, self.*.len - 1).*
+    }
+
+    pub fn clear(self: heap::*mut Self) {
+        self.*.len = 0;
+    }
+
+    #[inline]
+    pub fn len(self: heap::*Self) -> u32 {
+        self.*.len
+    }
+
+    #[inline]
+    pub fn cap(self: heap::*Self) -> u32 {
+        self.*.cap
+    }
+
+    #[inline]
+    pub fn is_empty(self: heap::*Self) -> bool {
+        self.*.len == 0
+    }
+}
+
+// ── demo ─────────────────────────────────────────────────────────────────────
+pub fn demo() -> i32 {
+    local vec = alloc_array::<Vec<i32>>(1);
+    vec.* = Vec::new();
+    
+    vec.push(10);
+    vec.push(20);
+    vec.push(30);
+    vec.push(40);
+    vec.push(50);
+    
+    _ = vec.pop();
+    // remove 50
+    vec.set(1, 99);
+    // [10, 99, 30, 40]
+    vec.swap(0, 3);
+    // [40, 99, 30, 10]
+    _ = vec.swap_remove(1);
+    // [40, 10, 30]
+    local mut sum: i32 = 0;
+    local mut i: u32 = 0;
+    
+    loop {
+        if i == vec.len() { break sum }
+        sum += vec.get(i);
+        i += 1;
+    }
 }
 
 export {
     heap as "memory",
-    check_wad_magic,
-    read_u16_le,
-    read_i32_le,
-    fb_ptr,
-    set_pixel,
-    clear,
+    reset,
+    demo,
 }

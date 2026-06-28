@@ -21,7 +21,7 @@ OUTPUT_WASM="${BASENAME}.wasm"
 OPTIMIZED_WASM="${BASENAME}.optimized.wasm"
 
 echo "=== Compiling $INPUT_FILE ==="
-./target/release/wx-compiler "$INPUT_FILE"
+./target/release/wx compile "$INPUT_FILE"
 
 if [ $? -ne 0 ]; then
     echo "Compilation failed!"

@@ -38,7 +38,8 @@ pub enum ScalarType {
 /// Sign only matters for narrow loads: `i32.load8_s` vs `i32.load8_u`.
 /// Full-width loads and stores are always unsigned.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(Debug, serde::Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum MemAccess {
     I8S,
     I8U,
@@ -139,7 +140,7 @@ impl StackResult {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(Debug))]
+#[cfg_attr(debug_assertions, derive(Debug))]
 pub enum DataNodeKind {
     // ── Constants ──────────────────────────────────────────────────────────
     Int {
@@ -512,6 +513,19 @@ pub enum ControlNode {
         memory: ast::DefId,
         delta: DataNodeIndex,
         result: DataNodeIndex,
+    },
+    MemoryFill {
+        memory: ast::DefId,
+        dst: DataNodeIndex,
+        val: DataNodeIndex,
+        len: DataNodeIndex,
+    },
+    MemoryCopy {
+        dst_memory: ast::DefId,
+        src_memory: ast::DefId,
+        dst: DataNodeIndex,
+        src: DataNodeIndex,
+        len: DataNodeIndex,
     },
     PointerLoad {
         address: DataNodeIndex,

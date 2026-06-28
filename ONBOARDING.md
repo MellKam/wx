@@ -17,10 +17,10 @@ wx/
 │   │       ├── tir.rs            # Type-checked IR (the big file, ~7000 lines)
 │   │       ├── mir.rs            # Mid-level IR (desugaring, struct lowering)
 │   │       ├── codegen.rs        # WASM bytecode emitter (currently pub-commented out in lib.rs)
-│   │       ├── fmt.rs            # Debug/display formatting helpers
 │   │       └── snapshots/        # insta snapshot files (*.snap)
-│   ├── wx-compiler-cli/          # CLI binary: reads .wx → writes .wasm
-│   ├── wx-compiler-wasm/         # WASM-compiled version of the compiler (for the playground)
+│   ├── wx-cli/          # CLI binary: reads .wx → writes .wasm
+│   ├── wx-fmt/          # Debug/display formatting helpers
+│   ├── wx-wasm/         # WASM-compiled version of the compiler (for the playground)
 │   └── wx-lsp/                   # Language server
 ├── examples/                     # Working .wx programs (fibonacci, pow, globals, …)
 └── web/ cli/                     # JS/TS tooling around the compiler
