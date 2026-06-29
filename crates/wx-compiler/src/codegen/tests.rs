@@ -2465,3 +2465,104 @@ fn test_constant_index_offset_folding_wat() {
     "});
     insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
 }
+
+// ── AddressOf (.& / .&mut)
+// ───────────────────────────────────────────────────────────
+
+#[test]
+fn test_address_of_array_element() {
+    // `arr[i].&mut` on a mutable heap array returns a *mut pointer to element i.
+    // The byte address must equal base + i * elem_size; writing through the
+    // returned pointer must update the correct memory slot.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 } { min_pages: 1 }
+
+        fn elem_ptr(arr: heap::[4]mut i32, i: u32) -> heap::*mut i32 {
+            arr[i].&mut
+        }
+
+        export { heap, elem_ptr }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let mem = instance.get_memory(&mut store, "heap").unwrap();
+    let elem_ptr = instance
+        .get_typed_func::<(i32, i32), i32>(&mut store, "elem_ptr")
+        .unwrap();
+
+    // Initialise four i32s at base address 0: [10, 20, 30, 40].
+    for (i, &v) in [10i32, 20, 30, 40].iter().enumerate() {
+        mem.write(&mut store, i * 4, &v.to_le_bytes()).unwrap();
+    }
+
+    // elem_ptr(base=0, i=2) must return byte offset 8.
+    assert_eq!(elem_ptr.call(&mut store, (0, 2)).unwrap(), 8);
+    // elem_ptr(base=0, i=0) must return byte offset 0.
+    assert_eq!(elem_ptr.call(&mut store, (0, 0)).unwrap(), 0);
+    // elem_ptr(base=0, i=3) must return byte offset 12.
+    assert_eq!(elem_ptr.call(&mut store, (0, 3)).unwrap(), 12);
+}
+
+#[test]
+fn test_address_of_struct_field() {
+    // `ptr.*.field.&` returns a pointer to the field's byte position within the struct.
+    // `x` is at offset 0; `y` is at offset 4 (both are i32 fields with alignment 4,
+    // sorted in declaration order since alignment is equal).
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 } { min_pages: 1 }
+        struct Point { x: i32, y: i32 }
+
+        fn x_addr(ptr: heap::*Point) -> heap::*i32 { ptr.*.x.& }
+        fn y_addr(ptr: heap::*Point) -> heap::*i32 { ptr.*.y.& }
+
+        export { heap, x_addr, y_addr }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, &case.bytecode).expect("invalid wasm");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiation failed");
+    let x_addr = instance
+        .get_typed_func::<i32, i32>(&mut store, "x_addr")
+        .unwrap();
+    let y_addr = instance
+        .get_typed_func::<i32, i32>(&mut store, "y_addr")
+        .unwrap();
+
+    let base: i32 = 64; // arbitrary non-zero base
+    // x is the first field: address == base + 0
+    assert_eq!(x_addr.call(&mut store, base).unwrap(), base);
+    // y is the second field: address == base + 4
+    assert_eq!(y_addr.call(&mut store, base).unwrap(), base + 4);
+}
+
+#[test]
+fn test_address_of_wat() {
+    // WAT snapshot pinning the emitted instructions for .& operations:
+    //
+    // elem_ptr — dynamic index: the address is base + i * 4.
+    //   Expected: local.get 0, local.get 1, i32.const 4, i32.mul, i32.add
+    //
+    // y_addr   — field at static offset 4: the address is ptr + 4.
+    //   Expected: local.get 0, i32.const 4, i32.add
+    //
+    // x_addr   — field at static offset 0: the address IS the pointer.
+    //   Expected: local.get 0  (no arithmetic needed)
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 } { min_pages: 1 }
+        struct Point { x: i32, y: i32 }
+
+        fn elem_ptr(arr: heap::[4]i32, i: u32) -> heap::*i32 { arr[i].& }
+        fn x_addr(ptr: heap::*Point) -> heap::*i32 { ptr.*.x.& }
+        fn y_addr(ptr: heap::*Point) -> heap::*i32 { ptr.*.y.& }
+
+        export { heap, elem_ptr, x_addr, y_addr }
+    "});
+    assert!(case.tir.diagnostics.is_empty());
+    insta::assert_snapshot!(wasmprinter::print_bytes(&case.bytecode).unwrap());
+}

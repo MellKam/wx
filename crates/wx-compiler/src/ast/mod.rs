@@ -1030,6 +1030,11 @@ pub enum Expression {
     Deref {
         pointer: Box<Spanned<Expression>>,
     },
+    /// `{expr}.&` or `{expr}.&mut`
+    AddressOf {
+        value: Box<Spanned<Expression>>,
+        mut_span: Option<TextSpan>,
+    },
     /// `return {expr}`
     Return {
         value: Option<Box<Spanned<Expression>>>,
@@ -3085,6 +3090,20 @@ impl<'ctx> Parser<'ctx> {
                 },
                 span,
             }),
+            Token::Amper => {
+                let mut_span = parser.parse_mut_span();
+                let span = TextSpan::new(
+                    object.span.start,
+                    mut_span.map_or(token.span.end, |s| s.end),
+                );
+                Ok(Spanned {
+                    inner: Expression::AddressOf {
+                        value: Box::new(object),
+                        mut_span,
+                    },
+                    span,
+                })
+            }
             Token::Identifier => {
                 let member_symbol = parser.intern_identifier(token.span);
                 Ok(Spanned {

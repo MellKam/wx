@@ -1829,14 +1829,6 @@ impl<'tir> Builder<'tir> {
                     }
                 }
             }
-            tir::ExprKind::Deref { pointer, memory } => Expression {
-                kind: ExprKind::PointerLoad {
-                    pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
-                    offset: 0,
-                    memory: self.resolve_memory_id(*memory),
-                },
-                ty: self.lower_type_index(expr.ty),
-            },
             tir::ExprKind::ObjectAccess { object, member } => {
                 let (struct_index, args) = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Struct { struct_index, args } => (*struct_index, args),
@@ -2188,29 +2180,6 @@ impl<'tir> Builder<'tir> {
                     ty: Type::Pointer { memory: memory_id },
                 }
             }
-            tir::ExprKind::Index {
-                object,
-                index,
-                memory,
-            } => {
-                let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
-                    tir::Type::Array { of, .. } | tir::Type::Slice { of, .. } => *of,
-                    _ => unreachable!("index lowering only supported on arrays and slices"),
-                };
-                let (ptr, offset) =
-                    match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
-                        IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
-                        IndexAddress::Dynamic(ptr) => (ptr, 0),
-                    };
-                Expression {
-                    kind: ExprKind::PointerLoad {
-                        pointer: Box::new(ptr),
-                        offset,
-                        memory: self.resolve_memory_id(*memory),
-                    },
-                    ty: self.lower_type_index(expr.ty),
-                }
-            }
             tir::ExprKind::SliceRange { object, start, end } => {
                 let (elem_tir_ty, mem_tir_ty, static_size) =
                     match self.tir.type_pool[object.ty.as_usize()].clone() {
@@ -2457,6 +2426,50 @@ impl<'tir> Builder<'tir> {
                     ty: result_ty,
                 }
             }
+            tir::ExprKind::Load { place } => {
+                let (ptr, offset, memory) = self.lower_place_address(func_ctx, place, sink);
+                Expression {
+                    kind: ExprKind::PointerLoad {
+                        pointer: Box::new(ptr),
+                        offset,
+                        memory,
+                    },
+                    ty: self.lower_type_index(expr.ty),
+                }
+            }
+            tir::ExprKind::AddressOf { place, .. } => {
+                let (ptr, offset, _memory) = self.lower_place_address(func_ctx, place, sink);
+                let ptr_ty = self.lower_type_index(expr.ty);
+                if offset == 0 {
+                    ptr
+                } else {
+                    Expression {
+                        kind: ExprKind::Add {
+                            left: Box::new(ptr),
+                            right: Box::new(Expression {
+                                kind: ExprKind::Int {
+                                    value: offset as i64,
+                                },
+                                ty: ptr_ty,
+                            }),
+                        },
+                        ty: ptr_ty,
+                    }
+                }
+            }
+            tir::ExprKind::Store { target, value } => {
+                let (ptr, offset, memory) = self.lower_place_address(func_ctx, target, sink);
+                let lowered_value = self.lower_expression(func_ctx, value, sink);
+                Expression {
+                    kind: ExprKind::PointerStore {
+                        pointer: Box::new(ptr),
+                        value: Box::new(lowered_value),
+                        offset,
+                        memory,
+                    },
+                    ty: Type::Unit,
+                }
+            }
         }
     }
 
@@ -2679,6 +2692,52 @@ impl<'tir> Builder<'tir> {
         }
     }
 
+    /// Compute the address of a place, returning `(base_ptr, static_byte_offset, memory_id)`.
+    ///
+    /// The caller emits a `PointerLoad`/`PointerStore` using the returned triple.
+    ///
+    /// - `Deref { pointer }` — evaluate the pointer expression; offset = 0.
+    /// - `Field { object, member }` — recurse on the parent place and add the
+    ///   field's static byte offset.
+    /// - `Index { object, index }` — delegate to `lower_index_address`; the
+    ///   returned pointer already encodes runtime index arithmetic when needed.
+    fn lower_place_address(
+        &mut self,
+        func_ctx: &mut FunctionContext,
+        place: &tir::Place,
+        sink: &mut Vec<Expression>,
+    ) -> (Expression, u32, ast::DefId) {
+        let memory_id = self.resolve_memory_id(place.memory);
+        match &place.kind {
+            tir::PlaceKind::Deref { pointer } => {
+                let ptr = self.lower_expression(func_ctx, pointer, sink);
+                (ptr, 0, memory_id)
+            }
+            tir::PlaceKind::Field { object, member } => {
+                let (base_ptr, base_offset, memory_id) =
+                    self.lower_place_address(func_ctx, object, sink);
+                let (struct_index, args) = match self.tir.type_pool[object.ty.as_usize()].clone() {
+                    tir::Type::Struct { struct_index, args } => (struct_index, args),
+                    _ => unreachable!("PlaceKind::Field: parent place must be a struct"),
+                };
+                let aggregate_index = self.ensure_aggregate_for_struct(struct_index, &args);
+                let decl_index =
+                    self.tir.structs[struct_index as usize].lookup[&member.inner] as usize;
+                let phys_index =
+                    self.aggregates[aggregate_index as usize].decl_to_phys[decl_index] as usize;
+                let field_offset = self.aggregates[aggregate_index as usize].offsets[phys_index];
+                (base_ptr, base_offset + field_offset, memory_id)
+            }
+            tir::PlaceKind::Index { object, index } => {
+                let elem_ty = place.ty;
+                match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
+                    IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset, memory_id),
+                    IndexAddress::Dynamic(ptr) => (ptr, 0, memory_id),
+                }
+            }
+        }
+    }
+
     fn lower_assignment(
         &mut self,
         func_ctx: &mut FunctionContext,
@@ -2699,33 +2758,6 @@ impl<'tir> Builder<'tir> {
                 id: *id,
                 value: Box::new(self.lower_expression(func_ctx, right, sink)),
             },
-            tir::ExprKind::Deref { pointer, memory } => ExprKind::PointerStore {
-                pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
-                value: Box::new(self.lower_expression(func_ctx, right, sink)),
-                offset: 0,
-                memory: self.resolve_memory_id(*memory),
-            },
-            tir::ExprKind::Index {
-                object,
-                index,
-                memory,
-            } => {
-                let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
-                    tir::Type::Array { of, .. } | tir::Type::Slice { of, .. } => *of,
-                    _ => unreachable!("index assignment only supported on arrays and slices"),
-                };
-                let (ptr, offset) =
-                    match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
-                        IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
-                        IndexAddress::Dynamic(ptr) => (ptr, 0),
-                    };
-                ExprKind::PointerStore {
-                    pointer: Box::new(ptr),
-                    value: Box::new(self.lower_expression(func_ctx, right, sink)),
-                    offset,
-                    memory: self.resolve_memory_id(*memory),
-                }
-            }
             tir::ExprKind::ObjectAccess { object, member } => {
                 let (struct_index, args) = match &self.tir.type_pool[object.ty.as_usize()] {
                     tir::Type::Struct { struct_index, args } => (*struct_index, args.clone()),
@@ -2736,27 +2768,20 @@ impl<'tir> Builder<'tir> {
                     self.tir.structs[struct_index as usize].lookup[&member.inner] as usize;
                 let phys_index =
                     self.aggregates[aggregate_index as usize].decl_to_phys[decl_index] as usize;
-                match &object.kind {
-                    tir::ExprKind::Deref { pointer, memory } => {
-                        let field_offset =
-                            self.aggregates[aggregate_index as usize].offsets[phys_index];
-                        ExprKind::PointerStore {
-                            pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
-                            value: Box::new(self.lower_expression(func_ctx, right, sink)),
-                            offset: field_offset,
-                            memory: self.resolve_memory_id(*memory),
-                        }
-                    }
-                    tir::ExprKind::Local {
-                        scope_index,
-                        local_index,
-                    } => ExprKind::AggregateSet {
-                        scope_index: *scope_index,
-                        local_index: *local_index,
-                        value_index: phys_index as u32,
-                        value: Box::new(self.lower_expression(func_ctx, right, sink)),
-                    },
-                    _ => unreachable!("ObjectAccess assignment with unsupported object kind"),
+                let tir::ExprKind::Local {
+                    scope_index,
+                    local_index,
+                } = &object.kind
+                else {
+                    unreachable!(
+                        "ObjectAccess assignment: object must be Local after place/value split"
+                    )
+                };
+                ExprKind::AggregateSet {
+                    scope_index: *scope_index,
+                    local_index: *local_index,
+                    value_index: phys_index as u32,
+                    value: Box::new(self.lower_expression(func_ctx, right, sink)),
                 }
             }
             tir::ExprKind::Placeholder => {
@@ -2833,33 +2858,13 @@ impl<'tir> Builder<'tir> {
                 id: *id,
                 value: Box::new(binary_expr),
             },
-            tir::ExprKind::Deref { pointer, memory } => ExprKind::PointerStore {
-                pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
-                value: Box::new(binary_expr),
-                offset: 0,
-                memory: self.resolve_memory_id(*memory),
-            },
-            tir::ExprKind::Index {
-                object,
-                index,
-                memory,
-            } => {
-                let elem_ty = match &self.tir.type_pool[object.ty.as_usize()] {
-                    tir::Type::Array { of, .. } | tir::Type::Slice { of, .. } => *of,
-                    _ => unreachable!(
-                        "index compound assignment only supported on arrays and slices"
-                    ),
-                };
-                let (ptr, offset) =
-                    match self.lower_index_address(func_ctx, object, index, elem_ty, sink) {
-                        IndexAddress::Constant { ptr, byte_offset } => (ptr, byte_offset),
-                        IndexAddress::Dynamic(ptr) => (ptr, 0),
-                    };
+            tir::ExprKind::Load { place } => {
+                let (ptr, offset, memory) = self.lower_place_address(func_ctx, place, sink);
                 ExprKind::PointerStore {
                     pointer: Box::new(ptr),
                     value: Box::new(binary_expr),
                     offset,
-                    memory: self.resolve_memory_id(*memory),
+                    memory,
                 }
             }
             tir::ExprKind::ObjectAccess { object, member } => {
@@ -2872,29 +2877,20 @@ impl<'tir> Builder<'tir> {
                     self.tir.structs[struct_index as usize].lookup[&member.inner] as usize;
                 let phys_index =
                     self.aggregates[aggregate_index as usize].decl_to_phys[decl_index] as usize;
-                match &object.kind {
-                    tir::ExprKind::Deref { pointer, memory } => {
-                        let field_offset =
-                            self.aggregates[aggregate_index as usize].offsets[phys_index];
-                        ExprKind::PointerStore {
-                            pointer: Box::new(self.lower_expression(func_ctx, pointer, sink)),
-                            value: Box::new(binary_expr),
-                            offset: field_offset,
-                            memory: self.resolve_memory_id(*memory),
-                        }
-                    }
-                    tir::ExprKind::Local {
-                        scope_index,
-                        local_index,
-                    } => ExprKind::AggregateSet {
-                        scope_index: *scope_index,
-                        local_index: *local_index,
-                        value_index: phys_index as u32,
-                        value: Box::new(binary_expr),
-                    },
-                    _ => unreachable!(
-                        "ObjectAccess compound assignment with unsupported object kind"
-                    ),
+                let tir::ExprKind::Local {
+                    scope_index,
+                    local_index,
+                } = &object.kind
+                else {
+                    unreachable!(
+                        "ObjectAccess compound assignment: object must be Local after place/value split"
+                    )
+                };
+                ExprKind::AggregateSet {
+                    scope_index: *scope_index,
+                    local_index: *local_index,
+                    value_index: phys_index as u32,
+                    value: Box::new(binary_expr),
                 }
             }
             _ => unreachable!(),

@@ -809,6 +809,29 @@ fn report_cannot_deref_non_pointer(span: SourceSpan, ty_display: String) -> Diag
         )
 }
 
+fn report_cannot_take_address_of_value(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::InvalidAssignmentTarget.code())
+        .with_message("cannot take address of a temporary or stack value")
+        .with_label(
+            span.primary_label()
+                .with_message("this expression is a value, not a location in memory"),
+        )
+        .with_note(
+            "`.&` is only valid on places reachable through a pointer, e.g. `ptr.*` or `ptr.*.field`",
+        )
+}
+
+fn report_cannot_take_mutable_address_of_immutable(span: SourceSpan) -> Diagnostic<FileId> {
+    Diagnostic::error()
+        .with_code(DiagnosticCode::CannotMutateImmutable.code())
+        .with_message("cannot take a mutable address of an immutable place")
+        .with_label(span.primary_label())
+        .with_note(
+            "the pointer chain leading here is immutable; use `*mut T` to allow mutable access",
+        )
+}
+
 fn report_no_memory_for_pointer(span: SourceSpan) -> Diagnostic<FileId> {
     Diagnostic::error()
         .with_code(DiagnosticCode::NoMemoryForPointer.code())
@@ -7217,6 +7240,48 @@ impl<'ast> Builder<'ast, '_> {
             ast::Expression::SliceRange { object, start, end } => {
                 self.build_slice_range_expression(func_ctx, expr.span, object, start, end)
             }
+            ast::Expression::AddressOf { value, mut_span } => {
+                let mutable = mut_span.is_some();
+                let operand = self.build_expression(
+                    func_ctx,
+                    AccessContext {
+                        expected_type: TypeIndex::INFER,
+                        access_kind: AccessKind::Read,
+                    },
+                    value,
+                )?;
+                match operand.kind {
+                    ExprKind::Load { place } => {
+                        if mutable && !place.mutable {
+                            self.tir.diagnostics.push(
+                                report_cannot_take_mutable_address_of_immutable(SourceSpan::new(
+                                    func_ctx.resolve_context.file_id,
+                                    expr.span,
+                                )),
+                            );
+                        }
+                        let pointer_ty = self.intern_type(Type::Pointer {
+                            to: place.ty,
+                            memory: place.memory,
+                            mutable,
+                        });
+                        Ok(Expression {
+                            kind: ExprKind::AddressOf { place, mutable },
+                            ty: pointer_ty,
+                            span: expr.span,
+                        })
+                    }
+                    _ => {
+                        self.tir
+                            .diagnostics
+                            .push(report_cannot_take_address_of_value(SourceSpan::new(
+                                func_ctx.resolve_context.file_id,
+                                operand.span,
+                            )));
+                        Err(())
+                    }
+                }
+            }
         }
     }
 
@@ -7322,14 +7387,45 @@ impl<'ast> Builder<'ast, '_> {
                         file_id: func_ctx.resolve_context.file_id,
                         span: member.span,
                     });
-                return Ok(Expression {
-                    kind: ExprKind::ObjectAccess {
-                        object: Box::new(object),
-                        member: member.clone(),
-                    },
-                    ty: field_ty,
-                    span: expr_span,
-                });
+                // Reuse object_ty / object_span so we can move object.kind in the match.
+                let object_ty = object.ty;
+                let object_span = object.span;
+                return match object.kind {
+                    // Object lives in linear memory — chain into a Field place.
+                    ExprKind::Load { place } => {
+                        let memory = place.memory;
+                        let mutable = place.mutable;
+                        Ok(Expression {
+                            kind: ExprKind::Load {
+                                place: Box::new(Place {
+                                    kind: PlaceKind::Field {
+                                        object: place,
+                                        member: member.clone(),
+                                    },
+                                    ty: field_ty,
+                                    memory,
+                                    mutable,
+                                    span: expr_span,
+                                }),
+                            },
+                            ty: field_ty,
+                            span: expr_span,
+                        })
+                    }
+                    // Object is a stack value — keep the existing ObjectAccess path.
+                    object_kind => Ok(Expression {
+                        kind: ExprKind::ObjectAccess {
+                            object: Box::new(Expression {
+                                kind: object_kind,
+                                ty: object_ty,
+                                span: object_span,
+                            }),
+                            member: member.clone(),
+                        },
+                        ty: field_ty,
+                        span: expr_span,
+                    }),
+                };
             }
         }
 
@@ -9317,12 +9413,9 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 });
             }
-            ExprKind::Deref { pointer, memory } => {
-                let inner_ty = match &self.tir.type_pool[pointer.ty.as_usize()] {
-                    Type::Pointer { to, .. } => *to,
-                    _ => unreachable!("Deref ExprKind must have Pointer type"),
-                };
-
+            ExprKind::Load { place } => {
+                let inner_ty = place.ty;
+                let left_span = left.span;
                 let mut right_expr = self.build_expression(
                     ctx,
                     AccessContext {
@@ -9342,7 +9435,7 @@ impl<'ast> Builder<'ast, '_> {
                                 file_id: ctx.resolve_context.file_id,
                                 left_type: Spanned {
                                     inner: inner_ty,
-                                    span: left.span,
+                                    span: left_span,
                                 },
                                 operator: operator.clone(),
                                 right_type: Spanned {
@@ -9352,73 +9445,10 @@ impl<'ast> Builder<'ast, '_> {
                             },
                         ));
                 }
-
-                let left_span = left.span;
-                let left_ty = left.ty;
                 Ok(Expression {
-                    kind: ExprKind::Binary {
-                        left: Box::new(Expression {
-                            kind: ExprKind::Deref { pointer, memory },
-                            ty: left_ty,
-                            span: left_span,
-                        }),
-                        operator,
-                        right: Box::new(right_expr),
-                    },
-                    ty: TypeIndex::UNIT,
-                    span: expr.span,
-                })
-            }
-            ExprKind::Index {
-                object,
-                index,
-                memory,
-            } => {
-                let elem_ty = left.ty;
-                let mut right_expr = self.build_expression(
-                    ctx,
-                    AccessContext {
-                        expected_type: elem_ty,
-                        access_kind: AccessKind::Read,
-                    },
-                    right,
-                )?;
-                if right_expr.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(ctx, &mut right_expr, elem_ty)?;
-                } else if !self.coercible_to(right_expr.ty, elem_ty) {
-                    self.tir
-                        .diagnostics
-                        .push(report_binary_expression_mistmatch(
-                            TypeFormatter::new(&self.tir, &self.interner),
-                            BinaryExpressionMistmatchDiagnostic {
-                                file_id: ctx.resolve_context.file_id,
-                                left_type: Spanned {
-                                    inner: elem_ty,
-                                    span: left.span,
-                                },
-                                operator: operator.clone(),
-                                right_type: Spanned {
-                                    inner: right_expr.ty,
-                                    span: right_expr.span,
-                                },
-                            },
-                        ));
-                }
-
-                let left_span = left.span;
-                Ok(Expression {
-                    kind: ExprKind::Binary {
-                        left: Box::new(Expression {
-                            kind: ExprKind::Index {
-                                object,
-                                index,
-                                memory,
-                            },
-                            ty: elem_ty,
-                            span: left_span,
-                        }),
-                        operator,
-                        right: Box::new(right_expr),
+                    kind: ExprKind::Store {
+                        target: place,
+                        value: Box::new(right_expr),
                     },
                     ty: TypeIndex::UNIT,
                     span: expr.span,
@@ -9427,7 +9457,7 @@ impl<'ast> Builder<'ast, '_> {
             ExprKind::ObjectAccess { ref object, .. } => {
                 if !matches!(
                     object.kind,
-                    ExprKind::Deref { .. } | ExprKind::Local { .. } | ExprKind::Global { .. }
+                    ExprKind::Local { .. } | ExprKind::Global { .. }
                 ) {
                     self.tir
                         .diagnostics
@@ -9702,12 +9732,8 @@ impl<'ast> Builder<'ast, '_> {
                     span: expr.span,
                 })
             }
-            ExprKind::Deref { pointer, memory } => {
-                let inner_ty = match &self.tir.type_pool[pointer.ty.as_usize()] {
-                    Type::Pointer { to, .. } => *to,
-                    _ => unreachable!("Deref ExprKind must have Pointer type"),
-                };
-
+            ExprKind::Load { place } => {
+                let inner_ty = place.ty;
                 if !inner_ty.is_primitive() {
                     self.tir
                         .diagnostics
@@ -9724,7 +9750,6 @@ impl<'ast> Builder<'ast, '_> {
                         ));
                     return Err(());
                 }
-
                 let mut right_expr = self.build_expression(
                     ctx,
                     AccessContext {
@@ -9754,68 +9779,13 @@ impl<'ast> Builder<'ast, '_> {
                             },
                         ));
                 }
-
                 let left_span = left.span;
                 let left_ty = left.ty;
                 Ok(Expression {
                     kind: ExprKind::Binary {
                         left: Box::new(Expression {
-                            kind: ExprKind::Deref { pointer, memory },
+                            kind: ExprKind::Load { place },
                             ty: left_ty,
-                            span: left_span,
-                        }),
-                        operator,
-                        right: Box::new(right_expr),
-                    },
-                    ty: TypeIndex::UNIT,
-                    span: expr.span,
-                })
-            }
-            ExprKind::Index {
-                object,
-                index,
-                memory,
-            } => {
-                let elem_ty = left.ty;
-                let mut right_expr = self.build_expression(
-                    ctx,
-                    AccessContext {
-                        expected_type: elem_ty,
-                        access_kind: AccessKind::Read,
-                    },
-                    right,
-                )?;
-                if right_expr.ty.is_comptime_number() {
-                    self.coerce_untyped_expr(ctx, &mut right_expr, elem_ty)?;
-                } else if !self.coercible_to(right_expr.ty, elem_ty) {
-                    self.tir
-                        .diagnostics
-                        .push(report_binary_expression_mistmatch(
-                            TypeFormatter::new(&self.tir, &self.interner),
-                            BinaryExpressionMistmatchDiagnostic {
-                                file_id: ctx.resolve_context.file_id,
-                                left_type: Spanned {
-                                    inner: elem_ty,
-                                    span: left.span,
-                                },
-                                operator: operator.clone(),
-                                right_type: Spanned {
-                                    inner: right_expr.ty,
-                                    span: right_expr.span,
-                                },
-                            },
-                        ));
-                }
-                let left_span = left.span;
-                Ok(Expression {
-                    kind: ExprKind::Binary {
-                        left: Box::new(Expression {
-                            kind: ExprKind::Index {
-                                object,
-                                index,
-                                memory,
-                            },
-                            ty: elem_ty,
                             span: left_span,
                         }),
                         operator,
@@ -9828,7 +9798,7 @@ impl<'ast> Builder<'ast, '_> {
             ExprKind::ObjectAccess { ref object, .. } => {
                 if !matches!(
                     object.kind,
-                    ExprKind::Deref { .. } | ExprKind::Local { .. } | ExprKind::Global { .. }
+                    ExprKind::Local { .. } | ExprKind::Global { .. }
                 ) {
                     self.tir
                         .diagnostics
@@ -11838,9 +11808,16 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         Ok(Expression {
-            kind: ExprKind::Deref {
-                pointer: Box::new(pointer),
-                memory,
+            kind: ExprKind::Load {
+                place: Box::new(Place {
+                    kind: PlaceKind::Deref {
+                        pointer: Box::new(pointer),
+                    },
+                    ty: inner_ty,
+                    memory,
+                    mutable,
+                    span,
+                }),
             },
             ty: inner_ty,
             span,
@@ -12227,10 +12204,17 @@ impl<'ast> Builder<'ast, '_> {
         }
 
         Ok(Expression {
-            kind: ExprKind::Index {
-                object: Box::new(object),
-                index: Box::new(index),
-                memory,
+            kind: ExprKind::Load {
+                place: Box::new(Place {
+                    kind: PlaceKind::Index {
+                        object: Box::new(object),
+                        index: Box::new(index),
+                    },
+                    ty: elem_type,
+                    memory,
+                    mutable,
+                    span,
+                }),
             },
             ty: elem_type,
             span,

@@ -13,37 +13,12 @@ functions:
               Pointer:
                 memory: 45
             mutability: Immutable
-          - ty:
-              Aggregate:
-                aggregate_index: 0
-            mutability: Immutable
         result: Unit
     block:
       kind:
         Block:
           scope_index: 0
           expressions:
-            - kind:
-                LocalSet:
-                  scope_index: 0
-                  local_index: 1
-                  value:
-                    kind:
-                      PointerLoad:
-                        pointer:
-                          kind:
-                            LocalGet:
-                              scope_index: 0
-                              local_index: 0
-                          ty:
-                            Pointer:
-                              memory: 45
-                        offset: 0
-                        memory: 45
-                    ty:
-                      Aggregate:
-                        aggregate_index: 0
-              ty: Unit
             - kind:
                 PointerStore:
                   pointer:
@@ -59,10 +34,17 @@ functions:
                       Add:
                         left:
                           kind:
-                            AggregateGet:
-                              scope_index: 0
-                              local_index: 1
-                              value_index: 1
+                            PointerLoad:
+                              pointer:
+                                kind:
+                                  LocalGet:
+                                    scope_index: 0
+                                    local_index: 0
+                                ty:
+                                  Pointer:
+                                    memory: 45
+                              offset: 4
+                              memory: 45
                           ty: U32
                         right:
                           kind:

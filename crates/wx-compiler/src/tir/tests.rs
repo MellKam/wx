@@ -6310,3 +6310,52 @@ fn test_ptr_autoderef_chained_calls() {
         case.tir.diagnostics
     );
 }
+
+// ── AddressOf (.& / .&mut) ─────────────────────────────────────────────────
+
+#[test]
+fn test_address_of_non_place_rejected() {
+    // `.&` on a stack value (not a memory place) must emit a diagnostic.
+    let case = TestCase::new(indoc! {"
+        fn bad() -> i32 { (5 as i32).& }
+        export { bad }
+    "});
+    assert!(
+        has_error_code(&case.tir, DiagnosticCode::InvalidAssignmentTarget),
+        "expected InvalidAssignmentTarget for .& on a temporary; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_address_of_mut_through_immutable_pointer_rejected() {
+    // `.&mut` through an immutable pointer must emit a diagnostic.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        fn bad(ptr: heap::*i32) -> heap::*mut i32 { ptr.*.&mut }
+        export { bad }
+    "});
+    assert!(
+        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+        "expected CannotMutateImmutable for .&mut through *i32; got: {:?}",
+        case.tir.diagnostics
+    );
+}
+
+#[test]
+fn test_address_of_place_has_correct_pointer_type() {
+    // `arr[i].&` on a heap array must resolve to a `heap::*i32` pointer type,
+    // and `ptr.*.field.&` on a struct field must resolve to the field's pointer type.
+    let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        struct Point { x: i32, y: i32 }
+        fn arr_elem_ptr(arr: heap::[4]i32, i: u32) -> heap::*i32 { arr[i].& }
+        fn field_ptr(ptr: heap::*Point) -> heap::*i32 { ptr.*.x.& }
+        export { arr_elem_ptr, field_ptr }
+    "});
+    assert!(
+        case.tir.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        case.tir.diagnostics
+    );
+}

@@ -456,6 +456,41 @@ pub struct TypeSet {
     pub accesses: Vec<SourceSpan>,
 }
 
+/// A location that lives inside linear memory (a "place" in the sense of
+/// Rust's place / value distinction).  Every `Place` carries the memory it
+/// belongs to and whether it was reached through a mutable pointer — both
+/// propagated at build time so callers never need a recursive walk.
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct Place {
+    pub kind: PlaceKind,
+    /// Type of the value stored at this location.
+    pub ty: TypeIndex,
+    /// `TypeIndex` of the `Type::Memory` this place lives in.
+    pub memory: TypeIndex,
+    /// `true` if the root `Deref` was through a mutable pointer.
+    pub mutable: bool,
+    pub span: ast::TextSpan,
+}
+
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum PlaceKind {
+    /// `ptr.*` — the only way to enter linear memory.
+    Deref { pointer: Box<Expression> },
+    /// `place.field` — field projection; memory/mutable inherited from object.
+    Field {
+        object: Box<Place>,
+        member: ast::Spanned<SymbolU32>,
+    },
+    /// `expr[index]` — index into an array/slice value; memory/mutable come from
+    /// the expression's type, not from a parent place.
+    Index {
+        object: Box<Expression>,
+        index: Box<Expression>,
+    },
+}
+
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ExprKind {
@@ -565,10 +600,7 @@ pub enum ExprKind {
         object: Box<Expression>,
         member: ast::Spanned<SymbolU32>,
     },
-    Deref {
-        pointer: Box<Expression>,
-        memory: TypeIndex,
-    },
+
     StructInit {
         struct_index: u32,
         fields: Box<[Expression]>,
@@ -587,12 +619,7 @@ pub enum ExprKind {
         count: u32,
         memory: TypeIndex,
     },
-    /// `object[index]`
-    Index {
-        object: Box<Expression>,
-        index: Box<Expression>,
-        memory: TypeIndex,
-    },
+
     /// `object[start..end]` — exclusive slice range.
     /// `None` means the bound was omitted: `start = None` is `0`, `end = None`
     /// is the object's length.  MIR fills these in during lowering.
@@ -600,6 +627,20 @@ pub enum ExprKind {
         object: Box<Expression>,
         start: Option<Box<Expression>>,
         end: Option<Box<Expression>>,
+    },
+    /// Load a value from a memory place (`place.*` or `place.field`, etc.).
+    Load {
+        place: Box<Place>,
+    },
+    /// Take the address of a memory place (`.&` / `.&mut` postfix operators).
+    AddressOf {
+        place: Box<Place>,
+        mutable: bool,
+    },
+    /// Store a value to a memory place (assignment through a place).
+    Store {
+        target: Box<Place>,
+        value: Box<Expression>,
     },
 }
 

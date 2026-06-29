@@ -60,6 +60,8 @@ define_text! {
         Comma            => ",",
         Dot              => ".",
         DotStar          => ".*",
+        DotAmp           => ".&",
+        DotAmpMut        => ".&mut",
         DotDot           => "..",
         LBrace           => "{",
         LBraceSpace      => "{ ",
@@ -1418,9 +1420,7 @@ impl<'a> Builder<'a> {
                 let operand_id = self.build_expression(operand);
                 self.arena.concat2(op_id, operand_id)
             }
-            ast::Expression::String | ast::Expression::Char => {
-                self.source_text(expression.span)
-            }
+            ast::Expression::String | ast::Expression::Char => self.source_text(expression.span),
             ast::Expression::ObjectAccess { object, member } => {
                 let obj_id = self.build_expression(object);
                 let dot = self.text(Text::Dot);
@@ -1431,6 +1431,15 @@ impl<'a> Builder<'a> {
                 let ptr_id = self.build_expression(pointer);
                 let dot_star = self.text(Text::DotStar);
                 self.arena.concat2(ptr_id, dot_star)
+            }
+            ast::Expression::AddressOf { value, mut_span } => {
+                let val_id = self.build_expression(value);
+                let suffix = if mut_span.is_some() {
+                    self.text(Text::DotAmpMut)
+                } else {
+                    self.text(Text::DotAmp)
+                };
+                self.arena.concat2(val_id, suffix)
             }
             ast::Expression::StructInit { path, fields } => {
                 let path_id = self.build_path_segments(path);

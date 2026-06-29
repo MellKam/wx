@@ -200,6 +200,12 @@ impl<T> Vec<T> {
 pub fn demo() -> i32 {
     local vec = alloc_array::<Vec<i32>>(1);
     vec.* = Vec::new();
+
+    &[1, 2, 3]
+    &mut [1, 2, 3]
+    [1, 2, 3].&mut
+    Point::{ x: 1, y: 1, z: 1 }.&mut
+    object.*.field.&mut
     
     vec.push(10);
     vec.push(20);

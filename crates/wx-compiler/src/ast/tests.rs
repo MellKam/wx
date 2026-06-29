@@ -506,6 +506,68 @@ fn test_chained_member_access() {
 }
 
 #[test]
+fn test_address_of_immutable() {
+    // ptr.*.& — immutable address-of; value is Deref, mut_span is None
+    let case = TestCase::new(indoc! {"
+        fn f(ptr: *i32) {
+            local a = ptr.*.&;
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let stmts = function_block(&case.ast, 0);
+    let expr = local_definition_value(stmts, 0);
+    let Expression::AddressOf { value, mut_span } = expr else {
+        panic!("expected AddressOf, got {expr:?}");
+    };
+    assert!(mut_span.is_none(), "expected no mut_span");
+    assert!(
+        matches!(value.inner, Expression::Deref { .. }),
+        "expected Deref as AddressOf operand"
+    );
+}
+
+#[test]
+fn test_address_of_mutable() {
+    // ptr.*.&mut — mutable address-of; mut_span is Some
+    let case = TestCase::new(indoc! {"
+        fn f(ptr: *mut i32) {
+            local a = ptr.*.&mut;
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let stmts = function_block(&case.ast, 0);
+    let expr = local_definition_value(stmts, 0);
+    let Expression::AddressOf { mut_span, .. } = expr else {
+        panic!("expected AddressOf, got {expr:?}");
+    };
+    assert!(mut_span.is_some(), "expected mut_span for .&mut");
+}
+
+#[test]
+fn test_address_of_through_field() {
+    // ptr.*.field.& — address-of a field: AddressOf > ObjectAccess > Deref
+    let case = TestCase::new(indoc! {"
+        fn f(ptr: *Point) {
+            local a = ptr.*.x.&;
+        }
+    "});
+    assert!(case.ast.diagnostics.is_empty());
+    let stmts = function_block(&case.ast, 0);
+    let expr = local_definition_value(stmts, 0);
+    let Expression::AddressOf { value, mut_span } = expr else {
+        panic!("expected AddressOf, got {expr:?}");
+    };
+    assert!(mut_span.is_none());
+    let Expression::ObjectAccess { object, .. } = &value.inner else {
+        panic!("expected ObjectAccess inside AddressOf");
+    };
+    assert!(
+        matches!(object.inner, Expression::Deref { .. }),
+        "expected Deref as root of field place"
+    );
+}
+
+#[test]
 fn test_numeric_literal_forms() {
     let case = TestCase::new(indoc! {"
         fn f() {
@@ -1033,8 +1095,20 @@ fn test_generic_application_type_args() {
         TypeExpression::GenericApplication { args, .. } if args.len() == 2
     ));
     if let TypeExpression::GenericApplication { args, .. } = param_ty {
-        assert!(matches!(&args[0].inner, Spanned { inner: TypeExpression::Path(_), .. }));
-        assert!(matches!(&args[1].inner, Spanned { inner: TypeExpression::Path(_), .. }));
+        assert!(matches!(
+            &args[0].inner,
+            Spanned {
+                inner: TypeExpression::Path(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &args[1].inner,
+            Spanned {
+                inner: TypeExpression::Path(_),
+                ..
+            }
+        ));
     }
 }
 
@@ -1060,7 +1134,10 @@ fn test_where_binding_parses_as_bound_with_bindings() {
     let Item::Function { signature, .. } = item(&case.ast, 0) else {
         panic!("expected function")
     };
-    let bounds = signature.type_params[0].bounds.as_ref().expect("expected bounds");
+    let bounds = signature.type_params[0]
+        .bounds
+        .as_ref()
+        .expect("expected bounds");
     let BoundExpression::WithBindings { path, bindings } = &bounds.inner else {
         panic!("expected WithBindings")
     };
@@ -1080,5 +1157,9 @@ fn test_impl_trait_multi_segment_trait_name() {
     let Item::ImplTrait { trait_name, .. } = item(&case.ast, 0) else {
         panic!("expected ImplTrait")
     };
-    assert_eq!(trait_name.len(), 2, "expected two path segments: gfx, Drawable");
+    assert_eq!(
+        trait_name.len(),
+        2,
+        "expected two path segments: gfx, Drawable"
+    );
 }

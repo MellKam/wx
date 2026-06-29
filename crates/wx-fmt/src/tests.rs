@@ -32,7 +32,7 @@ impl<'case> TestCase {
 #[test]
 fn test_format_simple_function() {
     let case = TestCase::new(indoc! {"
-        fn add(a: i32, b: i32) -> i32 { 
+        fn add(a: i32, b: i32) -> i32 {
             a + b
         }
 
@@ -1004,6 +1004,35 @@ fn test_format_long_type_params_wrap() {
                 DstMem: Memory where { Size = Size },
             >(dst: DstMem::*mut u8, src: SrcMem::*u8, len: Size) {}
         "},
+    );
+}
+
+#[test]
+fn test_format_address_of() {
+    let case = TestCase::new(indoc! {r#"
+        fn f(ptr: *i32, mptr: *mut i32) {
+            local a = ptr.*.&;
+            local b = mptr.*.&mut;
+        }
+    "#});
+    let output = format(
+        &case.ast,
+        &case.interner,
+        &case.files.get(case.ast.file_id).unwrap().source,
+        RendererConfig {
+            max_line_width: 80,
+            indent_width: 4,
+            trailing_comma: true,
+        },
+    );
+    assert_eq!(
+        output,
+        indoc! {r#"
+            fn f(ptr: *i32, mptr: *mut i32) {
+                local a = ptr.*.&;
+                local b = mptr.*.&mut;
+            }
+        "#}
     );
 }
 
