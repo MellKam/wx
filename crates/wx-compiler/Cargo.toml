@@ -21,7 +21,3 @@ serde_json = { workspace = true }
 insta = { version = "1.43", features = ["yaml"] }
 wasmtime = "46.0.1"
 wasmprinter = "0.252.0"
-
-[profile.dev.package]
-insta.opt-level = 3
-similar.opt-level = 3
