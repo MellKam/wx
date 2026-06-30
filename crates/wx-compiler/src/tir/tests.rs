@@ -4,126 +4,137 @@ use codespan_reporting::diagnostic::Severity;
 use indoc::indoc;
 
 use super::*;
-use crate::tir::builder::{CharLiteralError, parse_char_literal, unescape_string};
+use crate::tir::builder::{
+	CharLiteralError, parse_char_literal, unescape_string,
+};
 use crate::vfs;
 
 #[allow(unused)]
 struct TestCase {
-    graph: vfs::CompilationGraph,
-    tir: TIR,
+	graph: vfs::CompilationGraph,
+	tir: TIR,
 }
 
 impl TestCase {
-    fn new(source: &str) -> Self {
-        let mut builder = vfs::CompilationGraphBuilder::new();
-        let stdlib_id = builder.load_stdlib().unwrap();
-        let prefixed = format!("use std::*;\n{source}");
-        let root_id = builder
-            .load_binary(
-                "main.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([("main.wx".to_string(), prefixed)])),
-            )
-            .unwrap();
-        let mut graph = builder.build(root_id, stdlib_id);
-        let tir = TIR::build(&mut graph);
-        TestCase { graph, tir }
-    }
+	fn new(source: &str) -> Self {
+		let mut builder = vfs::CompilationGraphBuilder::new();
+		let stdlib_id = builder.load_stdlib().unwrap();
+		let prefixed = format!("use std::*;\n{source}");
+		let root_id = builder
+			.load_binary(
+				"main.wx".to_string(),
+				&vfs::VirtualFileSource::new(HashMap::from([(
+					"main.wx".to_string(),
+					prefixed,
+				)])),
+			)
+			.unwrap();
+		let mut graph = builder.build(root_id, stdlib_id);
+		let tir = TIR::build(&mut graph);
+		TestCase { graph, tir }
+	}
 
-    fn new_multi_file(entry_path: &str, source: &str, extra_files: &[(&str, &str)]) -> Self {
-        let prefixed_entry = format!("use std::*;\n{source}");
-        let mut workspace_files = HashMap::from([(entry_path.to_string(), prefixed_entry)]);
-        for (path, source) in extra_files {
-            workspace_files.insert((*path).to_string(), (*source).to_string());
-        }
+	fn new_multi_file(
+		entry_path: &str,
+		source: &str,
+		extra_files: &[(&str, &str)],
+	) -> Self {
+		let prefixed_entry = format!("use std::*;\n{source}");
+		let mut workspace_files =
+			HashMap::from([(entry_path.to_string(), prefixed_entry)]);
+		for (path, source) in extra_files {
+			workspace_files.insert((*path).to_string(), (*source).to_string());
+		}
 
-        let mut builder = vfs::CompilationGraphBuilder::new();
-        let stdlib_id = builder.load_stdlib().unwrap();
-        let root_id = builder
-            .load_binary(
-                entry_path.to_string(),
-                &vfs::VirtualFileSource::new(workspace_files),
-            )
-            .unwrap();
-        let mut graph = builder.build(root_id, stdlib_id);
-        let tir = TIR::build(&mut graph);
-        TestCase { graph, tir }
-    }
+		let mut builder = vfs::CompilationGraphBuilder::new();
+		let stdlib_id = builder.load_stdlib().unwrap();
+		let root_id = builder
+			.load_binary(
+				entry_path.to_string(),
+				&vfs::VirtualFileSource::new(workspace_files),
+			)
+			.unwrap();
+		let mut graph = builder.build(root_id, stdlib_id);
+		let tir = TIR::build(&mut graph);
+		TestCase { graph, tir }
+	}
 }
 
 #[test]
 fn test_unescape_string() {
-    assert_eq!(unescape_string(r#""hello""#), "hello");
-    assert_eq!(unescape_string(r#""hello\nworld""#), "hello\nworld");
-    assert_eq!(unescape_string(r#""tab\tthere""#), "tab\tthere");
-    assert_eq!(unescape_string(r#""quote\"here""#), "quote\"here");
-    assert_eq!(unescape_string(r#""backslash\\here""#), "backslash\\here");
-    assert_eq!(unescape_string(r#""null\0byte""#), "null\0byte");
-    assert_eq!(unescape_string(r#""carriage\rreturn""#), "carriage\rreturn");
-    // Multiple escapes
-    assert_eq!(
-        unescape_string(r#""line1\nline2\nline3""#),
-        "line1\nline2\nline3"
-    );
-    // No quotes (should return as-is)
-    assert_eq!(unescape_string("hello"), "hello");
+	assert_eq!(unescape_string(r#""hello""#), "hello");
+	assert_eq!(unescape_string(r#""hello\nworld""#), "hello\nworld");
+	assert_eq!(unescape_string(r#""tab\tthere""#), "tab\tthere");
+	assert_eq!(unescape_string(r#""quote\"here""#), "quote\"here");
+	assert_eq!(unescape_string(r#""backslash\\here""#), "backslash\\here");
+	assert_eq!(unescape_string(r#""null\0byte""#), "null\0byte");
+	assert_eq!(unescape_string(r#""carriage\rreturn""#), "carriage\rreturn");
+	// Multiple escapes
+	assert_eq!(
+		unescape_string(r#""line1\nline2\nline3""#),
+		"line1\nline2\nline3"
+	);
+	// No quotes (should return as-is)
+	assert_eq!(unescape_string("hello"), "hello");
 }
 
 #[test]
 fn test_parse_char_literal() {
-    // Plain characters
-    assert_eq!(parse_char_literal("'a'"), Ok('a'));
-    assert_eq!(parse_char_literal("'Z'"), Ok('Z'));
-    assert_eq!(parse_char_literal("'0'"), Ok('0'));
-    assert_eq!(parse_char_literal("' '"), Ok(' '));
+	// Plain characters
+	assert_eq!(parse_char_literal("'a'"), Ok('a'));
+	assert_eq!(parse_char_literal("'Z'"), Ok('Z'));
+	assert_eq!(parse_char_literal("'0'"), Ok('0'));
+	assert_eq!(parse_char_literal("' '"), Ok(' '));
 
-    // Named escape sequences
-    assert_eq!(parse_char_literal(r"'\n'"), Ok('\n'));
-    assert_eq!(parse_char_literal(r"'\r'"), Ok('\r'));
-    assert_eq!(parse_char_literal(r"'\t'"), Ok('\t'));
-    assert_eq!(parse_char_literal(r"'\\'"), Ok('\\'));
-    assert_eq!(parse_char_literal(r"'\''"), Ok('\''));
-    assert_eq!(parse_char_literal(r"'\0'"), Ok('\0'));
+	// Named escape sequences
+	assert_eq!(parse_char_literal(r"'\n'"), Ok('\n'));
+	assert_eq!(parse_char_literal(r"'\r'"), Ok('\r'));
+	assert_eq!(parse_char_literal(r"'\t'"), Ok('\t'));
+	assert_eq!(parse_char_literal(r"'\\'"), Ok('\\'));
+	assert_eq!(parse_char_literal(r"'\''"), Ok('\''));
+	assert_eq!(parse_char_literal(r"'\0'"), Ok('\0'));
 
-    // Hex escapes
-    assert_eq!(parse_char_literal(r"'\x41'"), Ok('A')); // 0x41 = 65 = 'A'
-    assert_eq!(parse_char_literal(r"'\x0A'"), Ok('\n')); // 0x0A = 10 = '\n'
-    assert_eq!(parse_char_literal(r"'\x00'"), Ok('\0'));
+	// Hex escapes
+	assert_eq!(parse_char_literal(r"'\x41'"), Ok('A')); // 0x41 = 65 = 'A'
+	assert_eq!(parse_char_literal(r"'\x0A'"), Ok('\n')); // 0x0A = 10 = '\n'
+	assert_eq!(parse_char_literal(r"'\x00'"), Ok('\0'));
 
-    // Without surrounding quotes — content passed directly
-    assert_eq!(parse_char_literal("a"), Ok('a'));
+	// Without surrounding quotes — content passed directly
+	assert_eq!(parse_char_literal("a"), Ok('a'));
 
-    // Errors
-    assert!(matches!(
-        parse_char_literal("''"),
-        Err(CharLiteralError::Empty)
-    ));
-    assert!(matches!(
-        parse_char_literal("'ab'"),
-        Err(CharLiteralError::TooLong)
-    ));
+	// Errors
+	assert!(matches!(
+		parse_char_literal("''"),
+		Err(CharLiteralError::Empty)
+	));
+	assert!(matches!(
+		parse_char_literal("'ab'"),
+		Err(CharLiteralError::TooLong)
+	));
 }
 
 #[test]
 fn test_build_with_crate_graph_lowers_child_module_items() {
-    let case = TestCase::new_multi_file(
-        "src/main.wx",
-        "module math;",
-        &[("src/math.wx", "fn add() -> i32 { 1 }")],
-    );
+	let case = TestCase::new_multi_file(
+		"src/main.wx",
+		"module math;",
+		&[("src/math.wx", "fn add() -> i32 { 1 }")],
+	);
 
-    assert!(
-        case.tir
-            .functions
-            .iter()
-            .any(|function| case.graph.interner.resolve(function.name.inner) == Some("add"))
-    );
+	assert!(
+		case.tir.functions.iter().any(|function| case
+			.graph
+			.interner
+			.resolve(function.name.inner)
+			== Some("add"))
+	);
 }
 
 #[test]
 fn test_build_with_crate_graph_resolves_cross_file_module_function_call() {
-    let case = TestCase::new_multi_file(
-        "src/main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"src/main.wx",
+		indoc! {"
             module math;
 
             fn main() -> i32 {
@@ -132,32 +143,32 @@ fn test_build_with_crate_graph_resolves_cross_file_module_function_call() {
 
             export { main }
         "},
-        &[("src/math.wx", "pub fn add() -> i32 { 1 }")],
-    );
+		&[("src/math.wx", "pub fn add() -> i32 { 1 }")],
+	);
 
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_build_with_crate_graph_resolves_cross_file_module_type_access() {
-    let case = TestCase::new_multi_file(
-        "src/main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"src/main.wx",
+		indoc! {"
             module shapes;
 
             fn use_circle(circle: shapes::Circle) {
                 unreachable
             }
         "},
-        &[("src/shapes.wx", "pub struct Circle {}")],
-    );
+		&[("src/shapes.wx", "pub struct Circle {}")],
+	);
 
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_duplicate_export() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn foo() -> i32 { 42 }
         fn bar() -> i32 { 43 }
 
@@ -167,20 +178,20 @@ fn test_duplicate_export() {
         }
     "});
 
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::DuplicateExport),
-        "expected E1018 (DuplicateExport), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateExport),
+		"expected E1018 (DuplicateExport), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_duplicate_export_with_alias() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn foo() -> i32 { 42 }
         fn bar() -> i32 { 43 }
 
@@ -190,30 +201,30 @@ fn test_duplicate_export_with_alias() {
         }
     "});
 
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::DuplicateExport),
-        "expected E1018 (DuplicateExport), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateExport),
+		"expected E1018 (DuplicateExport), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_parse_simple_addition() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn add(a: i32, b: i32) -> i32 { a + b }
 
         export { add, add as \"plus\" }
     "});
-    insta::assert_yaml_snapshot!(case.tir);
+	insta::assert_yaml_snapshot!(case.tir);
 }
 
 #[test]
 fn test_parse_import_with_alias() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         import \"console\" as console {
             fn log(ptr: u32, len: u32) -> ();
         }
@@ -224,12 +235,12 @@ fn test_parse_import_with_alias() {
 
         export { main }
     "});
-    insta::assert_yaml_snapshot!(case.tir);
+	insta::assert_yaml_snapshot!(case.tir);
 }
 
 #[test]
 fn test_imported_global() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         import \"env\" {
             global counter: i32;
             global mut flag: bool;
@@ -241,33 +252,34 @@ fn test_imported_global() {
 
         export { read }
     "});
-    // TODO: change to diagnostics.is_empty() once unused-warning for lib/stdlib
-    // items is fixed
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
-    );
-    // Both imported globals land in tir.globals with no value and namespace
-    // pointing to the import block.
-    assert_eq!(case.tir.globals.len(), 2);
-    assert!(case.tir.globals.iter().all(|g| g.value.is_none()));
-    assert!(
-        case.tir
-            .globals
-            .iter()
-            .all(|g| case.tir.is_import_namespace(g.namespace))
-    );
-    // They appear in the import_decl lookup.
-    let decl = &case.tir.import_decls[0];
-    assert_eq!(decl.lookup.len(), 2);
+	// TODO: change to diagnostics.is_empty() once unused-warning for lib/stdlib
+	// items is fixed
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity
+				== codespan_reporting::diagnostic::Severity::Error)
+	);
+	// Both imported globals land in tir.globals with no value and namespace
+	// pointing to the import block.
+	assert_eq!(case.tir.globals.len(), 2);
+	assert!(case.tir.globals.iter().all(|g| g.value.is_none()));
+	assert!(
+		case.tir
+			.globals
+			.iter()
+			.all(|g| case.tir.is_import_namespace(g.namespace))
+	);
+	// They appear in the import_decl lookup.
+	let decl = &case.tir.import_decls[0];
+	assert_eq!(decl.lookup.len(), 2);
 }
 
 #[test]
 fn test_local_variable_used_in_import_call() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         import \"console\" {
             fn log(ptr: u32, len: u32);
         }
@@ -279,15 +291,15 @@ fn test_local_variable_used_in_import_call() {
 
         export { main }
     "});
-    insta::assert_yaml_snapshot!(case.tir);
+	insta::assert_yaml_snapshot!(case.tir);
 }
 
 #[test]
 fn test_local_with_type_annotation_invalid_rhs_recovers() {
-    // When the RHS of a `local` declaration fails to resolve (e.g. unknown function),
-    // the checker must still register the local with the declared type so that
-    // subsequent uses don't cascade into "undeclared identifier" errors.
-    let case = TestCase::new(indoc! {"
+	// When the RHS of a `local` declaration fails to resolve (e.g. unknown function),
+	// the checker must still register the local with the declared type so that
+	// subsequent uses don't cascade into "undeclared identifier" errors.
+	let case = TestCase::new(indoc! {"
         fn use_ptr(x: u32) -> u32 { x }
         fn main() -> u32 {
             local p: u32 = unknown_fn()
@@ -295,19 +307,19 @@ fn test_local_with_type_annotation_invalid_rhs_recovers() {
         }
         export { main }
     "});
-    // Exactly one error: unknown_fn is undeclared. No cascading error for `p`.
-    assert_eq!(case.tir.diagnostics.len(), 1);
-    assert!(has_error_code(
-        &case.tir,
-        DiagnosticCode::UndeclaredIdentifier
-    ));
+	// Exactly one error: unknown_fn is undeclared. No cascading error for `p`.
+	assert_eq!(case.tir.diagnostics.len(), 1);
+	assert!(has_error_code(
+		&case.tir,
+		DiagnosticCode::UndeclaredIdentifier
+	));
 }
 
 #[test]
 fn test_local_with_pointer_type_annotation_dereference_recovers() {
-    // When the RHS errors (e.g. `alloc` is undeclared), the local must still carry
-    // the declared pointer type so that `n.*` doesn't cascade into a "not a pointer" error.
-    let case = TestCase::new(indoc! {"
+	// When the RHS errors (e.g. `alloc` is undeclared), the local must still carry
+	// the declared pointer type so that `n.*` doesn't cascade into a "not a pointer" error.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 } { min_pages: 1 }
         struct Node { x: i32 }
         fn write(x: i32) {
@@ -316,37 +328,37 @@ fn test_local_with_pointer_type_annotation_dereference_recovers() {
         }
         export { write }
     "});
-    // Only one error: alloc_node is undeclared. No cascading pointer/field errors.
-    assert_eq!(case.tir.diagnostics.len(), 1);
-    assert!(has_error_code(
-        &case.tir,
-        DiagnosticCode::UndeclaredIdentifier
-    ));
+	// Only one error: alloc_node is undeclared. No cascading pointer/field errors.
+	assert_eq!(case.tir.diagnostics.len(), 1);
+	assert!(has_error_code(
+		&case.tir,
+		DiagnosticCode::UndeclaredIdentifier
+	));
 }
 
 #[test]
 fn test_assign_to_undeclared_identifier_no_e1013() {
-    // Assignment to an undeclared variable should produce only E1007 (undeclared
-    // identifier), not a cascading E1013 (invalid assignment target).
-    let case = TestCase::new(indoc! {"
+	// Assignment to an undeclared variable should produce only E1007 (undeclared
+	// identifier), not a cascading E1013 (invalid assignment target).
+	let case = TestCase::new(indoc! {"
         fn f() {
             undeclared_var = 42
         }
         export { f }
     "});
-    assert_eq!(case.tir.diagnostics.len(), 1);
-    assert!(has_error_code(
-        &case.tir,
-        DiagnosticCode::UndeclaredIdentifier
-    ));
+	assert_eq!(case.tir.diagnostics.len(), 1);
+	assert!(has_error_code(
+		&case.tir,
+		DiagnosticCode::UndeclaredIdentifier
+	));
 }
 
 #[test]
 fn test_compare_mutable_pointer_with_null() {
-    // `cur == ptr::null()` must infer M and T for null<M,T>() from the type of `cur`
-    // (`heap::*Node`), even though null()'s return type is an immutable pointer.
-    // Previously `infer_type_args` required matching mutability, causing E1002.
-    let case = TestCase::new(indoc! {"
+	// `cur == ptr::null()` must infer M and T for null<M,T>() from the type of `cur`
+	// (`heap::*Node`), even though null()'s return type is an immutable pointer.
+	// Previously `infer_type_args` required matching mutability, causing E1002.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 } { min_pages: 1 }
         struct Node { x: i32 }
         fn is_null(p: heap::*Node) -> bool {
@@ -354,618 +366,624 @@ fn test_compare_mutable_pointer_with_null() {
         }
         export { is_null }
     "});
-    assert!(case.tir.diagnostics.is_empty());
+	assert!(case.tir.diagnostics.is_empty());
 }
 
 fn has_error_code(tir: &TIR, code: DiagnosticCode) -> bool {
-    tir.diagnostics
-        .iter()
-        .any(|d| d.code.as_deref() == Some(code.code()))
+	tir.diagnostics
+		.iter()
+		.any(|d| d.code.as_deref() == Some(code.code()))
 }
 
 // ── coerce_untyped_int_expr ──────────────────────────────────────────────
 
 #[test]
 fn test_coerce_int_to_i32() {
-    let case = TestCase::new("fn f() -> i32 { 42 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> i32 { 42 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_to_i64() {
-    let case = TestCase::new("fn f() -> i64 { 9999999999 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> i64 { 9999999999 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_to_u32() {
-    let case = TestCase::new("fn f() -> u32 { 100 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> u32 { 100 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_to_u64() {
-    let case = TestCase::new("fn f() -> u64 { 0 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> u64 { 0 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_overflow_i32() {
-    // i32::MAX + 1 = 2147483648 overflows i32
-    let case = TestCase::new("fn f() -> i32 { 2147483648 } export { f }");
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::IntegerLiteralOutOfRange),
-        "expected E1004 (out of range), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// i32::MAX + 1 = 2147483648 overflows i32
+	let case = TestCase::new("fn f() -> i32 { 2147483648 } export { f }");
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::IntegerLiteralOutOfRange),
+		"expected E1004 (out of range), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_negative_for_u32() {
-    let case = TestCase::new("fn f() -> u32 { -1 } export { f }");
-    // `-1` is `Unary { InvertSign, Int(1) }` — coerce_untyped_unary_expr only
-    // allows InvertSign for i32/i64, so u32 produces E1005 (UnableToCoerce).
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
-        "expected E1005 (UnableToCoerce) for negated literal coerced to u32, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	let case = TestCase::new("fn f() -> u32 { -1 } export { f }");
+	// `-1` is `Unary { InvertSign, Int(1) }` — coerce_untyped_unary_expr only
+	// allows InvertSign for i32/i64, so u32 produces E1005 (UnableToCoerce).
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
+		"expected E1005 (UnableToCoerce) for negated literal coerced to u32, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_coerce_int_literal_for_float_type_errors() {
-    // An untyped integer literal cannot be coerced to f32 (must write 1.0)
-    let case = TestCase::new("fn f() -> f32 { 1 } export { f }");
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::LiteralTypeMismatch),
-        "expected E1006 (int literal for float type), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// An untyped integer literal cannot be coerced to f32 (must write 1.0)
+	let case = TestCase::new("fn f() -> f32 { 1 } export { f }");
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::LiteralTypeMismatch),
+		"expected E1006 (int literal for float type), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_to_bool_errors() {
-    let case = TestCase::new("fn f() -> bool { 1 } export { f }");
-    // int literal is not coercible to bool — expect E1005 (unable to coerce)
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
-        "expected E1005 (unable to coerce), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> bool { 1 } export { f }");
+	// int literal is not coercible to bool — expect E1005 (unable to coerce)
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
+		"expected E1005 (unable to coerce), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── coerce_untyped_float_expr ────────────────────────────────────────────
 
 #[test]
 fn test_coerce_float_to_f32() {
-    let case = TestCase::new("fn f() -> f32 { 3.14 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> f32 { 3.14 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_float_to_f64() {
-    let case = TestCase::new("fn f() -> f64 { 2.718 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> f64 { 2.718 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_float_to_i32_errors() {
-    let case = TestCase::new("fn f() -> i32 { 1.5 } export { f }");
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
-        "expected E1005 (unable to coerce float to i32), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> i32 { 1.5 } export { f }");
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UnableToCoerce),
+		"expected E1005 (unable to coerce float to i32), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── binary arithmetic coercion ───────────────────────────────────────────
 
 #[test]
 fn test_coerce_binary_arithmetic_i32() {
-    let case = TestCase::new("fn f() -> i32 { 1 + 2 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> i32 { 1 + 2 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_binary_bitwise_i32() {
-    let case = TestCase::new("fn f() -> i32 { 10 & 12 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> i32 { 10 & 12 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── direct coercion to small integer types ───────────────────────────────
 
 #[test]
 fn test_coerce_int_to_i8() {
-    let case = TestCase::new("fn f() -> i8 { 127 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> i8 { 127 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_to_u8() {
-    let case = TestCase::new("fn f() -> u8 { 255 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> u8 { 255 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_to_i16() {
-    let case = TestCase::new("fn f() -> i16 { 1000 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> i16 { 1000 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_int_to_u16() {
-    let case = TestCase::new("fn f() -> u16 { 65535 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> u16 { 65535 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── float binary arithmetic propagation ─────────────────────────────────
 
 #[test]
 fn test_coerce_binary_arithmetic_f32() {
-    let case = TestCase::new("fn f() -> f32 { 1.5 + 0.5 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> f32 { 1.5 + 0.5 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_binary_arithmetic_f64() {
-    let case = TestCase::new("fn f() -> f64 { 1.0 + 2.0 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> f64 { 1.0 + 2.0 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_binary_float_multiply() {
-    let case = TestCase::new("fn f() -> f64 { 2.0 * 3.0 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> f64 { 2.0 * 3.0 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── INTEGER + FLOAT mismatch ─────────────────────────────────────────────
 
 #[test]
 fn test_integer_plus_float_literal_errors() {
-    // 1 is INTEGER, 1.0 is FLOAT — different comptime kinds → type mismatch
-    let case = TestCase::new("fn f() -> i32 { 1 + 1.0 } export { f }");
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
-        "expected E1001 (type mismatch for INTEGER + FLOAT), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// 1 is INTEGER, 1.0 is FLOAT — different comptime kinds → type mismatch
+	let case = TestCase::new("fn f() -> i32 { 1 + 1.0 } export { f }");
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
+		"expected E1001 (type mismatch for INTEGER + FLOAT), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_float_plus_integer_literal_errors() {
-    // Symmetric: FLOAT on the left, INTEGER on the right
-    let case = TestCase::new("fn f() -> f64 { 1.0 + 1 } export { f }");
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
-        "expected E1001 (type mismatch for FLOAT + INTEGER), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// Symmetric: FLOAT on the left, INTEGER on the right
+	let case = TestCase::new("fn f() -> f64 { 1.0 + 1 } export { f }");
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
+		"expected E1001 (type mismatch for FLOAT + INTEGER), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── if without else ──────────────────────────────────────────────────────
 
 #[test]
 fn test_if_without_else_returning_value_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn f() -> i32 {
             local x: i32 = if true { 5 };
             x
         }
     "});
-    assert!(has_error_code(&case.tir, DiagnosticCode::MissingElseBlock));
+	assert!(has_error_code(&case.tir, DiagnosticCode::MissingElseBlock));
 }
 
 #[test]
 fn test_if_without_else_unit_body_is_ok() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn f() {
             if true { local x: i32 = 1; }
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 // ── chained (nested) comptime binary expressions ─────────────────────────
 
 #[test]
 fn test_coerce_chained_integer_arithmetic() {
-    // All three literals are INTEGER; type propagates through both additions
-    let case = TestCase::new("fn f() -> i32 { 1 + 2 + 3 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// All three literals are INTEGER; type propagates through both additions
+	let case = TestCase::new("fn f() -> i32 { 1 + 2 + 3 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_coerce_chained_float_arithmetic() {
-    let case = TestCase::new("fn f() -> f64 { 1.0 + 2.0 + 3.0 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f() -> f64 { 1.0 + 2.0 + 3.0 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── typed operand drives coercion of comptime literal ────────────────────
 
 #[test]
 fn test_comptime_right_operand_coerced_by_typed_left() {
-    // x has concrete type i32; literal `1` (INTEGER) on the right gets coerced
-    let case = TestCase::new("fn f(x: i32) -> i32 { x + 1 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// x has concrete type i32; literal `1` (INTEGER) on the right gets coerced
+	let case = TestCase::new("fn f(x: i32) -> i32 { x + 1 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_left_operand_coerced_by_typed_right() {
-    // literal `1` (INTEGER) on the left, x has concrete type i32 on the right
-    let case = TestCase::new("fn f(x: i32) -> i32 { 1 + x } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// literal `1` (INTEGER) on the left, x has concrete type i32 on the right
+	let case = TestCase::new("fn f(x: i32) -> i32 { 1 + x } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_float_operand_coerced_by_typed_variable() {
-    let case = TestCase::new("fn f(x: f64) -> f64 { x + 1.0 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f(x: f64) -> f64 { x + 1.0 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── coercion through local variable binding ──────────────────────────────
 
 #[test]
 fn test_comptime_integer_coerced_in_local_binding() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn f() -> i32 {
             local x: i32 = 1 + 2;
             x
         }
         export { f }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_float_coerced_in_local_binding() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn f() -> f64 {
             local x: f64 = 1.0 + 2.0;
             x
         }
         export { f }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_integer_local_missing_annotation_errors() {
-    // No type annotation on the binding and no outer context → type annotation
-    // required
-    let case = TestCase::new(indoc! {"
+	// No type annotation on the binding and no outer context → type annotation
+	// required
+	let case = TestCase::new(indoc! {"
         fn f() {
             local x = 1 + 2;
         }
         export { f }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
-        "expected E1002 (type annotation required), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
+		"expected E1002 (type annotation required), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── coercion through function call arguments ─────────────────────────────
 
 #[test]
 fn test_comptime_literal_coerced_by_fn_param_type() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn add(a: i32, b: i32) -> i32 { a + b }
         fn f() -> i32 { add(1, 2) }
         export { f }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_float_literal_coerced_by_fn_param_type() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn scale(x: f32, factor: f32) -> f32 { x * factor }
         fn f(x: f32) -> f32 { scale(x, 2.0) }
         export { f }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── comparison operators with comptime literals ──────────────────────────
 
 #[test]
 fn test_comptime_integers_standalone_comparison_requires_annotation() {
-    // `1 == 2` has no type context: cannot decide i32.eq vs i64.eq → E1014
-    let case = TestCase::new("fn f() -> bool { 1 == 2 } export { f }");
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::ComparisonTypeAnnotationRequired),
-        "expected E1014 (comparison annotation required), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// `1 == 2` has no type context: cannot decide i32.eq vs i64.eq → E1014
+	let case = TestCase::new("fn f() -> bool { 1 == 2 } export { f }");
+	assert!(
+		has_error_code(
+			&case.tir,
+			DiagnosticCode::ComparisonTypeAnnotationRequired
+		),
+		"expected E1014 (comparison annotation required), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_integer_coerced_by_typed_comparand() {
-    // Typed variable on the left drives coercion of the literal on the right
-    let case = TestCase::new("fn f(x: i32) -> bool { x == 1 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	// Typed variable on the left drives coercion of the literal on the right
+	let case = TestCase::new("fn f(x: i32) -> bool { x == 1 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_integer_coerced_by_typed_comparand_on_right() {
-    let case = TestCase::new("fn f(x: i32) -> bool { 1 == x } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f(x: i32) -> bool { 1 == x } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_float_coerced_by_typed_comparand() {
-    let case = TestCase::new("fn f(x: f64) -> bool { x < 1.0 } export { f }");
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	let case = TestCase::new("fn f(x: f64) -> bool { x < 1.0 } export { f }");
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_comptime_integer_vs_float_comparison_errors() {
-    // When both sides are comptime numbers (INTEGER and FLOAT), the comparison
-    // builder emits E1014 (ComparisonTypeAnnotationRequired) since neither side
-    // has a concrete type to drive resolution.
-    let case = TestCase::new("fn f() -> bool { 1 == 1.0 } export { f }");
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::ComparisonTypeAnnotationRequired),
-        "expected E1014 (ComparisonTypeAnnotationRequired) for INTEGER == FLOAT, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	// When both sides are comptime numbers (INTEGER and FLOAT), the comparison
+	// builder emits E1014 (ComparisonTypeAnnotationRequired) since neither side
+	// has a concrete type to drive resolution.
+	let case = TestCase::new("fn f() -> bool { 1 == 1.0 } export { f }");
+	assert!(
+		has_error_code(
+			&case.tir,
+			DiagnosticCode::ComparisonTypeAnnotationRequired
+		),
+		"expected E1014 (ComparisonTypeAnnotationRequired) for INTEGER == FLOAT, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 // ── struct definition & initialization ──────────────────────────────────
@@ -973,7 +991,7 @@ fn test_comptime_integer_vs_float_comparison_errors() {
 /// Basic valid struct definition and initialization.
 #[test]
 fn test_struct_valid_init() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point {
             pub x: i32,
             pub y: i32,
@@ -985,22 +1003,22 @@ fn test_struct_valid_init() {
 
         export { make }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-    insta::assert_yaml_snapshot!(case.tir);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+	insta::assert_yaml_snapshot!(case.tir);
 }
 
 /// Shorthand field init `{ x }` should behave like `{ x: x }`.
 #[test]
 fn test_struct_shorthand_init() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point {
             pub x: i32,
             pub y: i32,
@@ -1012,21 +1030,21 @@ fn test_struct_shorthand_init() {
 
         export { make }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// Fields may be provided in any order.
 #[test]
 fn test_struct_init_out_of_order() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point {
             pub x: i32,
             pub y: i32,
@@ -1038,21 +1056,21 @@ fn test_struct_init_out_of_order() {
 
         export { make }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// Duplicate field in the struct *definition* should produce E1022.
 #[test]
 fn test_struct_duplicate_field_definition() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Bad {
             pub x: i32,
             pub x: i32,
@@ -1060,42 +1078,42 @@ fn test_struct_duplicate_field_definition() {
 
         export { }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::DuplicateStructField),
-        "expected E1022 (duplicate struct field), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateStructField),
+		"expected E1022 (duplicate struct field), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// Using an undeclared name in struct init position should produce an error.
 #[test]
 fn test_struct_init_undeclared_name() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn main() {
             Unknown::{ }
         }
 
         export { main }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
-        "expected E1021 (UndeclaredType) for unknown struct name, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
+		"expected E1021 (UndeclaredType) for unknown struct name, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 /// Unknown field name in struct init should produce E1025.
 #[test]
 fn test_struct_init_unknown_field() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point {
             pub x: i32,
             pub y: i32,
@@ -1107,15 +1125,15 @@ fn test_struct_init_unknown_field() {
 
         export { make }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UnknownStructField),
-        "expected E1025 (unknown struct field), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UnknownStructField),
+		"expected E1025 (unknown struct field), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// Specifying the same field twice in init should produce E1026 but NOT
@@ -1123,7 +1141,7 @@ fn test_struct_init_unknown_field() {
 /// appear as missing).
 #[test]
 fn test_struct_init_duplicate_field() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point {
             pub x: i32,
             pub y: i32,
@@ -1135,26 +1153,26 @@ fn test_struct_init_duplicate_field() {
 
         export { make }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::DuplicateStructFieldInit),
-        "expected E1026 (duplicate field in init), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-    // x was mentioned (just duplicated) — must NOT also appear as missing
-    assert!(
-        !has_error_code(&case.tir, DiagnosticCode::MissingStructFields),
-        "E1027 must not fire for a duplicated field (it was mentioned)"
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateStructFieldInit),
+		"expected E1026 (duplicate field in init), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+	// x was mentioned (just duplicated) — must NOT also appear as missing
+	assert!(
+		!has_error_code(&case.tir, DiagnosticCode::MissingStructFields),
+		"E1027 must not fire for a duplicated field (it was mentioned)"
+	);
 }
 
 /// Omitting required fields in init should produce E1027.
 #[test]
 fn test_struct_init_missing_fields() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point {
             pub x: i32,
             pub y: i32,
@@ -1166,22 +1184,22 @@ fn test_struct_init_missing_fields() {
 
         export { make }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::MissingStructFields),
-        "expected E1027 (missing fields), got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::MissingStructFields),
+		"expected E1027 (missing fields), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// A field whose value fails type-checking should NOT cause that field to
 /// appear in the missing-fields list (E1027).
 #[test]
 fn test_struct_init_errored_field_not_reported_as_missing() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point {
             pub x: i32,
             pub y: i32,
@@ -1193,32 +1211,32 @@ fn test_struct_init_errored_field_not_reported_as_missing() {
 
         export { make }
     "});
-    // Should have E1001 (TypeMistmatch) for field `x` receiving a bool instead of i32.
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
-        "expected E1001 (TypeMistmatch) for bool assigned to i32 field, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
-    // …but must NOT report `x` as a missing field
-    let missing_x = case.tir.diagnostics.iter().any(|d| {
-        d.code.as_deref() == Some(DiagnosticCode::MissingStructFields.code())
-            && d.message.contains('x')
-    });
-    assert!(
-        !missing_x,
-        "errored field `x` must not be reported as missing"
-    );
+	// Should have E1001 (TypeMistmatch) for field `x` receiving a bool instead of i32.
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
+		"expected E1001 (TypeMistmatch) for bool assigned to i32 field, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
+	// …but must NOT report `x` as a missing field
+	let missing_x = case.tir.diagnostics.iter().any(|d| {
+		d.code.as_deref() == Some(DiagnosticCode::MissingStructFields.code())
+			&& d.message.contains('x')
+	});
+	assert!(
+		!missing_x,
+		"errored field `x` must not be reported as missing"
+	);
 }
 
 /// Snapshot test for the duplicate-field-in-init case to lock in diagnostic
 /// details.
 #[test]
 fn test_structs() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct str {
             pub ptr: u32,
             pub len: u32,
@@ -1230,7 +1248,7 @@ fn test_structs() {
 
         export { main }
     "});
-    insta::assert_yaml_snapshot!(case.tir);
+	insta::assert_yaml_snapshot!(case.tir);
 }
 
 // ── char / primitive type tests ──────────────────────────────────────────
@@ -1238,71 +1256,71 @@ fn test_structs() {
 /// `char` is a built-in primitive — comparisons work without any stdlib.
 #[test]
 fn test_stdlib_types_available() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn is_lower(c: char) -> bool {
             c >= 'a' && c <= 'z'
         }
 
         export { is_lower }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// char is a primitive type — arithmetic on chars should resolve correctly.
 #[test]
 fn test_stdlib_struct_field_access() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn shift(c: char) -> char {
             c - 32
         }
 
         export { shift }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// Methods on built-in types defined in stdlib are callable from user code.
 #[test]
 fn test_stdlib_method_callable() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn uppercase(c: char) -> char {
             c.to_ascii_uppercase()
         }
 
         export { uppercase }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// impl methods and associated functions are registered in `impl_members` under
 /// the correct type key with the correct `ImplEntry` variant.
 #[test]
 fn test_impl_members_registered() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         impl i32 {
             pub fn abs(self) -> i32 {
                 if self < 0 { -self } else { self }
@@ -1319,93 +1337,93 @@ fn test_impl_members_registered() {
 
         export { use_them }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 
-    let members = case
-        .tir
-        .impl_members
-        .get(&TypeIndex::I32)
-        .expect("impl_members should have an entry for i32");
+	let members = case
+		.tir
+		.impl_members
+		.get(&TypeIndex::I32)
+		.expect("impl_members should have an entry for i32");
 
-    let abs_sym = case
-        .graph
-        .interner
-        .get("abs")
-        .expect("symbol `abs` not interned");
-    let from_bool_sym = case
-        .graph
-        .interner
-        .get("from_bool")
-        .expect("symbol `from_bool` not interned");
+	let abs_sym = case
+		.graph
+		.interner
+		.get("abs")
+		.expect("symbol `abs` not interned");
+	let from_bool_sym = case
+		.graph
+		.interner
+		.get("from_bool")
+		.expect("symbol `from_bool` not interned");
 
-    // `abs` takes `self` → Method; `from_bool` has no receiver → AssociatedFn
-    let abs_entry = members
-        .get(&abs_sym)
-        .expect("`abs` missing from impl_members");
-    let from_bool_entry = members
-        .get(&from_bool_sym)
-        .expect("`from_bool` missing from impl_members");
+	// `abs` takes `self` → Method; `from_bool` has no receiver → AssociatedFn
+	let abs_entry = members
+		.get(&abs_sym)
+		.expect("`abs` missing from impl_members");
+	let from_bool_entry = members
+		.get(&from_bool_sym)
+		.expect("`from_bool` missing from impl_members");
 
-    assert!(
-        matches!(abs_entry, ImplEntry::Method(_)),
-        "`abs` should be ImplEntry::Method, got {:?}",
-        abs_entry
-    );
-    assert!(
-        matches!(from_bool_entry, ImplEntry::AssociatedFn(_)),
-        "`from_bool` should be ImplEntry::AssociatedFn, got {:?}",
-        from_bool_entry
-    );
+	assert!(
+		matches!(abs_entry, ImplEntry::Method(_)),
+		"`abs` should be ImplEntry::Method, got {:?}",
+		abs_entry
+	);
+	assert!(
+		matches!(from_bool_entry, ImplEntry::AssociatedFn(_)),
+		"`from_bool` should be ImplEntry::AssociatedFn, got {:?}",
+		from_bool_entry
+	);
 
-    // Both entries must point to valid function indices
-    let &ImplEntry::Method(abs_idx) = abs_entry else {
-        unreachable!()
-    };
-    let &ImplEntry::AssociatedFn(from_bool_idx) = from_bool_entry else {
-        unreachable!()
-    };
-    assert!(
-        (abs_idx as usize) < case.tir.functions.len(),
-        "abs func_index out of bounds"
-    );
-    assert!(
-        (from_bool_idx as usize) < case.tir.functions.len(),
-        "from_bool func_index out of bounds"
-    );
+	// Both entries must point to valid function indices
+	let &ImplEntry::Method(abs_idx) = abs_entry else {
+		unreachable!()
+	};
+	let &ImplEntry::AssociatedFn(from_bool_idx) = from_bool_entry else {
+		unreachable!()
+	};
+	assert!(
+		(abs_idx as usize) < case.tir.functions.len(),
+		"abs func_index out of bounds"
+	);
+	assert!(
+		(from_bool_idx as usize) < case.tir.functions.len(),
+		"from_bool func_index out of bounds"
+	);
 }
 
 /// `pub fn` on a user-defined function suppresses the unused warning.
 #[test]
 fn test_pub_fn_no_unused_warning() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub fn helper() -> i32 {
             42
         }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "expected no diagnostics for pub fn, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"expected no diagnostics for pub fn, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// TIR preserves struct fields in declaration order; physical reordering for
 /// optimal memory layout is a MIR concern (tested in mir::tests).
 #[test]
 fn test_struct_fields_kept_in_declaration_order() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Mixed {
             a: bool,
             b: i64,
@@ -1416,278 +1434,271 @@ fn test_struct_fields_kept_in_declaration_order() {
         fn dummy(m: Mixed) -> Mixed { m }
         export { dummy }
     "});
-    eprintln!(
-        "diags: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
-    assert!(case.tir.diagnostics.is_empty());
+	eprintln!(
+		"diags: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+	assert!(case.tir.diagnostics.is_empty());
 
-    let mixed_sym = case.graph.interner.get("Mixed").unwrap();
-    let struct_index = case
-        .tir
-        .type_pool
-        .iter()
-        .find_map(|t| {
-            if let Type::Struct { struct_index, .. } = t {
-                if case.tir.structs[*struct_index as usize].name.inner == mixed_sym {
-                    Some(*struct_index)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    let field_names: Vec<&str> = case.tir.structs[struct_index as usize]
-        .fields
-        .iter()
-        .map(|f| case.graph.interner.resolve(f.name.inner).unwrap())
-        .collect();
-    assert_eq!(field_names, vec!["a", "b", "c", "d"]);
+	let mixed_sym = case.graph.interner.get("Mixed").unwrap();
+	let struct_index = case
+		.tir
+		.type_pool
+		.iter()
+		.find_map(|t| {
+			if let Type::Struct { struct_index, .. } = t {
+				if case.tir.structs[*struct_index as usize].name.inner
+					== mixed_sym
+				{
+					Some(*struct_index)
+				} else {
+					None
+				}
+			} else {
+				None
+			}
+		})
+		.unwrap();
+	let field_names: Vec<&str> = case.tir.structs[struct_index as usize]
+		.fields
+		.iter()
+		.map(|f| case.graph.interner.resolve(f.name.inner).unwrap())
+		.collect();
+	assert_eq!(field_names, vec!["a", "b", "c", "d"]);
 }
 
 /// A non-pub function that is never called should still produce a warning.
 #[test]
 fn test_non_pub_fn_unused_warning() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn unused() -> i32 {
             42
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.message == "function `unused` is never used"),
-        "expected unused-function diagnostic"
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.message == "function `unused` is never used"),
+		"expected unused-function diagnostic"
+	);
 }
 
 /// Functions declared inside a `module` block are intrinsics/imports and must
 /// not trigger an unused-function warning even if they are never called.
 #[test]
 fn test_module_fn_no_unused_warning() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         module math {
             #[intrinsic]
             fn add(a: i32, b: i32) -> i32;
         }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("is never used")),
-        "module functions should not warn as unused, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.message.contains("is never used")),
+		"module functions should not warn as unused, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 /// User-defined struct with `pub struct` should not warn as unused.
 #[test]
 fn test_pub_struct_no_unused_warning() {
-    // Structs don't currently emit unused warnings; this test just
-    // verifies that `pub struct` parses and compiles without error.
-    let case = TestCase::new(indoc! {"
+	// Structs don't currently emit unused warnings; this test just
+	// verifies that `pub struct` parses and compiles without error.
+	let case = TestCase::new(indoc! {"
         pub struct Point {
             pub x: i32,
             pub y: i32,
         }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_memory_declaration_registers_kind() {
-    let case32 = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case32 = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory MEM: Memory where { Size = u32 };
     "},
-        &[],
-    );
-    assert!(case32.tir.diagnostics.is_empty(), "unexpected diagnostics");
-    assert_eq!(
-        case32
-            .tir
-            .memories
-            .iter()
-            .map(|m| m.kind)
-            .collect::<Vec<_>>(),
-        vec![MemoryKind::Memory32]
-    );
+		&[],
+	);
+	assert!(case32.tir.diagnostics.is_empty(), "unexpected diagnostics");
+	assert_eq!(
+		case32
+			.tir
+			.memories
+			.iter()
+			.map(|m| m.kind)
+			.collect::<Vec<_>>(),
+		vec![MemoryKind::Memory32]
+	);
 
-    let case64 = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case64 = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory MEM: Memory where { Size = u64 };
     "},
-        &[],
-    );
-    assert!(case64.tir.diagnostics.is_empty(), "unexpected diagnostics");
-    assert_eq!(
-        case64
-            .tir
-            .memories
-            .iter()
-            .map(|m| m.kind)
-            .collect::<Vec<_>>(),
-        vec![MemoryKind::Memory64]
-    );
+		&[],
+	);
+	assert!(case64.tir.diagnostics.is_empty(), "unexpected diagnostics");
+	assert_eq!(
+		case64
+			.tir
+			.memories
+			.iter()
+			.map(|m| m.kind)
+			.collect::<Vec<_>>(),
+		vec![MemoryKind::Memory64]
+	);
 }
 
 #[test]
 fn test_memory_invalid_kind_is_error() {
-    let case = TestCase::new("memory MEM: i32;");
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::InvalidMemoryKind.code())),
-        "expected invalid memory kind diagnostic"
-    );
+	let case = TestCase::new("memory MEM: i32;");
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::InvalidMemoryKind.code())),
+		"expected invalid memory kind diagnostic"
+	);
 }
 
 #[test]
 fn test_fn_declaration_without_body_is_error() {
-    // A bare `fn` with no body and no #[intrinsic] must produce E0011.
-    let case = TestCase::new(indoc! {"
+	// A bare `fn` with no body and no #[intrinsic] must produce E0011.
+	let case = TestCase::new(indoc! {"
         fn add(a: i32, b: i32) -> i32
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingFunctionBody.code())),
-        "expected E0011 diagnostic for missing function body"
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::MissingFunctionBody.code())),
+		"expected E0011 diagnostic for missing function body"
+	);
 }
 
 #[test]
 fn test_memory_index_const_resolves() {
-    // `MEM::MEMORY_INDEX` — namespace access to a memory constant resolves cleanly.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `MEM::MEMORY_INDEX` — namespace access to a memory constant resolves cleanly.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory MEM: Memory where { Size = u32 };
         pub fn f() -> u32 { MEM::MEMORY_INDEX }
     "},
-        &[],
-    );
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+		&[],
+	);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_memory_size_call_resolves() {
-    // `.size()` is a method from the Memory trait; calling it should produce no
-    // errors.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `.size()` is a method from the Memory trait; calling it should produce no
+	// errors.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory MEM: Memory where { Size = u32 };
         pub fn f() { _ = MEM.size(); }
     "},
-        &[],
-    );
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+		&[],
+	);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_memory_grow_call_resolves() {
-    // `.grow()` is a method from the Memory trait; calling it should produce no
-    // errors.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `.grow()` is a method from the Memory trait; calling it should produce no
+	// errors.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory MEM: Memory where { Size = u32 };
         pub fn f() { _ = MEM.grow(1); }
     "},
-        &[],
-    );
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+		&[],
+	);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_memory_unknown_member_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory MEM: Memory where { Size = u32 };
         fn f() { _ = MEM::pages; }
     "},
-        &[],
-    );
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UndeclaredIdentifier.code())),
-        "expected undeclared identifier diagnostic for unknown memory member"
-    );
+		&[],
+	);
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UndeclaredIdentifier.code())),
+		"expected undeclared identifier diagnostic for unknown memory member"
+	);
 }
 
 #[test]
 fn test_memory_as_value_in_expression() {
-    // Memory identifiers are valid value expressions (for method calls like
-    // MEM.grow(1)).
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Memory identifiers are valid value expressions (for method calls like
+	// MEM.grow(1)).
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory MEM: Memory where { Size = u32 };
         fn f() { _ = MEM; }
     "},
-        &[],
-    );
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::NamespaceUsedAsValue.code())),
-        "memory identifier should be usable as a value expression"
-    );
+		&[],
+	);
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::NamespaceUsedAsValue.code())),
+		"memory identifier should be usable as a value expression"
+	);
 }
 
 // ── impl trait for type
@@ -1695,7 +1706,7 @@ fn test_memory_as_value_in_expression() {
 
 #[test]
 fn test_impl_trait_for_type_registers_trait_impl() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         trait Drawable {
             fn draw(self);
         }
@@ -1711,88 +1722,88 @@ fn test_impl_trait_for_type_registers_trait_impl() {
             }
         }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "unexpected errors: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"unexpected errors: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 
-    let draw_sym = case
-        .graph
-        .interner
-        .get("draw")
-        .expect("symbol `draw` not interned");
+	let draw_sym = case
+		.graph
+		.interner
+		.get("draw")
+		.expect("symbol `draw` not interned");
 
-    // Find the impl that contains `draw` — avoids hardcoding impl indices
-    // (stdlib adds its own impls before user ones).
-    let ti = case
-        .tir
-        .trait_impls
-        .iter()
-        .find(|ti| ti.members.contains_key(&draw_sym))
-        .expect("no TraitImpl has 'draw' method");
+	// Find the impl that contains `draw` — avoids hardcoding impl indices
+	// (stdlib adds its own impls before user ones).
+	let ti = case
+		.tir
+		.trait_impls
+		.iter()
+		.find(|ti| ti.members.contains_key(&draw_sym))
+		.expect("no TraitImpl has 'draw' method");
 
-    // target type is Point (a struct)
-    assert!(
-        matches!(
-            case.tir.type_pool[ti.target.as_usize()],
-            Type::Struct { .. }
-        ),
-        "target should be a struct type"
-    );
+	// target type is Point (a struct)
+	assert!(
+		matches!(
+			case.tir.type_pool[ti.target.as_usize()],
+			Type::Struct { .. }
+		),
+		"target should be a struct type"
+	);
 
-    let point_type = ti.target;
-    let drawable_index = ti.trait_index;
+	let point_type = ti.target;
+	let drawable_index = ti.trait_index;
 
-    // trait_impl_lookup is queryable for (Point, Drawable)
-    assert!(
-        case.tir
-            .trait_impl_lookup
-            .contains_key(&(point_type, drawable_index)),
-        "trait_impl_lookup should contain (Point, Drawable)"
-    );
+	// trait_impl_lookup is queryable for (Point, Drawable)
+	assert!(
+		case.tir
+			.trait_impl_lookup
+			.contains_key(&(point_type, drawable_index)),
+		"trait_impl_lookup should contain (Point, Drawable)"
+	);
 
-    // type_trait_impls maps Point → a list that includes this impl
-    let ti_index = case.tir.trait_impl_lookup[&(point_type, drawable_index)];
-    assert!(
-        case.tir
-            .type_trait_impls
-            .get(&point_type)
-            .map(|v| v.contains(&ti_index))
-            .unwrap_or(false),
-        "type_trait_impls should include the Drawable impl for Point"
-    );
+	// type_trait_impls maps Point → a list that includes this impl
+	let ti_index = case.tir.trait_impl_lookup[&(point_type, drawable_index)];
+	assert!(
+		case.tir
+			.type_trait_impls
+			.get(&point_type)
+			.map(|v| v.contains(&ti_index))
+			.unwrap_or(false),
+		"type_trait_impls should include the Drawable impl for Point"
+	);
 
-    // draw method is registered in TraitImpl.members
-    assert!(
-        matches!(ti.members.get(&draw_sym), Some(ImplEntry::Method(_))),
-        "`draw` should be ImplEntry::Method in TraitImpl.members"
-    );
+	// draw method is registered in TraitImpl.members
+	assert!(
+		matches!(ti.members.get(&draw_sym), Some(ImplEntry::Method(_))),
+		"`draw` should be ImplEntry::Method in TraitImpl.members"
+	);
 
-    // draw method also appears in impl_members for Point (for dispatch)
-    let impl_members = case
-        .tir
-        .impl_members
-        .get(&point_type)
-        .expect("impl_members should have an entry for Point");
-    assert!(
-        matches!(impl_members.get(&draw_sym), Some(ImplEntry::Method(_))),
-        "`draw` should also be in impl_members for method dispatch"
-    );
+	// draw method also appears in impl_members for Point (for dispatch)
+	let impl_members = case
+		.tir
+		.impl_members
+		.get(&point_type)
+		.expect("impl_members should have an entry for Point");
+	assert!(
+		matches!(impl_members.get(&draw_sym), Some(ImplEntry::Method(_))),
+		"`draw` should also be in impl_members for method dispatch"
+	);
 }
 
 #[test]
 fn test_impl_trait_function_origin_is_trait_impl() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         trait Greet {
             fn hello(self);
         }
@@ -1805,86 +1816,86 @@ fn test_impl_trait_function_origin_is_trait_impl() {
             }
         }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error)
-    );
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error)
+	);
 
-    let hello_sym = case
-        .graph
-        .interner
-        .get("hello")
-        .expect("symbol `hello` not interned");
-    let ti = case
-        .tir
-        .trait_impls
-        .iter()
-        .find(|ti| ti.members.contains_key(&hello_sym))
-        .expect("no TraitImpl has 'hello' method");
+	let hello_sym = case
+		.graph
+		.interner
+		.get("hello")
+		.expect("symbol `hello` not interned");
+	let ti = case
+		.tir
+		.trait_impls
+		.iter()
+		.find(|ti| ti.members.contains_key(&hello_sym))
+		.expect("no TraitImpl has 'hello' method");
 
-    let func_index = match ti.members.get(&hello_sym) {
-        Some(ImplEntry::Method(fi)) => *fi,
-        other => panic!("expected Method entry, got {:?}", other),
-    };
-    assert!(
-        matches!(
-            case.tir.functions[func_index as usize].type_param_parent,
-            None
-        ),
-        "method inside trait impl block doens't need to inherit self"
-    );
+	let func_index = match ti.members.get(&hello_sym) {
+		Some(ImplEntry::Method(fi)) => *fi,
+		other => panic!("expected Method entry, got {:?}", other),
+	};
+	assert!(
+		matches!(
+			case.tir.functions[func_index as usize].type_param_parent,
+			None
+		),
+		"method inside trait impl block doens't need to inherit self"
+	);
 }
 
 // ── trait duplicate definition ────────────────────────────────────────────────
 
 #[test]
 fn test_duplicate_trait_definition_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         trait Foo { }
         trait Foo { }
         export { }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
-        "expected duplicate definition error for two traits with same name, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+		"expected duplicate definition error for two traits with same name, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_local_trait_silently_shadows_wildcard_import() {
-    // Defining a trait with the same name as one from `use std::*` is allowed —
-    // local definitions always win over wildcard imports without a diagnostic.
-    let case = TestCase::new(indoc! {"
+	// Defining a trait with the same name as one from `use std::*` is allowed —
+	// local definitions always win over wildcard imports without a diagnostic.
+	let case = TestCase::new(indoc! {"
         trait PointerSize { }
         export { }
     "});
-    assert!(
-        !has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
-        "local trait shadowing wildcard import should not produce a duplicate error"
-    );
+	assert!(
+		!has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+		"local trait shadowing wildcard import should not produce a duplicate error"
+	);
 }
 
 #[test]
 fn test_trait_default_body_referencing_sibling_method_does_not_panic() {
-    // Regression: ensure_signature for TraitFunction left a Pending entry in the
-    // namespace. When a default method body referenced another trait method by
-    // name, lookup_global_symbol returned that Pending, reaching an unreachable!()
-    // in global_symbol_to_expression.
-    let _case = TestCase::new(indoc! {"
+	// Regression: ensure_signature for TraitFunction left a Pending entry in the
+	// namespace. When a default method body referenced another trait method by
+	// name, lookup_global_symbol returned that Pending, reaching an unreachable!()
+	// in global_symbol_to_expression.
+	let _case = TestCase::new(indoc! {"
         trait Counter {
             fn step() -> i32;
             fn doubled() -> i32 { step() + step() }
         }
     "});
-    // Test passes as long as it does not panic.
+	// Test passes as long as it does not panic.
 }
 
 // ── trait conformance check
@@ -1892,8 +1903,8 @@ fn test_trait_default_body_referencing_sibling_method_does_not_panic() {
 
 #[test]
 fn test_trait_conformance_missing_fn() {
-    // impl block omits the required abstract method → E1033
-    let case = TestCase::new(indoc! {"
+	// impl block omits the required abstract method → E1033
+	let case = TestCase::new(indoc! {"
         trait Drawable {
             fn draw(self);
         }
@@ -1905,24 +1916,22 @@ fn test_trait_conformance_missing_fn() {
 
         impl Drawable for Point {}
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingTraitImplItem.code())),
-        "expected E1033 for missing trait item, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| (d.code.as_deref(), &d.message))
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::MissingTraitImplItem.code())),
+		"expected E1033 for missing trait item, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| (d.code.as_deref(), &d.message))
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_trait_conformance_missing_const() {
-    // impl block omits a required associated const → E1033
-    let case = TestCase::new(indoc! {"
+	// impl block omits a required associated const → E1033
+	let case = TestCase::new(indoc! {"
         trait Sized {
             const SIZE: u32;
         }
@@ -1931,24 +1940,22 @@ fn test_trait_conformance_missing_const() {
 
         impl Sized for Foo {}
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingTraitImplItem.code())),
-        "expected E1033 for missing const, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| (d.code.as_deref(), &d.message))
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::MissingTraitImplItem.code())),
+		"expected E1033 for missing const, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| (d.code.as_deref(), &d.message))
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_trait_conformance_default_fn_not_required() {
-    // Trait methods with a default body are optional to override — no E1033
-    let case = TestCase::new(indoc! {"
+	// Trait methods with a default body are optional to override — no E1033
+	let case = TestCase::new(indoc! {"
         trait Greet {
             fn hello(self) {
                 unreachable
@@ -1959,20 +1966,20 @@ fn test_trait_conformance_default_fn_not_required() {
 
         impl Greet for Bar {}
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "unexpected errors: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"unexpected errors: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── supertrait bounds
@@ -1980,8 +1987,8 @@ fn test_trait_conformance_default_fn_not_required() {
 
 #[test]
 fn test_supertrait_resolved() {
-    // `Drawable: Sized` — the TIR Trait should carry Sized in its supertraits
-    let case = TestCase::new(indoc! {"
+	// `Drawable: Sized` — the TIR Trait should carry Sized in its supertraits
+	let case = TestCase::new(indoc! {"
         trait Sized {
             const SIZE: u32;
         }
@@ -1990,45 +1997,49 @@ fn test_supertrait_resolved() {
             fn draw(self);
         }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "unexpected errors: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"unexpected errors: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 
-    let drawable_idx = case
-        .tir
-        .traits
-        .iter()
-        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Drawable"))
-        .expect("Drawable not found") as u32;
-    let sized_idx = case
-        .tir
-        .traits
-        .iter()
-        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Sized"))
-        .expect("Sized not found") as u32;
+	let drawable_idx = case
+		.tir
+		.traits
+		.iter()
+		.position(|t| {
+			case.graph.interner.resolve(t.name.inner) == Some("Drawable")
+		})
+		.expect("Drawable not found") as u32;
+	let sized_idx = case
+		.tir
+		.traits
+		.iter()
+		.position(|t| {
+			case.graph.interner.resolve(t.name.inner) == Some("Sized")
+		})
+		.expect("Sized not found") as u32;
 
-    assert_eq!(
-        case.tir.traits[drawable_idx as usize].supertraits,
-        vec![sized_idx],
-        "Drawable should list Sized as a supertrait"
-    );
+	assert_eq!(
+		case.tir.traits[drawable_idx as usize].supertraits,
+		vec![sized_idx],
+		"Drawable should list Sized as a supertrait"
+	);
 }
 
 #[test]
 fn test_supertrait_missing_impl_errors() {
-    // impl Drawable for Point without impl Sized for Point → E1034
-    let case = TestCase::new(indoc! {"
+	// impl Drawable for Point without impl Sized for Point → E1034
+	let case = TestCase::new(indoc! {"
         trait Sized {
             const SIZE: u32;
         }
@@ -2048,24 +2059,22 @@ fn test_supertrait_missing_impl_errors() {
             }
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingSupertraitImpl.code())),
-        "expected E1034 for missing supertrait impl, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| (d.code.as_deref(), &d.message))
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::MissingSupertraitImpl.code())),
+		"expected E1034 for missing supertrait impl, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| (d.code.as_deref(), &d.message))
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_supertrait_satisfied_impl_no_errors() {
-    // Both Sized and Drawable implemented for Point — no E1034
-    let case = TestCase::new(indoc! {"
+	// Both Sized and Drawable implemented for Point — no E1034
+	let case = TestCase::new(indoc! {"
         trait Sized {
             const SIZE: u32;
         }
@@ -2089,20 +2098,20 @@ fn test_supertrait_satisfied_impl_no_errors() {
             }
         }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "unexpected errors: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"unexpected errors: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 // ── demand-driven forward reference resolution
@@ -2110,12 +2119,12 @@ fn test_supertrait_satisfied_impl_no_errors() {
 
 #[test]
 fn test_forward_ref_resolves_on_demand() {
-    // The query system resolves trait forward-references on demand. Using a trait
-    // name directly as a type is now invalid (traits are bounds, not types), but
-    // the resolution must still find the trait — producing ExpectedTrait (E1031),
-    // NOT UndeclaredType (E1021). E1021 would mean the forward reference was
-    // never resolved at all.
-    let case = TestCase::new(indoc! {"
+	// The query system resolves trait forward-references on demand. Using a trait
+	// name directly as a type is now invalid (traits are bounds, not types), but
+	// the resolution must still find the trait — producing ExpectedTrait (E1031),
+	// NOT UndeclaredType (E1021). E1021 would mean the forward reference was
+	// never resolved at all.
+	let case = TestCase::new(indoc! {"
         fn uses_memory32(mem: Memory32, delta: u32) -> u32 {
             mem.grow(delta)
         }
@@ -2124,21 +2133,19 @@ fn test_forward_ref_resolves_on_demand() {
             fn grow(self, delta: u32) -> u32;
         }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UndeclaredType.code())),
-        "E1021 should not be emitted: the query system resolves traits on demand"
-    );
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::ExpectedTrait.code())),
-        "E1031 should be emitted: traits cannot be used directly as types"
-    );
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UndeclaredType.code())),
+		"E1021 should not be emitted: the query system resolves traits on demand"
+	);
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.code.as_deref()
+				== Some(DiagnosticCode::ExpectedTrait.code())),
+		"E1031 should be emitted: traits cannot be used directly as types"
+	);
 }
 
 // ── cyclic type dependency tests
@@ -2146,25 +2153,23 @@ fn test_forward_ref_resolves_on_demand() {
 
 #[test]
 fn test_struct_direct_cycle_is_error() {
-    // A struct that contains itself by value has infinite size — E1032.
-    let case = TestCase::new(indoc! {"
+	// A struct that contains itself by value has infinite size — E1032.
+	let case = TestCase::new(indoc! {"
         struct A {
             field: A
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::CyclicTypeDependency.code())),
-        "expected E1032 for direct self-referential struct"
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::CyclicTypeDependency.code())),
+		"expected E1032 for direct self-referential struct"
+	);
 }
 
 #[test]
 fn test_struct_mutual_cycle_is_error() {
-    // A <-> B by value is an infinite-size cycle — E1032.
-    let case = TestCase::new(indoc! {"
+	// A <-> B by value is an infinite-size cycle — E1032.
+	let case = TestCase::new(indoc! {"
         struct A {
             b: B
         }
@@ -2172,116 +2177,107 @@ fn test_struct_mutual_cycle_is_error() {
             a: A
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::CyclicTypeDependency.code())),
-        "expected E1032 for mutually recursive structs"
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::CyclicTypeDependency.code())),
+		"expected E1032 for mutually recursive structs"
+	);
 }
 
 #[test]
 fn test_struct_three_way_cycle_is_error() {
-    // A -> B -> C -> A cycle — E1032.
-    let case = TestCase::new(indoc! {"
+	// A -> B -> C -> A cycle — E1032.
+	let case = TestCase::new(indoc! {"
         struct A { b: B }
         struct B { c: C }
         struct C { a: A }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::CyclicTypeDependency.code())),
-        "expected E1032 for three-way struct cycle"
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::CyclicTypeDependency.code())),
+		"expected E1032 for three-way struct cycle"
+	);
 }
 
 #[test]
 fn test_struct_forward_reference_resolves() {
-    // B used as a field type before B is declared — no cycle, no diagnostic.
-    let case = TestCase::new(indoc! {"
+	// B used as a field type before B is declared — no cycle, no diagnostic.
+	let case = TestCase::new(indoc! {"
         struct A { b: B }
         struct B { val: i32 }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| &d.message)
-        .collect::<Vec<_>>();
-    assert!(
-        errors.is_empty(),
-        "unexpected errors for valid forward reference: {:?}",
-        errors
-    );
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.map(|d| &d.message)
+		.collect::<Vec<_>>();
+	assert!(
+		errors.is_empty(),
+		"unexpected errors for valid forward reference: {:?}",
+		errors
+	);
 }
 
 #[test]
 fn test_struct_forward_reference_reversed_order_resolves() {
-    // Same as above but B declared first — both orderings must work.
-    let case = TestCase::new(indoc! {"
+	// Same as above but B declared first — both orderings must work.
+	let case = TestCase::new(indoc! {"
         struct B { val: i32 }
         struct A { b: B }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .map(|d| &d.message)
-        .collect::<Vec<_>>();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.map(|d| &d.message)
+		.collect::<Vec<_>>();
+	assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
 
 #[test]
 fn test_fn_uses_struct_declared_after_is_ok() {
-    // A function's parameter/return type that references a struct defined later
-    // in the file must resolve cleanly — no type errors.
-    let case = TestCase::new(indoc! {"
+	// A function's parameter/return type that references a struct defined later
+	// in the file must resolve cleanly — no type errors.
+	let case = TestCase::new(indoc! {"
         fn f(x: Point) -> Point { x }
         struct Point { x: i32, y: i32 }
     "});
-    let type_errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.code.as_deref().map_or(false, |c| c.starts_with('E')))
-        .collect();
-    assert!(
-        type_errors.is_empty(),
-        "unexpected type errors for forward-referenced struct in function: {:?}",
-        type_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
-    );
+	let type_errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.code.as_deref().map_or(false, |c| c.starts_with('E')))
+		.collect();
+	assert!(
+		type_errors.is_empty(),
+		"unexpected type errors for forward-referenced struct in function: {:?}",
+		type_errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_struct_cycle_does_not_prevent_other_structs_from_resolving() {
-    // Even with a cyclic struct present, independent structs should resolve fine.
-    let case = TestCase::new(indoc! {"
+	// Even with a cyclic struct present, independent structs should resolve fine.
+	let case = TestCase::new(indoc! {"
         struct Bad { bad: Bad }
         struct Good { val: i32 }
         fn uses_good(x: Good) -> i32 { x.val }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::CyclicTypeDependency.code())),
-        "expected E1032 for Bad"
-    );
-    // Good should still be registered; the function should compile without
-    // an undeclared-type error.
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UndeclaredType.code())),
-        "Good struct should still resolve despite Bad being cyclic"
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::CyclicTypeDependency.code())),
+		"expected E1032 for Bad"
+	);
+	// Good should still be registered; the function should compile without
+	// an undeclared-type error.
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UndeclaredType.code())),
+		"Good struct should still resolve despite Bad being cyclic"
+	);
 }
 
 // ── Generic structs
@@ -2289,180 +2285,180 @@ fn test_struct_cycle_does_not_prevent_other_structs_from_resolving() {
 
 #[test]
 fn test_generic_struct_definition_stores_type_params() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point<T> { x: T, y: T }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "{:?}", errors);
-    let s = case
-        .tir
-        .structs
-        .iter()
-        .find(|s| case.graph.interner.resolve(s.name.inner) == Some("Point"))
-        .expect("Point struct not found");
-    assert_eq!(s.type_params.len(), 1);
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| {
+			d.severity == codespan_reporting::diagnostic::Severity::Error
+		})
+		.collect();
+	assert!(errors.is_empty(), "{:?}", errors);
+	let s = case
+		.tir
+		.structs
+		.iter()
+		.find(|s| case.graph.interner.resolve(s.name.inner) == Some("Point"))
+		.expect("Point struct not found");
+	assert_eq!(s.type_params.len(), 1);
 }
 
 #[test]
 fn test_generic_struct_field_type_is_type_param() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Wrapper<T> { value: T }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "{:?}", errors);
-    let s = case
-        .tir
-        .structs
-        .iter()
-        .find(|s| case.graph.interner.resolve(s.name.inner) == Some("Wrapper"))
-        .expect("Wrapper struct not found");
-    // Field `value` should have type TypeParam { param_index: 0 }.
-    assert!(
-        matches!(
-            case.tir.type_pool[s.fields[0].ty.inner.as_usize()],
-            Type::TypeParam { param_index: 0, .. }
-        ),
-        "expected TypeParam, got {:?}",
-        case.tir.type_pool[s.fields[0].ty.inner.as_usize()]
-    );
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| {
+			d.severity == codespan_reporting::diagnostic::Severity::Error
+		})
+		.collect();
+	assert!(errors.is_empty(), "{:?}", errors);
+	let s = case
+		.tir
+		.structs
+		.iter()
+		.find(|s| case.graph.interner.resolve(s.name.inner) == Some("Wrapper"))
+		.expect("Wrapper struct not found");
+	// Field `value` should have type TypeParam { param_index: 0 }.
+	assert!(
+		matches!(
+			case.tir.type_pool[s.fields[0].ty.inner.as_usize()],
+			Type::TypeParam { param_index: 0, .. }
+		),
+		"expected TypeParam, got {:?}",
+		case.tir.type_pool[s.fields[0].ty.inner.as_usize()]
+	);
 }
 
 #[test]
 fn test_generic_struct_in_type_position_resolves() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Wrapper<T> { value: T }
         fn get(w: Wrapper<i32>) -> i32 { w.value }
         export { get }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
-    insta::assert_yaml_snapshot!(case.tir);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
+	insta::assert_yaml_snapshot!(case.tir);
 }
 
 #[test]
 fn test_generic_struct_init_with_type_args() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Pair<T> { pub first: T, pub second: T }
         fn make() -> Pair<i32> {
             Pair::<i32>::{ first: 1, second: 2 }
         }
         export { make }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
-    insta::assert_yaml_snapshot!(case.tir);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
+	insta::assert_yaml_snapshot!(case.tir);
 }
 
 #[test]
 fn test_generic_struct_field_access_substitutes_type() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Wrapper<T> { value: T }
         fn get_i32(w: Wrapper<i32>) -> i32 { w.value }
         fn get_f64(w: Wrapper<f64>) -> f64 { w.value }
         export { get_i32, get_f64 }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_generic_struct_wrong_type_arg_count_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point<T> { x: T, y: T }
         fn bad(p: Point<i32, f64>) -> i32 { p.x }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::TypeArgCountMismatch.code())),
-        "expected E1040 for wrong type arg count"
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::TypeArgCountMismatch.code())),
+		"expected E1040 for wrong type arg count"
+	);
 }
 
 #[test]
 fn test_generic_struct_init_wrong_type_arg_count_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Wrapper<T> { value: T }
         fn bad() -> Wrapper<i32> {
             Wrapper::<i32, f64>::{ value: 1 }
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::TypeArgCountMismatch.code())),
-        "expected E1040 for wrong type arg count in init"
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::TypeArgCountMismatch.code())),
+		"expected E1040 for wrong type arg count in init"
+	);
 }
 
 // ── Generics ─────────────────────────────────────────────────────────────────
 
 #[test]
 fn test_generic_identity_resolves() {
-    // identity<T>(t: T) -> T called with i32 — TIR must have no diagnostics
-    // and the function must carry one TypeParamInfo named "T".
-    let case = TestCase::new(indoc! {"
+	// identity<T>(t: T) -> T called with i32 — TIR must have no diagnostics
+	// and the function must carry one TypeParamInfo named "T".
+	let case = TestCase::new(indoc! {"
         pub fn identity<T>(t: T) -> T {
             t
         }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "unexpected errors (count: {})",
-        errors.len()
-    );
-    let func = case.tir.functions.iter().find(|f| {
-        case.graph
-            .interner
-            .resolve(f.name.inner)
-            .map(|n| n == "identity")
-            .unwrap_or(false)
-    });
-    let func = func.expect("function 'identity' not found in TIR");
-    assert_eq!(func.type_params.len(), 1, "expected one type param");
-    assert_eq!(
-        case.graph.interner.resolve(func.type_params[0].name),
-        Some("T")
-    );
-    assert!(
-        func.type_params[0].bounds.traits.is_empty(),
-        "T should have no bounds"
-    );
-    insta::assert_yaml_snapshot!(case.tir);
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(
+		errors.is_empty(),
+		"unexpected errors (count: {})",
+		errors.len()
+	);
+	let func = case.tir.functions.iter().find(|f| {
+		case.graph
+			.interner
+			.resolve(f.name.inner)
+			.map(|n| n == "identity")
+			.unwrap_or(false)
+	});
+	let func = func.expect("function 'identity' not found in TIR");
+	assert_eq!(func.type_params.len(), 1, "expected one type param");
+	assert_eq!(
+		case.graph.interner.resolve(func.type_params[0].name),
+		Some("T")
+	);
+	assert!(
+		func.type_params[0].bounds.traits.is_empty(),
+		"T should have no bounds"
+	);
+	insta::assert_yaml_snapshot!(case.tir);
 }
 
 #[test]
 fn test_generic_call_return_type_substituted() {
-    // Calling identity(42) must produce no diagnostics — the return type
-    // is substituted from TypeParam{0} → i32 via the argument.
-    let case = TestCase::new(indoc! {"
+	// Calling identity(42) must produce no diagnostics — the return type
+	// is substituted from TypeParam{0} → i32 via the argument.
+	let case = TestCase::new(indoc! {"
         pub fn identity<T>(t: T) -> T {
             t
         }
@@ -2470,23 +2466,23 @@ fn test_generic_call_return_type_substituted() {
             identity(42)
         }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "unexpected errors (count: {})",
-        errors.len()
-    );
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(
+		errors.is_empty(),
+		"unexpected errors (count: {})",
+		errors.len()
+	);
 }
 
 #[test]
 fn test_generic_with_bound_resolves() {
-    // fn with a trait bound — TypeParamInfo.bounds must contain the trait index.
-    let case = TestCase::new(indoc! {"
+	// fn with a trait bound — TypeParamInfo.bounds must contain the trait index.
+	let case = TestCase::new(indoc! {"
         trait Scalable {
             fn scale(self, factor: i32) -> i32;
         }
@@ -2494,43 +2490,43 @@ fn test_generic_with_bound_resolves() {
             t.scale(n)
         }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "unexpected errors (count: {})",
-        errors.len()
-    );
-    let func = case.tir.functions.iter().find(|f| {
-        case.graph
-            .interner
-            .resolve(f.name.inner)
-            .map(|n| n == "call_scale")
-            .unwrap_or(false)
-    });
-    let func = func.expect("function 'call_scale' not found in TIR");
-    assert_eq!(func.type_params.len(), 1);
-    assert_eq!(
-        func.type_params[0].bounds.traits.len(),
-        1,
-        "T should have one bound (Scalable)"
-    );
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(
+		errors.is_empty(),
+		"unexpected errors (count: {})",
+		errors.len()
+	);
+	let func = case.tir.functions.iter().find(|f| {
+		case.graph
+			.interner
+			.resolve(f.name.inner)
+			.map(|n| n == "call_scale")
+			.unwrap_or(false)
+	});
+	let func = func.expect("function 'call_scale' not found in TIR");
+	assert_eq!(func.type_params.len(), 1);
+	assert_eq!(
+		func.type_params[0].bounds.traits.len(),
+		1,
+		"T should have one bound (Scalable)"
+	);
 }
 
 #[test]
 fn test_type_param_referenced_in_binding_rhs_records_access() {
-    // When a type param appears as the RHS of a `where { AssocType = TypeParam }` binding,
-    // that reference must be recorded in TypeParamInfo.accesses so that:
-    //   (a) the "unused type param" warning is suppressed, and
-    //   (b) callers relying on accesses for liveness are correct.
-    //
-    // `T` below is only used in the binding — not in any param type or return type —
-    // so its accesses count must be exactly 1 after type-checking.
-    let case = TestCase::new(indoc! {"
+	// When a type param appears as the RHS of a `where { AssocType = TypeParam }` binding,
+	// that reference must be recorded in TypeParamInfo.accesses so that:
+	//   (a) the "unused type param" warning is suppressed, and
+	//   (b) callers relying on accesses for liveness are correct.
+	//
+	// `T` below is only used in the binding — not in any param type or return type —
+	// so its accesses count must be exactly 1 after type-checking.
+	let case = TestCase::new(indoc! {"
         trait Container {
             type Item;
         }
@@ -2538,159 +2534,167 @@ fn test_type_param_referenced_in_binding_rhs_records_access() {
             c
         }
     "});
-    no_errors(&case);
-    let func = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| {
-            case.graph
-                .interner
-                .resolve(f.name.inner)
-                .map(|n| n == "wrap")
-                .unwrap_or(false)
-        })
-        .expect("function 'wrap' not found in TIR");
-    assert_eq!(func.type_params.len(), 2, "expected two type params (T, C)");
-    assert_eq!(
-        func.type_params[0].accesses.len(),
-        1,
-        "T should have exactly 1 access recorded (from the binding `Item = T`)"
-    );
+	no_errors(&case);
+	let func = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| {
+			case.graph
+				.interner
+				.resolve(f.name.inner)
+				.map(|n| n == "wrap")
+				.unwrap_or(false)
+		})
+		.expect("function 'wrap' not found in TIR");
+	assert_eq!(func.type_params.len(), 2, "expected two type params (T, C)");
+	assert_eq!(
+		func.type_params[0].accesses.len(),
+		1,
+		"T should have exactly 1 access recorded (from the binding `Item = T`)"
+	);
 }
 
 #[test]
 fn test_generic_unknown_bound_is_error() {
-    // A bound that names an undeclared type should produce a diagnostic.
-    let case = TestCase::new(indoc! {"
+	// A bound that names an undeclared type should produce a diagnostic.
+	let case = TestCase::new(indoc! {"
         fn f<T: Nonexistent>(t: T) -> T {
             t
         }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
-        "expected E1021 (UndeclaredType) for unknown trait bound 'Nonexistent', got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
+		"expected E1021 (UndeclaredType) for unknown trait bound 'Nonexistent', got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 // ── NamespaceAccess / associated type projection ────────────────────────────
 
 fn no_errors(case: &TestCase) {
-    use codespan_reporting::diagnostic::Severity;
-    use codespan_reporting::term;
-    use codespan_reporting::term::DisplayStyle;
-    use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-    let writer = StandardStream::stderr(ColorChoice::Always);
-    let config = term::Config {
-        display_style: DisplayStyle::Rich,
-        ..term::Config::default()
-    };
-    for crate_ in &case.graph.crates {
-        for diagnostic in crate_
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| match diagnostic.severity {
-                Severity::Error | Severity::Bug => true,
-                _ => false,
-            })
-        {
-            term::emit_to_write_style(&mut writer.lock(), &config, &case.graph.files, diagnostic)
-                .unwrap();
-        }
-    }
-    for diagnostic in case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| match diagnostic.severity {
-            Severity::Error | Severity::Bug => true,
-            _ => false,
-        })
-    {
-        term::emit_to_write_style(&mut writer.lock(), &config, &case.graph.files, diagnostic)
-            .unwrap();
-    }
+	use codespan_reporting::diagnostic::Severity;
+	use codespan_reporting::term;
+	use codespan_reporting::term::DisplayStyle;
+	use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
+	let writer = StandardStream::stderr(ColorChoice::Always);
+	let config = term::Config {
+		display_style: DisplayStyle::Rich,
+		..term::Config::default()
+	};
+	for crate_ in &case.graph.crates {
+		for diagnostic in crate_.diagnostics.iter().filter(|diagnostic| {
+			match diagnostic.severity {
+				Severity::Error | Severity::Bug => true,
+				_ => false,
+			}
+		}) {
+			term::emit_to_write_style(
+				&mut writer.lock(),
+				&config,
+				&case.graph.files,
+				diagnostic,
+			)
+			.unwrap();
+		}
+	}
+	for diagnostic in case.tir.diagnostics.iter().filter(|diagnostic| {
+		match diagnostic.severity {
+			Severity::Error | Severity::Bug => true,
+			_ => false,
+		}
+	}) {
+		term::emit_to_write_style(
+			&mut writer.lock(),
+			&config,
+			&case.graph.files,
+			diagnostic,
+		)
+		.unwrap();
+	}
 
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "unexpected errors: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .filter(|d| d.severity == Severity::Error)
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"unexpected errors: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 fn has_error_matching(case: &TestCase, substring: &str) {
-    assert!(
-        case.tir.diagnostics.iter().any(|d| {
-            d.severity == Severity::Error
-                && (d.message.contains(substring) || d.notes.iter().any(|n| n.contains(substring)))
-        }),
-        "expected an error containing {:?}; got: {:#?}",
-        substring,
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| {
+			d.severity == Severity::Error
+				&& (d.message.contains(substring)
+					|| d.notes.iter().any(|n| n.contains(substring)))
+		}),
+		"expected an error containing {:?}; got: {:#?}",
+		substring,
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_assoc_type_declared_in_trait() {
-    // A trait with an associated type must register it in `members` and
-    // `assoc_type_bounds`.
-    let case = TestCase::new(indoc! {"
+	// A trait with an associated type must register it in `members` and
+	// `assoc_type_bounds`.
+	let case = TestCase::new(indoc! {"
         trait Bound {}
         trait Container {
             type Elem: Bound;
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let container_trait = case
-        .tir
-        .traits
-        .iter()
-        .find(|t| case.graph.interner.resolve(t.name.inner) == Some("Container"))
-        .expect("trait 'Container' not found");
+	let container_trait = case
+		.tir
+		.traits
+		.iter()
+		.find(|t| {
+			case.graph.interner.resolve(t.name.inner) == Some("Container")
+		})
+		.expect("trait 'Container' not found");
 
-    let elem_sym = case
-        .graph
-        .interner
-        .get("Elem")
-        .expect("symbol 'Elem' not interned");
+	let elem_sym = case
+		.graph
+		.interner
+		.get("Elem")
+		.expect("symbol 'Elem' not interned");
 
-    assert!(
-        matches!(
-            container_trait.members.get(&elem_sym),
-            Some(ImplEntry::AssociatedType { .. })
-        ),
-        "expected 'Elem' in Container::members as AssociatedType"
-    );
-    assert!(
-        container_trait.assoc_types.contains_key(&elem_sym),
-        "expected 'Elem' in Container::assoc_types"
-    );
+	assert!(
+		matches!(
+			container_trait.members.get(&elem_sym),
+			Some(ImplEntry::AssociatedType { .. })
+		),
+		"expected 'Elem' in Container::members as AssociatedType"
+	);
+	assert!(
+		container_trait.assoc_types.contains_key(&elem_sym),
+		"expected 'Elem' in Container::assoc_types"
+	);
 }
 
 #[test]
 fn test_assoc_type_projection_in_return_type() {
-    // `fn foo<C: Container>() -> C::Elem` — the return type must resolve to
-    // `AssocTypeProjection` (no error diagnostics).
-    let case = TestCase::new(indoc! {"
+	// `fn foo<C: Container>() -> C::Elem` — the return type must resolve to
+	// `AssocTypeProjection` (no error diagnostics).
+	let case = TestCase::new(indoc! {"
         trait Bound {}
         trait Container {
             type Elem: Bound;
@@ -2699,31 +2703,31 @@ fn test_assoc_type_projection_in_return_type() {
             unreachable
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let func = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("foo"))
-        .expect("function 'foo' not found");
+	let func = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("foo"))
+		.expect("function 'foo' not found");
 
-    let result_ty = func.result.as_ref().expect("expected a return type").inner;
-    assert!(
-        matches!(
-            case.tir.type_pool[result_ty.as_usize()],
-            Type::AssocTypeProjection { .. }
-        ),
-        "return type should be AssocTypeProjection for C::Elem, got type index {}",
-        result_ty.as_u32()
-    );
+	let result_ty = func.result.as_ref().expect("expected a return type").inner;
+	assert!(
+		matches!(
+			case.tir.type_pool[result_ty.as_usize()],
+			Type::AssocTypeProjection { .. }
+		),
+		"return type should be AssocTypeProjection for C::Elem, got type index {}",
+		result_ty.as_u32()
+	);
 }
 
 #[test]
 fn test_assoc_type_projection_in_param_type() {
-    // `fn consume<C: Container>(elem: C::Elem)` — the parameter type resolves to
-    // `AssocTypeProjection` without errors.
-    let case = TestCase::new(indoc! {"
+	// `fn consume<C: Container>(elem: C::Elem)` — the parameter type resolves to
+	// `AssocTypeProjection` without errors.
+	let case = TestCase::new(indoc! {"
         trait Bound {}
         trait Container {
             type Elem: Bound;
@@ -2732,13 +2736,13 @@ fn test_assoc_type_projection_in_param_type() {
             unreachable
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_assoc_type_unknown_member_is_error() {
-    // `M::Nonexistent` where `Memory` has no such associated type → diagnostic.
-    let case = TestCase::new(indoc! {"
+	// `M::Nonexistent` where `Memory` has no such associated type → diagnostic.
+	let case = TestCase::new(indoc! {"
         trait Memory {
             type Size;
         }
@@ -2746,38 +2750,38 @@ fn test_assoc_type_unknown_member_is_error() {
             unreachable
         }
     "});
-    // TODO: improve to "undeclared associated type 'Nonexistent'" for better diagnostics
-    has_error_matching(&case, "undeclared type");
+	// TODO: improve to "undeclared associated type 'Nonexistent'" for better diagnostics
+	has_error_matching(&case, "undeclared type");
 }
 
 #[test]
 fn test_assoc_type_bare_name_suggests_self_prefix() {
-    // Using the associated type name directly (e.g. `Size` instead of
-    // `Self::Size`) must produce a targeted error with a `Self::` suggestion.
-    let case = TestCase::new(indoc! {"
+	// Using the associated type name directly (e.g. `Size` instead of
+	// `Self::Size`) must produce a targeted error with a `Self::` suggestion.
+	let case = TestCase::new(indoc! {"
         trait Memory {
             type Size;
             fn alloc(n: Size) -> *u8;
         }
     "});
-    // report_bare_assoc_type emits E1021 with message "cannot find type `Size` in
-    // this scope" and a note containing the "Self::Size" suggestion.
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
-        "expected E1021 (UndeclaredType) for bare associated type name, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	// report_bare_assoc_type emits E1021 with message "cannot find type `Size` in
+	// this scope" and a note containing the "Self::Size" suggestion.
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
+		"expected E1021 (UndeclaredType) for bare associated type name, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_assoc_type_impl_registers_in_trait_impl() {
-    // `impl Container for Heap { type Elem = u32; }` — the impl must store
-    // a concrete type in both `TraitImpl::members` and `impl_members`.
-    let case = TestCase::new(indoc! {"
+	// `impl Container for Heap { type Elem = u32; }` — the impl must store
+	// a concrete type in both `TraitImpl::members` and `impl_members`.
+	let case = TestCase::new(indoc! {"
         trait Bound {}
         impl Bound for u32 {}
         trait Container {
@@ -2788,41 +2792,41 @@ fn test_assoc_type_impl_registers_in_trait_impl() {
             type Elem = u32;
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let ti = case
-        .tir
-        .trait_impls
-        .iter()
-        .find(|ti| {
-            case.tir
-                .traits
-                .get(ti.trait_index as usize)
-                .and_then(|t| case.graph.interner.resolve(t.name.inner))
-                == Some("Container")
-        })
-        .expect("TraitImpl for Container not found");
+	let ti = case
+		.tir
+		.trait_impls
+		.iter()
+		.find(|ti| {
+			case.tir
+				.traits
+				.get(ti.trait_index as usize)
+				.and_then(|t| case.graph.interner.resolve(t.name.inner))
+				== Some("Container")
+		})
+		.expect("TraitImpl for Container not found");
 
-    let elem_sym = case
-        .graph
-        .interner
-        .get("Elem")
-        .expect("symbol 'Elem' not interned");
+	let elem_sym = case
+		.graph
+		.interner
+		.get("Elem")
+		.expect("symbol 'Elem' not interned");
 
-    assert!(
-        matches!(
-            ti.members.get(&elem_sym),
-            Some(ImplEntry::AssociatedType { ty }) if *ty == TypeIndex::U32
-        ),
-        "expected 'Elem' → u32 in TraitImpl::members"
-    );
+	assert!(
+		matches!(
+			ti.members.get(&elem_sym),
+			Some(ImplEntry::AssociatedType { ty }) if *ty == TypeIndex::U32
+		),
+		"expected 'Elem' → u32 in TraitImpl::members"
+	);
 }
 
 #[test]
 fn test_assoc_type_impl_bound_violation_is_error() {
-    // `type Size = bool` where `Size: PointerSize` and `bool` does not
-    // implement `PointerSize` → diagnostic.
-    let case = TestCase::new(indoc! {"
+	// `type Size = bool` where `Size: PointerSize` and `bool` does not
+	// implement `PointerSize` → diagnostic.
+	let case = TestCase::new(indoc! {"
         trait PointerSize {}
         impl PointerSize for u32 {}
         trait Memory {
@@ -2833,15 +2837,18 @@ fn test_assoc_type_impl_bound_violation_is_error() {
             type Size = bool;
         }
     "});
-    has_error_matching(&case, "associated type `Size` must implement `PointerSize`");
+	has_error_matching(
+		&case,
+		"associated type `Size` must implement `PointerSize`",
+	);
 }
 
 #[test]
 fn test_assoc_type_where_binding_out_of_order_type_param_resolves() {
-    // `Src: Memory where { Size = S }` where `S` is defined AFTER `Src` —
-    // the two-pass resolution must find `S` in the full scope even though
-    // it wasn't yet built when the bound was first parsed.
-    let case = TestCase::new(indoc! {"
+	// `Src: Memory where { Size = S }` where `S` is defined AFTER `Src` —
+	// the two-pass resolution must find `S` in the full scope even though
+	// it wasn't yet built when the bound was first parsed.
+	let case = TestCase::new(indoc! {"
         trait PointerSize {}
         trait Memory {
             type Size: PointerSize;
@@ -2850,13 +2857,13 @@ fn test_assoc_type_where_binding_out_of_order_type_param_resolves() {
             unreachable
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_assoc_type_unconstrained_no_error() {
-    // An associated type with no bounds accepts any concrete type.
-    let case = TestCase::new(indoc! {"
+	// An associated type with no bounds accepts any concrete type.
+	let case = TestCase::new(indoc! {"
         trait Container {
             type Item;
         }
@@ -2865,16 +2872,16 @@ fn test_assoc_type_unconstrained_no_error() {
             type Item = i32;
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_assoc_type_projection_forwarded_in_generic_wrapper() {
-    // A generic wrapper that passes a `C::Item` argument to another function
-    // also expecting `C::Item` must compile without errors.
-    // Previously, the expected_type was silently dropped to None when the
-    // receiver was itself a TypeParam, skipping the check entirely.
-    let case = TestCase::new(indoc! {"
+	// A generic wrapper that passes a `C::Item` argument to another function
+	// also expecting `C::Item` must compile without errors.
+	// Previously, the expected_type was silently dropped to None when the
+	// receiver was itself a TypeParam, skipping the check entirely.
+	let case = TestCase::new(indoc! {"
         trait Container {
             type Item;
         }
@@ -2885,14 +2892,14 @@ fn test_assoc_type_projection_forwarded_in_generic_wrapper() {
             process(item)
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_assoc_type_projection_concrete_mismatch_in_generic_wrapper() {
-    // Passing a concrete `i32` where `C::Item` is expected must be a type
-    // error — even inside a generic wrapper where the receiver is a TypeParam.
-    let case = TestCase::new(indoc! {"
+	// Passing a concrete `i32` where `C::Item` is expected must be a type
+	// error — even inside a generic wrapper where the receiver is a TypeParam.
+	let case = TestCase::new(indoc! {"
         trait Container {
             type Item;
         }
@@ -2903,14 +2910,14 @@ fn test_assoc_type_projection_concrete_mismatch_in_generic_wrapper() {
             process(n)
         }
     "});
-    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+	assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
 }
 
 #[test]
 fn test_assoc_type_projection_in_nested_function_type_wrapper() {
-    // Recursive substitution must also rebind projections nested inside
-    // function types, not only top-level parameter and result types.
-    let case = TestCase::new(indoc! {"
+	// Recursive substitution must also rebind projections nested inside
+	// function types, not only top-level parameter and result types.
+	let case = TestCase::new(indoc! {"
         trait Container {
             type Item;
         }
@@ -2921,14 +2928,14 @@ fn test_assoc_type_projection_in_nested_function_type_wrapper() {
             process(f)
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_assoc_type_projection_in_tuple_wrapper() {
-    // Recursive substitution must also preserve projections nested inside
-    // tuple elements.
-    let case = TestCase::new(indoc! {"
+	// Recursive substitution must also preserve projections nested inside
+	// tuple elements.
+	let case = TestCase::new(indoc! {"
         trait Container {
             type Item;
         }
@@ -2939,17 +2946,17 @@ fn test_assoc_type_projection_in_tuple_wrapper() {
             process(pair)
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_assoc_type_projection_in_pointer_wrapper() {
-    // Recursive substitution must also preserve projections nested under
-    // pointer types. Untagged `*C::Item` resolves memory from the single
-    // ambient memory declaration.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Recursive substitution must also preserve projections nested under
+	// pointer types. Untagged `*C::Item` resolves memory from the single
+	// ambient memory declaration.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             trait Container {
                 type Item;
@@ -2961,36 +2968,36 @@ fn test_assoc_type_projection_in_pointer_wrapper() {
                 process(ptr)
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 // ── generic functions over Memory ────────────────────────────────────────────
 
 #[test]
 fn test_generic_over_memory_size_in_signature() {
-    // A generic fn<M: Memory>(M::Size) → M::Size must resolve without errors:
-    // M::Size stays as AssocTypeProjection in the generic signature.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// A generic fn<M: Memory>(M::Size) → M::Size must resolve without errors:
+	// M::Size stays as AssocTypeProjection in the generic signature.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
                 n
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_generic_over_memory_called_with_concrete_memory() {
-    // Calling pass(heap, 42u32) must unify M=heap → M::Size=u32 with no errors.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Calling pass(heap, 42u32) must unify M=heap → M::Size=u32 with no errors.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
                 n
@@ -2999,17 +3006,17 @@ fn test_generic_over_memory_called_with_concrete_memory() {
                 pass(heap, n)
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_generic_over_memory_wrong_size_type_is_error() {
-    // Passing i64 where M::Size=u32 is expected must be a type error.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Passing i64 where M::Size=u32 is expected must be a type error.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
                 n
@@ -3018,18 +3025,18 @@ fn test_generic_over_memory_wrong_size_type_is_error() {
                 pass(heap, n)
             }
         "},
-        &[],
-    );
-    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+		&[],
+	);
+	assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
 }
 
 #[test]
 fn test_generic_over_memory_two_concrete_memories() {
-    // The same generic fn called with both a Memory32 and a Memory64 must
-    // resolve correctly for each — M::Size = u32 and M::Size = u64.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// The same generic fn called with both a Memory32 and a Memory64 must
+	// resolve correctly for each — M::Size = u32 and M::Size = u64.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             memory stack: Memory where { Size = u64 };
             fn pass<M: Memory>(mem: M, n: M::Size) -> M::Size {
@@ -3042,21 +3049,21 @@ fn test_generic_over_memory_two_concrete_memories() {
                 pass(stack, n)
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 // ── Type::Infer / underscore type placeholder ────────────────────────────────
 
 #[test]
 fn test_infer_placeholder_in_generic_type_arg() {
-    // `Layout<_>` where the local variable's assigned value fully constrains
-    // the type arg — the `_` is the user-written inference placeholder and
-    // must not cause an error when the context resolves it.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `Layout<_>` where the local variable's assigned value fully constrains
+	// the type arg — the `_` is the user-written inference placeholder and
+	// must not cause an error when the context resolves it.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             struct Layout<M: Memory> { size: M::Size }
             impl <M: Memory> Layout<M> {
@@ -3068,19 +3075,19 @@ fn test_infer_placeholder_in_generic_type_arg() {
                 local x: Layout<_> = Layout::<heap>::new(4 as u32);
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_cannot_infer_generic_type_param_error() {
-    // Calling a generic constructor without enough context to infer the type
-    // parameter must be an error with a "cannot infer type for type parameter"
-    // diagnostic.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Calling a generic constructor without enough context to infer the type
+	// parameter must be an error with a "cannot infer type for type parameter"
+	// diagnostic.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             struct Layout<M: Memory> { size: M::Size }
             impl <M: Memory> Layout<M> {
@@ -3092,15 +3099,15 @@ fn test_cannot_infer_generic_type_param_error() {
                 local y = Layout::array::<i32>(4);
             }
         "},
-        &[],
-    );
-    has_error_matching(&case, "cannot infer type for type parameter `M`");
+		&[],
+	);
+	has_error_matching(&case, "cannot infer type for type parameter `M`");
 
-    // When M is also specified via turbofish on the first segment, both params
-    // are fully resolved and there should be no errors.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// When M is also specified via turbofish on the first segment, both params
+	// are fully resolved and there should be no errors.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             struct Layout<M: Memory> { size: M::Size }
             impl <M: Memory> Layout<M> {
@@ -3112,112 +3119,112 @@ fn test_cannot_infer_generic_type_param_error() {
                 local y = Layout::<heap>::array::<i32>(10);
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 // ── `_` (infer placeholder) edge cases ──────────────────────────────────────
 
 #[test]
 fn test_infer_in_function_param_type_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn foo(x: _) -> i32 { 0 }
     "});
-    has_error_matching(&case, "`_` is not allowed in item type signatures");
+	has_error_matching(&case, "`_` is not allowed in item type signatures");
 }
 
 #[test]
 fn test_infer_in_function_return_type_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn foo() -> _ { 0 }
     "});
-    has_error_matching(&case, "`_` is not allowed in item type signatures");
+	has_error_matching(&case, "`_` is not allowed in item type signatures");
 }
 
 #[test]
 fn test_infer_in_struct_field_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Foo { x: _ }
     "});
-    has_error_matching(&case, "`_` is not allowed in item type signatures");
+	has_error_matching(&case, "`_` is not allowed in item type signatures");
 }
 
 #[test]
 fn test_infer_in_global_declaration_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         global x: _ = 0;
     "});
-    has_error_matching(&case, "`_` is not allowed in item type signatures");
+	has_error_matching(&case, "`_` is not allowed in item type signatures");
 }
 
 #[test]
 fn test_infer_in_cast_without_context_is_error() {
-    // `42 as _` with no type context — target type cannot be inferred.
-    let case = TestCase::new(indoc! {"
+	// `42 as _` with no type context — target type cannot be inferred.
+	let case = TestCase::new(indoc! {"
         fn foo() { local x = 42 as _; }
     "});
-    assert!(has_error_code(
-        &case.tir,
-        DiagnosticCode::TypeAnnotationRequired
-    ));
+	assert!(has_error_code(
+		&case.tir,
+		DiagnosticCode::TypeAnnotationRequired
+	));
 }
 
 #[test]
 fn test_infer_in_cast_with_context_succeeds() {
-    // `42 as _` where context supplies the target type — should lower cleanly.
-    let case = TestCase::new(indoc! {"
+	// `42 as _` where context supplies the target type — should lower cleanly.
+	let case = TestCase::new(indoc! {"
         fn foo() -> i32 { 42 as _ }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_infer_multi_wildcard_tuple_annotation() {
-    // Both `_` slots should be filled from the RHS — no error.
-    let case = TestCase::new(indoc! {"
+	// Both `_` slots should be filled from the RHS — no error.
+	let case = TestCase::new(indoc! {"
         fn foo() {
             local x: (i32, f32) = (1 as i32, 2.0 as f32);
             local y: (_, _) = (1 as i32, 2.0 as f32);
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_infer_annotation_type_mismatch_still_errors() {
-    // `local x: i32 = 1.0 as f32` should still produce a type mismatch even
-    // when using `_` for the other slot.
-    let case = TestCase::new(indoc! {"
+	// `local x: i32 = 1.0 as f32` should still produce a type mismatch even
+	// when using `_` for the other slot.
+	let case = TestCase::new(indoc! {"
         fn foo() {
             local x: (i32, _) = (1.0 as f32, 2 as i32);
         }
     "});
-    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+	assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
 }
 
 #[test]
 fn test_infer_local_no_rhs_annotation_only_is_error() {
-    // `local x: _` with no initializer is not valid syntax, but `local x: _ = expr`
-    // where expr is also completely unconstrained should produce an error.
-    let case = TestCase::new(indoc! {"
+	// `local x: _` with no initializer is not valid syntax, but `local x: _ = expr`
+	// where expr is also completely unconstrained should produce an error.
+	let case = TestCase::new(indoc! {"
         fn foo() -> i32 {
             local x: _ = 42;
             x
         }
     "});
-    // The integer literal 42 by itself with no constraint should require annotation.
-    assert!(has_error_code(
-        &case.tir,
-        DiagnosticCode::TypeAnnotationRequired
-    ));
+	// The integer literal 42 by itself with no constraint should require annotation.
+	assert!(has_error_code(
+		&case.tir,
+		DiagnosticCode::TypeAnnotationRequired
+	));
 }
 
 #[test]
 fn test_module_namespace_type_access() {
-    // `module::Type` — a type accessed through a module namespace resolves
-    // to the module's declared type without errors.
-    let case = TestCase::new(indoc! {"
+	// `module::Type` — a type accessed through a module namespace resolves
+	// to the module's declared type without errors.
+	let case = TestCase::new(indoc! {"
         module shapes {
             pub struct Circle {}
         }
@@ -3225,218 +3232,219 @@ fn test_module_namespace_type_access() {
             unreachable
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 // ── Memory-tagged pointer types ──────────────────────────────────────────────
 
 #[test]
 fn test_memory_tagged_pointer() {
-    // `heap::*i32` resolves to Type::Pointer { memory: Some(heap_id) }
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `heap::*i32` resolves to Type::Pointer { memory: Some(heap_id) }
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(p: heap::*i32) {
                 unreachable
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 
-    let heap_id = case.tir.memories[0].id;
-    let f = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
-        .expect("function 'f' not found");
+	let heap_id = case.tir.memories[0].id;
+	let f = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
+		.expect("function 'f' not found");
 
-    let param_ty = f.params[0].ty.inner;
-    let is_heap_ptr = match &case.tir.type_pool[param_ty.as_usize()] {
-        Type::Pointer { memory, .. } => {
-            matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
-        }
-        _ => false,
-    };
-    assert!(
-        is_heap_ptr,
-        "expected heap::*i32 (pointer tagged with heap), got index {}",
-        param_ty.as_u32()
-    );
+	let param_ty = f.params[0].ty.inner;
+	let is_heap_ptr = match &case.tir.type_pool[param_ty.as_usize()] {
+		Type::Pointer { memory, .. } => {
+			matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+		}
+		_ => false,
+	};
+	assert!(
+		is_heap_ptr,
+		"expected heap::*i32 (pointer tagged with heap), got index {}",
+		param_ty.as_u32()
+	);
 }
 
 #[test]
 fn test_memory_tagged_slice() {
-    // `heap::[]u8` resolves to Type::Slice { memory: Some(heap_id) }
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `heap::[]u8` resolves to Type::Slice { memory: Some(heap_id) }
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(s: heap::[]u8) {
                 unreachable
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 
-    let heap_id = case.tir.memories[0].id;
-    let f = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
-        .expect("function 'f' not found");
+	let heap_id = case.tir.memories[0].id;
+	let f = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
+		.expect("function 'f' not found");
 
-    let param_ty = f.params[0].ty.inner;
-    let is_heap_slice = match &case.tir.type_pool[param_ty.as_usize()] {
-        Type::Slice { memory, .. } => {
-            matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
-        }
-        _ => false,
-    };
-    assert!(
-        is_heap_slice,
-        "expected heap::[]u8 (slice tagged with heap), got index {}",
-        param_ty.as_u32()
-    );
+	let param_ty = f.params[0].ty.inner;
+	let is_heap_slice = match &case.tir.type_pool[param_ty.as_usize()] {
+		Type::Slice { memory, .. } => {
+			matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+		}
+		_ => false,
+	};
+	assert!(
+		is_heap_slice,
+		"expected heap::[]u8 (slice tagged with heap), got index {}",
+		param_ty.as_u32()
+	);
 }
 
 #[test]
 fn test_memory_tagged_array() {
-    // `heap::[4]u8` resolves to Type::Array { size: 4, memory: Some(heap_id) }
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `heap::[4]u8` resolves to Type::Array { size: 4, memory: Some(heap_id) }
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]u8) {
                 unreachable
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 
-    let heap_id = case.tir.memories[0].id;
-    let f = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
-        .expect("function 'f' not found");
+	let heap_id = case.tir.memories[0].id;
+	let f = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
+		.expect("function 'f' not found");
 
-    let param_ty = f.params[0].ty.inner;
-    let is_heap_array = match &case.tir.type_pool[param_ty.as_usize()] {
-        Type::Array {
-            size: 4, memory, ..
-        } => {
-            matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
-        }
-        _ => false,
-    };
-    assert!(
-        is_heap_array,
-        "expected heap::[4]u8 (array tagged with heap), got index {}",
-        param_ty.as_u32()
-    );
+	let param_ty = f.params[0].ty.inner;
+	let is_heap_array = match &case.tir.type_pool[param_ty.as_usize()] {
+		Type::Array {
+			size: 4, memory, ..
+		} => {
+			matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+		}
+		_ => false,
+	};
+	assert!(
+		is_heap_array,
+		"expected heap::[4]u8 (array tagged with heap), got index {}",
+		param_ty.as_u32()
+	);
 }
 
 #[test]
 fn test_memory_tagged_nested_array() {
-    // `heap::[4]heap::[4]u8` — outer array in heap, elements are heap-tagged arrays
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `heap::[4]heap::[4]u8` — outer array in heap, elements are heap-tagged arrays
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]heap::[4]u8) {
                 unreachable
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 
-    let heap_id = case.tir.memories[0].id;
-    let f = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
-        .expect("function 'f' not found");
+	let heap_id = case.tir.memories[0].id;
+	let f = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
+		.expect("function 'f' not found");
 
-    let outer_ty = f.params[0].ty.inner;
-    let is_heap_mem = |memory: &TypeIndex| matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id);
-    let (inner_ty, outer_tagged) = match &case.tir.type_pool[outer_ty.as_usize()] {
-        Type::Array {
-            of,
-            size: 4,
-            memory,
-            ..
-        } if is_heap_mem(memory) => (*of, true),
-        _ => (TypeIndex::ERROR, false),
-    };
-    assert!(
-        outer_tagged,
-        "outer array should be tagged with heap memory"
-    );
-    let inner_tagged = match &case.tir.type_pool[inner_ty.as_usize()] {
-        Type::Array {
-            size: 4, memory, ..
-        } => is_heap_mem(memory),
-        _ => false,
-    };
-    assert!(
-        inner_tagged,
-        "inner array should also be tagged with heap memory"
-    );
+	let outer_ty = f.params[0].ty.inner;
+	let is_heap_mem = |memory: &TypeIndex| matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id);
+	let (inner_ty, outer_tagged) =
+		match &case.tir.type_pool[outer_ty.as_usize()] {
+			Type::Array {
+				of,
+				size: 4,
+				memory,
+				..
+			} if is_heap_mem(memory) => (*of, true),
+			_ => (TypeIndex::ERROR, false),
+		};
+	assert!(
+		outer_tagged,
+		"outer array should be tagged with heap memory"
+	);
+	let inner_tagged = match &case.tir.type_pool[inner_ty.as_usize()] {
+		Type::Array {
+			size: 4, memory, ..
+		} => is_heap_mem(memory),
+		_ => false,
+	};
+	assert!(
+		inner_tagged,
+		"inner array should also be tagged with heap memory"
+	);
 }
 
 #[test]
 fn test_memory_tagged_non_pointer_is_error() {
-    // `heap::i32` — memory namespace before a scalar type should error
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `heap::i32` — memory namespace before a scalar type should error
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(x: heap::i32) {
                 unreachable
             }
         "},
-        &[],
-    );
-    assert!(has_error_code(&case.tir, DiagnosticCode::UndeclaredType)); // heap::i32 — `i32` is not a member of the memory namespace
+		&[],
+	);
+	assert!(has_error_code(&case.tir, DiagnosticCode::UndeclaredType)); // heap::i32 — `i32` is not a member of the memory namespace
 }
 
 #[test]
 fn test_untagged_and_tagged_pointer_resolve_to_same_type() {
-    // With one memory in scope, `*i32` and `heap::*i32` resolve to the same type.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// With one memory in scope, `*i32` and `heap::*i32` resolve to the same type.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: *i32, b: heap::*i32) {
                 unreachable
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 
-    let f = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
-        .expect("function 'f' not found");
+	let f = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("f"))
+		.expect("function 'f' not found");
 
-    let untagged = f.params[0].ty.inner;
-    let tagged = f.params[1].ty.inner;
-    assert_eq!(
-        untagged, tagged,
-        "with one memory, *i32 and heap::*i32 should intern to the same TypeIndex"
-    );
+	let untagged = f.params[0].ty.inner;
+	let tagged = f.params[1].ty.inner;
+	assert_eq!(
+		untagged, tagged,
+		"with one memory, *i32 and heap::*i32 should intern to the same TypeIndex"
+	);
 }
 
 // ── FunctionItem type tests
@@ -3444,124 +3452,121 @@ fn test_untagged_and_tagged_pointer_resolve_to_same_type() {
 
 #[test]
 fn test_function_reference_has_function_item_type() {
-    // When a function name is used as a value (not immediately called), the
-    // resulting expression type must be `FunctionItem`, not `Function`. This
-    // ensures the compiler preserves the function's identity rather than
-    // exposing its raw (potentially TypeParam-polluted) signature.
-    let case = TestCase::new(indoc! {"
+	// When a function name is used as a value (not immediately called), the
+	// resulting expression type must be `FunctionItem`, not `Function`. This
+	// ensures the compiler preserves the function's identity rather than
+	// exposing its raw (potentially TypeParam-polluted) signature.
+	let case = TestCase::new(indoc! {"
         fn square(n: i32) -> i32 { n * n }
         fn main() {
             local f = square
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let square_id = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("square"))
-        .expect("function 'square' not found")
-        .id;
+	let square_id = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("square"))
+		.expect("function 'square' not found")
+		.id;
 
-    let has_function_item = case.tir.type_pool.iter().any(|t| {
-        if let Type::FunctionItem { id, type_args } = t {
-            *id == square_id && type_args.is_empty()
-        } else {
-            false
-        }
-    });
-    assert!(
-        has_function_item,
-        "expected Type::FunctionItem for 'square' in the type pool"
-    );
+	let has_function_item = case.tir.type_pool.iter().any(|t| {
+		if let Type::FunctionItem { id, type_args } = t {
+			*id == square_id && type_args.is_empty()
+		} else {
+			false
+		}
+	});
+	assert!(
+		has_function_item,
+		"expected Type::FunctionItem for 'square' in the type pool"
+	);
 }
 
 #[test]
 fn test_generic_function_reference_has_function_item_not_fn_pointer() {
-    // A reference to a generic function must produce `FunctionItem`, not
-    // `Function { signature: fn(TypeParam{0}) -> TypeParam{0} }`. The old
-    // representation leaked TypeParam internals and made it impossible to
-    // distinguish which function was being referenced.
-    let case = TestCase::new(indoc! {"
+	// A reference to a generic function must produce `FunctionItem`, not
+	// `Function { signature: fn(TypeParam{0}) -> TypeParam{0} }`. The old
+	// representation leaked TypeParam internals and made it impossible to
+	// distinguish which function was being referenced.
+	let case = TestCase::new(indoc! {"
         fn identity<T>(t: T) -> T { t }
         fn main() {
             local f = identity
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let identity_id = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("identity"))
-        .expect("function 'identity' not found")
-        .id;
+	let identity_id = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("identity"))
+		.expect("function 'identity' not found")
+		.id;
 
-    let has_function_item = case
-        .tir
-        .type_pool
-        .iter()
-        .any(|t| matches!(t, Type::FunctionItem { id, .. } if *id == identity_id));
-    assert!(
-        has_function_item,
-        "expected Type::FunctionItem for generic 'identity'"
-    );
+	let has_function_item = case.tir.type_pool.iter().any(
+		|t| matches!(t, Type::FunctionItem { id, .. } if *id == identity_id),
+	);
+	assert!(
+		has_function_item,
+		"expected Type::FunctionItem for generic 'identity'"
+	);
 
-    // The function's own signature_index is still fn(TypeParam{0}) ->
-    // TypeParam{0} in the pool (needed for the function body), but function
-    // *reference* expressions must use FunctionItem, not expose that raw
-    // signature as their value type.
+	// The function's own signature_index is still fn(TypeParam{0}) ->
+	// TypeParam{0} in the pool (needed for the function body), but function
+	// *reference* expressions must use FunctionItem, not expose that raw
+	// signature as their value type.
 }
 
 #[test]
 fn test_indirect_call_via_function_item_local_compiles() {
-    // Storing a function in a local and calling it via the local is valid.
-    // `f` has type `FunctionItem`, but calling it works because
-    // `build_call_expression` resolves the signature through the function id.
-    let case = TestCase::new(indoc! {"
+	// Storing a function in a local and calling it via the local is valid.
+	// `f` has type `FunctionItem`, but calling it works because
+	// `build_call_expression` resolves the signature through the function id.
+	let case = TestCase::new(indoc! {"
         fn square(n: i32) -> i32 { n * n }
         fn main() -> i32 {
             local f = square
             f(5)
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_function_item_type_error_label_names_function() {
-    // When a `FunctionItem` is passed where a concrete function-pointer type is
-    // expected, the error label must name the function ("identity"), not show
-    // its raw signature ("fn(T0) -> T0"). This verifies `display_type` for
-    // `Type::FunctionItem` returns the function name.
-    let case = TestCase::new(indoc! {"
+	// When a `FunctionItem` is passed where a concrete function-pointer type is
+	// expected, the error label must name the function ("identity"), not show
+	// its raw signature ("fn(T0) -> T0"). This verifies `display_type` for
+	// `Type::FunctionItem` returns the function name.
+	let case = TestCase::new(indoc! {"
         fn identity<T>(t: T) -> T { t }
         fn take_fn(f: fn(i32) -> i32) -> i32 { f(0) }
         fn main() -> i32 {
             take_fn(identity)
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "expected a type error when passing FunctionItem where fn pointer expected"
-    );
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| { d.labels.iter().any(|l| l.message.contains("identity")) }),
-        "error label must name the function 'identity', not show raw TypeParam signature"
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"expected a type error when passing FunctionItem where fn pointer expected"
+	);
+	assert!(
+		case.tir.diagnostics.iter().any(|d| {
+			d.labels.iter().any(|l| l.message.contains("identity"))
+		}),
+		"error label must name the function 'identity', not show raw TypeParam signature"
+	);
 }
 
 #[test]
 fn test_missing_argument_uses_callee_type_param_names() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn take<T>(value: T) {
             unreachable
         }
@@ -3571,29 +3576,29 @@ fn test_missing_argument_uses_callee_type_param_names() {
         }
     "});
 
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "expected missing argument error"
-    );
-    assert!(
-        case.tir.diagnostics.iter().any(|d| {
-            d.notes
-                .iter()
-                .any(|note| note.contains("argument #1 of type `T` is missing"))
-        }),
-        "missing argument diagnostic should use callee type parameter name `T`"
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"expected missing argument error"
+	);
+	assert!(
+		case.tir.diagnostics.iter().any(|d| {
+			d.notes
+				.iter()
+				.any(|note| note.contains("argument #1 of type `T` is missing"))
+		}),
+		"missing argument diagnostic should use callee type parameter name `T`"
+	);
 }
 
 #[test]
 fn test_two_functions_have_distinct_function_item_types() {
-    // Each distinct function must intern to a distinct `FunctionItem` TypeIndex.
-    // Sharing a type between different functions would break identity-based
-    // dispatch and type checking.
-    let case = TestCase::new(indoc! {"
+	// Each distinct function must intern to a distinct `FunctionItem` TypeIndex.
+	// Sharing a type between different functions would break identity-based
+	// dispatch and type checking.
+	let case = TestCase::new(indoc! {"
         fn square(n: i32) -> i32 { n * n }
         fn double(n: i32) -> i32 { n + n }
         fn main() {
@@ -3601,46 +3606,47 @@ fn test_two_functions_have_distinct_function_item_types() {
             local b = double
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let find_id = |name: &str| {
-        case.tir
-            .functions
-            .iter()
-            .find(|f| case.graph.interner.resolve(f.name.inner) == Some(name))
-            .unwrap_or_else(|| panic!("function '{}' not found", name))
-            .id
-    };
-    let square_id = find_id("square");
-    let double_id = find_id("double");
+	let find_id = |name: &str| {
+		case.tir
+			.functions
+			.iter()
+			.find(|f| case.graph.interner.resolve(f.name.inner) == Some(name))
+			.unwrap_or_else(|| panic!("function '{}' not found", name))
+			.id
+	};
+	let square_id = find_id("square");
+	let double_id = find_id("double");
 
-    let type_idx = |id: DefId| {
-        case.tir
-            .type_pool
-            .iter()
-            .enumerate()
-            .find_map(|(i, t)| {
-                if matches!(t, Type::FunctionItem { id: fid, .. } if *fid == id) {
-                    Some(TypeIndex(i as u32))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| panic!("FunctionItem for {:?} not found", id))
-    };
-    assert_ne!(
-        type_idx(square_id),
-        type_idx(double_id),
-        "square and double must have distinct FunctionItem TypeIndex values"
-    );
+	let type_idx = |id: DefId| {
+		case.tir
+			.type_pool
+			.iter()
+			.enumerate()
+			.find_map(|(i, t)| {
+				if matches!(t, Type::FunctionItem { id: fid, .. } if *fid == id)
+				{
+					Some(TypeIndex(i as u32))
+				} else {
+					None
+				}
+			})
+			.unwrap_or_else(|| panic!("FunctionItem for {:?} not found", id))
+	};
+	assert_ne!(
+		type_idx(square_id),
+		type_idx(double_id),
+		"square and double must have distinct FunctionItem TypeIndex values"
+	);
 }
 
 #[test]
 fn test_function_item_coerces_to_matching_fn_pointer_type() {
-    // A FunctionItem must be implicitly coercible to a `fn(...)` parameter
-    // whose signature matches exactly. This is the `func_pointers.wx` pattern:
-    // passing a named function where a function-pointer argument is expected.
-    let case = TestCase::new(indoc! {"
+	// A FunctionItem must be implicitly coercible to a `fn(...)` parameter
+	// whose signature matches exactly. This is the `func_pointers.wx` pattern:
+	// passing a named function where a function-pointer argument is expected.
+	let case = TestCase::new(indoc! {"
         fn add(a: i32, b: i32) -> i32 { a + b }
         fn sub(a: i32, b: i32) -> i32 { a - b }
         fn apply(binop: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
@@ -3652,79 +3658,79 @@ fn test_function_item_coerces_to_matching_fn_pointer_type() {
             a + b
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_function_item_wrong_signature_is_error() {
-    // A FunctionItem must NOT coerce to a `fn(...)` type with a different
-    // signature — the arity or parameter types must match exactly.
-    let case = TestCase::new(indoc! {"
+	// A FunctionItem must NOT coerce to a `fn(...)` type with a different
+	// signature — the arity or parameter types must match exactly.
+	let case = TestCase::new(indoc! {"
         fn add(a: i32, b: i32) -> i32 { a + b }
         fn apply(binop: fn(i32) -> i32, n: i32) -> i32 { binop(n) }
         fn main() -> i32 {
             apply(add, 5)
         }
     "});
-    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+	assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
 }
 
 // ── Type application expressions ─────────────────────────────────────────────
 
 #[test]
 fn test_type_application_coerces_to_fn_pointer() {
-    // `identity::<i32>` must coerce to `fn(i32) -> i32`.
-    let case = TestCase::new(indoc! {"
+	// `identity::<i32>` must coerce to `fn(i32) -> i32`.
+	let case = TestCase::new(indoc! {"
         fn identity<T>(t: T) -> T { t }
         fn main() {
             local f: fn(i32) -> i32 = identity::<i32>
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_type_application_wrong_arg_count_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn identity<T>(t: T) -> T { t }
         fn main() {
             local f = identity::<i32, i64>
         }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeArgCountMismatch),
-        "expected E1040 (TypeArgCountMismatch) for too many type args, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeArgCountMismatch),
+		"expected E1040 (TypeArgCountMismatch) for too many type args, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_type_application_on_non_generic_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn add(a: i32, b: i32) -> i32 { a + b }
         fn main() {
             local f = add::<i32>
         }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeArgCountMismatch),
-        "expected E1040 (TypeArgCountMismatch) for type args on non-generic fn, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeArgCountMismatch),
+		"expected E1040 (TypeArgCountMismatch) for type args on non-generic fn, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_type_application_in_if_else_unifies() {
-    // Two distinct generic instantiations with the same signature unify.
-    let case = TestCase::new(indoc! {"
+	// Two distinct generic instantiations with the same signature unify.
+	let case = TestCase::new(indoc! {"
         fn identity<T>(t: T) -> T { t }
         fn wrap<T>(t: T) -> T { t }
         fn main() -> fn(i32) -> i32 {
@@ -3732,125 +3738,125 @@ fn test_type_application_in_if_else_unifies() {
             f
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 // ── Pointer dereference ──────────────────────────────────────────────────────
 
 #[test]
 fn test_deref_load_through_pointer() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn read(ptr: heap::*i32) -> i32 { ptr.* }
     "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_deref_store_through_mutable_pointer() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn write(ptr: heap::*mut i32) { ptr.* = 42 }
     "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_deref_arithmetic_assignment_through_mutable_pointer() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn increment(ptr: heap::*mut i32) { ptr.* += 1 }
     "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_deref_non_pointer_type_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn bad(x: i32) -> i32 { x.* }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotDerefNonPointer),
-        "expected E1037 (dereference of non-pointer type)"
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotDerefNonPointer),
+		"expected E1037 (dereference of non-pointer type)"
+	);
 }
 
 #[test]
 fn test_deref_no_memory_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn bad(ptr: *i32) -> i32 { ptr.* }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::NoMemoryForPointer),
-        "expected E1038 (no memory for pointer)"
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::NoMemoryForPointer),
+		"expected E1038 (no memory for pointer)"
+	);
 }
 
 #[test]
 fn test_deref_store_through_immutable_pointer_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn bad(ptr: heap::*i32) { ptr.* = 42 }
     "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "expected W1000 (CannotMutateImmutable) for store through immutable pointer, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"expected W1000 (CannotMutateImmutable) for store through immutable pointer, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_deref_arithmetic_assignment_through_immutable_pointer_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn bad(ptr: heap::*i32) { ptr.* += 1 }
     "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "expected W1000 (CannotMutateImmutable) for arithmetic-assign through immutable pointer, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"expected W1000 (CannotMutateImmutable) for arithmetic-assign through immutable pointer, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_deref_type_mismatch_on_store_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn bad(ptr: heap::*mut i32) { ptr.* = true }
     "},
-        &[],
-    );
-    has_error_matching(&case, "cannot assign");
+		&[],
+	);
+	has_error_matching(&case, "cannot assign");
 }
 
 // ── Multi-segment path resolution
@@ -3858,9 +3864,9 @@ fn test_deref_type_mismatch_on_store_is_error() {
 
 #[test]
 fn test_path_type_associated_fn_ufcs() {
-    // `i32::abs(x)` — 2-segment path where the first segment is a type and the
-    // second is an associated function; all params (including self) are explicit.
-    let case = TestCase::new(indoc! {"
+	// `i32::abs(x)` — 2-segment path where the first segment is a type and the
+	// second is an associated function; all params (including self) are explicit.
+	let case = TestCase::new(indoc! {"
         impl i32 {
             pub fn abs(self) -> i32 {
                 if self < 0 { -self } else { self }
@@ -3871,13 +3877,13 @@ fn test_path_type_associated_fn_ufcs() {
         }
         export { f }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_path_struct_associated_fn_no_params() {
-    // `Counter::zero()` — zero-parameter associated function on a user-defined struct.
-    let case = TestCase::new(indoc! {"
+	// `Counter::zero()` — zero-parameter associated function on a user-defined struct.
+	let case = TestCase::new(indoc! {"
         struct Counter { value: u32 }
         impl Counter {
             pub fn zero() -> Counter { Counter::{ value: 0 } }
@@ -3885,13 +3891,13 @@ fn test_path_struct_associated_fn_no_params() {
         fn test() -> Counter { Counter::zero() }
         export { test }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_path_generic_struct_associated_fn() {
-    // `Wrapper::<u32>::new(42)` — associated function on a generic struct via generic impl.
-    let case = TestCase::new(indoc! {"
+	// `Wrapper::<u32>::new(42)` — associated function on a generic struct via generic impl.
+	let case = TestCase::new(indoc! {"
         struct Wrapper<T> { value: T }
         impl<T> Wrapper<T> {
             pub fn new(value: T) -> Wrapper<T> { Wrapper::{ value } }
@@ -3899,14 +3905,14 @@ fn test_path_generic_struct_associated_fn() {
         fn test() -> Wrapper<u32> { Wrapper::<u32>::new(42) }
         export { test }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_path_inline_module_type_associated_fn() {
-    // `math::Point::zero()` — 3-segment path through an inline module to an
-    // associated function: module → type → fn.
-    let case = TestCase::new(indoc! {"
+	// `math::Point::zero()` — 3-segment path through an inline module to an
+	// associated function: module → type → fn.
+	let case = TestCase::new(indoc! {"
         module math {
             pub struct Point {}
             impl Point {
@@ -3918,15 +3924,15 @@ fn test_path_inline_module_type_associated_fn() {
         }
         export { f }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_path_cross_module_struct_init() {
-    // `shapes::Point::{ x: 1, y: 2 }` — struct literal via a cross-module path.
-    let case = TestCase::new_multi_file(
-        "src/main.wx",
-        indoc! {"
+	// `shapes::Point::{ x: 1, y: 2 }` — struct literal via a cross-module path.
+	let case = TestCase::new_multi_file(
+		"src/main.wx",
+		indoc! {"
             module shapes;
 
             fn make() -> shapes::Point {
@@ -3935,18 +3941,18 @@ fn test_path_cross_module_struct_init() {
 
             export { make }
         "},
-        &[("src/shapes.wx", "pub struct Point { x: i32, y: i32 }")],
-    );
-    no_errors(&case);
+		&[("src/shapes.wx", "pub struct Point { x: i32, y: i32 }")],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_path_cross_module_generic_struct_init() {
-    // `containers::Wrapper::<i32>::{ value: 42 }` — generic struct literal via a
-    // cross-module path with explicit type args on the last segment.
-    let case = TestCase::new_multi_file(
-        "src/main.wx",
-        indoc! {"
+	// `containers::Wrapper::<i32>::{ value: 42 }` — generic struct literal via a
+	// cross-module path with explicit type args on the last segment.
+	let case = TestCase::new_multi_file(
+		"src/main.wx",
+		indoc! {"
             module containers;
 
             fn make() -> containers::Wrapper::<i32> {
@@ -3955,15 +3961,15 @@ fn test_path_cross_module_generic_struct_init() {
 
             export { make }
         "},
-        &[("src/containers.wx", "pub struct Wrapper<T> { value: T }")],
-    );
-    no_errors(&case);
+		&[("src/containers.wx", "pub struct Wrapper<T> { value: T }")],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_generic_struct_concrete_impl() {
-    // impl Point<i32> — concrete monomorphic impl, no type params needed
-    let case = TestCase::new(indoc! {"
+	// impl Point<i32> — concrete monomorphic impl, no type params needed
+	let case = TestCase::new(indoc! {"
         struct Point<T> {
             x: T,
             y: T,
@@ -3980,13 +3986,13 @@ fn test_generic_struct_concrete_impl() {
 
         export { run }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_generic_struct_method() {
-    // impl Point<T> — generic impl; T in scope, field access returns T
-    let case = TestCase::new(indoc! {"
+	// impl Point<T> — generic impl; T in scope, field access returns T
+	let case = TestCase::new(indoc! {"
         struct Point<T> {
             x: T,
             y: T,
@@ -4003,7 +4009,7 @@ fn test_generic_struct_method() {
 
         export { run }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 // ── Array literals
@@ -4011,149 +4017,149 @@ fn test_generic_struct_method() {
 
 #[test]
 fn test_array_literal_basic() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() -> heap::[3]i32 {
                 local x: heap::[3]i32 = [1, 2, 3];
                 x
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_array_literal_mutable() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() -> heap::[3]i32 {
                 local x: heap::[3]i32 = [1, 2, 3];
                 x
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_array_literal_float_elements() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() -> heap::[2]f32 {
                 local x: heap::[2]f32 = [1.0, 2.0];
                 x
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_array_literal_empty_with_annotation() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() -> heap::[0]i32 {
                 local x: heap::[0]i32 = [];
                 x
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_array_literal_size_mismatch_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() {
                 local x: heap::[3]i32 = [1, 2];
             }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::ArraySizeMismatch),
-        "expected E1043 (array size mismatch)"
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::ArraySizeMismatch),
+		"expected E1043 (array size mismatch)"
+	);
 }
 
 #[test]
 fn test_array_literal_no_annotation_is_error() {
-    // Without a type annotation the element type cannot be inferred from comptime
-    // ints.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Without a type annotation the element type cannot be inferred from comptime
+	// ints.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() {
                 local x = [1, 2, 3];
             }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
-        "expected E1002 (type annotation required)"
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
+		"expected E1002 (type annotation required)"
+	);
 }
 
 #[test]
 fn test_array_literal_no_memory_is_error() {
-    // No memory declaration — array cannot be placed in linear memory.
-    let case = TestCase::new(indoc! {"
+	// No memory declaration — array cannot be placed in linear memory.
+	let case = TestCase::new(indoc! {"
         fn f() {
             local x: [3]i32 = [1, 2, 3];
         }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::NoMemoryForPointer),
-        "expected E1038 (no memory for pointer)"
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::NoMemoryForPointer),
+		"expected E1038 (no memory for pointer)"
+	);
 }
 
 #[test]
 fn test_array_literal_non_numeric_element_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() {
                 local x: heap::[2]i32 = [true, false];
             }
         "},
-        &[],
-    );
-    has_error_matching(&case, "array element type must be a numeric type");
+		&[],
+	);
+	has_error_matching(&case, "array element type must be a numeric type");
 }
 
 #[test]
 fn test_array_literal_mixed_element_types_is_error() {
-    // Mixing a typed expression (true: bool) after a comptime int should mismatch.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Mixing a typed expression (true: bool) after a comptime int should mismatch.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(b: bool) {
                 local x: heap::[2]bool = [b, b];
             }
         "},
-        &[],
-    );
-    has_error_matching(&case, "array element type must be a numeric type");
+		&[],
+	);
+	has_error_matching(&case, "array element type must be a numeric type");
 }
 
 // ── Array repeat
@@ -4161,103 +4167,103 @@ fn test_array_literal_mixed_element_types_is_error() {
 
 #[test]
 fn test_array_repeat_basic() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() -> heap::[4]i32 {
                 local x: heap::[4]i32 = [0; 4];
                 x
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_array_repeat_float() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() -> heap::[8]f64 {
                 local x: heap::[8]f64 = [0.0; 8];
                 x
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_array_repeat_count_not_const_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(n: u32) {
                 local x: heap::[4]i32 = [0; n];
             }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::ArrayRepeatCountNotConst),
-        "expected E1044 (array repeat count not const)"
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::ArrayRepeatCountNotConst),
+		"expected E1044 (array repeat count not const)"
+	);
 }
 
 #[test]
 fn test_array_repeat_size_mismatch_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() {
                 local x: heap::[4]i32 = [0; 3];
             }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::ArraySizeMismatch),
-        "expected E1043 (array size mismatch)"
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::ArraySizeMismatch),
+		"expected E1043 (array size mismatch)"
+	);
 }
 
 #[test]
 fn test_array_repeat_no_annotation_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f() {
                 local x = [0; 4];
             }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
-        "expected E1002 (type annotation required)"
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeAnnotationRequired),
+		"expected E1002 (type annotation required)"
+	);
 }
 
 #[test]
 fn test_array_repeat_non_numeric_value_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(b: bool) {
                 local x: heap::[4]i32 = [b; 4];
             }
         "},
-        &[],
-    );
-    has_error_matching(&case, "array element type must be a numeric type");
+		&[],
+	);
+	has_error_matching(&case, "array element type must be a numeric type");
 }
 
 // ── Index operator
@@ -4265,303 +4271,303 @@ fn test_array_repeat_non_numeric_value_is_error() {
 
 #[test]
 fn test_index_read_from_array() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_read_from_slice() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[]i32) -> i32 { a[0] }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_on_non_indexable_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn f(x: i32) -> i32 { x[0] }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::IndexOnNonIndexable),
-        "expected E1042 (index on non-indexable type)"
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::IndexOnNonIndexable),
+		"expected E1042 (index on non-indexable type)"
+	);
 }
 
 #[test]
 fn test_index_wrong_index_type_is_error() {
-    // Memory where { Size = u32 } requires u32 index; passing i64 should be a type mismatch.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Memory where { Size = u32 } requires u32 index; passing i64 should be a type mismatch.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32, i: i64) -> i32 { a[i] }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
-        "expected E1001 (TypeMistmatch) for wrong index type, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
+		"expected E1001 (TypeMistmatch) for wrong index type, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_index_store_through_mutable_array() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]mut i32) { a[0] = 42 }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_store_through_immutable_array_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32) { a[0] = 42 }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "expected W1000 (CannotMutateImmutable) for store through immutable array, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"expected W1000 (CannotMutateImmutable) for store through immutable array, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_index_arithmetic_assignment_through_mutable_array() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]mut i32) { a[0] += 1 }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_arithmetic_assignment_through_immutable_array_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32) { a[0] += 1 }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "expected W1000 (CannotMutateImmutable) for arithmetic-assign through immutable array, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"expected W1000 (CannotMutateImmutable) for arithmetic-assign through immutable array, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_index_store_type_mismatch_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]mut i32) { a[0] = true }
         "},
-        &[],
-    );
-    has_error_matching(&case, "cannot assign");
+		&[],
+	);
+	has_error_matching(&case, "cannot assign");
 }
 
 #[test]
 fn test_index_memory64_requires_u64_index() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u64 };
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_ambiguous_memory_is_error() {
-    // Two memories and no tag on the array type — cannot resolve memory for
-    // indexing.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Two memories and no tag on the array type — cannot resolve memory for
+	// indexing.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             memory stack: Memory where { Size = u32 };
             fn f(a: heap::[4]i32) -> i32 { a[0] }
         "},
-        &[],
-    );
-    // The array type already carries heap's memory id, so indexing it should
-    // succeed even with two memories declared.
-    no_errors(&case);
+		&[],
+	);
+	// The array type already carries heap's memory id, so indexing it should
+	// succeed even with two memories declared.
+	no_errors(&case);
 }
 
 #[test]
 fn test_array_literal_runtime_element_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(x: i32) {
                 local arr: heap::[2]i32 = [x, 1];
             }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::ArrayElementNotConst),
-        "expected E1045 (array element not const)"
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::ArrayElementNotConst),
+		"expected E1045 (array element not const)"
+	);
 }
 
 #[test]
 fn test_array_repeat_runtime_value_is_error() {
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(x: i32) {
                 local arr: heap::[4]i32 = [x; 4];
             }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::ArrayElementNotConst),
-        "expected E1045 (array element not const)"
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::ArrayElementNotConst),
+		"expected E1045 (array element not const)"
+	);
 }
 
 // ── abstract memory indexing ──────────────────────────────────────────────────
 
 #[test]
 fn test_index_concrete_memory32_typed_variable() {
-    // Typed u32 variable (not a literal) as index into a Memory32 array.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Typed u32 variable (not a literal) as index into a Memory32 array.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32, i: u32) -> i32 { a[i] }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_concrete_memory64_typed_variable() {
-    // Typed u64 variable as index into a Memory64 array.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Typed u64 variable as index into a Memory64 array.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u64 };
             fn f(a: heap::[4]i32, i: u64) -> i32 { a[i] }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_memory32_with_u64_variable_is_error() {
-    // Typed u64 index on a Memory32 (u32-indexed) array must be rejected.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Typed u64 index on a Memory32 (u32-indexed) array must be rejected.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn f(a: heap::[4]i32, i: u64) -> i32 { a[i] }
         "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
-        "expected E1001 (TypeMistmatch) for u64 index on Memory32 array, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
+		"expected E1001 (TypeMistmatch) for u64 index on Memory32 array, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_index_generic_array_with_assoc_size_type() {
-    // Generic fn over M: Memory indexing M::[4]i32 with M::Size — the index
-    // type must accept M::Size rather than requiring a concrete integer type.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Generic fn over M: Memory indexing M::[4]i32 with M::Size — the index
+	// type must accept M::Size rather than requiring a concrete integer type.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn read<M: Memory>(arr: M::[4]i32, i: M::Size) -> i32 {
                 arr[i]
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_generic_slice_with_assoc_size_type() {
-    // Same as above but for a slice (runtime-length).
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Same as above but for a slice (runtime-length).
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn read<M: Memory>(s: M::[]i32, i: M::Size) -> i32 {
                 s[i]
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_index_generic_array_call_with_concrete_memory() {
-    // The generic indexing fn must be callable with a concrete memory so
-    // M::Size is substituted to u32 at the call site.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// The generic indexing fn must be callable with a concrete memory so
+	// M::Size is substituted to u32 at the call site.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             memory heap: Memory where { Size = u32 };
             fn read<M: Memory>(arr: M::[4]i32, i: M::Size) -> i32 {
                 arr[i]
@@ -4570,9 +4576,9 @@ fn test_index_generic_array_call_with_concrete_memory() {
                 read(arr, i)
             }
         "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 // ── generic trait bound checking
@@ -4580,24 +4586,26 @@ fn test_index_generic_array_call_with_concrete_memory() {
 
 #[test]
 fn test_generic_call_with_satisfying_type_is_ok() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         trait UnsignedInteger {}
         impl UnsignedInteger for u32 {}
         fn test<U: UnsignedInteger>(u: U) {}
         fn main() { test(42 as u32); }
         export { main }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no errors when calling test() with u32 (implements UnsignedInteger): {:?}",
-        errors
-    );
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| {
+			d.severity == codespan_reporting::diagnostic::Severity::Error
+		})
+		.collect();
+	assert!(
+		errors.is_empty(),
+		"expected no errors when calling test() with u32 (implements UnsignedInteger): {:?}",
+		errors
+	);
 }
 
 // ── enum tests
@@ -4605,7 +4613,7 @@ fn test_generic_call_with_satisfying_type_is_ok() {
 
 #[test]
 fn test_enum_variants_are_populated() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         enum Color: i32 {
             Red = 1,
             Green,
@@ -4613,38 +4621,38 @@ fn test_enum_variants_are_populated() {
         }
         export {}
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors: {:?}", errors);
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(errors.is_empty(), "expected no errors: {:?}", errors);
 
-    let enum_ = case
-        .tir
-        .enums
-        .iter()
-        .find(|e| case.graph.interner.resolve(e.name.inner) == Some("Color"))
-        .expect("Color enum not found");
+	let enum_ = case
+		.tir
+		.enums
+		.iter()
+		.find(|e| case.graph.interner.resolve(e.name.inner) == Some("Color"))
+		.expect("Color enum not found");
 
-    assert_eq!(enum_.variants.len(), 3, "expected 3 variants");
-    assert!(enum_.lookup.len() == 3);
+	assert_eq!(enum_.variants.len(), 3, "expected 3 variants");
+	assert!(enum_.lookup.len() == 3);
 
-    let red_idx = *enum_.lookup.values().min().unwrap();
-    let red = &enum_.variants[red_idx as usize];
-    assert!(matches!(red.value.kind, ExprKind::Int { value: 1 }));
+	let red_idx = *enum_.lookup.values().min().unwrap();
+	let red = &enum_.variants[red_idx as usize];
+	assert!(matches!(red.value.kind, ExprKind::Int { value: 1 }));
 
-    let green = &enum_.variants[1];
-    assert!(matches!(green.value.kind, ExprKind::Int { value: 2 }));
+	let green = &enum_.variants[1];
+	assert!(matches!(green.value.kind, ExprKind::Int { value: 2 }));
 
-    let blue = &enum_.variants[2];
-    assert!(matches!(blue.value.kind, ExprKind::Int { value: 3 }));
+	let blue = &enum_.variants[2];
+	assert!(matches!(blue.value.kind, ExprKind::Int { value: 3 }));
 }
 
 #[test]
 fn test_enum_all_implicit_variants() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         enum Direction: u32 {
             North,
             East,
@@ -4653,36 +4661,38 @@ fn test_enum_all_implicit_variants() {
         }
         export {}
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "expected no errors: {:?}", errors);
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(errors.is_empty(), "expected no errors: {:?}", errors);
 
-    let enum_ = case
-        .tir
-        .enums
-        .iter()
-        .find(|e| case.graph.interner.resolve(e.name.inner) == Some("Direction"))
-        .expect("Direction enum not found");
+	let enum_ = case
+		.tir
+		.enums
+		.iter()
+		.find(|e| {
+			case.graph.interner.resolve(e.name.inner) == Some("Direction")
+		})
+		.expect("Direction enum not found");
 
-    assert_eq!(enum_.variants.len(), 4);
-    for (i, variant) in enum_.variants.iter().enumerate() {
-        assert!(
-            matches!(variant.value.kind, ExprKind::Int { value } if value == i as i64),
-            "variant {} should have value {}, got {:?}",
-            i,
-            i,
-            variant.value.kind
-        );
-    }
+	assert_eq!(enum_.variants.len(), 4);
+	for (i, variant) in enum_.variants.iter().enumerate() {
+		assert!(
+			matches!(variant.value.kind, ExprKind::Int { value } if value == i as i64),
+			"variant {} should have value {}, got {:?}",
+			i,
+			i,
+			variant.value.kind
+		);
+	}
 }
 
 #[test]
 fn test_enum_variant_access_resolves() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         enum Color: i32 {
             Red = 1,
             Green,
@@ -4693,22 +4703,22 @@ fn test_enum_variant_access_resolves() {
         }
         export { get_red }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no errors accessing Color::Red: {:?}",
-        errors
-    );
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(
+		errors.is_empty(),
+		"expected no errors accessing Color::Red: {:?}",
+		errors
+	);
 }
 
 #[test]
 fn test_enum_comparison() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         enum Color: i32 {
             Red = 1,
             Green,
@@ -4719,88 +4729,88 @@ fn test_enum_comparison() {
         }
         export { is_red }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    assert!(
-        errors.is_empty(),
-        "expected no errors comparing enum values: {:?}",
-        errors
-    );
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(
+		errors.is_empty(),
+		"expected no errors comparing enum values: {:?}",
+		errors
+	);
 }
 
 #[test]
 fn test_enum_missing_repr_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         enum Color {
             Red,
             Green,
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "expected an error for enum without repr type"
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"expected an error for enum without repr type"
+	);
 }
 
 #[test]
 fn test_enum_duplicate_variant_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         enum Color: i32 {
             Red,
             Red,
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "expected an error for duplicate variant name"
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"expected an error for duplicate variant name"
+	);
 }
 
 #[test]
 fn test_lang_items_registered() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         #[lang = \"my_trait\"]
         pub trait MyTrait {}
 
         #[lang = \"my_fn\"]
         pub fn my_function() {}
     "});
-    assert!(case.tir.diagnostics.is_empty());
-    let trait_key = case
-        .graph
-        .interner
-        .get("my_trait")
-        .expect("lang key not interned");
-    let fn_key = case
-        .graph
-        .interner
-        .get("my_fn")
-        .expect("lang key not interned");
-    let fn_def_id = *case
-        .tir
-        .lang_items
-        .get(&fn_key)
-        .expect("fn lang item not registered");
-    assert!(
-        case.tir.lang_items.contains_key(&trait_key),
-        "trait lang item not registered"
-    );
-    assert!(case.tir.function_index(fn_def_id).is_some());
+	assert!(case.tir.diagnostics.is_empty());
+	let trait_key = case
+		.graph
+		.interner
+		.get("my_trait")
+		.expect("lang key not interned");
+	let fn_key = case
+		.graph
+		.interner
+		.get("my_fn")
+		.expect("lang key not interned");
+	let fn_def_id = *case
+		.tir
+		.lang_items
+		.get(&fn_key)
+		.expect("fn lang item not registered");
+	assert!(
+		case.tir.lang_items.contains_key(&trait_key),
+		"trait lang item not registered"
+	);
+	assert!(case.tir.function_index(fn_def_id).is_some());
 }
 
 #[test]
 fn test_generic_impl_block_registers_and_dispatches() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         fn get_len(s: heap::[]u8) -> u32 {
@@ -4809,97 +4819,97 @@ fn test_generic_impl_block_registers_and_dispatches() {
 
         export { get_len }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_generic_impl_bare_type_param_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         impl<T> T {
             pub fn nope(self) {}
         }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
-        "expected E1001 (TypeMistmatch/no nominal type) for bare type param impl, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
+		"expected E1001 (TypeMistmatch/no nominal type) for bare type param impl, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_slice_range_full_is_ok() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn f(s: heap::[]u8) -> heap::[]u8 {
             s[..]
         }
         export { f }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_slice_range_with_bounds_is_ok() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn f(s: heap::[]u8, i: u32, n: u32) -> heap::[]u8 {
             s[i..n]
         }
         export { f }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_slice_range_on_array_is_ok() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn f(arr: heap::[4]u8) -> heap::[]u8 {
             arr[1..3]
         }
         export { f }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_slice_range_on_non_indexable_is_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn f(x: i32) -> heap::[]i32 {
             x[..]
         }
         export { f }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::IndexOnNonIndexable),
-        "expected E1042 (IndexOnNonIndexable) for range-index on i32, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::IndexOnNonIndexable),
+		"expected E1042 (IndexOnNonIndexable) for range-index on i32, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 // ── global initializers
@@ -4907,18 +4917,18 @@ fn test_slice_range_on_non_indexable_is_error() {
 
 #[test]
 fn test_global_init_function_call_resolves() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn compute() -> i32 { 42 as i32 }
         global mut result: i32 = compute()
         export { result }
     "});
-    no_errors(&case);
-    assert!(case.tir.globals[0].value.is_some());
+	no_errors(&case);
+	assert!(case.tir.globals[0].value.is_some());
 }
 
 #[test]
 fn test_global_init_block_with_locals_resolves() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         global mut x: i32 = {
             local a = 3 as i32;
             local b = 4 as i32;
@@ -4926,118 +4936,119 @@ fn test_global_init_block_with_locals_resolves() {
         }
         export { x }
     "});
-    no_errors(&case);
-    assert!(case.tir.globals[0].value.is_some());
+	no_errors(&case);
+	assert!(case.tir.globals[0].value.is_some());
 }
 
 #[test]
 fn test_global_init_arithmetic_resolves() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         global mut x: i32 = 2 + 3
         export { x }
     "});
-    no_errors(&case);
-    assert!(case.tir.globals[0].value.is_some());
+	no_errors(&case);
+	assert!(case.tir.globals[0].value.is_some());
 }
 
 #[test]
 fn test_global_init_type_mismatch_reports_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         global mut x: i32 = true
         export { x }
     "});
-    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+	assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
 }
 
 #[test]
 fn test_global_init_cross_global_reference_resolves() {
-    // g2's initializer reads g1 — g1 is in scope, so this type-checks cleanly.
-    // At runtime g1 is already set before g2 (declaration order), so g2 = 10 + 1.
-    let case = TestCase::new(indoc! {"
+	// g2's initializer reads g1 — g1 is in scope, so this type-checks cleanly.
+	// At runtime g1 is already set before g2 (declaration order), so g2 = 10 + 1.
+	let case = TestCase::new(indoc! {"
         global mut g1: i32 = 10
         global mut g2: i32 = g1 + 1
         export { g1, g2 }
     "});
-    no_errors(&case);
-    assert_eq!(case.tir.globals.len(), 2);
-    assert!(case.tir.globals.iter().all(|g| g.value.is_some()));
+	no_errors(&case);
+	assert_eq!(case.tir.globals.len(), 2);
+	assert!(case.tir.globals.iter().all(|g| g.value.is_some()));
 }
 
 #[test]
 fn test_global_init_reverse_cross_reference_resolves() {
-    // g2 is declared before g1, so when g2's initializer reads g1 the value
-    // will be the WASM zero-default (g1 hasn't been set yet).
-    // This is defined behaviour: type-checks clean, init order is declaration order.
-    let case = TestCase::new(indoc! {"
+	// g2 is declared before g1, so when g2's initializer reads g1 the value
+	// will be the WASM zero-default (g1 hasn't been set yet).
+	// This is defined behaviour: type-checks clean, init order is declaration order.
+	let case = TestCase::new(indoc! {"
         global mut g2: i32 = g1 + 1
         global mut g1: i32 = 10
         export { g1, g2 }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_global_init_if_expression_resolves() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn flag() -> bool { true }
         global mut x: i32 = if flag() { 1 as i32 } else { 2 as i32 }
         export { x }
     "});
-    no_errors(&case);
-    assert!(case.tir.globals[0].value.is_some());
+	no_errors(&case);
+	assert!(case.tir.globals[0].value.is_some());
 }
 
 #[test]
 fn test_global_initialized_to_data_end_tir() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 } {
             min_pages: 1,
         };
         global mut bump: heap::*u8 = heap::DATA_END;
         export { heap }
     "});
-    // Only warning expected: "never used" (no functions read bump in this test).
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .all(|d| d.severity != codespan_reporting::diagnostic::Severity::Error)
-    );
-    assert_eq!(case.tir.globals.len(), 1);
+	// Only warning expected: "never used" (no functions read bump in this test).
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.all(|d| d.severity
+				!= codespan_reporting::diagnostic::Severity::Error)
+	);
+	assert_eq!(case.tir.globals.len(), 1);
 }
 
 #[test]
 fn test_typeset_definition_registers_in_tir() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         typeset Numbers { u8, i8, u16, i16, u32, i32, u64, i64 }
         fn identity<N: Numbers>(x: N) -> N { x }
         fn use_it() -> i32 { identity(42 as i32) }
         export { use_it }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
-    // At least stdlib Integer + user Numbers typesets are registered
-    assert!(!case.tir.typesets.is_empty());
-    // The user-defined identity function has one type param with one typeset bound
-    let identity = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| {
-            case.graph.interner.resolve(f.name.inner) == Some("identity")
-                && f.type_params.iter().any(|tp| tp.bounds.typeset.is_some())
-        })
-        .expect("no identity function with typeset bounds found");
-    assert_eq!(identity.type_params.len(), 1);
-    assert!(identity.type_params[0].bounds.typeset.is_some());
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
+	// At least stdlib Integer + user Numbers typesets are registered
+	assert!(!case.tir.typesets.is_empty());
+	// The user-defined identity function has one type param with one typeset bound
+	let identity = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| {
+			case.graph.interner.resolve(f.name.inner) == Some("identity")
+				&& f.type_params.iter().any(|tp| tp.bounds.typeset.is_some())
+		})
+		.expect("no identity function with typeset bounds found");
+	assert_eq!(identity.type_params.len(), 1);
+	assert!(identity.type_params[0].bounds.typeset.is_some());
 }
 
 #[test]
 fn test_typeset_bound_violation_reports_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         typeset Numbers { u8, i8, u16, i16, u32, i32, u64, i64 }
         fn identity<N: Numbers>(x: N) -> N { x }
         fn main() -> f32 {
@@ -5045,63 +5056,55 @@ fn test_typeset_bound_violation_reports_error() {
         }
         export { main }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::TypesetBoundViolation.code()))
-    );
+	assert!(case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+		== Some(DiagnosticCode::TypesetBoundViolation.code())));
 }
 
 #[test]
 fn test_typeset_member_not_integer_reports_error() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         typeset BadSet { u32, f32 }
         export { }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::TypesetMemberNotInteger.code()))
-    );
+	assert!(case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+		== Some(DiagnosticCode::TypesetMemberNotInteger.code())));
 }
 
 #[test]
 fn test_stdlib_integer_typeset_exists() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn double<N: Integer>(x: N) -> N { x }
         fn use_it() -> i32 { double(21 as i32) }
         export { use_it }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_typeset_intersection_range_in_bounds() {
-    // Integer intersection is [0, 127]; literals within that range are accepted
-    let case = TestCase::new(indoc! {"
+	// Integer intersection is [0, 127]; literals within that range are accepted
+	let case = TestCase::new(indoc! {"
         fn make<N: Integer>(x: N) -> N { x }
         fn use_zero() -> i32 { make(0 as i32) }
         fn use_mid() -> u8 { make(100 as u8) }
         fn use_max() -> i8 { make(127 as i8) }
         export { use_zero, use_mid, use_max }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_typeset_intersection_range_literal_in_local() {
-    // 0 and 100 are within Integer intersection [0, 127]; locals typed as TypeParam should be fine
-    let case = TestCase::new(indoc! {"
+	// 0 and 100 are within Integer intersection [0, 127]; locals typed as TypeParam should be fine
+	let case = TestCase::new(indoc! {"
         fn with_bounds<N: Integer>(x: N) -> N {
             local _lo: N = 0;
             local _hi: N = 100;
@@ -5110,61 +5113,61 @@ fn test_typeset_intersection_range_literal_in_local() {
         fn use_it() -> i32 { with_bounds(50 as i32) }
         export { use_it }
     "});
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| {
+			d.severity == codespan_reporting::diagnostic::Severity::Error
+		})
+		.collect();
+	assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 }
 
 #[test]
 fn test_typeset_intersection_range_out_of_bounds_reports_error() {
-    // Integer intersection max is 127; 200 is outside the safe range
-    // This fires when assigning an untyped literal to a local of TypeParam type
-    let case = TestCase::new(indoc! {"
+	// Integer intersection max is 127; 200 is outside the safe range
+	// This fires when assigning an untyped literal to a local of TypeParam type
+	let case = TestCase::new(indoc! {"
         fn test<N: Integer>() {
             local x: N = 200;
         }
         fn use_it() { test() }
         export { use_it }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::TypesetBoundViolation.code())),
-        "expected E1047, got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::TypesetBoundViolation.code())),
+		"expected E1047, got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_generic_slice_first_with_pointer_size_index() {
-    // `self[0]` inside `impl<M: Memory, T> M::[]T` — the literal `0` must be
-    // coerced to `M::Size`, whose typeset bound is `PointerSize { u32, u64 }`.
-    // The intersection range for PointerSize is [0, u32::MAX], so `0` is valid.
-    let case = TestCase::new(indoc! {"
+	// `self[0]` inside `impl<M: Memory, T> M::[]T` — the literal `0` must be
+	// coerced to `M::Size`, whose typeset bound is `PointerSize { u32, u64 }`.
+	// The intersection range for PointerSize is [0, u32::MAX], so `0` is valid.
+	let case = TestCase::new(indoc! {"
         impl<M: Memory, T> M::[]T {
             pub fn first(self) -> T { self[0] }
         }
         export { }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
 }
 
 // ── type-position namespace resolution ─────────────────────────────────────
 
 #[test]
 fn test_type_position_inline_module_registers_module_access() {
-    // Accessing a type via an inline module path should register an LSP access
-    // on the module declaration.
-    let case = TestCase::new(indoc! {"
+	// Accessing a type via an inline module path should register an LSP access
+	// on the module declaration.
+	let case = TestCase::new(indoc! {"
         module math {
             pub struct Vec2 { pub x: i32, pub y: i32 }
         }
@@ -5173,23 +5176,23 @@ fn test_type_position_inline_module_registers_module_access() {
 
         export { f }
     "});
-    no_errors(&case);
-    assert!(
-        case.tir.namespaces.iter().any(|ns| !ns.accesses.is_empty()),
-        "expected at least one access registered on a namespace, got: {:?}",
-        case.tir
-            .namespaces
-            .iter()
-            .map(|ns| ns.accesses.len())
-            .collect::<Vec<_>>(),
-    );
+	no_errors(&case);
+	assert!(
+		case.tir.namespaces.iter().any(|ns| !ns.accesses.is_empty()),
+		"expected at least one access registered on a namespace, got: {:?}",
+		case.tir
+			.namespaces
+			.iter()
+			.map(|ns| ns.accesses.len())
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_type_position_three_segment_inline_module_path() {
-    // `outer::inner::Point` — three-segment type path through two nested inline
-    // modules. Exercises the intermediate loop in resolve_type.
-    let case = TestCase::new(indoc! {"
+	// `outer::inner::Point` — three-segment type path through two nested inline
+	// modules. Exercises the intermediate loop in resolve_type.
+	let case = TestCase::new(indoc! {"
         module outer {
             pub module inner {
                 pub struct Point { pub x: i32, pub y: i32 }
@@ -5200,61 +5203,61 @@ fn test_type_position_three_segment_inline_module_path() {
 
         export { f }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_type_position_undeclared_in_module_path_is_error() {
-    // `shapes::NonExistent` — the module exists but the type does not.
-    // Should produce exactly one error (not a cascade) and not panic.
-    let case = TestCase::new_multi_file(
-        "src/main.wx",
-        indoc! {"
+	// `shapes::NonExistent` — the module exists but the type does not.
+	// Should produce exactly one error (not a cascade) and not panic.
+	let case = TestCase::new_multi_file(
+		"src/main.wx",
+		indoc! {"
             module shapes;
 
             fn f(x: shapes::NonExistent) { }
 
             export { f }
         "},
-        &[("src/shapes.wx", "pub struct Point { pub x: i32 }")],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
-        "expected E1021 (UndeclaredType) for missing type in module path, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+		&[("src/shapes.wx", "pub struct Point { pub x: i32 }")],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
+		"expected E1021 (UndeclaredType) for missing type in module path, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_type_position_non_namespace_as_intermediate_is_error() {
-    // `i32::Foo` — `i32` is a primitive, not a module; looking up an associated
-    // type that doesn't exist should produce E1021 (UndeclaredType).
-    let case = TestCase::new(indoc! {"
+	// `i32::Foo` — `i32` is a primitive, not a module; looking up an associated
+	// type that doesn't exist should produce E1021 (UndeclaredType).
+	let case = TestCase::new(indoc! {"
         fn f(x: i32::Foo) { }
 
         export { f }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
-        "expected E1021 (UndeclaredType) when a primitive is used as a type namespace, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
+		"expected E1021 (UndeclaredType) when a primitive is used as a type namespace, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 #[test]
 fn test_struct_init_three_segment_inline_module_path() {
-    // `outer::inner::Point::{ x: 1, y: 2 }` — struct literal via a 3-segment
-    // inline module path. Exercises the namespace_span tracking loop added to
-    // build_struct_init_expression.
-    let case = TestCase::new(indoc! {"
+	// `outer::inner::Point::{ x: 1, y: 2 }` — struct literal via a 3-segment
+	// inline module path. Exercises the namespace_span tracking loop added to
+	// build_struct_init_expression.
+	let case = TestCase::new(indoc! {"
         module outer {
             pub module inner {
                 pub struct Point { pub x: i32, pub y: i32 }
@@ -5267,15 +5270,15 @@ fn test_struct_init_three_segment_inline_module_path() {
 
         export { make }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_struct_init_undeclared_type_in_module_path_is_error() {
-    // `shapes::Ghost::{ }` — the module exists but `Ghost` is not defined there.
-    let case = TestCase::new_multi_file(
-        "src/main.wx",
-        indoc! {"
+	// `shapes::Ghost::{ }` — the module exists but `Ghost` is not defined there.
+	let case = TestCase::new_multi_file(
+		"src/main.wx",
+		indoc! {"
             module shapes;
 
             fn f() -> shapes::Ghost {
@@ -5284,17 +5287,17 @@ fn test_struct_init_undeclared_type_in_module_path_is_error() {
 
             export { f }
         "},
-        &[("src/shapes.wx", "pub struct Point { pub x: i32 }")],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
-        "expected E1021 (UndeclaredType) for missing struct in module path, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>(),
-    );
+		&[("src/shapes.wx", "pub struct Point { pub x: i32 }")],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UndeclaredType),
+		"expected E1021 (UndeclaredType) for missing struct in module path, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
 }
 
 /// `@size_of::<T, M>` returns `M::Size` projected from @size_of's own param list
@@ -5303,7 +5306,7 @@ fn test_struct_init_undeclared_type_in_module_path_is_error() {
 /// normalise to the same TypeIndex so the struct init type-checks cleanly.
 #[test]
 fn test_assoc_type_projection_normalised_across_functions() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         struct Layout<M: Memory> {
@@ -5321,22 +5324,22 @@ fn test_assoc_type_projection_normalised_across_functions() {
             }
         }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_assoc_type_as_memory_tag_in_trait() {
-    // `Self::M` where M: Memory should be valid as a memory tag in pointer types
-    // inside a trait definition.
-    let case = TestCase::new(indoc! {"
+	// `Self::M` where M: Memory should be valid as a memory tag in pointer types
+	// inside a trait definition.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         struct Layout<M: Memory> {
@@ -5352,14 +5355,14 @@ fn test_assoc_type_as_memory_tag_in_trait() {
             fn dealloc(self: *Self, ptr: Self::M::*u8, layout: Layout<Self::M>);
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_assoc_type_memory_bound_satisfied_by_memory_decl() {
-    // `impl Allocator for BumpAllocator { type M = heap; }` — concrete memory
-    // satisfies the `M: Memory` bound on the associated type.
-    let case = TestCase::new(indoc! {"
+	// `impl Allocator for BumpAllocator { type M = heap; }` — concrete memory
+	// satisfies the `M: Memory` bound on the associated type.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         struct Layout<M: Memory> {
@@ -5383,66 +5386,66 @@ fn test_assoc_type_memory_bound_satisfied_by_memory_decl() {
             }
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 // ── loop type inference ───────────────────────────────────────────────────────
 
 #[test]
 fn test_infinite_loop_has_never_type() {
-    // `loop {}` with no break coerces to any return type — proves Never type.
-    let case = TestCase::new(indoc! {"
+	// `loop {}` with no break coerces to any return type — proves Never type.
+	let case = TestCase::new(indoc! {"
         pub fn f() -> i32 { loop {} }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_loop_with_break_has_unit_type() {
-    // bare `break` makes the loop yield Unit; returning it from a () fn is fine.
-    let case = TestCase::new(indoc! {"
+	// bare `break` makes the loop yield Unit; returning it from a () fn is fine.
+	let case = TestCase::new(indoc! {"
         pub fn f() { loop { break; } }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_loop_with_break_value_has_that_type() {
-    // `break 42` makes the loop yield i32.
-    let case = TestCase::new(indoc! {"
+	// `break 42` makes the loop yield i32.
+	let case = TestCase::new(indoc! {"
         pub fn f() -> i32 { loop { break 42; } }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_loop_with_continue_only_has_never_type() {
-    // `continue` does not count as a break — loop still has Never type.
-    let case = TestCase::new(indoc! {"
+	// `continue` does not count as a break — loop still has Never type.
+	let case = TestCase::new(indoc! {"
         pub fn f() -> i32 { loop { continue; } }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 // ── supertrait constraint tests ───────────────────────────────────────────────
 
 #[test]
 fn test_supertrait_single_level_satisfies_bound() {
-    // T: B where B: A — passing T to a fn requiring A should type-check.
-    let case = TestCase::new(indoc! {"
+	// T: B where B: A — passing T to a fn requiring A should type-check.
+	let case = TestCase::new(indoc! {"
         trait A {}
         trait B: A {}
         fn requires_a<T: A>(x: T) {}
         fn call_with_b<T: B>(x: T) { requires_a(x); }
         export {}
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_supertrait_two_levels_deep_satisfies_bound() {
-    // T: C where C: B and B: A — passing T to a fn requiring A should type-check.
-    let case = TestCase::new(indoc! {"
+	// T: C where C: B and B: A — passing T to a fn requiring A should type-check.
+	let case = TestCase::new(indoc! {"
         trait A {}
         trait B: A {}
         trait C: B {}
@@ -5450,14 +5453,14 @@ fn test_supertrait_two_levels_deep_satisfies_bound() {
         fn call_with_c<T: C>(x: T) { requires_a(x); }
         export {}
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_nested_assoc_type_projection_resolves() {
-    // `A::M::Size` — associated type of an associated type — must resolve
-    // without error when `type M: Memory` is declared in the Allocator trait.
-    let case = TestCase::new(indoc! {"
+	// `A::M::Size` — associated type of an associated type — must resolve
+	// without error when `type M: Memory` is declared in the Allocator trait.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         trait Allocator {
             type M: Memory;
@@ -5468,203 +5471,185 @@ fn test_nested_assoc_type_projection_resolves() {
         }
         export {}
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_phantom_type_param_as_infer_is_error() {
-    // T does not appear in the return type of `phantom`, so `_` for T
-    // cannot be verified by the result-type check — it should still error.
-    let case = TestCase::new(indoc! {"
+	// T does not appear in the return type of `phantom`, so `_` for T
+	// cannot be verified by the result-type check — it should still error.
+	let case = TestCase::new(indoc! {"
         fn phantom<T>() -> i32 { 0 }
         fn f() -> i32 { phantom::<_>() }
     "});
-    assert!(has_error_code(
-        &case.tir,
-        DiagnosticCode::TypeAnnotationRequired
-    ));
+	assert!(has_error_code(
+		&case.tir,
+		DiagnosticCode::TypeAnnotationRequired
+	));
 }
 
 #[test]
 fn test_phantom_type_param_suppressed_by_type_mismatch() {
-    // When the argument for a NON-phantom param causes TypeMistmatch, the
-    // phantom-param check is skipped to avoid double-reporting on the same
-    // call site.  Only TypeMistmatch should appear.
-    let case = TestCase::new(indoc! {"
+	// When the argument for a NON-phantom param causes TypeMistmatch, the
+	// phantom-param check is skipped to avoid double-reporting on the same
+	// call site.  Only TypeMistmatch should appear.
+	let case = TestCase::new(indoc! {"
         fn phantom<T>(x: i32) -> i32 { x }
         fn f() -> i32 { phantom::<_>(true) }
     "});
-    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
-    assert!(!has_error_code(
-        &case.tir,
-        DiagnosticCode::TypeAnnotationRequired
-    ));
+	assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+	assert!(!has_error_code(
+		&case.tir,
+		DiagnosticCode::TypeAnnotationRequired
+	));
 }
 
 #[test]
 fn test_phantom_type_param_suppressed_when_unrelated_arg_mismatches() {
-    // Phantom param U is unrelated to the TypeMistmatch on y — but the check
-    // is still suppressed.  Known limitation: fixing the TypeMistmatch will
-    // then reveal the phantom error on U in a second compilation.
-    //
-    // `true` is a concrete bool (not a comptime literal), so T is properly
-    // inferred as bool without triggering the comptime-literal annotation path.
-    let case = TestCase::new(indoc! {"
+	// Phantom param U is unrelated to the TypeMistmatch on y — but the check
+	// is still suppressed.  Known limitation: fixing the TypeMistmatch will
+	// then reveal the phantom error on U in a second compilation.
+	//
+	// `true` is a concrete bool (not a comptime literal), so T is properly
+	// inferred as bool without triggering the comptime-literal annotation path.
+	let case = TestCase::new(indoc! {"
         fn f<T, U>(x: T, y: i32) -> i32 { y }
         fn g() -> i32 { f(true, true) }
     "});
-    assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
-    assert!(!has_error_code(
-        &case.tir,
-        DiagnosticCode::TypeAnnotationRequired
-    ));
+	assert!(has_error_code(&case.tir, DiagnosticCode::TypeMistmatch));
+	assert!(!has_error_code(
+		&case.tir,
+		DiagnosticCode::TypeAnnotationRequired
+	));
 }
 
 // ── unused type parameter warnings ───────────────────────────────────────────
 
 #[test]
 fn test_unused_type_param_warns() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub fn phantom<T>() -> i32 { 0 }
     "});
-    assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref()
-            == Some(DiagnosticCode::UnusedTypeParam.code())
-            && d.message.contains('T')),
-        "expected W1006 for phantom T, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedTypeParam.code())
+			&& d.message.contains('T')),
+		"expected W1006 for phantom T, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_used_type_param_in_param_no_warn() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub fn identity<T>(x: T) -> T { x }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedTypeParam.code())),
-        "T used in param and result should not warn"
-    );
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedTypeParam.code())),
+		"T used in param and result should not warn"
+	);
 }
 
 #[test]
 fn test_implicit_self_type_param_in_trait_method_no_warn() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub trait PointerSize {
             fn size() -> u32;
         }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedTypeParam.code())),
-        "implicit Self type param should not warn"
-    );
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedTypeParam.code())),
+		"implicit Self type param should not warn"
+	);
 }
 
 #[test]
 fn test_used_type_param_in_return_only_no_warn() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub fn produce<T>() -> T { loop {} }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedTypeParam.code())),
-        "T used in return type should not warn"
-    );
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedTypeParam.code())),
+		"T used in return type should not warn"
+	);
 }
 
 // ── unused struct field warnings ──────────────────────────────────────────────
 
 #[test]
 fn test_unused_field_init_but_not_read_warns() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub struct Pair { pub x: i32, y: i32 }
         pub fn make(x: i32) -> Pair {
             Pair::{ x: x, y: 0 }
         }
     "});
-    assert!(
-        case.tir.diagnostics.iter().any(|d| d.code.as_deref()
-            == Some(DiagnosticCode::UnusedStructField.code())
-            && d.message.contains('y')),
-        "expected W1007 for private field `y` which is initialized but never read, got: {:?}",
-        case.tir
-            .diagnostics
-            .iter()
-            .map(|d| &d.message)
-            .collect::<Vec<_>>()
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedStructField.code())
+			&& d.message.contains('y')),
+		"expected W1007 for private field `y` which is initialized but never read, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
 }
 
 #[test]
 fn test_unused_field_read_suppresses_warn() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub struct Pair { x: i32, y: i32 }
         pub fn make(x: i32, y: i32) -> Pair { Pair::{ x: x, y: y } }
         pub fn get_x(p: Pair) -> i32 { p.x }
         pub fn get_y(p: Pair) -> i32 { p.y }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedStructField.code())),
-        "fields that are read should not warn"
-    );
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedStructField.code())),
+		"fields that are read should not warn"
+	);
 }
 
 #[test]
 fn test_pub_field_no_unused_warn() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub struct Pair { pub x: i32, pub y: i32 }
         pub fn make() -> Pair { Pair::{ x: 1, y: 2 } }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedStructField.code())),
-        "pub fields should not warn even if never read in this file"
-    );
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedStructField.code())),
+		"pub fields should not warn even if never read in this file"
+	);
 }
 
 #[test]
 fn test_never_initialized_field_no_warn() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         pub struct Node { value: i32, next: i32 }
         pub fn is_zero(n: Node) -> bool { false }
     "});
-    assert!(
-        !case
-            .tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::UnusedStructField.code())),
-        "fields that are never initialized should not warn (struct itself may be unused)"
-    );
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedStructField.code())),
+		"fields that are never initialized should not warn (struct itself may be unused)"
+	);
 }
 
 #[test]
 fn test_type_param_multiple_bounds_both_enforced() {
-    // `T: Scalable + Printable` — BoundList must be flattened so both bounds
-    // end up in TypeParamInfo.bounds (exercises resolve_type_param_bounds).
-    let case = TestCase::new(indoc! {"
+	// `T: Scalable + Printable` — BoundList must be flattened so both bounds
+	// end up in TypeParamInfo.bounds (exercises resolve_type_param_bounds).
+	let case = TestCase::new(indoc! {"
         trait Scalable { fn scale(self, n: i32) -> i32; }
         trait Printable { fn print(self); }
         fn do_both<T: Scalable + Printable>(t: T) -> i32 {
@@ -5672,29 +5657,29 @@ fn test_type_param_multiple_bounds_both_enforced() {
             t.scale(1)
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let func = case
-        .tir
-        .functions
-        .iter()
-        .find(|f| case.graph.interner.resolve(f.name.inner) == Some("do_both"))
-        .expect("function 'do_both' not found");
+	let func = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("do_both"))
+		.expect("function 'do_both' not found");
 
-    assert_eq!(func.type_params.len(), 1);
-    assert_eq!(
-        func.type_params[0].bounds.traits.len(),
-        2,
-        "T should have two bounds (Scalable and Printable)"
-    );
+	assert_eq!(func.type_params.len(), 1);
+	assert_eq!(
+		func.type_params[0].bounds.traits.len(),
+		2,
+		"T should have two bounds (Scalable and Printable)"
+	);
 }
 
 #[test]
 #[ignore = "TODO: TIR does not currently check trait bound satisfaction at generic call sites"]
 fn test_type_param_multiple_bounds_missing_impl_is_error() {
-    // Pass a type that only satisfies one of two bounds — should error once
-    // call-site trait bound checking is implemented.
-    let case = TestCase::new(indoc! {"
+	// Pass a type that only satisfies one of two bounds — should error once
+	// call-site trait bound checking is implemented.
+	let case = TestCase::new(indoc! {"
         trait Scalable { fn scale(self, n: i32) -> i32; }
         trait Printable { fn print(self); }
         fn do_both<T: Scalable + Printable>(t: T) {}
@@ -5702,62 +5687,68 @@ fn test_type_param_multiple_bounds_missing_impl_is_error() {
         impl Scalable for Num { fn scale(self, n: i32) -> i32 { n } }
         fn call() { do_both(Num::{}); }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "expected an error: Num does not implement Printable"
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"expected an error: Num does not implement Printable"
+	);
 }
 
 #[test]
 fn test_multiple_supertraits_both_resolved() {
-    // `trait Widget: Drawable + Sized` — both supertraits must appear in
-    // tir.traits[widget_idx].supertraits (exercises BoundList flattening in
-    // the supertrait resolution handler).
-    let case = TestCase::new(indoc! {"
+	// `trait Widget: Drawable + Sized` — both supertraits must appear in
+	// tir.traits[widget_idx].supertraits (exercises BoundList flattening in
+	// the supertrait resolution handler).
+	let case = TestCase::new(indoc! {"
         trait Drawable { fn draw(self); }
         trait Sized { const SIZE: u32; }
         trait Widget: Drawable + Sized {}
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let widget_idx = case
-        .tir
-        .traits
-        .iter()
-        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Widget"))
-        .expect("trait 'Widget' not found");
-    let drawable_idx = case
-        .tir
-        .traits
-        .iter()
-        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Drawable"))
-        .expect("trait 'Drawable' not found") as u32;
-    let sized_idx = case
-        .tir
-        .traits
-        .iter()
-        .position(|t| case.graph.interner.resolve(t.name.inner) == Some("Sized"))
-        .expect("trait 'Sized' not found") as u32;
+	let widget_idx = case
+		.tir
+		.traits
+		.iter()
+		.position(|t| {
+			case.graph.interner.resolve(t.name.inner) == Some("Widget")
+		})
+		.expect("trait 'Widget' not found");
+	let drawable_idx = case
+		.tir
+		.traits
+		.iter()
+		.position(|t| {
+			case.graph.interner.resolve(t.name.inner) == Some("Drawable")
+		})
+		.expect("trait 'Drawable' not found") as u32;
+	let sized_idx = case
+		.tir
+		.traits
+		.iter()
+		.position(|t| {
+			case.graph.interner.resolve(t.name.inner) == Some("Sized")
+		})
+		.expect("trait 'Sized' not found") as u32;
 
-    let supertraits = &case.tir.traits[widget_idx].supertraits;
-    assert_eq!(supertraits.len(), 2, "Widget should have two supertraits");
-    assert!(
-        supertraits.contains(&drawable_idx),
-        "Drawable missing from supertraits"
-    );
-    assert!(
-        supertraits.contains(&sized_idx),
-        "Sized missing from supertraits"
-    );
+	let supertraits = &case.tir.traits[widget_idx].supertraits;
+	assert_eq!(supertraits.len(), 2, "Widget should have two supertraits");
+	assert!(
+		supertraits.contains(&drawable_idx),
+		"Drawable missing from supertraits"
+	);
+	assert!(
+		supertraits.contains(&sized_idx),
+		"Sized missing from supertraits"
+	);
 }
 
 #[test]
 fn test_multiple_supertraits_missing_one_impl_is_error() {
-    // impl Widget for Point without impl Sized for Point — must error.
-    let case = TestCase::new(indoc! {"
+	// impl Widget for Point without impl Sized for Point — must error.
+	let case = TestCase::new(indoc! {"
         trait Drawable { fn draw(self); }
         trait Sized { const SIZE: u32; }
         trait Widget: Drawable + Sized {}
@@ -5765,55 +5756,55 @@ fn test_multiple_supertraits_missing_one_impl_is_error() {
         impl Drawable for Point { fn draw(self) {} }
         impl Widget for Point {}
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some(DiagnosticCode::MissingSupertraitImpl.code())),
-        "expected E1034 for missing Sized impl"
-    );
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::MissingSupertraitImpl.code())),
+		"expected E1034 for missing Sized impl"
+	);
 }
 
 #[test]
 fn test_assoc_type_multiple_bounds_both_stored() {
-    // `type Elem: A + B` — both bounds must be stored in the associated-type
-    // entry (exercises BoundList flattening in TraitAssociatedType handler).
-    let case = TestCase::new(indoc! {"
+	// `type Elem: A + B` — both bounds must be stored in the associated-type
+	// entry (exercises BoundList flattening in TraitAssociatedType handler).
+	let case = TestCase::new(indoc! {"
         trait A {}
         trait B {}
         trait Container {
             type Elem: A + B;
         }
     "});
-    no_errors(&case);
+	no_errors(&case);
 
-    let container = case
-        .tir
-        .traits
-        .iter()
-        .find(|t| case.graph.interner.resolve(t.name.inner) == Some("Container"))
-        .expect("trait 'Container' not found");
+	let container = case
+		.tir
+		.traits
+		.iter()
+		.find(|t| {
+			case.graph.interner.resolve(t.name.inner) == Some("Container")
+		})
+		.expect("trait 'Container' not found");
 
-    let elem_sym = case
-        .graph
-        .interner
-        .get("Elem")
-        .expect("symbol 'Elem' not interned");
-    let assoc = container
-        .assoc_types
-        .get(&elem_sym)
-        .expect("assoc type 'Elem' not found");
-    assert_eq!(
-        assoc.bounds.traits.len(),
-        2,
-        "Elem should have two trait bounds (A and B)"
-    );
+	let elem_sym = case
+		.graph
+		.interner
+		.get("Elem")
+		.expect("symbol 'Elem' not interned");
+	let assoc = container
+		.assoc_types
+		.get(&elem_sym)
+		.expect("assoc type 'Elem' not found");
+	assert_eq!(
+		assoc.bounds.traits.len(),
+		2,
+		"Elem should have two trait bounds (A and B)"
+	);
 }
 
 #[test]
 fn test_assoc_type_multiple_bounds_violation_is_error() {
-    // Provide a concrete type that satisfies A but not B — must error.
-    let case = TestCase::new(indoc! {"
+	// Provide a concrete type that satisfies A but not B — must error.
+	let case = TestCase::new(indoc! {"
         trait A {}
         trait B {}
         impl A for i32 {}
@@ -5825,22 +5816,22 @@ fn test_assoc_type_multiple_bounds_violation_is_error() {
             type Elem = i32;
         }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.severity == Severity::Error),
-        "expected an error: i32 does not implement B"
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"expected an error: i32 does not implement B"
+	);
 }
 
 #[test]
 fn test_impl_module_trait_for_type_resolves() {
-    // `impl module::Drawable for Point` — multi-segment trait_name must be
-    // resolved via resolve_path_segments_as_type (not resolve_type).
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `impl module::Drawable for Point` — multi-segment trait_name must be
+	// resolved via resolve_path_segments_as_type (not resolve_type).
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
             module shapes;
             use shapes::*;
             struct Point { x: i32 }
@@ -5848,59 +5839,59 @@ fn test_impl_module_trait_for_type_resolves() {
                 fn draw(self) {}
             }
         "},
-        &[(
-            "shapes.wx",
-            indoc! {"
+		&[(
+			"shapes.wx",
+			indoc! {"
                 pub trait Drawable {
                     pub fn draw(self);
                 }
             "},
-        )],
-    );
-    no_errors(&case);
+		)],
+	);
+	no_errors(&case);
 
-    let draw_sym = case
-        .graph
-        .interner
-        .get("draw")
-        .expect("symbol 'draw' not interned");
-    let ti = case
-        .tir
-        .trait_impls
-        .iter()
-        .find(|ti| ti.members.contains_key(&draw_sym))
-        .expect("no TraitImpl has 'draw' method");
-    assert!(
-        matches!(
-            case.tir.type_pool[ti.target.as_usize()],
-            Type::Struct { .. }
-        ),
-        "target should be Point (a struct)"
-    );
+	let draw_sym = case
+		.graph
+		.interner
+		.get("draw")
+		.expect("symbol 'draw' not interned");
+	let ti = case
+		.tir
+		.trait_impls
+		.iter()
+		.find(|ti| ti.members.contains_key(&draw_sym))
+		.expect("no TraitImpl has 'draw' method");
+	assert!(
+		matches!(
+			case.tir.type_pool[ti.target.as_usize()],
+			Type::Struct { .. }
+		),
+		"target should be Point (a struct)"
+	);
 }
 
 #[test]
 fn test_invalid_self_type_rejected() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Foo { x: i32 }
         impl Foo {
             pub fn bad(self: u32) -> i32 { 0 }
         }
         export { }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E1053")),
-        "expected InvalidSelfType diagnostic, got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.code.as_deref() == Some("E1053")),
+		"expected InvalidSelfType diagnostic, got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_valid_self_types_accepted() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Foo { x: i32 }
         impl Foo {
@@ -5910,12 +5901,12 @@ fn test_valid_self_types_accepted() {
         }
         export { }
     "});
-    no_errors(&case);
+	no_errors(&case);
 }
 
 #[test]
 fn test_duplicate_method_name_in_impl_rejected() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Foo { x: i32 }
         impl Foo {
             pub fn bar(self) -> i32 { 0 }
@@ -5923,19 +5914,19 @@ fn test_duplicate_method_name_in_impl_rejected() {
         }
         export { }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E1000")),
-        "expected DuplicateDefinition diagnostic, got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.code.as_deref() == Some("E1000")),
+		"expected DuplicateDefinition diagnostic, got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_duplicate_method_name_in_generic_impl_rejected() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Vec<T> { len: u32 }
         impl<T> Vec<T> {
@@ -5944,155 +5935,155 @@ fn test_duplicate_method_name_in_generic_impl_rejected() {
         }
         export { }
     "});
-    assert!(
-        case.tir
-            .diagnostics
-            .iter()
-            .any(|d| d.code.as_deref() == Some("E1000")),
-        "expected DuplicateDefinition diagnostic, got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.code.as_deref() == Some("E1000")),
+		"expected DuplicateDefinition diagnostic, got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 // ── Tree mutability verification ──────────────────────────────────────────────
 
 #[test]
 fn test_tree_mut_binding_mut_does_not_grant_write_through() {
-    // `mut` on binding does NOT grant write-through — pointer type must be `*mut T`.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `mut` on binding does NOT grant write-through — pointer type must be `*mut T`.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn bad(mut ptr: heap::*i32) { ptr.* = 42 }
     "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "mut binding + *i32 should NOT allow write-through; got: {:?}",
-        case.tir.diagnostics
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"mut binding + *i32 should NOT allow write-through; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_tree_mut_immutable_binding_mutable_pointer_write_ok() {
-    // Immutable binding + `*mut T` IS sufficient for write-through.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Immutable binding + `*mut T` IS sufficient for write-through.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn ok(ptr: heap::*mut i32) { ptr.* = 42 }
     "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_tree_mut_nested_inner_immutable_blocks_deep_write() {
-    // `p: *mut *i32` — outer `*mut` allows storing a pointer, but inner `*i32` blocks write-through.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `p: *mut *i32` — outer `*mut` allows storing a pointer, but inner `*i32` blocks write-through.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn bad(p: heap::*mut heap::*i32) { p.*.* = 99 }
     "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "p.*.* write should error: inner *i32 is immutable; got: {:?}",
-        case.tir.diagnostics
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"p.*.* write should error: inner *i32 is immutable; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_tree_mut_nested_both_mutable_write_ok() {
-    // `p: *mut *mut i32` — both levels mutable, p.*.* = val should work.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `p: *mut *mut i32` — both levels mutable, p.*.* = val should work.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn ok(p: heap::*mut heap::*mut i32) { p.*.* = 99 }
     "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_tree_mut_struct_field_through_immutable_ptr_is_error() {
-    // `ptr: *Node` — cannot write any field through it.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `ptr: *Node` — cannot write any field through it.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { x: i32 }
         fn bad(ptr: heap::*Node) { ptr.*.x = 1 }
     "},
-        &[],
-    );
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "field write through *Node should error; got: {:?}",
-        case.tir.diagnostics
-    );
+		&[],
+	);
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"field write through *Node should error; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_tree_mut_struct_field_through_mutable_ptr_ok() {
-    // `ptr: *mut Node` — can write fields.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `ptr: *mut Node` — can write fields.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { x: i32 }
         fn ok(ptr: heap::*mut Node) { ptr.*.x = 1 }
     "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_tree_mut_mutable_ptr_coerces_to_immutable_param() {
-    // Passing `*mut T` where `*T` is expected is allowed (safe downgrade).
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Passing `*mut T` where `*T` is expected is allowed (safe downgrade).
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn read(ptr: heap::*i32) -> i32 { ptr.* }
         fn call(p: heap::*mut i32) -> i32 { read(p) }
     "},
-        &[],
-    );
-    no_errors(&case);
+		&[],
+	);
+	no_errors(&case);
 }
 
 #[test]
 fn test_tree_mut_immutable_ptr_cannot_satisfy_mutable_param() {
-    // Passing `*T` where `*mut T` is expected is NOT allowed.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// Passing `*T` where `*mut T` is expected is NOT allowed.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn write(ptr: heap::*mut i32) { ptr.* = 1 }
         fn call(p: heap::*i32) { write(p) }
     "},
-        &[],
-    );
-    assert!(
-        !case.tir.diagnostics.is_empty(),
-        "passing *i32 to *mut i32 param must error; got no diagnostics"
-    );
+		&[],
+	);
+	assert!(
+		!case.tir.diagnostics.is_empty(),
+		"passing *i32 to *mut i32 param must error; got no diagnostics"
+	);
 }
 
 #[test]
 fn test_tree_mut_binding_mut_allows_reassign_but_not_write_through() {
-    // `local mut p: *i32` — can reassign p, but cannot write through p.*.
-    let case = TestCase::new_multi_file(
-        "main.wx",
-        indoc! {"
+	// `local mut p: *i32` — can reassign p, but cannot write through p.*.
+	let case = TestCase::new_multi_file(
+		"main.wx",
+		indoc! {"
         memory heap: Memory where { Size = u32 };
         fn bad(a: heap::*i32, b: heap::*i32) {
             local mut p: heap::*i32 = a;
@@ -6100,32 +6091,34 @@ fn test_tree_mut_binding_mut_allows_reassign_but_not_write_through() {
             p.* = 99
         }
     "},
-        &[],
-    );
-    // Reassign `p = b` is ok (mut binding). Write `p.* = 99` must error (pointer type immutable).
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "write through *i32 must error even with mut binding; got: {:?}",
-        case.tir.diagnostics
-    );
-    let errors: Vec<_> = case
-        .tir
-        .diagnostics
-        .iter()
-        .filter(|d| d.severity == codespan_reporting::diagnostic::Severity::Error)
-        .collect();
-    assert_eq!(
-        errors.len(),
-        1,
-        "expected exactly 1 error (write-through only, not the reassign); got: {:?}",
-        errors
-    );
+		&[],
+	);
+	// Reassign `p = b` is ok (mut binding). Write `p.* = 99` must error (pointer type immutable).
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"write through *i32 must error even with mut binding; got: {:?}",
+		case.tir.diagnostics
+	);
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| {
+			d.severity == codespan_reporting::diagnostic::Severity::Error
+		})
+		.collect();
+	assert_eq!(
+		errors.len(),
+		1,
+		"expected exactly 1 error (write-through only, not the reassign); got: {:?}",
+		errors
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_calls_method_on_inner_type() {
-    // `ptr.value()` on a concrete struct should resolve via auto-deref.
-    let case = TestCase::new(indoc! {"
+	// `ptr.value()` on a concrete struct should resolve via auto-deref.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { value: i32 }
         impl Node {
@@ -6134,17 +6127,17 @@ fn test_ptr_autoderef_calls_method_on_inner_type() {
         fn get(n: heap::*Node) -> i32 { n.value() }
         export { get }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "auto-deref method call should succeed; got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"auto-deref method call should succeed; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_mutable_ptr_calls_mut_self_method() {
-    // `ptr.set()` on `*mut Node` should resolve to a method taking `self: heap::*mut Self`.
-    let case = TestCase::new(indoc! {"
+	// `ptr.set()` on `*mut Node` should resolve to a method taking `self: heap::*mut Self`.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { value: i32 }
         impl Node {
@@ -6153,17 +6146,17 @@ fn test_ptr_autoderef_mutable_ptr_calls_mut_self_method() {
         fn update(n: heap::*mut Node) { n.set(42) }
         export { update }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "auto-deref mut method call should succeed; got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"auto-deref mut method call should succeed; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_mutable_ptr_coerces_to_immutable_self() {
-    // `*mut T` calling a method with `self: *T` should succeed via `*mut T → *T` coercion.
-    let case = TestCase::new(indoc! {"
+	// `*mut T` calling a method with `self: *T` should succeed via `*mut T → *T` coercion.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { val: i32 }
         impl Node {
@@ -6172,17 +6165,17 @@ fn test_ptr_autoderef_mutable_ptr_coerces_to_immutable_self() {
         fn get(n: heap::*mut Node) -> i32 { n.read() }
         export { get }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "mutable pointer calling immutable-self method must succeed; got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"mutable pointer calling immutable-self method must succeed; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_immutable_ptr_rejects_mut_self_method() {
-    // `ptr.set()` on `*Node` (immutable) with `self: *mut Node` should be a type mismatch.
-    let case = TestCase::new(indoc! {"
+	// `ptr.set()` on `*Node` (immutable) with `self: *mut Node` should be a type mismatch.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { value: i32 }
         impl Node {
@@ -6191,17 +6184,17 @@ fn test_ptr_autoderef_immutable_ptr_rejects_mut_self_method() {
         fn bad(n: heap::*Node) { n.set(42) }
         export { bad }
     "});
-    assert!(
-        !case.tir.diagnostics.is_empty(),
-        "immutable pointer calling mut-self method must error"
-    );
+	assert!(
+		!case.tir.diagnostics.is_empty(),
+		"immutable pointer calling mut-self method must error"
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_owned_self_reports_mismatch() {
-    // Calling a method with `self: Node` (owned) via a pointer should report a type mismatch,
-    // not "method not found". The user is expected to write `ptr.*.method()` to deref first.
-    let case = TestCase::new(indoc! {"
+	// Calling a method with `self: Node` (owned) via a pointer should report a type mismatch,
+	// not "method not found". The user is expected to write `ptr.*.method()` to deref first.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { value: i32 }
         impl Node {
@@ -6210,16 +6203,16 @@ fn test_ptr_autoderef_owned_self_reports_mismatch() {
         fn bad(n: heap::*Node) -> i32 { n.owned() }
         export { bad }
     "});
-    assert!(
-        !case.tir.diagnostics.is_empty(),
-        "calling owned-self method via pointer must error"
-    );
+	assert!(
+		!case.tir.diagnostics.is_empty(),
+		"calling owned-self method via pointer must error"
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_generic_impl_method() {
-    // Auto-deref through a pointer to a generic struct should find the generic impl method.
-    let case = TestCase::new(indoc! {"
+	// Auto-deref through a pointer to a generic struct should find the generic impl method.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Wrapper<T> { inner: T }
         impl <T> Wrapper<T> {
@@ -6228,18 +6221,18 @@ fn test_ptr_autoderef_generic_impl_method() {
         fn unwrap(w: heap::*Wrapper<i32>) -> i32 { w.get() }
         export { unwrap }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "auto-deref on generic impl method should succeed; got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"auto-deref on generic impl method should succeed; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_memory_qualifier_mismatch_errors() {
-    // `other::*Node` calling a method with `self: heap::*Node` — the inner type `Node`
-    // is found, but the self-param check fails because the memory qualifiers differ.
-    let case = TestCase::new(indoc! {"
+	// `other::*Node` calling a method with `self: heap::*Node` — the inner type `Node`
+	// is found, but the self-param check fails because the memory qualifiers differ.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         memory other: Memory where { Size = u32 };
         struct Node { val: i32 }
@@ -6249,17 +6242,17 @@ fn test_ptr_autoderef_memory_qualifier_mismatch_errors() {
         fn bad(n: other::*Node) -> i32 { n.read() }
         export { bad }
     "});
-    assert!(
-        !case.tir.diagnostics.is_empty(),
-        "calling heap method via other-memory pointer must error"
-    );
+	assert!(
+		!case.tir.diagnostics.is_empty(),
+		"calling heap method via other-memory pointer must error"
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_double_pointer_not_found() {
-    // `**Node` — auto-deref is one level only. The inner type is `*Node`, which has no
-    // impl block, so the method is not found.
-    let case = TestCase::new(indoc! {"
+	// `**Node` — auto-deref is one level only. The inner type is `*Node`, which has no
+	// impl block, so the method is not found.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { val: i32 }
         impl Node {
@@ -6268,33 +6261,33 @@ fn test_ptr_autoderef_double_pointer_not_found() {
         fn bad(n: heap::*heap::*Node) -> i32 { n.read() }
         export { bad }
     "});
-    assert!(
-        !case.tir.diagnostics.is_empty(),
-        "double-pointer auto-deref must error — only one level deep"
-    );
+	assert!(
+		!case.tir.diagnostics.is_empty(),
+		"double-pointer auto-deref must error — only one level deep"
+	);
 }
 
 #[test]
 fn test_ptr_field_access_does_not_auto_deref() {
-    // `ptr.field` (no `.*`) — field access does NOT auto-deref pointers.
-    // The user must write `ptr.*.field`.
-    let case = TestCase::new(indoc! {"
+	// `ptr.field` (no `.*`) — field access does NOT auto-deref pointers.
+	// The user must write `ptr.*.field`.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { val: i32 }
         fn bad(n: heap::*Node) -> i32 { n.val }
         export { bad }
     "});
-    assert!(
-        !case.tir.diagnostics.is_empty(),
-        "field access through pointer without deref must error"
-    );
+	assert!(
+		!case.tir.diagnostics.is_empty(),
+		"field access through pointer without deref must error"
+	);
 }
 
 #[test]
 fn test_ptr_autoderef_chained_calls() {
-    // `ptr.next().get_val()` — `next()` returns `*Node`, then `get_val()` auto-derefs
-    // the returned pointer. Each call goes through resolve_method_call independently.
-    let case = TestCase::new(indoc! {"
+	// `ptr.next().get_val()` — `next()` returns `*Node`, then `get_val()` auto-derefs
+	// the returned pointer. Each call goes through resolve_method_call independently.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Node { val: i32 }
         impl Node {
@@ -6304,58 +6297,58 @@ fn test_ptr_autoderef_chained_calls() {
         fn chain(n: heap::*Node) -> i32 { n.next().get_val() }
         export { chain }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "chained auto-deref method calls should succeed; got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"chained auto-deref method calls should succeed; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 // ── AddressOf (.& / .&mut) ─────────────────────────────────────────────────
 
 #[test]
 fn test_address_of_non_place_rejected() {
-    // `.&` on a stack value (not a memory place) must emit a diagnostic.
-    let case = TestCase::new(indoc! {"
+	// `.&` on a stack value (not a memory place) must emit a diagnostic.
+	let case = TestCase::new(indoc! {"
         fn bad() -> i32 { (5 as i32).& }
         export { bad }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::InvalidAssignmentTarget),
-        "expected InvalidAssignmentTarget for .& on a temporary; got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::InvalidAssignmentTarget),
+		"expected InvalidAssignmentTarget for .& on a temporary; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_address_of_mut_through_immutable_pointer_rejected() {
-    // `.&mut` through an immutable pointer must emit a diagnostic.
-    let case = TestCase::new(indoc! {"
+	// `.&mut` through an immutable pointer must emit a diagnostic.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn bad(ptr: heap::*i32) -> heap::*mut i32 { ptr.*.&mut }
         export { bad }
     "});
-    assert!(
-        has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
-        "expected CannotMutateImmutable for .&mut through *i32; got: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotMutateImmutable),
+		"expected CannotMutateImmutable for .&mut through *i32; got: {:?}",
+		case.tir.diagnostics
+	);
 }
 
 #[test]
 fn test_address_of_place_has_correct_pointer_type() {
-    // `arr[i].&` on a heap array must resolve to a `heap::*i32` pointer type,
-    // and `ptr.*.field.&` on a struct field must resolve to the field's pointer type.
-    let case = TestCase::new(indoc! {"
+	// `arr[i].&` on a heap array must resolve to a `heap::*i32` pointer type,
+	// and `ptr.*.field.&` on a struct field must resolve to the field's pointer type.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         struct Point { x: i32, y: i32 }
         fn arr_elem_ptr(arr: heap::[4]i32, i: u32) -> heap::*i32 { arr[i].& }
         fn field_ptr(ptr: heap::*Point) -> heap::*i32 { ptr.*.x.& }
         export { arr_elem_ptr, field_ptr }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected diagnostics: {:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected diagnostics: {:?}",
+		case.tir.diagnostics
+	);
 }

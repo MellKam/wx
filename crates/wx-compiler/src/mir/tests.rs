@@ -7,30 +7,30 @@ use crate::{tir, vfs};
 
 #[allow(unused)]
 struct TestCase {
-    graph: vfs::CompilationGraph,
-    tir: tir::TIR,
-    mir: MIR,
+	graph: vfs::CompilationGraph,
+	tir: tir::TIR,
+	mir: MIR,
 }
 
 impl TestCase {
-    fn new(source: &str) -> Self {
-        let mut builder = vfs::CompilationGraphBuilder::new();
-        let stdlib_id = builder.load_stdlib().unwrap();
-        let prefixed = format!("use std::*;\n{source}");
-        let root_id = builder
-            .load_binary(
-                "main.wx".to_string(),
-                &vfs::VirtualFileSource::new(HashMap::from([(
-                    "main.wx".to_string(),
-                    prefixed,
-                )])),
-            )
-            .unwrap();
-        let mut graph = builder.build(root_id, stdlib_id);
-        let tir = tir::TIR::build(&mut graph);
-        let mir = MIR::build(&tir, &graph.interner, graph.id_generator);
-        TestCase { graph, tir, mir }
-    }
+	fn new(source: &str) -> Self {
+		let mut builder = vfs::CompilationGraphBuilder::new();
+		let stdlib_id = builder.load_stdlib().unwrap();
+		let prefixed = format!("use std::*;\n{source}");
+		let root_id = builder
+			.load_binary(
+				"main.wx".to_string(),
+				&vfs::VirtualFileSource::new(HashMap::from([(
+					"main.wx".to_string(),
+					prefixed,
+				)])),
+			)
+			.unwrap();
+		let mut graph = builder.build(root_id, stdlib_id);
+		let tir = tir::TIR::build(&mut graph);
+		let mir = MIR::build(&tir, &graph.interner, graph.id_generator);
+		TestCase { graph, tir, mir }
+	}
 }
 
 // Minimal inline definitions shared across tests that need them.
@@ -62,15 +62,15 @@ const CHAR_ASCII_METHODS: &str = indoc! {"
 
 #[test]
 fn test_char_lowered_to_u32() {
-    // char is a primitive; MIR should represent it as U32.
-    let case = TestCase::new(indoc! {"
+	// char is a primitive; MIR should represent it as U32.
+	let case = TestCase::new(indoc! {"
         fn identity(c: char) -> char {
             c
         }
 
         export { identity }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 // ── structs
@@ -78,8 +78,8 @@ fn test_char_lowered_to_u32() {
 
 #[test]
 fn test_struct_field_access_lowered_to_local_tuple_get() {
-    // ObjectAccess on a struct local → LocalTupleGet in MIR.
-    let case = TestCase::new(indoc! {"
+	// ObjectAccess on a struct local → LocalTupleGet in MIR.
+	let case = TestCase::new(indoc! {"
         struct Point {
             x: u32,
             y: u32,
@@ -91,13 +91,13 @@ fn test_struct_field_access_lowered_to_local_tuple_get() {
 
         export { get_x }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_struct_init_lowered_to_struct_create() {
-    // StructInit → StructCreate in MIR.
-    let case = TestCase::new(indoc! {"
+	// StructInit → StructCreate in MIR.
+	let case = TestCase::new(indoc! {"
         struct Point {
             x: u32,
             y: u32,
@@ -109,13 +109,13 @@ fn test_struct_init_lowered_to_struct_create() {
 
         export { make_point }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_global_struct_type() {
-    // A function returning a struct type should produce Tuple-typed MIR.
-    let case = TestCase::new(indoc! {"
+	// A function returning a struct type should produce Tuple-typed MIR.
+	let case = TestCase::new(indoc! {"
         struct Vec2 {
             x: u32,
             y: u32,
@@ -127,7 +127,7 @@ fn test_global_struct_type() {
 
         export { get_origin }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 // ── associated consts
@@ -141,36 +141,36 @@ fn test_global_struct_type() {
 
 #[test]
 fn test_struct_method_call() {
-    // Both #[inline] methods get substituted into `to_upper`; the snapshot
-    // shows only the arithmetic body with no Call nodes remaining.
-    let case = TestCase::new(&format!(
-        "{CHAR_ASCII_METHODS}\n{}",
-        indoc! {"
+	// Both #[inline] methods get substituted into `to_upper`; the snapshot
+	// shows only the arithmetic body with no Call nodes remaining.
+	let case = TestCase::new(&format!(
+		"{CHAR_ASCII_METHODS}\n{}",
+		indoc! {"
         fn to_upper(c: char) -> char {
             c.to_ascii_uppercase()
         }
 
         export { to_upper }
     "}
-    ));
-    insta::assert_yaml_snapshot!(case.mir);
+	));
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_inline_method_is_substituted() {
-    // A call to an #[inline] method must be replaced by its body in MIR —
-    // the snapshot shows the inlined if/xor logic with no Call node.
-    let case = TestCase::new(&format!(
-        "{CHAR_ASCII_METHODS}\n{}",
-        indoc! {"
+	// A call to an #[inline] method must be replaced by its body in MIR —
+	// the snapshot shows the inlined if/xor logic with no Call node.
+	let case = TestCase::new(&format!(
+		"{CHAR_ASCII_METHODS}\n{}",
+		indoc! {"
         fn to_upper(c: char) -> char {
             c.to_ascii_uppercase()
         }
 
         export { to_upper }
     "}
-    ));
-    insta::assert_yaml_snapshot!(case.mir);
+	));
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 // ── memory instructions
@@ -178,8 +178,8 @@ fn test_inline_method_is_substituted() {
 
 #[test]
 fn test_memory_grow_lowers_to_memory_grow() {
-    // heap.grow(delta) → MemoryGrow { memory_index: 0, delta }
-    let case = TestCase::new(indoc! {"
+	// heap.grow(delta) → MemoryGrow { memory_index: 0, delta }
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         pub fn f(delta: u32) -> u32 {
@@ -188,13 +188,13 @@ fn test_memory_grow_lowers_to_memory_grow() {
 
         export { f }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_memory_size_lowers_to_memory_size() {
-    // heap.size() → MemorySize { memory_index: 0 }
-    let case = TestCase::new(indoc! {"
+	// heap.size() → MemorySize { memory_index: 0 }
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         pub fn f() -> u32 {
@@ -203,13 +203,13 @@ fn test_memory_size_lowers_to_memory_size() {
 
         export { f }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_memory_data_end_lowers_to_memory_offset() {
-    // heap::DATA_END → MemoryOffset { memory_index: 0 }
-    let case = TestCase::new(indoc! {"
+	// heap::DATA_END → MemoryOffset { memory_index: 0 }
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         pub fn f() -> heap::*u8 {
@@ -218,13 +218,13 @@ fn test_memory_data_end_lowers_to_memory_offset() {
 
         export { f }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_memory_index_lowers_to_int() {
-    // heap::MEMORY_INDEX → Int { value: 0 } (the wasm linear memory index)
-    let case = TestCase::new(indoc! {"
+	// heap::MEMORY_INDEX → Int { value: 0 } (the wasm linear memory index)
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         pub fn f() -> u32 {
@@ -233,14 +233,14 @@ fn test_memory_index_lowers_to_int() {
 
         export { f }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 // ── slice_len intrinsic ───────────────────────────────────────────────────────
 
 #[test]
 fn test_slice_len_lowers_to_aggregate_get() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         pub fn f(s: heap::[]u8) -> u32 {
@@ -249,15 +249,15 @@ fn test_slice_len_lowers_to_aggregate_get() {
 
         export { f }
     "});
-    assert!(case.tir.diagnostics.is_empty());
-    insta::assert_yaml_snapshot!(case.mir);
+	assert!(case.tir.diagnostics.is_empty());
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 // ── slice_from_parts intrinsic ────────────────────────────────────────────────
 
 #[test]
 fn test_slice_from_parts_lowers_to_aggregate() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         pub fn f(ptr: heap::*u8, len: u32) -> heap::[]u8 {
@@ -266,17 +266,17 @@ fn test_slice_from_parts_lowers_to_aggregate() {
 
         export { f }
     "});
-    assert!(case.tir.diagnostics.is_empty());
-    insta::assert_yaml_snapshot!(case.mir);
+	assert!(case.tir.diagnostics.is_empty());
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 // ── generic over Memory ───────────────────────────────────────────────────────
 
 #[test]
 fn test_generic_over_memory_monomorphizes_size_type() {
-    // A generic fn<M: Memory> called with two concrete memories must produce
-    // two monomorphized instances with the right concrete Size types (u32 / u64).
-    let case = TestCase::new(indoc! {"
+	// A generic fn<M: Memory> called with two concrete memories must produce
+	// two monomorphized instances with the right concrete Size types (u32 / u64).
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         memory stack: Memory where { Size = u64 };
 
@@ -294,45 +294,45 @@ fn test_generic_over_memory_monomorphizes_size_type() {
 
         export { use_heap, use_stack }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 // ── call graph / DCE ─────────────────────────────────────────────────────────
 
 #[test]
 fn test_dead_function_removed_by_dce() {
-    // `unused` is never exported or called — DCE must eliminate it.
-    let case = TestCase::new(indoc! {"
+	// `unused` is never exported or called — DCE must eliminate it.
+	let case = TestCase::new(indoc! {"
         fn used(x: u32) -> u32 { x + 1 }
         fn unused(x: u32) -> u32 { x * 2 }
 
         export { used }
     "});
-    assert_eq!(case.mir.functions.len(), 1);
-    let ExportItem::Function { id, .. } = case.mir.exports[0] else {
-        panic!()
-    };
-    assert_eq!(case.mir.functions[0].id, id);
+	assert_eq!(case.mir.functions.len(), 1);
+	let ExportItem::Function { id, .. } = case.mir.exports[0] else {
+		panic!()
+	};
+	assert_eq!(case.mir.functions[0].id, id);
 }
 
 #[test]
 fn test_non_inline_callee_survives_dce() {
-    // `helper` is called by `entry` but is not marked `#[inline]`, so it must
-    // remain in mir.functions as a call target rather than being folded away.
-    let case = TestCase::new(indoc! {"
+	// `helper` is called by `entry` but is not marked `#[inline]`, so it must
+	// remain in mir.functions as a call target rather than being folded away.
+	let case = TestCase::new(indoc! {"
         fn helper(x: u32) -> u32 { x + 1 }
         fn entry(x: u32) -> u32 { helper(x) }
 
         export { entry }
     "});
-    insta::assert_yaml_snapshot!(case.mir);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_inline_chain_collapses_to_single_function() {
-    // Three `#[inline]` functions chained: the entire chain folds into `main`
-    // and the inline helpers are removed by DCE. Only one function survives.
-    let case = TestCase::new(indoc! {"
+	// Three `#[inline]` functions chained: the entire chain folds into `main`
+	// and the inline helpers are removed by DCE. Only one function survives.
+	let case = TestCase::new(indoc! {"
         #[inline]
         fn add_one(x: u32) -> u32 { x + 1 }
 
@@ -343,14 +343,14 @@ fn test_inline_chain_collapses_to_single_function() {
 
         export { main }
     "});
-    assert_eq!(case.mir.functions.len(), 1);
+	assert_eq!(case.mir.functions.len(), 1);
 }
 
 #[test]
 fn test_multiple_exports_protect_their_callees() {
-    // `f` calls `double`, `g` calls `triple`; `orphan` is called by nobody.
-    // Both export roots must protect their own callees; only `orphan` is DCE'd.
-    let case = TestCase::new(indoc! {"
+	// `f` calls `double`, `g` calls `triple`; `orphan` is called by nobody.
+	// Both export roots must protect their own callees; only `orphan` is DCE'd.
+	let case = TestCase::new(indoc! {"
         fn double(x: u32) -> u32 { x * 2 }
         fn triple(x: u32) -> u32 { x * 3 }
         fn orphan(x: u32) -> u32 { x * 4 }
@@ -360,15 +360,15 @@ fn test_multiple_exports_protect_their_callees() {
 
         export { f, g }
     "});
-    assert_eq!(case.mir.functions.len(), 4); // f, g, double, triple — not orphan
-    assert_eq!(case.mir.exports.len(), 2);
+	assert_eq!(case.mir.functions.len(), 4); // f, g, double, triple — not orphan
+	assert_eq!(case.mir.exports.len(), 2);
 }
 
 #[test]
 fn test_function_reference_value_survives_dce() {
-    // `target` is only referenced as a value passed to `apply` — never called
-    // directly from `run`. DCE must keep it because it is a live dependency.
-    let case = TestCase::new(indoc! {"
+	// `target` is only referenced as a value passed to `apply` — never called
+	// directly from `run`. DCE must keep it because it is a live dependency.
+	let case = TestCase::new(indoc! {"
         fn target(x: u32) -> u32 { x + 1 }
 
         fn apply(f: fn(u32) -> u32, x: u32) -> u32 {
@@ -381,16 +381,16 @@ fn test_function_reference_value_survives_dce() {
 
         export { run }
     "});
-    // run, apply, target — all three must survive.
-    assert_eq!(case.mir.functions.len(), 3);
+	// run, apply, target — all three must survive.
+	assert_eq!(case.mir.functions.len(), 3);
 }
 
 #[test]
 fn test_unused_trait_impl_eliminated_by_dce() {
-    // Both Num1 and Num2 implement Scalable, but only Num1 is ever used.
-    // The call chain is: run → doubled<Num1> → Num1::value.
-    // Num2::value has no incoming edge and must be eliminated by DCE.
-    let case = TestCase::new(indoc! {"
+	// Both Num1 and Num2 implement Scalable, but only Num1 is ever used.
+	// The call chain is: run → doubled<Num1> → Num1::value.
+	// Num2::value has no incoming edge and must be eliminated by DCE.
+	let case = TestCase::new(indoc! {"
         trait Scalable {
             fn value(self) -> i32;
             fn doubled(self) -> i32 { self.value() * 2 }
@@ -409,52 +409,52 @@ fn test_unused_trait_impl_eliminated_by_dce() {
         }
         export { run }
     "});
-    // run, doubled<Num1>, Num1::value — Num2::value must not survive.
-    assert_eq!(case.mir.functions.len(), 3);
+	// run, doubled<Num1>, Num1::value — Num2::value must not survive.
+	assert_eq!(case.mir.functions.len(), 3);
 }
 
 #[test]
 fn test_recursive_function_survives_dce() {
-    // A self-recursive exported function references itself as a callee.
-    // DCE must keep it alive (it is its own root).
-    let case = TestCase::new(indoc! {"
+	// A self-recursive exported function references itself as a callee.
+	// DCE must keep it alive (it is its own root).
+	let case = TestCase::new(indoc! {"
         fn count_down(n: u32) -> u32 {
             if n == 0 { 0 } else { count_down(n - 1) }
         }
         export { count_down }
     "});
-    assert_eq!(case.mir.functions.len(), 1);
-    let ExportItem::Function { id, .. } = case.mir.exports[0] else {
-        panic!()
-    };
-    assert_eq!(case.mir.functions[0].id, id);
+	assert_eq!(case.mir.functions.len(), 1);
+	let ExportItem::Function { id, .. } = case.mir.exports[0] else {
+		panic!()
+	};
+	assert_eq!(case.mir.functions[0].id, id);
 }
 
 #[test]
 fn test_inline_helper_in_dead_code_is_eliminated() {
-    // dead_caller is never exported or transitively reachable.
-    // It calls an #[inline] helper. After inlining, dead_caller holds the
-    // inlined body, but DCE removes it along with the original helper.
-    // Only `live` (the export) must survive.
-    let case = TestCase::new(indoc! {"
+	// dead_caller is never exported or transitively reachable.
+	// It calls an #[inline] helper. After inlining, dead_caller holds the
+	// inlined body, but DCE removes it along with the original helper.
+	// Only `live` (the export) must survive.
+	let case = TestCase::new(indoc! {"
         #[inline]
         fn helper(x: u32) -> u32 { x + 1 }
         fn dead_caller(x: u32) -> u32 { helper(x) }
         fn live(x: u32) -> u32 { x * 2 }
         export { live }
     "});
-    assert_eq!(case.mir.functions.len(), 1);
-    let ExportItem::Function { id, .. } = case.mir.exports[0] else {
-        panic!()
-    };
-    assert_eq!(case.mir.functions[0].id, id);
+	assert_eq!(case.mir.functions.len(), 1);
+	let ExportItem::Function { id, .. } = case.mir.exports[0] else {
+		panic!()
+	};
+	assert_eq!(case.mir.functions[0].id, id);
 }
 
 #[test]
 fn test_deep_call_chain_survives_dce() {
-    // entry → step1 → step2 → step3 → leaf: the full depth-4 chain must survive.
-    // Verifies that BFS propagation is not cut short at depth 2.
-    let case = TestCase::new(indoc! {"
+	// entry → step1 → step2 → step3 → leaf: the full depth-4 chain must survive.
+	// Verifies that BFS propagation is not cut short at depth 2.
+	let case = TestCase::new(indoc! {"
         fn leaf(x: u32) -> u32 { x }
         fn step3(x: u32) -> u32 { leaf(x) }
         fn step2(x: u32) -> u32 { step3(x) }
@@ -462,7 +462,7 @@ fn test_deep_call_chain_survives_dce() {
         fn entry(x: u32) -> u32 { step1(x) }
         export { entry }
     "});
-    assert_eq!(case.mir.functions.len(), 5);
+	assert_eq!(case.mir.functions.len(), 5);
 }
 
 /// `struct Mixed { a: bool, b: i64, c: u32, d: f64 }` naively laid out takes
@@ -470,7 +470,7 @@ fn test_deep_call_chain_survives_dce() {
 /// u32, bool — 24B.
 #[test]
 fn test_struct_layout_is_alignment_sorted() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Mixed {
             a: bool,
             b: i64,
@@ -481,24 +481,24 @@ fn test_struct_layout_is_alignment_sorted() {
         fn dummy(m: Mixed) -> Mixed { m }
         export { dummy }
     "});
-    assert!(case.tir.diagnostics.is_empty());
+	assert!(case.tir.diagnostics.is_empty());
 
-    // The `dummy` function's first parameter is `Mixed`; its MIR type carries
-    // the aggregate index into `mir.aggregates`.
-    let sig_index = case.mir.functions[0].signature_index as usize;
-    let param_ty = case.mir.signatures[sig_index].params()[0];
-    let aggregate_index = match param_ty {
-        Type::Aggregate { aggregate_index } => aggregate_index as usize,
-        _ => panic!("expected Mixed to lower to an aggregate"),
-    };
+	// The `dummy` function's first parameter is `Mixed`; its MIR type carries
+	// the aggregate index into `mir.aggregates`.
+	let sig_index = case.mir.functions[0].signature_index as usize;
+	let param_ty = case.mir.signatures[sig_index].params()[0];
+	let aggregate_index = match param_ty {
+		Type::Aggregate { aggregate_index } => aggregate_index as usize,
+		_ => panic!("expected Mixed to lower to an aggregate"),
+	};
 
-    let agg = &case.mir.aggregates[aggregate_index];
-    // Total size and alignment after alignment-sorted layout.
-    assert_eq!(agg.layout.size, 24);
-    assert_eq!(agg.layout.align, 8);
-    // Physical order: b(i64)@0, d(f64)@8, c(u32)@16, a(bool)@20
-    assert_eq!(&*agg.offsets, &[0, 8, 16, 20]);
-    assert_eq!(&*agg.values, &[Type::I64, Type::F64, Type::U32, Type::Bool]);
+	let agg = &case.mir.aggregates[aggregate_index];
+	// Total size and alignment after alignment-sorted layout.
+	assert_eq!(agg.layout.size, 24);
+	assert_eq!(agg.layout.align, 8);
+	// Physical order: b(i64)@0, d(f64)@8, c(u32)@16, a(bool)@20
+	assert_eq!(&*agg.offsets, &[0, 8, 16, 20]);
+	assert_eq!(&*agg.values, &[Type::I64, Type::F64, Type::U32, Type::Bool]);
 }
 
 // ── Generics / monomorphization
@@ -510,7 +510,7 @@ fn test_struct_layout_is_alignment_sorted() {
 /// type, producing two separate mono functions.
 #[test]
 fn test_different_type_args_produce_separate_mono_instances() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn identity<T>(t: T) -> T { t }
 
         fn run_i32()  -> i32  { identity(42) }
@@ -518,17 +518,17 @@ fn test_different_type_args_produce_separate_mono_instances() {
 
         export { run_i32, run_bool }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected TIR diagnostics"
-    );
-    // run_i32 + run_bool + identity<i32> + identity<bool> = 4
-    assert_eq!(
-        case.mir.functions.len(),
-        4,
-        "expected 4 MIR functions, got {}",
-        case.mir.functions.len()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected TIR diagnostics"
+	);
+	// run_i32 + run_bool + identity<i32> + identity<bool> = 4
+	assert_eq!(
+		case.mir.functions.len(),
+		4,
+		"expected 4 MIR functions, got {}",
+		case.mir.functions.len()
+	);
 }
 
 /// A concrete generic `call_wrap<T>` calls another generic `wrap<T>`.
@@ -546,7 +546,7 @@ fn test_different_type_args_produce_separate_mono_instances() {
 /// before calling get_or_insert (MIR GenericCall arm).
 #[test]
 fn test_generic_calls_generic_multi_iteration_worklist() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn wrap<T>(t: T) -> T { t }
         fn call_wrap<T>(t: T) -> T { wrap(t) }
 
@@ -554,24 +554,24 @@ fn test_generic_calls_generic_multi_iteration_worklist() {
 
         export { run }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected TIR diagnostics"
-    );
-    // run + call_wrap<i32> + wrap<i32> = 3
-    assert_eq!(
-        case.mir.functions.len(),
-        3,
-        "expected 3 MIR functions (run + call_wrap<i32> + wrap<i32>), got {}",
-        case.mir.functions.len()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected TIR diagnostics"
+	);
+	// run + call_wrap<i32> + wrap<i32> = 3
+	assert_eq!(
+		case.mir.functions.len(),
+		3,
+		"expected 3 MIR functions (run + call_wrap<i32> + wrap<i32>), got {}",
+		case.mir.functions.len()
+	);
 }
 
 /// Verifies that `#[inline]` on a generic function is propagated to every mono
 /// instance so callers always inline it rather than emitting a call.
 #[test]
 fn test_inline_attribute_on_generic_propagated_to_mono_instance() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         #[inline]
         fn wrap<T>(t: T) -> T { t }
 
@@ -579,15 +579,15 @@ fn test_inline_attribute_on_generic_propagated_to_mono_instance() {
 
         export { run }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected TIR diagnostics"
-    );
-    assert_eq!(
-        case.mir.functions.len(),
-        1,
-        "wrap<i32> should be inlined into run and DCE'd, leaving only run"
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected TIR diagnostics"
+	);
+	assert_eq!(
+		case.mir.functions.len(),
+		1,
+		"wrap<i32> should be inlined into run and DCE'd, leaving only run"
+	);
 }
 
 // ── Generic struct monomorphization
@@ -600,7 +600,7 @@ fn test_inline_attribute_on_generic_propagated_to_mono_instance() {
 /// `Point<f32>` the wrong field types.
 #[test]
 fn test_generic_struct_distinct_aggregates_per_type_arg() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point<T> {
             x: T,
             y: T,
@@ -611,48 +611,52 @@ fn test_generic_struct_distinct_aggregates_per_type_arg() {
 
         export { get_x_i32, get_x_f32 }
     "});
-    assert!(case.tir.diagnostics.is_empty());
+	assert!(case.tir.diagnostics.is_empty());
 
-    let sig_i32 = case
-        .mir
-        .functions
-        .iter()
-        .find(|f| {
-            let sig = &case.mir.signatures[f.signature_index as usize];
-            sig.result() == Type::I32
-        })
-        .expect("get_x_i32 not found");
-    let sig_f32 = case
-        .mir
-        .functions
-        .iter()
-        .find(|f| {
-            let sig = &case.mir.signatures[f.signature_index as usize];
-            sig.result() == Type::F32
-        })
-        .expect("get_x_f32 not found");
+	let sig_i32 = case
+		.mir
+		.functions
+		.iter()
+		.find(|f| {
+			let sig = &case.mir.signatures[f.signature_index as usize];
+			sig.result() == Type::I32
+		})
+		.expect("get_x_i32 not found");
+	let sig_f32 = case
+		.mir
+		.functions
+		.iter()
+		.find(|f| {
+			let sig = &case.mir.signatures[f.signature_index as usize];
+			sig.result() == Type::F32
+		})
+		.expect("get_x_f32 not found");
 
-    let agg_i32 = match case.mir.signatures[sig_i32.signature_index as usize].params()[0] {
-        Type::Aggregate { aggregate_index } => aggregate_index as usize,
-        _ => panic!("expected Point<i32> to be an aggregate"),
-    };
-    let agg_f32 = match case.mir.signatures[sig_f32.signature_index as usize].params()[0] {
-        Type::Aggregate { aggregate_index } => aggregate_index as usize,
-        _ => panic!("expected Point<f32> to be an aggregate"),
-    };
+	let agg_i32 = match case.mir.signatures[sig_i32.signature_index as usize]
+		.params()[0]
+	{
+		Type::Aggregate { aggregate_index } => aggregate_index as usize,
+		_ => panic!("expected Point<i32> to be an aggregate"),
+	};
+	let agg_f32 = match case.mir.signatures[sig_f32.signature_index as usize]
+		.params()[0]
+	{
+		Type::Aggregate { aggregate_index } => aggregate_index as usize,
+		_ => panic!("expected Point<f32> to be an aggregate"),
+	};
 
-    assert_ne!(
-        agg_i32, agg_f32,
-        "Point<i32> and Point<f32> must map to distinct aggregates"
-    );
-    assert_eq!(
-        &*case.mir.aggregates[agg_i32].values,
-        &[Type::I32, Type::I32]
-    );
-    assert_eq!(
-        &*case.mir.aggregates[agg_f32].values,
-        &[Type::F32, Type::F32]
-    );
+	assert_ne!(
+		agg_i32, agg_f32,
+		"Point<i32> and Point<f32> must map to distinct aggregates"
+	);
+	assert_eq!(
+		&*case.mir.aggregates[agg_i32].values,
+		&[Type::I32, Type::I32]
+	);
+	assert_eq!(
+		&*case.mir.aggregates[agg_f32].values,
+		&[Type::F32, Type::F32]
+	);
 }
 
 /// Constructing and accessing a field on a concrete `Point<i32>` inside a
@@ -660,7 +664,7 @@ fn test_generic_struct_distinct_aggregates_per_type_arg() {
 /// struct's own type args are used as substitutions when lowering its fields.
 #[test]
 fn test_generic_struct_init_and_field_access_concrete() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Point<T> {
             x: T,
             pub y: T,
@@ -673,20 +677,22 @@ fn test_generic_struct_init_and_field_access_concrete() {
 
         export { run }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
-    assert_eq!(case.mir.functions.len(), 1);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
+	assert_eq!(case.mir.functions.len(), 1);
 
-    let agg_idx = case
-        .mir
-        .aggregates
-        .iter()
-        .position(|a| a.values.len() == 2 && a.values.iter().all(|&t| t == Type::I32))
-        .expect("Point<i32> aggregate not found");
-    assert_eq!(case.mir.aggregates[agg_idx].layout.size, 8);
+	let agg_idx = case
+		.mir
+		.aggregates
+		.iter()
+		.position(|a| {
+			a.values.len() == 2 && a.values.iter().all(|&t| t == Type::I32)
+		})
+		.expect("Point<i32> aggregate not found");
+	assert_eq!(case.mir.aggregates[agg_idx].layout.size, 8);
 }
 
 /// A generic function operating on a generic struct gets the correct aggregate
@@ -694,7 +700,7 @@ fn test_generic_struct_init_and_field_access_concrete() {
 /// have a single `I64` field with size 8, not the TypeParam placeholder.
 #[test]
 fn test_generic_struct_in_generic_function_monomorphizes_correctly() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         struct Box<T> {
             value: T,
         }
@@ -708,20 +714,20 @@ fn test_generic_struct_in_generic_function_monomorphizes_correctly() {
 
         export { run }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "{:?}",
-        case.tir.diagnostics
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"{:?}",
+		case.tir.diagnostics
+	);
 
-    let agg = case
-        .mir
-        .aggregates
-        .iter()
-        .find(|a| a.values.len() == 1 && a.values[0] == Type::I64)
-        .expect("Box<i64> aggregate with I64 field not found");
-    assert_eq!(agg.layout.size, 8);
-    assert_eq!(agg.layout.align, 8);
+	let agg = case
+		.mir
+		.aggregates
+		.iter()
+		.find(|a| a.values.len() == 1 && a.values[0] == Type::I64)
+		.expect("Box<i64> aggregate with I64 field not found");
+	assert_eq!(agg.layout.size, 8);
+	assert_eq!(agg.layout.align, 8);
 }
 
 /// Mutually recursive `#[inline]` functions used to stall Kahn's algorithm:
@@ -739,7 +745,7 @@ fn test_generic_struct_in_generic_function_monomorphizes_correctly() {
 /// Result: entry + f = 2 functions.
 #[test]
 fn test_mutually_recursive_inline_functions_kahn_stall() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         #[inline]
         fn f(n: u32) -> u32 {
             if n == 0 { 0 } else { g(n - 1) }
@@ -753,17 +759,17 @@ fn test_mutually_recursive_inline_functions_kahn_stall() {
 
         export { entry }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected TIR diagnostics"
-    );
-    // entry + f = 2  (g was inlined into f; f is the cycle-break anchor)
-    assert_eq!(
-        case.mir.functions.len(),
-        2,
-        "expected 2 functions (entry + f with g inlined); got {}",
-        case.mir.functions.len()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected TIR diagnostics"
+	);
+	// entry + f = 2  (g was inlined into f; f is the cycle-break anchor)
+	assert_eq!(
+		case.mir.functions.len(),
+		2,
+		"expected 2 functions (entry + f with g inlined); got {}",
+		case.mir.functions.len()
+	);
 }
 
 /// After an `#[inline]` function is substituted into its caller, the inlining
@@ -773,7 +779,7 @@ fn test_mutually_recursive_inline_functions_kahn_stall() {
 /// is incorrectly eliminated.
 #[test]
 fn test_inline_function_calling_generic_dce_preserves_mono_instance() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         fn identity<T>(t: T) -> T { t }
 
         #[inline]
@@ -783,28 +789,28 @@ fn test_inline_function_calling_generic_dce_preserves_mono_instance() {
 
         export { run }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected TIR diagnostics"
-    );
-    // one_more is inlined into run then removed by DCE.
-    // identity<i32> must survive because the graph-edge propagation transferred
-    // it to run's callees.  Total: run + identity<i32> = 2.
-    assert_eq!(
-        case.mir.functions.len(),
-        2,
-        "expected 2 functions (run + identity<i32>); got {}",
-        case.mir.functions.len()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected TIR diagnostics"
+	);
+	// one_more is inlined into run then removed by DCE.
+	// identity<i32> must survive because the graph-edge propagation transferred
+	// it to run's callees.  Total: run + identity<i32> = 2.
+	assert_eq!(
+		case.mir.functions.len(),
+		2,
+		"expected 2 functions (run + identity<i32>); got {}",
+		case.mir.functions.len()
+	);
 }
 
 #[test]
 fn test_multiple_calls_to_generic_produce_single_mono_instance() {
-    // Calling `identity<i32>` twice must produce exactly one monomorphized
-    // function, not two. The MIR function list should contain:
-    //   1. `run` (the concrete caller)
-    //   2. one monomorphized copy of `identity` for i32
-    let case = TestCase::new(indoc! {"
+	// Calling `identity<i32>` twice must produce exactly one monomorphized
+	// function, not two. The MIR function list should contain:
+	//   1. `run` (the concrete caller)
+	//   2. one monomorphized copy of `identity` for i32
+	let case = TestCase::new(indoc! {"
         fn identity<T>(t: T) -> T {
             t
         }
@@ -815,17 +821,17 @@ fn test_multiple_calls_to_generic_produce_single_mono_instance() {
 
         export { run }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected TIR diagnostics"
-    );
-    // `run` + one mono instance of `identity<i32>` = 2 functions total.
-    assert_eq!(
-        case.mir.functions.len(),
-        2,
-        "expected exactly 2 MIR functions (run + one identity<i32>), got {}",
-        case.mir.functions.len()
-    );
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected TIR diagnostics"
+	);
+	// `run` + one mono instance of `identity<i32>` = 2 functions total.
+	assert_eq!(
+		case.mir.functions.len(),
+		2,
+		"expected exactly 2 MIR functions (run + one identity<i32>), got {}",
+		case.mir.functions.len()
+	);
 }
 
 // ── static data
@@ -840,8 +846,8 @@ fn test_multiple_calls_to_generic_produce_single_mono_instance() {
 
 #[test]
 fn test_array_literal_bytes_are_little_endian() {
-    // [1, 2, 3] as heap::[3]i32 → 12 bytes encoding each value as 32-bit LE.
-    let case = TestCase::new(indoc! {"
+	// [1, 2, 3] as heap::[3]i32 → 12 bytes encoding each value as 32-bit LE.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn get() -> heap::[3]i32 {
             local arr: heap::[3]i32 = [1, 2, 3];
@@ -849,22 +855,22 @@ fn test_array_literal_bytes_are_little_endian() {
         }
         export { get }
     "});
-    assert_eq!(case.mir.static_entries.len(), 1);
-    assert_eq!(
-        &*case.mir.static_entries[0].bytes,
-        &[
-            1u8, 0, 0, 0, // 1_i32 LE
-            2, 0, 0, 0, // 2_i32 LE
-            3, 0, 0, 0, // 3_i32 LE
-        ],
-    );
-    assert_eq!(case.mir.static_entries[0].align, 4);
+	assert_eq!(case.mir.static_entries.len(), 1);
+	assert_eq!(
+		&*case.mir.static_entries[0].bytes,
+		&[
+			1u8, 0, 0, 0, // 1_i32 LE
+			2, 0, 0, 0, // 2_i32 LE
+			3, 0, 0, 0, // 3_i32 LE
+		],
+	);
+	assert_eq!(case.mir.static_entries[0].align, 4);
 }
 
 #[test]
 fn test_array_repeat_bytes_repeated() {
-    // [7; 4] as heap::[4]u8 → four bytes each equal to 7.
-    let case = TestCase::new(indoc! {"
+	// [7; 4] as heap::[4]u8 → four bytes each equal to 7.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn get() -> heap::[4]u8 {
             local arr: heap::[4]u8 = [7; 4];
@@ -872,16 +878,16 @@ fn test_array_repeat_bytes_repeated() {
         }
         export { get }
     "});
-    assert_eq!(case.mir.static_entries.len(), 1);
-    assert_eq!(&*case.mir.static_entries[0].bytes, &[7u8, 7, 7, 7]);
-    assert_eq!(case.mir.static_entries[0].align, 1);
+	assert_eq!(case.mir.static_entries.len(), 1);
+	assert_eq!(&*case.mir.static_entries[0].bytes, &[7u8, 7, 7, 7]);
+	assert_eq!(case.mir.static_entries[0].align, 1);
 }
 
 #[test]
 fn test_array_dce_removes_static_data_ownership() {
-    // A dead function with an array literal is removed by DCE.
-    // No live function should reference its static entry.
-    let case = TestCase::new(indoc! {"
+	// A dead function with an array literal is removed by DCE.
+	// No live function should reference its static entry.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn live() -> i32 { 42 }
         fn dead() -> heap::[3]i32 {
@@ -890,23 +896,23 @@ fn test_array_dce_removes_static_data_ownership() {
         }
         export { live }
     "});
-    assert_eq!(case.mir.functions.len(), 1);
-    let live_indices: std::collections::HashSet<u32> = case
-        .mir
-        .functions
-        .iter()
-        .flat_map(|f| f.static_data.iter().copied())
-        .collect();
-    assert!(
-        live_indices.is_empty(),
-        "live functions must not reference the dead array's entry"
-    );
+	assert_eq!(case.mir.functions.len(), 1);
+	let live_indices: std::collections::HashSet<u32> = case
+		.mir
+		.functions
+		.iter()
+		.flat_map(|f| f.static_data.iter().copied())
+		.collect();
+	assert!(
+		live_indices.is_empty(),
+		"live functions must not reference the dead array's entry"
+	);
 }
 
 #[test]
 fn test_static_entry_alignment_matches_element_type() {
-    // i32 elements → align 4; f64 elements → align 8; u8 elements → align 1.
-    let case = TestCase::new(indoc! {"
+	// i32 elements → align 4; f64 elements → align 8; u8 elements → align 1.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
         fn ints() -> heap::[2]i32 {
             local a: heap::[2]i32 = [10, 20];
@@ -922,19 +928,19 @@ fn test_static_entry_alignment_matches_element_type() {
         }
         export { ints, doubles, bytes }
     "});
-    assert_eq!(case.mir.static_entries.len(), 3);
-    let aligns: std::collections::HashSet<u32> =
-        case.mir.static_entries.iter().map(|e| e.align).collect();
-    assert!(aligns.contains(&4), "i32 array must have align 4");
-    assert!(aligns.contains(&8), "f64 array must have align 8");
-    assert!(aligns.contains(&1), "u8 array must have align 1");
+	assert_eq!(case.mir.static_entries.len(), 3);
+	let aligns: std::collections::HashSet<u32> =
+		case.mir.static_entries.iter().map(|e| e.align).collect();
+	assert!(aligns.contains(&4), "i32 array must have align 4");
+	assert!(aligns.contains(&8), "f64 array must have align 8");
+	assert!(aligns.contains(&1), "u8 array must have align 1");
 }
 
 // ── size_of / align_of intrinsics ────────────────────────────────────────────
 
 #[test]
 fn test_size_of_lowers_to_const_int() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         fn size_u8() -> u32 { size_of::<u8, heap>() }
@@ -944,13 +950,13 @@ fn test_size_of_lowers_to_const_int() {
 
         export { size_u8, size_u32, size_u64, size_u16 }
     "});
-    assert!(case.tir.diagnostics.is_empty());
-    insta::assert_yaml_snapshot!(case.mir);
+	assert!(case.tir.diagnostics.is_empty());
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_align_of_lowers_to_const_int() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         fn align_u8() -> u32 { align_of::<u8, heap>() }
@@ -959,15 +965,15 @@ fn test_align_of_lowers_to_const_int() {
 
         export { align_u8, align_u32, align_u64 }
     "});
-    assert!(case.tir.diagnostics.is_empty());
-    insta::assert_yaml_snapshot!(case.mir);
+	assert!(case.tir.diagnostics.is_empty());
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_size_of_generic_monomorphizes() {
-    // When T is a type param, size_of must substitute the concrete type at
-    // monomorphization time and lower to distinct Int values per instance.
-    let case = TestCase::new(indoc! {"
+	// When T is a type param, size_of must substitute the concrete type at
+	// monomorphization time and lower to distinct Int values per instance.
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         fn typed_size<T, M: Memory>() -> M::Size { size_of::<T, M>() }
@@ -977,13 +983,13 @@ fn test_size_of_generic_monomorphizes() {
 
         export { call_u8, call_u32 }
     "});
-    assert!(case.tir.diagnostics.is_empty());
-    insta::assert_yaml_snapshot!(case.mir);
+	assert!(case.tir.diagnostics.is_empty());
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_generic_impl_slice_len_method_lowers_correctly() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         impl<M: Memory, T> M::[]T {
@@ -998,14 +1004,13 @@ fn test_generic_impl_slice_len_method_lowers_correctly() {
 
         export { get_len }
     "});
-    assert!(case.tir.diagnostics.is_empty());
-    insta::assert_yaml_snapshot!(case.mir);
-
+	assert!(case.tir.diagnostics.is_empty());
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 fn test_compound_assign_through_ptr_deref_on_struct_field() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         struct Vec {
@@ -1020,18 +1025,18 @@ fn test_compound_assign_through_ptr_deref_on_struct_field() {
 
         export { increment_len }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected TIR diagnostics: {:?}",
-        case.tir.diagnostics
-    );
-    insta::assert_yaml_snapshot!(case.mir);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected TIR diagnostics: {:?}",
+		case.tir.diagnostics
+	);
+	insta::assert_yaml_snapshot!(case.mir);
 }
 
 #[test]
 #[ignore = "method lookup for pointer receivers not yet implemented"]
 fn test_generic_compound_assign_through_ptr_deref() {
-    let case = TestCase::new(indoc! {"
+	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         struct Vec<T> {
@@ -1052,10 +1057,10 @@ fn test_generic_compound_assign_through_ptr_deref() {
 
         export { call_it }
     "});
-    assert!(
-        case.tir.diagnostics.is_empty(),
-        "unexpected TIR diagnostics: {:?}",
-        case.tir.diagnostics
-    );
-    insta::assert_yaml_snapshot!(case.mir);
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"unexpected TIR diagnostics: {:?}",
+		case.tir.diagnostics
+	);
+	insta::assert_yaml_snapshot!(case.mir);
 }

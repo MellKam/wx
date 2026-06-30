@@ -4,7 +4,19 @@ members = ["crates/*"]
 exclude = ["crates/wx-lsp"]
 package.repository = "https://github.com/MellKam/wx"
 package.license = "MIT"
+package.edition = "2024"
+# Checked the minimum version with https://github.com/foresterre/cargo-msrv
+package.rust-version = "1.85.1"
+package.authors = ["Artem Melnyk <melkam464@gmail.com>"]
 
+# Insta benefits from being compiled in release mode
+# https://insta.rs/docs/quickstart/#optional-faster-runs
 [profile.dev.package]
 insta.opt-level = 3
 similar.opt-level = 3
+
+[workspace.dependencies]
+codespan-reporting = "0.13.1"
+string-interner = "0.20.0"
+serde = "1.0"
+serde_json = "1.0"

@@ -1,17 +1,16 @@
 [package]
 name = "wx-fmt"
+description = "Code formatter for WX language"
 version = "0.0.1"
-authors = ["Artem Melnyk <melkam464@gmail.com>"]
-edition = "2024"
-license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-string-interner = "0.20.0"
+string-interner = { workspace = true }
 wx-compiler = { path = "../wx-compiler" }
 
 [dev-dependencies]
 indoc = "2"
-
-[profile.dev.package]
-insta.opt-level = 3
-similar.opt-level = 3

@@ -1,24 +1,26 @@
 [package]
 name = "wx-compiler"
 version = "0.0.1"
-authors = ["Artem Melnyk <melkam464@gmail.com>"]
-edition = "2024"
-license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [lib]
 
 [dependencies]
-codespan-reporting = { version = "0.13.1", features = ["serialization"] }
+codespan-reporting = { workspace = true, features = ["serialization"] }
 leb128fmt = "0.1.0"
-string-interner = "0.20.0"
-serde = { version = "1.0", features = ["derive"] }
+string-interner = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 indoc = "2"
-serde_json = "1.0"
+serde_json = { workspace = true }
 insta = { version = "1.43", features = ["yaml"] }
-wasmtime = "43"
-wasmprinter = "0.245"
+wasmtime = "46.0.1"
+wasmprinter = "0.252.0"
 
 [profile.dev.package]
 insta.opt-level = 3

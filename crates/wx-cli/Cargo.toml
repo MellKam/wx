@@ -1,14 +1,16 @@
 [package]
 name = "wx-cli"
 version = "0.0.1"
-authors = ["Artem Melnyk <melkam464@gmail.com>"]
-edition = "2024"
-license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 clap = { version = "4.5.40", features = ["cargo"] }
-codespan-reporting = "0.13.1"
-string-interner = "0.19.0"
+codespan-reporting = { workspace = true }
+string-interner = { workspace = true }
 wx-compiler = { path = "../wx-compiler" }
 wx-fmt = { path = "../wx-fmt" }
 

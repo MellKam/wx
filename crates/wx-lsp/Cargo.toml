@@ -6,10 +6,10 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-lsp-server = "0.7.9"
+lsp-server = "0.8.0"
 lsp-types = { version = "0.97.0", features = ["proposed"] }
-serde_json = "1.0"
-serde = { version = "1.0", features = ["derive"] }
+serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 wx-compiler = { path = "../wx-compiler" }
-string-interner = "0.19.0"
-codespan-reporting = "0.13.1"
+string-interner = { workspace = true }
+codespan-reporting = { workspace = true }
