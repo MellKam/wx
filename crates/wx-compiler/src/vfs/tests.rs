@@ -57,7 +57,7 @@ fn load_crate_reports_missing_entry_file() {
 	let mut builder = CompilationGraphBuilder::new();
 	match builder.load_binary(path_str.clone(), &NativeFileSource) {
 		Err(LoadError::ReadFailed { path: failed_path }) => {
-			assert_eq!(failed_path, path_str)
+			assert_eq!(failed_path, path_str.replace('\\', "/"))
 		}
 		Err(other) => panic!("unexpected error: {other:?}"),
 		Ok(_) => panic!("expected missing file error"),
@@ -84,7 +84,10 @@ fn load_crate_resolves_module_directory_file() {
 
 	let root = &graph.modules[graph.root.as_u32() as usize];
 	let child = &graph.modules[root.children[0].as_u32() as usize];
-	assert_eq!(child.file_path, child_path.to_str().unwrap());
+	assert_eq!(
+		child.file_path,
+		child_path.to_str().unwrap().replace('\\', "/")
+	);
 
 	fs::remove_file(&path).unwrap();
 	fs::remove_file(&child_path).unwrap();
@@ -112,8 +115,11 @@ fn load_crate_rejects_ambiguous_module_paths() {
 			file,
 			directory_file,
 		}) => {
-			assert_eq!(file, sibling_path.to_str().unwrap());
-			assert_eq!(directory_file, directory_path.to_str().unwrap());
+			assert_eq!(file, sibling_path.to_str().unwrap().replace('\\', "/"));
+			assert_eq!(
+				directory_file,
+				directory_path.to_str().unwrap().replace('\\', "/")
+			);
 		}
 		Err(other) => panic!("unexpected error: {other:?}"),
 		Ok(_) => panic!("expected ambiguous module error"),

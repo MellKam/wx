@@ -383,6 +383,18 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 		name: Option<SymbolU32>,
 		parent: Option<ModuleId>,
 	) -> Result<ModuleId, LoadError> {
+		let mut file_path = file_path;
+		// We normalize all path separators to '/' to ensure consistent VFS lookup
+		// across all platforms (matching virtual file schemas and test assertions).
+		// SAFETY: Both '\' and '/' are ASCII bytes, occupying exactly one byte and never affecting multibyte sequences.
+		// Thus, this in-place substitution preserves UTF-8 validity.
+		unsafe {
+			for byte in file_path.as_bytes_mut() {
+				if *byte == b'\\' {
+					*byte = b'/';
+				}
+			}
+		}
 		if let Some(&module_id) = self.path_to_module.get(&file_path) {
 			return Ok(module_id);
 		}

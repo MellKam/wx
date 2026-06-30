@@ -688,24 +688,11 @@ impl<'f> Scheduler<'f> {
 	}
 
 	fn emit_block(&mut self, block_idx: BlockIndex) {
-		// Collect statement count first, then index into the block per-iteration.
-		// This avoids holding an immutable borrow on `self.func` while `emit_control`
-		// needs `&mut self`.
-		let stmt_count = self.func.blocks[block_idx as usize]
+		for stmt in &self.func.blocks[block_idx as usize]
 			.as_ref()
-			.unwrap()
+			.expect("block scope should be built")
 			.statements
-			.len();
-		for i in 0..stmt_count {
-			// Re-borrow per iteration so the mutable borrow in emit_control is allowed.
-			// Safety: we only read at index `i` and do not mutate `func.blocks`.
-			let stmt_ptr = &self.func.blocks[block_idx as usize]
-				.as_ref()
-				.unwrap()
-				.statements[i] as *const ControlNode;
-			// SAFETY: `emit_control` never modifies `func.blocks`, so the pointer remains
-			// valid.
-			let stmt = unsafe { &*stmt_ptr };
+		{
 			self.emit_control(block_idx, stmt);
 		}
 	}
