@@ -2040,18 +2040,18 @@ impl<'ctx> Parser<'ctx> {
 
 		if parser.lexer.has_crlf {
 			parser.ast.diagnostics.push(Diagnostic::warning()
-                .with_code(DiagnosticCode::CrlfLineEndings.code())
-                .with_message("file contains carriage returns (`\\r\\n`)")
-                .with_label(Label::primary(file_id, TextSpan::new(0, 0)).with_message(
-                    "carriage returns can shift text spans; consider using LF (`\\n`) line endings instead",
-                )));
+				.with_code(DiagnosticCode::CrlfLineEndings.code())
+				.with_message("file contains carriage returns (`\\r\\n`)")
+				.with_label(
+					Label::primary(file_id, TextSpan::new(0, 0)).with_message(
+						"carriage returns can shift text spans; consider using LF (`\\n`) line endings instead",
+				))
+			);
 		}
 
-		let comments = CommentMap(
-			std::mem::take(&mut parser.lexer.comments).into_boxed_slice(),
-		);
-		parser.ast.comments = comments;
-		parser.ast
+		let Parser { mut ast, lexer, .. } = parser;
+		ast.comments = CommentMap(lexer.comments.into_boxed_slice());
+		ast
 	}
 
 	fn recover_from_invalid_item(

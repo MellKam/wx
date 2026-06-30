@@ -1777,7 +1777,9 @@ impl TIR {
 		match self.item_lookup[&id] {
 			ItemIndex::Function(i) => i,
 			#[cfg(debug_assertions)]
-			other => unreachable!("expected Function for {id:?}, found {other:?}"),
+			other => {
+				unreachable!("expected Function for {id:?}, found {other:?}")
+			}
 			#[cfg(not(debug_assertions))]
 			_ => unreachable!(),
 		}
@@ -1796,7 +1798,9 @@ impl TIR {
 		match self.item_lookup[&id] {
 			ItemIndex::Struct(i) => i,
 			#[cfg(debug_assertions)]
-			other => unreachable!("expected Struct for {id:?}, found {other:?}"),
+			other => {
+				unreachable!("expected Struct for {id:?}, found {other:?}")
+			}
 			#[cfg(not(debug_assertions))]
 			_ => unreachable!(),
 		}
@@ -1834,7 +1838,9 @@ impl TIR {
 		match self.item_lookup[&id] {
 			ItemIndex::Global(i) => i,
 			#[cfg(debug_assertions)]
-			other => unreachable!("expected Global for {id:?}, found {other:?}"),
+			other => {
+				unreachable!("expected Global for {id:?}, found {other:?}")
+			}
 			#[cfg(not(debug_assertions))]
 			_ => unreachable!(),
 		}
@@ -1853,7 +1859,9 @@ impl TIR {
 		match self.item_lookup[&id] {
 			ItemIndex::Memory(i) => i,
 			#[cfg(debug_assertions)]
-			other => unreachable!("expected Memory for {id:?}, found {other:?}"),
+			other => {
+				unreachable!("expected Memory for {id:?}, found {other:?}")
+			}
 			#[cfg(not(debug_assertions))]
 			_ => unreachable!(),
 		}
@@ -1872,7 +1880,9 @@ impl TIR {
 		match self.item_lookup[&id] {
 			ItemIndex::TypeSet(i) => i,
 			#[cfg(debug_assertions)]
-			other => unreachable!("expected TypeSet for {id:?}, found {other:?}"),
+			other => {
+				unreachable!("expected TypeSet for {id:?}, found {other:?}")
+			}
 			#[cfg(not(debug_assertions))]
 			_ => unreachable!(),
 		}
@@ -1910,7 +1920,9 @@ impl TIR {
 		match self.item_lookup[&id] {
 			ItemIndex::TraitImpl(i) => i,
 			#[cfg(debug_assertions)]
-			other => unreachable!("expected TraitImpl for {id:?}, found {other:?}"),
+			other => {
+				unreachable!("expected TraitImpl for {id:?}, found {other:?}")
+			}
 			#[cfg(not(debug_assertions))]
 			_ => unreachable!(),
 		}
