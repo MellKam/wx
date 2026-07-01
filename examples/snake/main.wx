@@ -1,8 +1,10 @@
+use std::*;
+
 memory heap: Memory where { Size = u32 };
 
 global mut bump: heap::*u8 = heap::DATA_END;
 
-pub fn alloc<T>() -> heap::*T {
+pub fn alloc<T>() -> heap::*mut T {
   local align = align_of::<T, heap>();
   local ptr = (bump as u32 + align - 1) / align * align;
   local new_end = ptr + size_of::<T, heap>();
@@ -12,7 +14,7 @@ pub fn alloc<T>() -> heap::*T {
     _ = heap.grow(needed);
   }
   bump = new_end as heap::*u8;
-  ptr as heap::*T
+  ptr as _
 }
 
 import "host" {
@@ -30,22 +32,18 @@ const STEP_MS: i64 = 120;
 struct Node {
   x: i32,
   y: i32,
-  next: heap::*Node,
+  next: heap::*mut Node,
 }
 
-global mut head: heap::*Node = ptr::null();
+global mut head: heap::*mut Node = ptr::null_mut();
 global mut len: i32 = 0;
 global mut dir: i32 = 0;
 global mut food_x: i32 = 16;
 global mut food_y: i32 = 12;
 global mut acc_ms: i64 = 0;
 
-pub fn node_new(
-  value_x: i32,
-  value_y: i32,
-  next: heap::*Node,
-) -> heap::*Node {
-  local n: heap::*Node = alloc::<Node>();
+pub fn node_new(value_x: i32, value_y: i32, next: heap::*mut Node) -> heap::*mut Node {
+  local n: heap::*mut Node = alloc::<Node>();
   n.* = Node::{ x: value_x, y: value_y, next: next };
   n
 }
@@ -56,17 +54,17 @@ pub fn push_front(x: i32, y: i32) {
 }
 
 pub fn pop_back() {
-  if head.is_null() { return; }
-  if head.*.next.is_null() {
-    head = ptr::null();
+  if ptr::is_null(head) { return; }
+  if ptr::is_null(head.*.next) {
+    head = ptr::null_mut();
     len = 0;
     return;
   }
-  local mut cur = head as *Node;
+  local mut cur = head as *mut Node;
   loop {
     local mut n = cur.*;
-    if n.next.*.next.is_null() {
-      n.next = ptr::null();
+    if ptr::is_null(n.next.*.next) {
+      n.next = ptr::null_mut();
       cur.* = n;
       len -= 1;
       break;
@@ -78,7 +76,7 @@ pub fn pop_back() {
 pub fn contains(x: i32, y: i32) -> bool {
   local mut cur: *Node = head;
   loop {
-    if cur.is_null() { break false }
+    if ptr::is_null(cur) { break false }
     local n = cur.*;
     if n.x == x && n.y == y { break true }
     cur = n.next;
@@ -106,7 +104,7 @@ pub fn start() {
 
 pub fn reset() {
   bump = heap::DATA_END;
-  head = ptr::null();
+  head = ptr::null_mut();
   len = 0;
   acc_ms = 0;
 }
@@ -120,7 +118,7 @@ pub fn step() {
   
   local mut hx: i32 = 0;
   local mut hy: i32 = 0;
-  if head.is_null() {
+  if ptr::is_null(head) {
     hx = 0;
     hy = 0;
   } else {
@@ -162,15 +160,14 @@ pub fn draw() {
     0xFFFFFF00,
   );
   
-  local mut cur: heap::*Node = head;
+  local mut cur: heap::*mut Node = head;
   local mut first: bool = true;
   loop {
-    if cur.is_null() { break }
-    local n = cur.*;
+    if ptr::is_null(cur) { break }
     if first {
       host::draw_rect(
-        n.x * CELL_SIZE,
-        n.y * CELL_SIZE,
+        cur.*.x * CELL_SIZE,
+        cur.*.y * CELL_SIZE,
         CELL_SIZE,
         CELL_SIZE,
         0xFFFF0000,
@@ -178,14 +175,14 @@ pub fn draw() {
       first = false;
     } else {
       host::draw_rect(
-        n.x * CELL_SIZE,
-        n.y * CELL_SIZE,
+        cur.*.x * CELL_SIZE,
+        cur.*.y * CELL_SIZE,
         CELL_SIZE,
         CELL_SIZE,
         0xFF00FF00,
       );
     }
-    cur = n.next;
+    cur = cur.*.next;
   }
 }
 

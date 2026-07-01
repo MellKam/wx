@@ -1,3 +1,5 @@
+use std::*;
+
 memory heap: Memory where { Size = u32 };
 
 global mut bump: heap::*u8 = heap::DATA_END;
@@ -7,13 +9,13 @@ struct Layout<M: Memory> {
     align: M::Size,
 }
 
-impl <M: Memory> Layout<M> {
+impl<M: Memory> Layout<M> {
     pub fn of<T>() -> Layout<M> {
-        Layout::{ size: @size_of::<T, M>(), align: @align_of::<T, M>() }
+        Layout::{ size: size_of::<T>(), align: align_of::<T>() }
     }
 
     pub fn array<T>(count: M::Size) -> Layout<M> {
-        Layout::{ size: @size_of::<T, M>() * count, align: @align_of::<T, M>() }
+        Layout::{ size: size_of::<T>() * count, align: align_of::<T>() }
     }
 }
 
@@ -52,7 +54,7 @@ struct Vec<T, A: Allocator> {
     alloc: A,
 }
 
-impl <T, A: Allocator> Vec<T, A> {
+impl<T, A: Allocator> Vec<T, A> {
     #[inline]
     pub fn new(alloc: A) -> Vec<T, A> {
         Vec::{ buf: ptr::null(), len: 0, cap: 0, alloc }

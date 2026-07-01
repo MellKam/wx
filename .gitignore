@@ -3,3 +3,4 @@ target/
 out/
 node_modules/
 vscode/bin
+cli/npm/*/bin

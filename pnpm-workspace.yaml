@@ -1,0 +1,7 @@
+packages:
+  - 'vscode'
+  - 'cli'
+  - 'cli/npm/*'
+
+minimumReleaseAgeExclude:
+  - '@types/node@26.1.0'

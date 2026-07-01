@@ -1585,6 +1585,36 @@ fn test_memory_invalid_kind_is_error() {
 }
 
 #[test]
+fn test_memory_missing_std_import_does_not_panic() {
+	// Regression test: without `use std::*;` in scope, `Memory` is an
+	// unresolved trait bound, so the memory's kind can't be determined.
+	// This must not leave `MEM` stuck as `SymbolKind::Pending`, which
+	// used to panic (`unreachable!`) as soon as anything referenced it.
+	let mut builder = vfs::CompilationGraphBuilder::new();
+	let stdlib_id = builder.load_stdlib().unwrap();
+	let root_id = builder
+		.load_binary(
+			"main.wx".to_string(),
+			&vfs::VirtualFileSource::new(HashMap::from([(
+				"main.wx".to_string(),
+				indoc! {"
+                    memory MEM: Memory where { Size = u32 };
+                    pub fn f() -> u32 { MEM::MEMORY_INDEX }
+                "}
+				.to_string(),
+			)])),
+		)
+		.unwrap();
+	let mut graph = builder.build(root_id, stdlib_id);
+	let tir = TIR::build(&mut graph);
+	assert!(
+		tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::InvalidMemoryKind.code())),
+		"expected invalid memory kind diagnostic"
+	);
+}
+
+#[test]
 fn test_fn_declaration_without_body_is_error() {
 	// A bare `fn` with no body and no #[intrinsic] must produce E0011.
 	let case = TestCase::new(indoc! {"

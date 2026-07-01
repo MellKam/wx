@@ -1,0 +1,8 @@
+{
+	"name": "@wx-lang/cli-darwin-x64",
+	"version": "0.1.0",
+	"description": "Native wx CLI binary for macOS (x64)",
+	"os": ["darwin"],
+	"cpu": ["x64"],
+	"files": ["bin"]
+}

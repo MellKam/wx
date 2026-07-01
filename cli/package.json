@@ -1,20 +1,22 @@
 {
-	"name": "wx-compiler",
+	"name": "@wx-lang/cli",
 	"version": "0.1.0",
-	"files": [
-		"wx-compiler"
-	],
-	"description": "CLI for wx-compiler-wasm",
+	"description": "Native CLI for the WX compiler (compile/check/format WX source to WebAssembly)",
 	"author": {
 		"name": "Artem Melnyk"
 	},
 	"type": "module",
 	"bin": {
-		"wx-compiler": "./wx-compiler"
+		"wx": "./bin.js"
 	},
-	"dependencies": {
-		"wx-compiler-wasm": "0.1.0",
-		"commander": "14.0.3"
+	"files": [
+		"bin.js"
+	],
+	"optionalDependencies": {
+		"@wx-lang/cli-darwin-arm64": "workspace:*",
+		"@wx-lang/cli-darwin-x64": "workspace:*",
+		"@wx-lang/cli-linux-x64": "workspace:*",
+		"@wx-lang/cli-win32-x64": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/node": "25.5.0"

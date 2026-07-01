@@ -1697,6 +1697,41 @@ impl<'ast> Builder<'ast, '_> {
 		}
 	}
 
+	/// Registers a `Memory32` stub for a `memory` declaration whose kind
+	/// bound failed to resolve (e.g. an unresolved/invalid trait bound,
+	/// often because `Memory` wasn't brought into scope). Without this,
+	/// the name stays `SymbolKind::Pending` forever and any later use of
+	/// it hits the "signature resolved but symbol still pending"
+	/// unreachable in `resolve_symbol_kind_to_expression`.
+	fn register_placeholder_memory(
+		&mut self,
+		resolve_context: ResolveContext,
+		id: ast::DefId,
+		name: &ast::Spanned<SymbolU32>,
+	) {
+		let memory_index = self.tir.memories.len() as u32;
+		let kind = MemoryKind::Memory32;
+		self.tir.memories.push(Memory {
+			id,
+			file_id: resolve_context.file_id,
+			kind,
+			name: name.clone(),
+			min_pages: None,
+			max_pages: None,
+		});
+		self.tir.item_lookup.insert(id, ItemIndex::Memory(memory_index));
+		self.insert_symbol(
+			resolve_context.namespace,
+			(SymbolNamespace::Type, name.inner),
+			SymbolKind::Memory { memory_index, kind },
+		);
+		self.insert_symbol(
+			resolve_context.namespace,
+			(SymbolNamespace::Value, name.inner),
+			SymbolKind::Memory { memory_index, kind },
+		);
+	}
+
 	fn lookup_global_symbol(
 		&self,
 		namespace: Option<NamespaceIndex>,
@@ -4746,6 +4781,11 @@ impl<'ast> Builder<'ast, '_> {
 									kind.span,
 								)),
 							);
+							self.register_placeholder_memory(
+								resolve_context,
+								*id,
+								name,
+							);
 							self.sig_state.get_mut(&def_id).unwrap().state =
 								ComputeState::Done;
 							return;
@@ -4801,6 +4841,11 @@ impl<'ast> Builder<'ast, '_> {
 									resolve_context.file_id,
 									kind.span,
 								)),
+							);
+							self.register_placeholder_memory(
+								resolve_context,
+								*id,
+								name,
 							);
 							self.sig_state.get_mut(&def_id).unwrap().state =
 								ComputeState::Done;

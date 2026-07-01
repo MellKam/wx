@@ -1,0 +1,117 @@
+name: Publish CLI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Publish (${{ matrix.npm-pkg }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            npm-pkg: win32-x64
+          - os: ubuntu-latest
+            rust-target: x86_64-unknown-linux-gnu
+            npm-pkg: linux-x64
+          - os: macos-latest
+            rust-target: x86_64-apple-darwin
+            npm-pkg: darwin-x64
+          - os: macos-latest
+            rust-target: aarch64-apple-darwin
+            npm-pkg: darwin-arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Build wx CLI
+        run: cargo build --release --manifest-path crates/wx-cli/Cargo.toml --target ${{ matrix.rust-target }}
+
+      - name: Stage Binary
+        shell: bash
+        run: |
+          mkdir -p cli/npm/${{ matrix.npm-pkg }}/bin
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp target/${{ matrix.rust-target }}/release/wx.exe cli/npm/${{ matrix.npm-pkg }}/bin/wx.exe
+          else
+            cp target/${{ matrix.rust-target }}/release/wx cli/npm/${{ matrix.npm-pkg }}/bin/wx
+          fi
+
+      - name: Package Archive
+        id: package
+        shell: bash
+        run: |
+          bin_name="wx"
+          [ "${{ matrix.os }}" = "windows-latest" ] && bin_name="wx.exe"
+          cd "cli/npm/${{ matrix.npm-pkg }}/bin"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            archive="wx-${{ matrix.rust-target }}.zip"
+            7z a "$archive" "$bin_name"
+          else
+            archive="wx-${{ matrix.rust-target }}.tar.gz"
+            tar -czf "$archive" "$bin_name"
+          fi
+          mv "$archive" "$GITHUB_WORKSPACE/$archive"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Release Asset
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.package.outputs.archive }}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish Platform Package
+        working-directory: cli/npm/${{ matrix.npm-pkg }}
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-main:
+    name: Publish @wx-lang/cli
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: "11.9.0"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # cli/package.json references the platform packages via "workspace:*";
+      # `pnpm publish` rewrites those to real version numbers, which plain
+      # `npm publish` cannot do.
+      - name: Publish
+        working-directory: cli
+        run: pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

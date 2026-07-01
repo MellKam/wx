@@ -1,5 +1,5 @@
 import type { editor, MarkerSeverity, MarkerTag } from "monaco-editor";
-import { compile as compileWX } from "wx-compiler-wasm";
+import { compile as compileWX } from "@wx-lang/wasm-bindings";
 
 export interface Diagnostic {
 	code: undefined;
