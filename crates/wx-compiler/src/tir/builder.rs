@@ -1218,7 +1218,7 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 
 	let tir = TIR {
 		diagnostics: Vec::new(),
-		type_pool: vec![
+		types: vec![
 			// Order MUST match the IDX constants defined at the top of this file.
 			Type::Error,
 			Type::Infer,
@@ -1243,6 +1243,8 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 		globals: Vec::new(),
 		exports: HashMap::new(),
 		namespaces: Vec::new(),
+		root_symbols: HashMap::new(),
+		root_wildcard_imports: Vec::new(),
 		module_decls: Vec::new(),
 		import_decls: Vec::new(),
 		enums: Vec::new(),
@@ -1261,7 +1263,7 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 		item_lookup: HashMap::new(),
 	};
 	let type_index_lookup = HashMap::from_iter(
-		tir.type_pool
+		tir.types
 			.iter()
 			.enumerate()
 			.map(|(idx, ty)| (ty.clone(), TypeIndex(idx as u32))),
@@ -1380,6 +1382,9 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 
 	builder.report_unused_items();
 
+	builder.tir.root_symbols = builder.symbol_lookup;
+	builder.tir.root_wildcard_imports = builder.root_wildcard_imports;
+
 	builder.tir
 }
 
@@ -1388,7 +1393,7 @@ impl<'ast> Builder<'ast, '_> {
 		if ty == self_type {
 			return true;
 		}
-		match &self.tir.type_pool[ty.as_usize()] {
+		match &self.tir.types[ty.as_usize()] {
 			Type::Pointer { to, .. } => *to == self_type,
 			_ => false,
 		}
@@ -1398,8 +1403,8 @@ impl<'ast> Builder<'ast, '_> {
 		if let Some(&idx) = self.type_index_lookup.get(&ty) {
 			idx
 		} else {
-			let idx = TypeIndex(self.tir.type_pool.len() as u32);
-			self.tir.type_pool.push(ty.clone());
+			let idx = TypeIndex(self.tir.types.len() as u32);
+			self.tir.types.push(ty.clone());
 			self.type_index_lookup.insert(ty, idx);
 			idx
 		}
@@ -1426,19 +1431,19 @@ impl<'ast> Builder<'ast, '_> {
 				mutable: false,
 			},
 		) = (
-			&self.tir.type_pool[a.as_usize()],
-			&self.tir.type_pool[b.as_usize()],
+			&self.tir.types[a.as_usize()],
+			&self.tir.types[b.as_usize()],
 		) {
 			if a_to == b_to && a_mem == b_mem {
 				return true;
 			}
 		}
 		// FunctionItem coerces implicitly to its matching Function type.
-		let (id, type_args) = match &self.tir.type_pool[a.as_usize()] {
+		let (id, type_args) = match &self.tir.types[a.as_usize()] {
 			Type::FunctionItem { id, type_args } => (*id, type_args.clone()),
 			_ => return false,
 		};
-		if !matches!(self.tir.type_pool[b.as_usize()], Type::Function { .. }) {
+		if !matches!(self.tir.types[b.as_usize()], Type::Function { .. }) {
 			return false;
 		}
 		let fi = self.tir.expect_function_index(id) as usize;
@@ -1472,8 +1477,8 @@ impl<'ast> Builder<'ast, '_> {
 				type_args: ref b_args,
 			},
 		) = (
-			&self.tir.type_pool[a.as_usize()],
-			&self.tir.type_pool[b.as_usize()],
+			&self.tir.types[a.as_usize()],
+			&self.tir.types[b.as_usize()],
 		) {
 			let a_args = a_args.clone();
 			let b_args = b_args.clone();
@@ -1602,7 +1607,7 @@ impl<'ast> Builder<'ast, '_> {
 		root_struct_index: u32,
 		visited: &mut Vec<u32>,
 	) -> bool {
-		match &self.tir.type_pool[ty.as_usize()] {
+		match &self.tir.types[ty.as_usize()] {
 			Type::Struct { struct_index, .. } => {
 				if *struct_index == root_struct_index {
 					return true;
@@ -2018,7 +2023,7 @@ impl<'ast> Builder<'ast, '_> {
 		if self.interner.resolve(identifier.inner) == Some("Self") {
 			if let Some(self_ty) = scope.and_then(|s| s.self_type) {
 				if let Type::TypeParam { owner, param_index } =
-					self.tir.type_pool[self_ty.as_usize()]
+					self.tir.types[self_ty.as_usize()]
 				{
 					self.record_type_param_access(
 						owner,
@@ -2261,7 +2266,7 @@ impl<'ast> Builder<'ast, '_> {
 						return TypeIndex::ERROR;
 					};
 					let struct_index =
-						match &self.tir.type_pool[base_ty.as_usize()] {
+						match &self.tir.types[base_ty.as_usize()] {
 							Type::Struct { struct_index, .. } => *struct_index,
 							_ => {
 								self.tir.diagnostics.push(
@@ -2365,7 +2370,7 @@ impl<'ast> Builder<'ast, '_> {
 				if last.type_args.is_empty() {
 					return last_ty;
 				}
-				let struct_index = match &self.tir.type_pool[last_ty.as_usize()]
+				let struct_index = match &self.tir.types[last_ty.as_usize()]
 				{
 					Type::Struct { struct_index, .. } => *struct_index,
 					_ => {
@@ -2534,7 +2539,7 @@ impl<'ast> Builder<'ast, '_> {
 						Err(()) => return TypeIndex::ERROR,
 					}
 				}
-				match &self.tir.type_pool[memory_ty.as_usize()] {
+				match &self.tir.types[memory_ty.as_usize()] {
 					Type::Memory { .. }
 					| Type::TypeParam { .. }
 					| Type::AssocTypeProjection { .. } => {}
@@ -2798,7 +2803,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn type_param_bounds(&self, ty: TypeIndex) -> &[TraitBound] {
 		let Type::TypeParam { owner, param_index } =
-			self.tir.type_pool[ty.as_usize()]
+			self.tir.types[ty.as_usize()]
 		else {
 			return &[];
 		};
@@ -3086,12 +3091,7 @@ impl<'ast> Builder<'ast, '_> {
 				let mut ids: Vec<ast::DefId> = Vec::new();
 				for ti in items.iter() {
 					match &ti.inner.inner {
-						ast::TraitItem::Function { id, signature, .. } => {
-							self.insert_symbol(
-								namespace,
-								(SymbolNamespace::Value, signature.name.inner),
-								SymbolKind::Pending(*id),
-							);
+						ast::TraitItem::Function { id, .. } => {
 							self.ast_nodes.push(AstEntry {
 								def_id: *id,
 								file_id,
@@ -3103,12 +3103,7 @@ impl<'ast> Builder<'ast, '_> {
 							});
 							ids.push(*id);
 						}
-						ast::TraitItem::Const { id, name, .. } => {
-							self.insert_symbol(
-								namespace,
-								(SymbolNamespace::Value, name.inner),
-								SymbolKind::Pending(*id),
-							);
+						ast::TraitItem::Const { id, .. } => {
 							self.ast_nodes.push(AstEntry {
 								def_id: *id,
 								file_id,
@@ -3377,6 +3372,7 @@ impl<'ast> Builder<'ast, '_> {
 				self.tir.typesets.push(TypeSet {
 					id: *id,
 					file_id,
+					namespace,
 					name: name.clone(),
 					pub_span: *pub_span,
 					members: Box::new([]),
@@ -3833,6 +3829,7 @@ impl<'ast> Builder<'ast, '_> {
 						id: *id,
 						file_id: resolve_context.file_id,
 						namespace: resolve_context.namespace,
+						parent: None,
 						body: None,
 						type_params: signature
 							.type_params
@@ -3945,6 +3942,7 @@ impl<'ast> Builder<'ast, '_> {
 							id: *id,
 							file_id: resolve_context.file_id,
 							namespace: resolve_context.namespace,
+							parent: Some(ItemParent::Impl(self_type)),
 							pub_span: None,
 							name: name.clone(),
 							ty: ast::Spanned {
@@ -4066,6 +4064,7 @@ impl<'ast> Builder<'ast, '_> {
 						id: *id,
 						file_id: resolve_context.file_id,
 						namespace: resolve_context.namespace,
+						parent: Some(ItemParent::Impl(self_type)),
 						body: None,
 						type_params: Box::new([]),
 						type_param_parent: None,
@@ -4149,7 +4148,7 @@ impl<'ast> Builder<'ast, '_> {
 					impl_target,
 				);
 
-				let target = match &self.tir.type_pool[self_type.as_usize()] {
+				let target = match &self.tir.types[self_type.as_usize()] {
 					Type::TypeParam { .. } => {
 						self.tir.diagnostics.push(
                             Diagnostic::error()
@@ -4226,6 +4225,7 @@ impl<'ast> Builder<'ast, '_> {
 					id: *id,
 					file_id: resolve_context.file_id,
 					namespace: resolve_context.namespace,
+					parent: Some(ItemParent::GenericImpl(block_index)),
 					body: None,
 					type_params: signature
 						.type_params
@@ -4374,7 +4374,7 @@ impl<'ast> Builder<'ast, '_> {
 
 				// Populate the O(1) dispatch index.
 				if let Some(kind) = GenericImplTargetKind::from_type(
-					&self.tir.type_pool[self_type.as_usize()],
+					&self.tir.types[self_type.as_usize()],
 				) {
 					self.tir.generic_impl_dispatch.insert(
 						(kind, signature.name.inner),
@@ -4536,6 +4536,7 @@ impl<'ast> Builder<'ast, '_> {
 						id: *id,
 						file_id: resolve_context.file_id,
 						namespace: resolve_context.namespace,
+						parent: Some(ItemParent::Trait(trait_index)),
 						body: None,
 						pub_span: None,
 						type_params: signature
@@ -4616,11 +4617,6 @@ impl<'ast> Builder<'ast, '_> {
 						signature.name.inner,
 						ImplEntry::Method(func_index),
 					);
-					self.insert_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Value, signature.name.inner),
-						SymbolKind::Function { func_index },
-					);
 				}
 			}
 
@@ -4648,6 +4644,7 @@ impl<'ast> Builder<'ast, '_> {
 						id: *id,
 						file_id: resolve_context.file_id,
 						namespace: resolve_context.namespace,
+						parent: Some(ItemParent::Trait(trait_index)),
 						pub_span: None,
 						name: name.clone(),
 						ty: Spanned {
@@ -4666,11 +4663,6 @@ impl<'ast> Builder<'ast, '_> {
 							id: *id,
 							ty: ty_idx,
 						},
-					);
-					self.insert_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Value, name.inner),
-						SymbolKind::Const { const_index },
 					);
 				}
 			}
@@ -5002,6 +4994,7 @@ impl<'ast> Builder<'ast, '_> {
 								id: *id,
 								file_id: resolve_context.file_id,
 								namespace: resolve_context.namespace,
+								parent: None,
 								pub_span: *pub_span,
 								name: name.clone(),
 								ty: ast::Spanned {
@@ -5045,6 +5038,7 @@ impl<'ast> Builder<'ast, '_> {
 						id: *id,
 						file_id: resolve_context.file_id,
 						namespace: Some(import_ns_idx),
+						parent: None,
 						signature_index,
 						body: None,
 						type_params: Box::new([]),
@@ -5320,6 +5314,7 @@ impl<'ast> Builder<'ast, '_> {
 						id: *id,
 						file_id: resolve_context.file_id,
 						namespace: resolve_context.namespace,
+						parent: Some(ItemParent::Impl(self_type)),
 						body: None,
 						type_params: Box::new([]),
 						type_param_parent: None,
@@ -5390,6 +5385,7 @@ impl<'ast> Builder<'ast, '_> {
 							id: *id,
 							file_id: resolve_context.file_id,
 							namespace: resolve_context.namespace,
+							parent: Some(ItemParent::Impl(self_type)),
 							pub_span: None,
 							name: name.clone(),
 							ty: ast::Spanned {
@@ -5919,7 +5915,7 @@ impl<'ast> Builder<'ast, '_> {
 		// Final segment: look up the symbol in the final namespace and convert to BoundKind.
 		let last = segs.last().unwrap();
 		let Type::Module { namespace_idx } =
-			self.tir.type_pool[namespace_ty.as_usize()].clone()
+			self.tir.types[namespace_ty.as_usize()].clone()
 		else {
 			self.tir.diagnostics.push(
 				Diagnostic::error()
@@ -6213,7 +6209,7 @@ impl<'ast> Builder<'ast, '_> {
 		ty: TypeIndex,
 		type_args: &[TypeIndex],
 	) -> TypeIndex {
-		match &self.tir.type_pool[ty.as_usize()] {
+		match &self.tir.types[ty.as_usize()] {
 			// Types that can never contain TypeParams — return immediately.
 			Type::Unit
 			| Type::Bool
@@ -6250,7 +6246,7 @@ impl<'ast> Builder<'ast, '_> {
 				let (base, assoc_name, trait_index) =
 					(*base, *assoc_name, *trait_index);
 				let substituted = self.substitute_type(base, type_args);
-				match &self.tir.type_pool[substituted.as_usize()] {
+				match &self.tir.types[substituted.as_usize()] {
 					Type::TypeParam { .. }
 					| Type::AssocTypeProjection { .. } => {
 						if substituted == base {
@@ -6450,7 +6446,7 @@ impl<'ast> Builder<'ast, '_> {
 		type_args: &[TypeIndex],
 	) -> TypeIndex {
 		let result = self.substitute_type(ty, type_args);
-		match &self.tir.type_pool[result.as_usize()] {
+		match &self.tir.types[result.as_usize()] {
 			Type::TypeParam { .. }
 			| Type::Integer
 			| Type::Float
@@ -6476,8 +6472,8 @@ impl<'ast> Builder<'ast, '_> {
 		}
 
 		match (
-			&self.tir.type_pool[pattern_ty.as_usize()],
-			&self.tir.type_pool[actual_ty.as_usize()],
+			&self.tir.types[pattern_ty.as_usize()],
+			&self.tir.types[actual_ty.as_usize()],
 		) {
 			(Type::TypeParam { param_index, .. }, _) => {
 				// First binding wins — don't overwrite a slot already set by turbofish or an earlier argument.
@@ -6629,8 +6625,8 @@ impl<'ast> Builder<'ast, '_> {
 			return true;
 		}
 		match (
-			&self.tir.type_pool[actual.as_usize()],
-			&self.tir.type_pool[expected.as_usize()],
+			&self.tir.types[actual.as_usize()],
+			&self.tir.types[expected.as_usize()],
 		) {
 			(
 				Type::Struct {
@@ -6682,7 +6678,7 @@ impl<'ast> Builder<'ast, '_> {
 		if ty == TypeIndex::INFER {
 			return true;
 		}
-		match &self.tir.type_pool[ty.as_usize()] {
+		match &self.tir.types[ty.as_usize()] {
 			Type::Struct { args, .. } => {
 				args.iter().any(|&a| self.contains_infer(a))
 			}
@@ -8113,7 +8109,7 @@ impl<'ast> Builder<'ast, '_> {
 		member_name: SymbolU32,
 	) -> Option<(usize, Box<[TypeIndex]>)> {
 		let outer_kind = GenericImplTargetKind::from_type(
-			&self.tir.type_pool[receiver_ty.as_usize()],
+			&self.tir.types[receiver_ty.as_usize()],
 		)?;
 		let &block_idx = self
 			.tir
@@ -8140,7 +8136,7 @@ impl<'ast> Builder<'ast, '_> {
 		expr_span: TextSpan,
 	) -> Result<Expression, ()> {
 		let object = self.build_expression(func_ctx, access_ctx, object)?;
-		let entry = match &self.tir.type_pool[object.ty.as_usize()] {
+		let entry = match &self.tir.types[object.ty.as_usize()] {
 			Type::TypeParam { owner, param_index } => self
 				.tir
 				.type_param_info(*owner, *param_index as usize)
@@ -8187,7 +8183,7 @@ impl<'ast> Builder<'ast, '_> {
 
 		// Check struct fields
 		if let Type::Struct { struct_index, args } =
-			self.tir.type_pool[object.ty.as_usize()].clone()
+			self.tir.types[object.ty.as_usize()].clone()
 		{
 			if let Some(&field_index) = self.tir.structs[struct_index as usize]
 				.lookup
@@ -8415,7 +8411,7 @@ impl<'ast> Builder<'ast, '_> {
 		if !first.type_args.is_empty() {
 			let resolve_context = func_ctx.resolve_context.clone();
 			let struct_index =
-				match &self.tir.type_pool[namespace_ty.as_usize()] {
+				match &self.tir.types[namespace_ty.as_usize()] {
 					Type::Struct { struct_index, .. } => *struct_index,
 					_ => {
 						self.tir.diagnostics.push(
@@ -8476,9 +8472,9 @@ impl<'ast> Builder<'ast, '_> {
 		namespace_span: TextSpan,
 		member: Spanned<SymbolU32>,
 	) -> Result<TypeIndex, ()> {
-		match &self.tir.type_pool[namespace_ty.as_usize()].clone() {
+		match &self.tir.types[namespace_ty.as_usize()].clone() {
 			Type::Module { namespace_idx } => {
-				match &self.tir.type_pool[namespace_ty.as_usize()] {
+				match &self.tir.types[namespace_ty.as_usize()] {
 					Type::Module { namespace_idx } => self.tir.namespaces
 						[*namespace_idx as usize]
 						.accesses
@@ -8749,7 +8745,7 @@ impl<'ast> Builder<'ast, '_> {
 			Some(ImplEntry::AssociatedType { .. }) | None => {}
 		}
 
-		match &self.tir.type_pool[namespace.inner.as_usize()].clone() {
+		match &self.tir.types[namespace.inner.as_usize()].clone() {
 			Type::Memory { .. } => {
 				self.tir.diagnostics.push(report_undeclared_identifier(
 					SourceSpan::new(file_id, member.span),
@@ -8859,7 +8855,7 @@ impl<'ast> Builder<'ast, '_> {
 	) -> Result<Expression, ()> {
 		let file_id = func_ctx.resolve_context.file_id;
 
-		match &self.tir.type_pool[namespace.inner.as_usize()] {
+		match &self.tir.types[namespace.inner.as_usize()] {
 			Type::Module { namespace_idx } => self.tir.namespaces
 				[*namespace_idx as usize]
 				.accesses
@@ -9356,8 +9352,8 @@ impl<'ast> Builder<'ast, '_> {
 			return true;
 		}
 		match (
-			&self.tir.type_pool[a.as_usize()],
-			&self.tir.type_pool[b.as_usize()],
+			&self.tir.types[a.as_usize()],
+			&self.tir.types[b.as_usize()],
 		) {
 			(
 				Type::Pointer { memory: a_mem, .. },
@@ -9398,7 +9394,7 @@ impl<'ast> Builder<'ast, '_> {
 	}
 
 	fn type_scalar(&self, ty: TypeIndex) -> Option<WasmScalar> {
-		match &self.tir.type_pool[ty.as_usize()] {
+		match &self.tir.types[ty.as_usize()] {
 			Type::Bool
 			| Type::U8
 			| Type::I8
@@ -9416,7 +9412,7 @@ impl<'ast> Builder<'ast, '_> {
 			Type::F32 => Some(WasmScalar::F32),
 			Type::F64 => Some(WasmScalar::F64),
 			Type::Pointer { memory, .. } => {
-				match &self.tir.type_pool[memory.as_usize()] {
+				match &self.tir.types[memory.as_usize()] {
 					Type::Memory { id, .. } => {
 						let kind = self.tir.memories
 							[self.tir.expect_memory_index(*id) as usize]
@@ -9869,7 +9865,7 @@ impl<'ast> Builder<'ast, '_> {
 		let mut right = self.build_expression(
 			ctx,
 			AccessContext {
-				expected_type: match &self.tir.type_pool[left.ty.as_usize()] {
+				expected_type: match &self.tir.types[left.ty.as_usize()] {
 					Type::Integer
 					| Type::Float
 					| Type::Error
@@ -10158,7 +10154,7 @@ impl<'ast> Builder<'ast, '_> {
 			(left_type, right_type)
 				if left_type == right_type
 					&& matches!(
-						self.tir.type_pool[left_type.as_usize()],
+						self.tir.types[left_type.as_usize()],
 						Type::Enum { .. }
 					) =>
 			{
@@ -10178,8 +10174,8 @@ impl<'ast> Builder<'ast, '_> {
 					ast::BinaryOp::Eq | ast::BinaryOp::NotEq
 				) && matches!(
 					(
-						&self.tir.type_pool[left_type.as_usize()],
-						&self.tir.type_pool[right_type.as_usize()],
+						&self.tir.types[left_type.as_usize()],
+						&self.tir.types[right_type.as_usize()],
 					),
 					(
 						Type::Pointer { to: lt, memory: lm, .. },
@@ -11004,7 +11000,7 @@ impl<'ast> Builder<'ast, '_> {
 		let mut right = self.build_expression(
 			ctx,
 			AccessContext {
-				expected_type: match &self.tir.type_pool[left.ty.as_usize()] {
+				expected_type: match &self.tir.types[left.ty.as_usize()] {
 					Type::Integer
 					| Type::Float
 					| Type::Error
@@ -11181,7 +11177,7 @@ impl<'ast> Builder<'ast, '_> {
 			trait_index,
 			assoc_name,
 			..
-		} = &self.tir.type_pool[ty.as_usize()]
+		} = &self.tir.types[ty.as_usize()]
 		else {
 			return false;
 		};
@@ -11195,7 +11191,7 @@ impl<'ast> Builder<'ast, '_> {
 		let Type::TypeParam {
 			ref owner,
 			param_index,
-		} = self.tir.type_pool[ty.as_usize()]
+		} = self.tir.types[ty.as_usize()]
 		else {
 			return None;
 		};
@@ -11209,7 +11205,7 @@ impl<'ast> Builder<'ast, '_> {
 	/// `TypeParam` (via its `typeset_bound` field) or `AssocTypeProjection`
 	/// (via the trait's associated-type `typeset_bound`).
 	fn typeset_bound_for(&self, ty: TypeIndex) -> Option<TypesetIndex> {
-		match &self.tir.type_pool[ty.as_usize()] {
+		match &self.tir.types[ty.as_usize()] {
 			Type::TypeParam { .. } => self.type_param_typeset_bound(ty),
 			Type::AssocTypeProjection {
 				trait_index,
@@ -11263,7 +11259,7 @@ impl<'ast> Builder<'ast, '_> {
 			if arg_ty == TypeIndex::ERROR {
 				continue;
 			}
-			let satisfied = match &self.tir.type_pool[arg_ty.as_usize()] {
+			let satisfied = match &self.tir.types[arg_ty.as_usize()] {
 				// Nested generic: the caller's TypeParam forwards here — check its typeset bound.
 				Type::TypeParam { .. } => self
 					.type_param_typeset_bound(arg_ty)
@@ -11551,13 +11547,13 @@ impl<'ast> Builder<'ast, '_> {
 			},
 			ast_callee,
 		)?;
-		let signature = match &self.tir.type_pool[callee.ty.as_usize()] {
+		let signature = match &self.tir.types[callee.ty.as_usize()] {
 			Type::Function { signature } => signature.clone(),
 			Type::FunctionItem { id, .. } => {
 				let signature_index = self.tir.functions
 					[self.tir.expect_function_index(*id) as usize]
 					.signature_index;
-				match &self.tir.type_pool[signature_index.as_usize()] {
+				match &self.tir.types[signature_index.as_usize()] {
 					Type::Function { signature } => signature.clone(),
 					_ => unreachable!(),
 				}
@@ -11668,7 +11664,7 @@ impl<'ast> Builder<'ast, '_> {
 					// impl-level args pre-filled and remaining slots as INFER) by the time
 					// we get here — build_namespace_member_expression enforces this invariant.
 					let type_args: Box<[TypeIndex]> =
-						match &self.tir.type_pool[callee.ty.as_usize()] {
+						match &self.tir.types[callee.ty.as_usize()] {
 							Type::FunctionItem { type_args, .. } => {
 								type_args.clone()
 							}
@@ -11725,7 +11721,7 @@ impl<'ast> Builder<'ast, '_> {
 		ty: TypeIndex,
 		method_name: SymbolU32,
 	) -> Option<ImplEntry> {
-		match &self.tir.type_pool[ty.as_usize()] {
+		match &self.tir.types[ty.as_usize()] {
 			Type::TypeParam { owner, param_index } => self
 				.tir
 				.type_param_info(*owner, *param_index as usize)
@@ -11760,7 +11756,7 @@ impl<'ast> Builder<'ast, '_> {
 		method: Spanned<SymbolU32>,
 	) -> Result<(FunctionIndex, Box<[TypeIndex]>), ()> {
 		// Pointer types cannot have impl blocks, so look up methods on the inner type directly.
-		let lookup_ty = match &self.tir.type_pool[ty.as_usize()] {
+		let lookup_ty = match &self.tir.types[ty.as_usize()] {
 			Type::Pointer { to, .. } => *to,
 			_ => ty,
 		};
@@ -11854,7 +11850,7 @@ impl<'ast> Builder<'ast, '_> {
 		let id = self.tir.functions[func_index as usize].id;
 		let signature_index =
 			self.tir.functions[func_index as usize].signature_index;
-		let signature = match &self.tir.type_pool[signature_index.as_usize()] {
+		let signature = match &self.tir.types[signature_index.as_usize()] {
 			Type::Function { signature } => signature.clone(),
 			_ => unreachable!(),
 		};
@@ -12291,7 +12287,7 @@ impl<'ast> Builder<'ast, '_> {
 				)));
 			Err(())
 		} else if matches!(
-			self.tir.type_pool[target_idx.as_usize()],
+			self.tir.types[target_idx.as_usize()],
 			Type::Pointer { .. }
 		) {
 			match self.type_scalar(target_idx) {
@@ -12538,7 +12534,7 @@ impl<'ast> Builder<'ast, '_> {
 			)?
 		};
 
-		let struct_index = match &self.tir.type_pool[struct_ty.as_usize()] {
+		let struct_index = match &self.tir.types[struct_ty.as_usize()] {
 			Type::Struct { struct_index, .. } => *struct_index,
 			_ => {
 				let name = self
@@ -12580,11 +12576,11 @@ impl<'ast> Builder<'ast, '_> {
 		} else {
 			// `struct_ty` may already carry args when the path resolved to a
 			// fully-instantiated type — e.g. `Self` inside `impl<M,T> Vec<M,T>`.
-			match &self.tir.type_pool[struct_ty.as_usize()] {
+			match &self.tir.types[struct_ty.as_usize()] {
 				Type::Struct { args, .. } if args.len() == type_params_len => {
 					args.clone()
 				}
-				_ => match &self.tir.type_pool
+				_ => match &self.tir.types
 					[access_ctx.expected_type.as_usize()]
 				{
 					Type::Struct {
@@ -12825,7 +12821,7 @@ impl<'ast> Builder<'ast, '_> {
 
 		// If the expected type is a tuple, use its element types as hints.
 		let expected_elems: Option<Box<[TypeIndex]>> =
-			match &self.tir.type_pool[access_ctx.expected_type.as_usize()] {
+			match &self.tir.types[access_ctx.expected_type.as_usize()] {
 				Type::Tuple { elements }
 					if elements.len() == ast_elements.len() =>
 				{
@@ -12906,7 +12902,7 @@ impl<'ast> Builder<'ast, '_> {
 		)?;
 
 		let (inner_ty, memory, mutable) =
-			match &self.tir.type_pool[pointer.ty.as_usize()] {
+			match &self.tir.types[pointer.ty.as_usize()] {
 				Type::Pointer {
 					to,
 					memory,
@@ -12983,7 +12979,7 @@ impl<'ast> Builder<'ast, '_> {
 	}
 
 	fn pointer_type_for_memory(&mut self, memory: TypeIndex) -> TypeIndex {
-		match &self.tir.type_pool[memory.as_usize()].clone() {
+		match &self.tir.types[memory.as_usize()].clone() {
 			Type::Memory { id, .. } => {
 				let idx = self.tir.expect_memory_index(*id);
 				match self.tir.memories[idx as usize].kind {
@@ -13038,7 +13034,7 @@ impl<'ast> Builder<'ast, '_> {
 			SourceSpan::new(func_ctx.resolve_context.file_id, span);
 
 		let (expected_of, expected_memory, expected_size, expected_mutable) =
-			match self.tir.type_pool[access_ctx.expected_type.as_usize()]
+			match self.tir.types[access_ctx.expected_type.as_usize()]
 				.clone()
 			{
 				Type::Array {
@@ -13173,7 +13169,7 @@ impl<'ast> Builder<'ast, '_> {
 			SourceSpan::new(func_ctx.resolve_context.file_id, span);
 
 		let (expected_of, expected_memory, expected_mutable) =
-			match self.tir.type_pool[access_ctx.expected_type.as_usize()]
+			match self.tir.types[access_ctx.expected_type.as_usize()]
 				.clone()
 			{
 				Type::Array {
@@ -13208,7 +13204,7 @@ impl<'ast> Builder<'ast, '_> {
 			};
 
 		if let Type::Array { size, .. } =
-			self.tir.type_pool[access_ctx.expected_type.as_usize()].clone()
+			self.tir.types[access_ctx.expected_type.as_usize()].clone()
 		{
 			if count != size {
 				self.tir.diagnostics.push(report_array_size_mismatch(
@@ -13302,7 +13298,7 @@ impl<'ast> Builder<'ast, '_> {
 		)?;
 
 		let (elem_type, memory, mutable) =
-			match self.tir.type_pool[object.ty.as_usize()].clone() {
+			match self.tir.types[object.ty.as_usize()].clone() {
 				Type::Array {
 					of,
 					memory,
@@ -13403,7 +13399,7 @@ impl<'ast> Builder<'ast, '_> {
 		)?;
 
 		let (elem_type, memory, mutable) =
-			match self.tir.type_pool[object.ty.as_usize()].clone() {
+			match self.tir.types[object.ty.as_usize()].clone() {
 				Type::Array {
 					of,
 					memory,

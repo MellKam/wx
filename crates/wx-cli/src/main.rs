@@ -79,15 +79,11 @@ fn parse_display_style(s: &str) -> DisplayStyle {
 
 fn load_compilation(file_path: &str) -> vfs::CompilationGraph {
 	let mut builder = vfs::CompilationGraphBuilder::new();
-	let stdlib_id = builder.load_stdlib().unwrap();
+	let stdlib_id = builder.load_stdlib();
 	match builder.load_binary(file_path.to_string(), &vfs::NativeFileSource) {
 		Ok(root_id) => builder.build(root_id, stdlib_id),
-		Err(vfs::LoadError::ReadFailed { path }) => {
-			eprintln!("error: cannot read file '{path}'");
-			std::process::exit(1);
-		}
-		Err(_) => {
-			eprintln!("error: failed to load compilation");
+		Err(()) => {
+			eprintln!("error: cannot read file '{file_path}'");
 			std::process::exit(1);
 		}
 	}

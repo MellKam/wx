@@ -755,7 +755,7 @@ impl<'tir> Builder<'tir> {
 	/// Resolve a TIR TypeIndex to a concrete TIR TypeIndex using `current_substitutions`.
 	/// Handles chains of `AssocTypeProjection` by recursing through the base.
 	fn resolve_tir_type(&self, ty: tir::TypeIndex) -> tir::TypeIndex {
-		match &self.tir.type_pool[ty.as_usize()] {
+		match &self.tir.types[ty.as_usize()] {
 			tir::Type::TypeParam { param_index, .. } => {
 				self.current_substitutions[*param_index as usize]
 			}
@@ -785,7 +785,7 @@ impl<'tir> Builder<'tir> {
 
 	fn resolve_memory_id(&self, memory_ty: tir::TypeIndex) -> ast::DefId {
 		let concrete = self.resolve_tir_type(memory_ty);
-		match &self.tir.type_pool[concrete.as_usize()] {
+		match &self.tir.types[concrete.as_usize()] {
 			tir::Type::Memory { id, .. } => *id,
 			_ => unreachable!(
 				"memory TypeIndex does not resolve to Type::Memory"
@@ -827,7 +827,7 @@ impl<'tir> Builder<'tir> {
 			return Layout { size: 2, align: 2 };
 		}
 
-		match &self.tir.type_pool[idx.as_usize()] {
+		match &self.tir.types[idx.as_usize()] {
 			tir::Type::Function { .. } | tir::Type::FunctionItem { .. } => {
 				Layout { size: 4, align: 4 }
 			}
@@ -957,7 +957,7 @@ impl<'tir> Builder<'tir> {
 		let saved = if !args.is_empty() {
 			let concrete_args: Box<[tir::TypeIndex]> = args
 				.iter()
-				.map(|&a| match &self.tir.type_pool[a.as_usize()] {
+				.map(|&a| match &self.tir.types[a.as_usize()] {
 					tir::Type::TypeParam { param_index, .. } => {
 						self.current_substitutions[*param_index as usize]
 					}
@@ -1006,7 +1006,7 @@ impl<'tir> Builder<'tir> {
 			_ => {}
 		};
 
-		match self.tir.type_pool[type_idx.as_usize()].clone() {
+		match self.tir.types[type_idx.as_usize()].clone() {
 			tir::Type::TypeParam { param_index, .. } => {
 				let concrete = self.current_substitutions[param_index as usize];
 				self.lower_type_index(concrete)
@@ -1025,7 +1025,7 @@ impl<'tir> Builder<'tir> {
 					// Resolve any TypeParam entries in type_args through current_substitutions.
 					let concrete_args: Box<[tir::TypeIndex]> = type_args
 						.iter()
-						.map(|&ty| match &self.tir.type_pool[ty.as_usize()] {
+						.map(|&ty| match &self.tir.types[ty.as_usize()] {
 							tir::Type::TypeParam { param_index, .. } => self
 								.current_substitutions
 								.get(*param_index as usize)
@@ -1104,7 +1104,7 @@ impl<'tir> Builder<'tir> {
 		&mut self,
 		type_idx: tir::TypeIndex,
 	) -> SignatureIndex {
-		let sig = match &self.tir.type_pool[type_idx.as_usize()] {
+		let sig = match &self.tir.types[type_idx.as_usize()] {
 			tir::Type::Function { signature } => signature.clone(),
 			_ => unreachable!("expected Function type"),
 		};
@@ -1434,7 +1434,7 @@ impl<'tir> Builder<'tir> {
 		// For slices the lowered object is an aggregate {ptr, len}; extract
 		// the pointer field (index 0) as the base address.
 		let (base, ptr_ty) = if let tir::Type::Slice { memory, .. } =
-			self.tir.type_pool[object.ty.as_usize()]
+			self.tir.types[object.ty.as_usize()]
 		{
 			let memory_id = self.resolve_memory_id(memory);
 			let ptr_ty = Type::Pointer { memory: memory_id };
@@ -1555,7 +1555,7 @@ impl<'tir> Builder<'tir> {
 			tir::ExprKind::Function { id } => {
 				// If the FunctionItem carries non-empty type_args the reference is a
 				// monomorphized generic function; register the mono instance.
-				match self.tir.type_pool[expr.ty.as_usize()].clone() {
+				match self.tir.types[expr.ty.as_usize()].clone() {
 					tir::Type::FunctionItem {
 						id: fn_id,
 						type_args,
@@ -1563,7 +1563,7 @@ impl<'tir> Builder<'tir> {
 						let concrete_args: Box<[tir::TypeIndex]> = type_args
 							.iter()
 							.map(|&ty| {
-								match &self.tir.type_pool[ty.as_usize()] {
+								match &self.tir.types[ty.as_usize()] {
 									tir::Type::TypeParam {
 										param_index,
 										..
@@ -1676,7 +1676,7 @@ impl<'tir> Builder<'tir> {
 				// lower `TypeParam{0}` with substitutions = [TypeParam{0}].
 				let concrete_type_args: Box<[tir::TypeIndex]> = type_args
 					.iter()
-					.map(|&ty| match &self.tir.type_pool[ty.as_usize()] {
+					.map(|&ty| match &self.tir.types[ty.as_usize()] {
 						tir::Type::TypeParam { param_index, .. } => self
 							.current_substitutions
 							.get(*param_index as usize)
@@ -1732,7 +1732,7 @@ impl<'tir> Builder<'tir> {
 				// Resolve any TypeParam entries in type_args through active substitutions.
 				let resolved: Box<[tir::TypeIndex]> = type_args
 					.iter()
-					.map(|&ty| match &self.tir.type_pool[ty.as_usize()] {
+					.map(|&ty| match &self.tir.types[ty.as_usize()] {
 						tir::Type::TypeParam { param_index, .. } => self
 							.current_substitutions
 							.get(*param_index as usize)
@@ -1870,7 +1870,7 @@ impl<'tir> Builder<'tir> {
 						let namespace_ty = namespace.inner;
 						let const_name =
 							self.interner.resolve(const_name_sym).unwrap();
-						match &self.tir.type_pool[namespace_ty.as_usize()] {
+						match &self.tir.types[namespace_ty.as_usize()] {
 							tir::Type::Memory { id, .. } => match const_name {
 								"DATA_END" => Expression {
 									kind: ExprKind::MemoryOffset {
@@ -1921,7 +1921,7 @@ impl<'tir> Builder<'tir> {
 			}
 			tir::ExprKind::ObjectAccess { object, member } => {
 				let (struct_index, args) =
-					match &self.tir.type_pool[object.ty.as_usize()] {
+					match &self.tir.types[object.ty.as_usize()] {
 						tir::Type::Struct { struct_index, args } => {
 							(*struct_index, args)
 						}
@@ -1980,7 +1980,7 @@ impl<'tir> Builder<'tir> {
 			}
 			tir::ExprKind::StructInit { fields, .. } => {
 				let (struct_index, args) =
-					match &self.tir.type_pool[expr.ty.as_usize()] {
+					match &self.tir.types[expr.ty.as_usize()] {
 						tir::Type::Struct { struct_index, args } => {
 							(*struct_index, args)
 						}
@@ -2008,7 +2008,7 @@ impl<'tir> Builder<'tir> {
 			}
 			tir::ExprKind::TupleInit { elements } => {
 				let types: Box<[Type]> =
-					match &self.tir.type_pool[expr.ty.as_usize()] {
+					match &self.tir.types[expr.ty.as_usize()] {
 						tir::Type::Tuple { elements } => {
 							let elements: Box<[Type]> = elements
 								.iter()
@@ -2328,7 +2328,7 @@ impl<'tir> Builder<'tir> {
 				}
 			}
 			tir::ExprKind::ArrayLiteral { elements, memory } => {
-				let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
+				let elem_ty = match &self.tir.types[expr.ty.as_usize()] {
 					tir::Type::Array { of, .. } => *of,
 					_ => unreachable!(),
 				};
@@ -2356,7 +2356,7 @@ impl<'tir> Builder<'tir> {
 				count,
 				memory,
 			} => {
-				let elem_ty = match &self.tir.type_pool[expr.ty.as_usize()] {
+				let elem_ty = match &self.tir.types[expr.ty.as_usize()] {
 					tir::Type::Array { of, .. } => *of,
 					_ => unreachable!(),
 				};
@@ -2380,7 +2380,7 @@ impl<'tir> Builder<'tir> {
 			}
 			tir::ExprKind::SliceRange { object, start, end } => {
 				let (elem_tir_ty, mem_tir_ty, static_size) =
-					match self.tir.type_pool[object.ty.as_usize()].clone() {
+					match self.tir.types[object.ty.as_usize()].clone() {
 						tir::Type::Array {
 							of, memory, size, ..
 						} => (of, memory, Some(size)),
@@ -2701,7 +2701,7 @@ impl<'tir> Builder<'tir> {
 		match name_str {
 			"memory_grow" => {
 				let raw_ty = type_args[0];
-				let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+				let mem_ty = match &self.tir.types[raw_ty.as_usize()] {
 					tir::Type::TypeParam { param_index, .. } => self
 						.current_substitutions
 						.get(*param_index as usize)
@@ -2709,7 +2709,7 @@ impl<'tir> Builder<'tir> {
 						.unwrap_or(raw_ty),
 					_ => raw_ty,
 				};
-				let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
+				let memory = match &self.tir.types[mem_ty.as_usize()] {
 					tir::Type::Memory { id, .. } => *id,
 					_ => unreachable!(
 						"memory_grow type arg must be a Memory type"
@@ -2727,7 +2727,7 @@ impl<'tir> Builder<'tir> {
 			}
 			"memory_size" => {
 				let raw_ty = type_args[0];
-				let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+				let mem_ty = match &self.tir.types[raw_ty.as_usize()] {
 					tir::Type::TypeParam { param_index, .. } => self
 						.current_substitutions
 						.get(*param_index as usize)
@@ -2735,7 +2735,7 @@ impl<'tir> Builder<'tir> {
 						.unwrap_or(raw_ty),
 					_ => raw_ty,
 				};
-				let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
+				let memory = match &self.tir.types[mem_ty.as_usize()] {
 					tir::Type::Memory { id, .. } => *id,
 					_ => unreachable!(
 						"memory_size type arg must be a Memory type"
@@ -2802,7 +2802,7 @@ impl<'tir> Builder<'tir> {
 			}
 			"size_of" => {
 				let raw_ty = type_args[0];
-				let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {
+				let concrete_t = match &self.tir.types[raw_ty.as_usize()] {
 					tir::Type::TypeParam { param_index, .. } => self
 						.current_substitutions
 						.get(*param_index as usize)
@@ -2820,7 +2820,7 @@ impl<'tir> Builder<'tir> {
 			}
 			"align_of" => {
 				let raw_ty = type_args[0];
-				let concrete_t = match &self.tir.type_pool[raw_ty.as_usize()] {
+				let concrete_t = match &self.tir.types[raw_ty.as_usize()] {
 					tir::Type::TypeParam { param_index, .. } => self
 						.current_substitutions
 						.get(*param_index as usize)
@@ -2868,7 +2868,7 @@ impl<'tir> Builder<'tir> {
 			},
 			"memory_fill" => {
 				let raw_ty = type_args[0];
-				let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+				let mem_ty = match &self.tir.types[raw_ty.as_usize()] {
 					tir::Type::TypeParam { param_index, .. } => self
 						.current_substitutions
 						.get(*param_index as usize)
@@ -2876,7 +2876,7 @@ impl<'tir> Builder<'tir> {
 						.unwrap_or(raw_ty),
 					_ => raw_ty,
 				};
-				let memory = match &self.tir.type_pool[mem_ty.as_usize()] {
+				let memory = match &self.tir.types[mem_ty.as_usize()] {
 					tir::Type::Memory { id, .. } => *id,
 					_ => unreachable!(
 						"memory_fill type arg must be a Memory type"
@@ -2909,7 +2909,7 @@ impl<'tir> Builder<'tir> {
 			}
 			"memory_copy" => {
 				let resolve_memory = |raw_ty: tir::TypeIndex| {
-					let mem_ty = match &self.tir.type_pool[raw_ty.as_usize()] {
+					let mem_ty = match &self.tir.types[raw_ty.as_usize()] {
 						tir::Type::TypeParam { param_index, .. } => self
 							.current_substitutions
 							.get(*param_index as usize)
@@ -2917,7 +2917,7 @@ impl<'tir> Builder<'tir> {
 							.unwrap_or(raw_ty),
 						_ => raw_ty,
 					};
-					match &self.tir.type_pool[mem_ty.as_usize()] {
+					match &self.tir.types[mem_ty.as_usize()] {
 						tir::Type::Memory { id, .. } => *id,
 						_ => unreachable!(
 							"memory_copy type arg must be a Memory type"
@@ -2981,7 +2981,7 @@ impl<'tir> Builder<'tir> {
 				let (base_ptr, base_offset, memory_id) =
 					self.lower_place_address(func_ctx, object, sink);
 				let (struct_index, args) =
-					match self.tir.type_pool[object.ty.as_usize()].clone() {
+					match self.tir.types[object.ty.as_usize()].clone() {
 						tir::Type::Struct { struct_index, args } => {
 							(struct_index, args)
 						}
@@ -3035,7 +3035,7 @@ impl<'tir> Builder<'tir> {
 			},
 			tir::ExprKind::ObjectAccess { object, member } => {
 				let (struct_index, args) =
-					match &self.tir.type_pool[object.ty.as_usize()] {
+					match &self.tir.types[object.ty.as_usize()] {
 						tir::Type::Struct { struct_index, args } => {
 							(*struct_index, args.clone())
 						}
@@ -3153,7 +3153,7 @@ impl<'tir> Builder<'tir> {
 			}
 			tir::ExprKind::ObjectAccess { object, member } => {
 				let (struct_index, args) =
-					match &self.tir.type_pool[object.ty.as_usize()] {
+					match &self.tir.types[object.ty.as_usize()] {
 						tir::Type::Struct { struct_index, args } => {
 							(*struct_index, args.clone())
 						}

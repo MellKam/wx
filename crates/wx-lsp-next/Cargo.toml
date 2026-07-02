@@ -15,3 +15,6 @@ wx-fmt = { path = "../wx-fmt" }
 string-interner = { workspace = true }
 codespan-reporting = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+indoc = "2"

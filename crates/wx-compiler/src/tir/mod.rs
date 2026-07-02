@@ -64,6 +64,31 @@ pub enum TypeParamOwner {
 	ImplBlock(u32),
 }
 
+/// The block a function/constant is a member of, if any — an impl block or
+/// a trait declaration. `None` means the item is free-standing: callable by
+/// its bare name (subject to namespace visibility). This answers a
+/// different question than `TypeParamOwner`: that's about where an item's
+/// *inherited* type parameters come from, and only applies when there's
+/// something to inherit. A non-generic `impl Point { }` has an `ItemParent`
+/// but no `TypeParamOwner` — there's nothing to inherit, but it's still a
+/// member of a block that gates how the item can be referenced (`Point::new()`,
+/// never bare `new()`).
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ItemParent {
+	/// Non-generic `impl Target { }` / `impl Trait for Target { }`. `Target`
+	/// is already fully resolved, so this points straight at its `TypeIndex`
+	/// — the same key used in `TIR::impl_members`.
+	Impl(TypeIndex),
+	/// Generic `impl<Params> Target { }` / `impl<Params> Trait for Target { }`.
+	/// Index into `TIR::generic_impl_list`.
+	GenericImpl(u32),
+	/// Trait item — a method/const declaration or default body, scoped to
+	/// the trait's implicit `Self`.
+	Trait(TraitIndex),
+}
+
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -291,6 +316,9 @@ pub struct Constant {
 	pub id: ast::DefId,
 	pub file_id: FileId,
 	pub namespace: Option<NamespaceIndex>,
+	/// `Some` for associated consts (`impl Target { const FOO }` / trait
+	/// consts) — `None` for free top-level consts. See `ItemParent`.
+	pub parent: Option<ItemParent>,
 	pub pub_span: Option<ast::TextSpan>,
 	pub name: ast::Spanned<SymbolU32>,
 	pub ty: ast::Spanned<TypeIndex>,
@@ -452,6 +480,7 @@ impl IntegerRange {
 pub struct TypeSet {
 	pub id: ast::DefId,
 	pub file_id: FileId,
+	pub namespace: Option<NamespaceIndex>,
 	pub name: ast::Spanned<SymbolU32>,
 	pub pub_span: Option<ast::TextSpan>,
 	pub members: Box<[TypeIndex]>,
@@ -1148,6 +1177,9 @@ pub struct Function {
 	pub id: DefId,
 	pub file_id: FileId,
 	pub namespace: Option<NamespaceIndex>,
+	/// `Some` for methods/associated functions (impl or trait members) —
+	/// `None` for free top-level and imported functions. See `ItemParent`.
+	pub parent: Option<ItemParent>,
 	pub pub_span: Option<ast::TextSpan>,
 	/// Own type parameters only — does not include params inherited from a
 	/// parent impl block. For the full ordered list, prepend the params from
@@ -1365,7 +1397,7 @@ impl<'a> TypeFormatter<'a> {
 	}
 
 	pub fn display_kind(&self, idx: TypeIndex) -> &'static str {
-		match &self.tir.type_pool[idx.as_usize()] {
+		match &self.tir.types[idx.as_usize()] {
 			Type::Struct { .. } => "struct",
 			Type::Function { .. } | Type::FunctionItem { .. } => "function",
 			Type::Enum { .. } => "enum",
@@ -1421,7 +1453,7 @@ impl<'a> TypeFormatter<'a> {
 		f: &mut impl std::fmt::Write,
 		idx: TypeIndex,
 	) -> std::fmt::Result {
-		match &self.tir.type_pool[idx.as_usize()] {
+		match &self.tir.types[idx.as_usize()] {
 			Type::Integer => f.write_str("{integer}"),
 			Type::Float => f.write_str("{float}"),
 			Type::Error => f.write_str("{unknown}"),
@@ -1714,12 +1746,21 @@ pub enum ItemIndex {
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TIR {
-	pub type_pool: Vec<Type>,
+	pub types: Vec<Type>,
 	pub diagnostics: Vec<Diagnostic<FileId>>,
 	pub functions: Vec<Function>,
 	pub globals: Vec<Global>,
 	pub memories: Vec<Memory>,
 	pub namespaces: Vec<ModuleNamespace>,
+	/// Symbol table for the implicit root namespace (`namespace = None`) —
+	/// the counterpart of `ModuleNamespace::symbols` for items that aren't
+	/// nested inside any `module { }` block.
+	#[cfg_attr(test, serde(skip))]
+	pub root_symbols: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
+	/// Namespaces brought into the root scope via `use path::*;`. Parallel to
+	/// `ModuleNamespace::wildcard_imports`.
+	#[cfg_attr(test, serde(skip))]
+	pub root_wildcard_imports: Vec<NamespaceIndex>,
 	pub module_decls: Vec<ModuleDecl>,
 	pub import_decls: Vec<ImportDecl>,
 	pub enums: Vec<Enum>,

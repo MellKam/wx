@@ -56,12 +56,24 @@ pub struct SpanInfo {
 	pub kind: SymbolKind,
 }
 
+/// A named module-level definition, tagged with the namespace it's declared
+/// in so completion can filter to what's actually visible from a given
+/// cursor position instead of every item in the compilation graph.
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(Clone)]
+pub struct GlobalDefinition {
+	pub name: SymbolU32,
+	/// `None` means the implicit root namespace.
+	pub namespace: Option<NamespaceIndex>,
+	pub info: SpanInfo,
+}
+
 pub struct SymbolIndex {
 	pub definitions: Vec<SpanInfo>,
 	pub references: Vec<SpanInfo>,
 	/// Named module-level definitions sorted by string value for prefix search.
 	/// Excludes scope-sensitive items (locals, params, type params, labels).
-	pub defs_by_name: Vec<(SymbolU32, SpanInfo)>,
+	pub global_definitions: Vec<GlobalDefinition>,
 }
 
 impl SymbolIndex {
@@ -69,18 +81,18 @@ impl SymbolIndex {
 		Self {
 			definitions: Vec::new(),
 			references: Vec::new(),
-			defs_by_name: Vec::new(),
+			global_definitions: Vec::new(),
 		}
 	}
 
 	fn build(&mut self, interner: &StringInterner) {
 		self.definitions.sort_by_key(|e| e.source.span.start);
 		self.references.sort_by_key(|e| e.source.span.start);
-		self.defs_by_name.sort_by(|(a, _), (b, _)| {
+		self.global_definitions.sort_by(|a, b| {
 			interner
-				.resolve(*a)
+				.resolve(a.name)
 				.unwrap_or("")
-				.cmp(interner.resolve(*b).unwrap_or(""))
+				.cmp(interner.resolve(b.name).unwrap_or(""))
 		});
 	}
 
@@ -125,7 +137,11 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 			source: SourceSpan::new(global.file_id, global.name.span),
 			kind: SymbolKind::Global(global.id),
 		};
-		index.defs_by_name.push((global.name.inner, info.clone()));
+		index.global_definitions.push(GlobalDefinition {
+			name: global.name.inner,
+			namespace: global.namespace,
+			info: info.clone(),
+		});
 		index.definitions.push(info);
 		for access in &global.accesses {
 			index.references.push(SpanInfo {
@@ -143,7 +159,15 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 			source: SourceSpan::new(file_id, function.name.span),
 			kind: SymbolKind::Function(func_id),
 		};
-		index.defs_by_name.push((function.name.inner, info.clone()));
+		// Methods/associated functions (`function.parent.is_some()`) are only
+		// reachable via `Type::name()` or `value.name()` — never bare `name()`.
+		if function.parent.is_none() {
+			index.global_definitions.push(GlobalDefinition {
+				name: function.name.inner,
+				namespace: function.namespace,
+				info: info.clone(),
+			});
+		}
 		index.definitions.push(info);
 
 		for access in &function.accesses {
@@ -235,7 +259,11 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 			source: SourceSpan::new(struct_.file_id, struct_.name.span),
 			kind: SymbolKind::Struct(struct_.id),
 		};
-		index.defs_by_name.push((struct_.name.inner, info.clone()));
+		index.global_definitions.push(GlobalDefinition {
+			name: struct_.name.inner,
+			namespace: struct_.namespace,
+			info: info.clone(),
+		});
 		index.definitions.push(info);
 		for access in &struct_.accesses {
 			index.references.push(SpanInfo {
@@ -288,7 +316,11 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 			source: SourceSpan::new(enum_.file_id, enum_.name.span),
 			kind: SymbolKind::Enum(enum_.id),
 		};
-		index.defs_by_name.push((enum_.name.inner, info.clone()));
+		index.global_definitions.push(GlobalDefinition {
+			name: enum_.name.inner,
+			namespace: enum_.namespace,
+			info: info.clone(),
+		});
 		index.definitions.push(info);
 		for (variant_idx, variant) in enum_.variants.iter().enumerate() {
 			let variant_kind = SymbolKind::EnumVariant {
@@ -299,9 +331,11 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 				source: SourceSpan::new(enum_.file_id, variant.name.span),
 				kind: variant_kind.clone(),
 			};
-			index
-				.defs_by_name
-				.push((variant.name.inner, variant_info.clone()));
+			index.global_definitions.push(GlobalDefinition {
+				name: variant.name.inner,
+				namespace: enum_.namespace,
+				info: variant_info.clone(),
+			});
 			index.definitions.push(variant_info);
 			for access in &variant.accesses {
 				index.references.push(SpanInfo {
@@ -318,7 +352,15 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 				source: SourceSpan::new(constant.file_id, constant.name.span),
 				kind: SymbolKind::Const(constant.id),
 			};
-			index.defs_by_name.push((constant.name.inner, info.clone()));
+			// Associated consts (`constant.parent.is_some()`) are only
+			// reachable via `Type::NAME` — never bare `NAME`.
+			if constant.parent.is_none() {
+				index.global_definitions.push(GlobalDefinition {
+					name: constant.name.inner,
+					namespace: constant.namespace,
+					info: info.clone(),
+				});
+			}
 			index.definitions.push(info);
 			for access in &constant.accesses {
 				index.references.push(SpanInfo {
@@ -368,7 +410,11 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 			source: def_source,
 			kind: kind.clone(),
 		};
-		index.defs_by_name.push((name_sym, info.clone()));
+		index.global_definitions.push(GlobalDefinition {
+			name: name_sym,
+			namespace: ns.parent,
+			info: info.clone(),
+		});
 		index.definitions.push(info);
 		for access in &ns.accesses {
 			index.references.push(SpanInfo {
@@ -384,7 +430,11 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 			source: SourceSpan::new(trait_.file_id, trait_.name.span),
 			kind: kind.clone(),
 		};
-		index.defs_by_name.push((trait_.name.inner, info.clone()));
+		index.global_definitions.push(GlobalDefinition {
+			name: trait_.name.inner,
+			namespace: trait_.namespace,
+			info: info.clone(),
+		});
 		index.definitions.push(info);
 		for access in &trait_.accesses {
 			index.references.push(SpanInfo {
@@ -402,7 +452,11 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 				source: SourceSpan::new(trait_.file_id, at.name_span),
 				kind: at_kind.clone(),
 			};
-			index.defs_by_name.push((*assoc_name, at_info.clone()));
+			index.global_definitions.push(GlobalDefinition {
+				name: *assoc_name,
+				namespace: trait_.namespace,
+				info: at_info.clone(),
+			});
 			index.definitions.push(at_info);
 			for access in &at.accesses {
 				index.references.push(SpanInfo {
@@ -419,7 +473,11 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 			source: SourceSpan::new(typeset.file_id, typeset.name.span),
 			kind: kind.clone(),
 		};
-		index.defs_by_name.push((typeset.name.inner, info.clone()));
+		index.global_definitions.push(GlobalDefinition {
+			name: typeset.name.inner,
+			namespace: typeset.namespace,
+			info: info.clone(),
+		});
 		index.definitions.push(info);
 		for access in &typeset.accesses {
 			index.references.push(SpanInfo {

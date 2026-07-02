@@ -1,13 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Range};
+use tower_lsp_server::ls_types::{
+	Diagnostic, DiagnosticSeverity, Position, Range, Uri,
+};
 use wx_compiler::vfs::FileId;
 
 use crate::completion::{completion_items, find_enclosing_function};
 use crate::{
 	CompiledRoot, OpenDocument, ServerState, analyze_root, compute_refresh,
-	diagnostic_publish_paths, discover_crate_root,
+	diagnostic_publish_paths, discover_crate_root, find_active_call,
+	is_current_version, owning_root,
 };
 
 /// Resolves the `FileId` for a given file path from a compiled root.
@@ -31,6 +34,29 @@ fn open_document(text: &str) -> OpenDocument {
 		text: text.to_string(),
 		lsp_version: COUNTER.fetch_add(1, Ordering::Relaxed),
 	}
+}
+
+#[test]
+fn is_current_version_detects_superseded_edits() {
+	let root = PathBuf::from("/test/main.wx");
+	let mut state = ServerState::default();
+	state.open_documents.insert(
+		root.clone(),
+		OpenDocument { text: "fn test() {}".to_string(), lsp_version: 1 },
+	);
+	assert!(is_current_version(&state, &root, 1));
+
+	// A newer edit lands (bumping the version) before a debounced rebuild
+	// scheduled for the older version gets a chance to run.
+	state.open_documents.insert(
+		root.clone(),
+		OpenDocument {
+			text: "fn test() { local x = 1; }".to_string(),
+			lsp_version: 2,
+		},
+	);
+	assert!(!is_current_version(&state, &root, 1));
+	assert!(is_current_version(&state, &root, 2));
 }
 
 #[test]
@@ -96,7 +122,7 @@ fn analyze_root_updates_multi_file_diagnostics_when_overlay_changes() {
 		open_document("fn add() -> bool {\n    true\n}\n"),
 	);
 
-	let broken = analyze_root(&mut state, &root);
+	let broken = analyze_root(&mut state, &root, &mut Vec::new());
 	assert!(broken.owned_files.contains(&root));
 	assert!(broken.owned_files.contains(&child));
 	assert!(
@@ -114,7 +140,7 @@ fn analyze_root_updates_multi_file_diagnostics_when_overlay_changes() {
 		open_document("fn add() -> i32 {\n    1\n}\n"),
 	);
 
-	let fixed = analyze_root(&mut state, &root);
+	let fixed = analyze_root(&mut state, &root, &mut Vec::new());
 	assert!(fixed.owned_files.contains(&root));
 	assert!(fixed.owned_files.contains(&child));
 	assert!(
@@ -151,10 +177,10 @@ fn refresh_file_from_child_path_discovers_root_and_republishes_root_diagnostics(
 		open_document("fn add() -> bool {\n    true\n}\n"),
 	);
 
-	let broken_publish = compute_refresh(&mut state, &child);
+	let broken_publish = compute_refresh(&mut state, &child, &mut Vec::new());
 
-	assert_eq!(state.file_to_root.get(&child), Some(&root));
-	assert_eq!(state.file_to_root.get(&root), Some(&root));
+	assert_eq!(owning_root(&state, &child), Some(root.as_path()));
+	assert_eq!(owning_root(&state, &root), Some(root.as_path()));
 
 	assert!(
 		broken_publish.iter().any(|(path, diags)| {
@@ -171,7 +197,7 @@ fn refresh_file_from_child_path_discovers_root_and_republishes_root_diagnostics(
 		open_document("fn add() -> i32 {\n    1\n}\n"),
 	);
 
-	let fixed_publish = compute_refresh(&mut state, &child);
+	let fixed_publish = compute_refresh(&mut state, &child, &mut Vec::new());
 
 	assert!(
 		fixed_publish.iter().any(|(path, diags)| {
@@ -192,7 +218,28 @@ fn compile_source(root: &PathBuf, source: &str) -> (ServerState, CompiledRoot) {
 	state
 		.open_documents
 		.insert(root.clone(), open_document(source));
-	analyze_root(&mut state, root);
+	analyze_root(&mut state, root, &mut Vec::new());
+	let compiled = state.cached.remove(root).expect("compilation failed");
+	(state, compiled)
+}
+
+/// Compiles `root_source` alongside additional `(path, source)` files (e.g.
+/// files pulled in via `module foo;` declarations).
+fn compile_multi_source(
+	root: &PathBuf,
+	root_source: &str,
+	extra_files: &[(&PathBuf, &str)],
+) -> (ServerState, CompiledRoot) {
+	let mut state = ServerState::default();
+	state
+		.open_documents
+		.insert(root.clone(), open_document(root_source));
+	for (path, source) in extra_files {
+		state
+			.open_documents
+			.insert((*path).clone(), open_document(source));
+	}
+	analyze_root(&mut state, root, &mut Vec::new());
 	let compiled = state.cached.remove(root).expect("compilation failed");
 	(state, compiled)
 }
@@ -260,6 +307,63 @@ fn completion_inside_function_includes_locals_declared_before_cursor() {
 }
 
 #[test]
+fn completion_excludes_impl_methods_and_associated_functions() {
+	let root = PathBuf::from("/test/main.wx");
+	let source = indoc::indoc! { "
+		struct Point {
+		    x: i32,
+		    y: i32,
+		}
+
+		impl Point {
+		    fn new(x: i32, y: i32) -> Point {
+		        Point { x: x, y: y }
+		    }
+
+		    pub fn sum(self) -> i32 {
+		        self.x + self.y
+		    }
+		}
+
+		fn test() {
+
+		}
+	" };
+	// Cursor on the blank line inside `test`'s body.
+	let cursor = source.find("fn test() {\n").unwrap() + "fn test() {\n".len();
+
+	let (_, compiled) = compile_source(&root, source);
+	let file_id = file_id_for(&compiled, &root);
+
+	let items = completion_items(
+		&compiled.tir,
+		&compiled.graph.interner,
+		&compiled.symbol_index,
+		file_id,
+		source,
+		cursor,
+	);
+	let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+	assert!(
+		labels.contains(&"test"),
+		"expected free function `test` in completions; got: {labels:?}"
+	);
+	assert!(
+		labels.contains(&"Point"),
+		"expected struct `Point` in completions; got: {labels:?}"
+	);
+	assert!(
+		!labels.contains(&"new"),
+		"associated function `Point::new` must not be bare-callable; got: {labels:?}"
+	);
+	assert!(
+		!labels.contains(&"sum"),
+		"method `Point::sum` must not be bare-callable; got: {labels:?}"
+	);
+}
+
+#[test]
 fn completion_inside_function_shows_globals_too() {
 	let root = PathBuf::from("/test/main.wx");
 	let source = "fn helper() -> i32 { 0 }\nfn main() -> i32 {\n    \n}";
@@ -282,6 +386,43 @@ fn completion_inside_function_shows_globals_too() {
 	assert!(
 		labels.contains(&"helper"),
 		"expected global function `helper` in completions; got: {labels:?}"
+	);
+}
+
+#[test]
+fn completion_sorts_locals_before_globals() {
+	let root = PathBuf::from("/test/main.wx");
+	// "zeta" (local) would sort after "alpha" (global) alphabetically by
+	// label — locals should still come first via `sort_text`.
+	let source = "fn alpha() -> i32 { 0 }\nfn main() -> i32 {\n    local zeta = 1;\n\n}";
+	let cursor = source.find("1;\n").unwrap() + "1;\n".len();
+
+	let (_, compiled) = compile_source(&root, source);
+	let file_id = file_id_for(&compiled, &root);
+
+	let items = completion_items(
+		&compiled.tir,
+		&compiled.graph.interner,
+		&compiled.symbol_index,
+		file_id,
+		source,
+		cursor,
+	);
+
+	let zeta = items
+		.iter()
+		.find(|i| i.label == "zeta")
+		.expect("local `zeta` should be suggested");
+	let alpha = items
+		.iter()
+		.find(|i| i.label == "alpha")
+		.expect("global `alpha` should be suggested");
+
+	assert!(
+		zeta.sort_text < alpha.sort_text,
+		"expected local `zeta` to sort before global `alpha`; zeta sort_text={:?}, alpha sort_text={:?}",
+		zeta.sort_text,
+		alpha.sort_text
 	);
 }
 
@@ -312,6 +453,146 @@ fn completion_prefix_filters_results() {
 	assert!(
 		!labels.contains(&"beta"),
 		"expected `beta` filtered out; got: {labels:?}"
+	);
+}
+
+#[test]
+fn completion_hides_sibling_module_items_without_use() {
+	let root = PathBuf::from("/test/main.wx");
+	let math = PathBuf::from("/test/math.wx");
+	let source = "module math;\nfn main() -> i32 {\n    \n}";
+	let cursor = source.find("\n    \n}").unwrap() + 5;
+
+	let (_, compiled) = compile_multi_source(
+		&root,
+		source,
+		&[(&math, "pub fn add() -> i32 { 1 }")],
+	);
+	let file_id = file_id_for(&compiled, &root);
+
+	let items = completion_items(
+		&compiled.tir,
+		&compiled.graph.interner,
+		&compiled.symbol_index,
+		file_id,
+		source,
+		cursor,
+	);
+	let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+	assert!(
+		labels.contains(&"main"),
+		"expected root-level `main` in completions; got: {labels:?}"
+	);
+	assert!(
+		!labels.contains(&"add"),
+		"expected `math::add` NOT to be visible unqualified from root; got: {labels:?}"
+	);
+}
+
+#[test]
+fn completion_shows_sibling_module_items_via_wildcard_use() {
+	let root = PathBuf::from("/test/main.wx");
+	let math = PathBuf::from("/test/math.wx");
+	let source =
+		"module math;\nuse math::*;\nfn main() -> i32 {\n    \n}";
+	let cursor = source.find("\n    \n}").unwrap() + 5;
+
+	let (_, compiled) = compile_multi_source(
+		&root,
+		source,
+		&[(&math, "pub fn add() -> i32 { 1 }")],
+	);
+	let file_id = file_id_for(&compiled, &root);
+
+	let items = completion_items(
+		&compiled.tir,
+		&compiled.graph.interner,
+		&compiled.symbol_index,
+		file_id,
+		source,
+		cursor,
+	);
+	let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+
+	assert!(
+		labels.contains(&"add"),
+		"expected `add` visible after `use math::*;`; got: {labels:?}"
+	);
+}
+
+#[test]
+fn resolve_source_and_offset_prefers_live_buffer_over_stale_compiled_source() {
+	// Regression test: signature_help used to compute `offset` from
+	// `compiled.graph.files` (the source as of the last save) and then slice
+	// into that same stale, shorter string. Typing new lines above the
+	// cursor without saving (e.g. wrapping existing code in a new `module`
+	// block) pushed the live cursor position past the stale source's length
+	// and panicked on `source[..offset]`. `resolve_source_and_offset` is the
+	// shared fix both `completion` and `signature_help` now go through —
+	// this exercises it directly against the exact reported scenario.
+	let root = PathBuf::from("/test/main.wx");
+	let stale_source = "fn test() {\n\n}";
+	let (mut state, compiled) = compile_source(&root, stale_source);
+	state.cached.insert(root.clone(), compiled);
+
+	let live_source =
+		"module test {\n    fn foo()\n}\n\nfn test() {\n\n}";
+	state
+		.open_documents
+		.insert(root.clone(), open_document(live_source));
+
+	// Cursor right after "fn foo()" on line 1 — this line doesn't exist at
+	// all in `stale_source`, which is only 14 bytes long.
+	let position = Position {
+		line: 1,
+		character: 11,
+	};
+	let uri = Uri::from_file_path(&root).expect("valid file uri");
+	let compiled = state.cached.get(&root).unwrap();
+	let file_id = file_id_for(compiled, &root);
+
+	// Must not panic, and must resolve against the live buffer (not the
+	// 14-byte stale one) — this is exactly what used to panic.
+	let (source, offset) = crate::resolve_source_and_offset(
+		&state, compiled, &uri, file_id, position,
+	)
+	.expect("should resolve source/offset from the live buffer");
+	assert_eq!(source, live_source);
+	assert!(offset <= source.len());
+
+	let call = find_active_call(source, offset);
+	assert!(call.is_some(), "expected an active call for `fn foo(`");
+}
+
+#[test]
+fn resolve_uri_finds_virtual_stdlib_module() {
+	// Regression test: `Uri::to_file_path()` doesn't check the scheme, so it
+	// returns a bogus `Some(path)` for a `wx://std/...` virtual URI instead
+	// of `None`. `resolve_uri` must not use that to short-circuit past the
+	// string-comparison fallback, or hover/goto-definition/semantic-tokens
+	// silently stop working inside the standard library file.
+	let root = PathBuf::from("/test/main.wx");
+	let (_, compiled) = compile_source(&root, "fn main() {}");
+	let stdlib_file_id = compiled
+		.graph
+		.crates
+		.iter()
+		.flat_map(|cg| cg.modules.iter())
+		.find(|m| m.file_path == "lib.wx")
+		.map(|m| m.file_id)
+		.expect("stdlib module should be present in the compiled graph");
+	let uri = crate::file_id_to_uri(&compiled, stdlib_file_id)
+		.expect("should construct a wx://std/ URI for the stdlib module");
+
+	let mut state = ServerState::default();
+	state.cached.insert(root.clone(), compiled);
+
+	let resolved = crate::resolve_uri(&state, &uri);
+	assert_eq!(
+		resolved.map(|(_, file_id)| file_id),
+		Some(stdlib_file_id),
+		"resolve_uri should find the stdlib module via its constructed wx:// URI"
 	);
 }
 

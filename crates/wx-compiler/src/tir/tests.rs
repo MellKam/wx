@@ -18,7 +18,7 @@ struct TestCase {
 impl TestCase {
 	fn new(source: &str) -> Self {
 		let mut builder = vfs::CompilationGraphBuilder::new();
-		let stdlib_id = builder.load_stdlib().unwrap();
+		let stdlib_id = builder.load_stdlib();
 		let prefixed = format!("use std::*;\n{source}");
 		let root_id = builder
 			.load_binary(
@@ -47,7 +47,7 @@ impl TestCase {
 		}
 
 		let mut builder = vfs::CompilationGraphBuilder::new();
-		let stdlib_id = builder.load_stdlib().unwrap();
+		let stdlib_id = builder.load_stdlib();
 		let root_id = builder
 			.load_binary(
 				entry_path.to_string(),
@@ -1447,7 +1447,7 @@ fn test_struct_fields_kept_in_declaration_order() {
 	let mixed_sym = case.graph.interner.get("Mixed").unwrap();
 	let struct_index = case
 		.tir
-		.type_pool
+		.types
 		.iter()
 		.find_map(|t| {
 			if let Type::Struct { struct_index, .. } = t {
@@ -1591,7 +1591,7 @@ fn test_memory_missing_std_import_does_not_panic() {
 	// This must not leave `MEM` stuck as `SymbolKind::Pending`, which
 	// used to panic (`unreachable!`) as soon as anything referenced it.
 	let mut builder = vfs::CompilationGraphBuilder::new();
-	let stdlib_id = builder.load_stdlib().unwrap();
+	let stdlib_id = builder.load_stdlib();
 	let root_id = builder
 		.load_binary(
 			"main.wx".to_string(),
@@ -1785,7 +1785,7 @@ fn test_impl_trait_for_type_registers_trait_impl() {
 	// target type is Point (a struct)
 	assert!(
 		matches!(
-			case.tir.type_pool[ti.target.as_usize()],
+			case.tir.types[ti.target.as_usize()],
 			Type::Struct { .. }
 		),
 		"target should be a struct type"
@@ -2359,11 +2359,11 @@ fn test_generic_struct_field_type_is_type_param() {
 	// Field `value` should have type TypeParam { param_index: 0 }.
 	assert!(
 		matches!(
-			case.tir.type_pool[s.fields[0].ty.inner.as_usize()],
+			case.tir.types[s.fields[0].ty.inner.as_usize()],
 			Type::TypeParam { param_index: 0, .. }
 		),
 		"expected TypeParam, got {:?}",
-		case.tir.type_pool[s.fields[0].ty.inner.as_usize()]
+		case.tir.types[s.fields[0].ty.inner.as_usize()]
 	);
 }
 
@@ -2745,7 +2745,7 @@ fn test_assoc_type_projection_in_return_type() {
 	let result_ty = func.result.as_ref().expect("expected a return type").inner;
 	assert!(
 		matches!(
-			case.tir.type_pool[result_ty.as_usize()],
+			case.tir.types[result_ty.as_usize()],
 			Type::AssocTypeProjection { .. }
 		),
 		"return type should be AssocTypeProjection for C::Elem, got type index {}",
@@ -3291,9 +3291,9 @@ fn test_memory_tagged_pointer() {
 		.expect("function 'f' not found");
 
 	let param_ty = f.params[0].ty.inner;
-	let is_heap_ptr = match &case.tir.type_pool[param_ty.as_usize()] {
+	let is_heap_ptr = match &case.tir.types[param_ty.as_usize()] {
 		Type::Pointer { memory, .. } => {
-			matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+			matches!(&case.tir.types[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
 		}
 		_ => false,
 	};
@@ -3328,9 +3328,9 @@ fn test_memory_tagged_slice() {
 		.expect("function 'f' not found");
 
 	let param_ty = f.params[0].ty.inner;
-	let is_heap_slice = match &case.tir.type_pool[param_ty.as_usize()] {
+	let is_heap_slice = match &case.tir.types[param_ty.as_usize()] {
 		Type::Slice { memory, .. } => {
-			matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+			matches!(&case.tir.types[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
 		}
 		_ => false,
 	};
@@ -3365,11 +3365,11 @@ fn test_memory_tagged_array() {
 		.expect("function 'f' not found");
 
 	let param_ty = f.params[0].ty.inner;
-	let is_heap_array = match &case.tir.type_pool[param_ty.as_usize()] {
+	let is_heap_array = match &case.tir.types[param_ty.as_usize()] {
 		Type::Array {
 			size: 4, memory, ..
 		} => {
-			matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
+			matches!(&case.tir.types[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id)
 		}
 		_ => false,
 	};
@@ -3404,9 +3404,9 @@ fn test_memory_tagged_nested_array() {
 		.expect("function 'f' not found");
 
 	let outer_ty = f.params[0].ty.inner;
-	let is_heap_mem = |memory: &TypeIndex| matches!(&case.tir.type_pool[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id);
+	let is_heap_mem = |memory: &TypeIndex| matches!(&case.tir.types[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id);
 	let (inner_ty, outer_tagged) =
-		match &case.tir.type_pool[outer_ty.as_usize()] {
+		match &case.tir.types[outer_ty.as_usize()] {
 			Type::Array {
 				of,
 				size: 4,
@@ -3419,7 +3419,7 @@ fn test_memory_tagged_nested_array() {
 		outer_tagged,
 		"outer array should be tagged with heap memory"
 	);
-	let inner_tagged = match &case.tir.type_pool[inner_ty.as_usize()] {
+	let inner_tagged = match &case.tir.types[inner_ty.as_usize()] {
 		Type::Array {
 			size: 4, memory, ..
 		} => is_heap_mem(memory),
@@ -3502,7 +3502,7 @@ fn test_function_reference_has_function_item_type() {
 		.expect("function 'square' not found")
 		.id;
 
-	let has_function_item = case.tir.type_pool.iter().any(|t| {
+	let has_function_item = case.tir.types.iter().any(|t| {
 		if let Type::FunctionItem { id, type_args } = t {
 			*id == square_id && type_args.is_empty()
 		} else {
@@ -3537,7 +3537,7 @@ fn test_generic_function_reference_has_function_item_not_fn_pointer() {
 		.expect("function 'identity' not found")
 		.id;
 
-	let has_function_item = case.tir.type_pool.iter().any(
+	let has_function_item = case.tir.types.iter().any(
 		|t| matches!(t, Type::FunctionItem { id, .. } if *id == identity_id),
 	);
 	assert!(
@@ -3651,7 +3651,7 @@ fn test_two_functions_have_distinct_function_item_types() {
 
 	let type_idx = |id: DefId| {
 		case.tir
-			.type_pool
+			.types
 			.iter()
 			.enumerate()
 			.find_map(|(i, t)| {
@@ -5893,7 +5893,7 @@ fn test_impl_module_trait_for_type_resolves() {
 		.expect("no TraitImpl has 'draw' method");
 	assert!(
 		matches!(
-			case.tir.type_pool[ti.target.as_usize()],
+			case.tir.types[ti.target.as_usize()],
 			Type::Struct { .. }
 		),
 		"target should be Point (a struct)"

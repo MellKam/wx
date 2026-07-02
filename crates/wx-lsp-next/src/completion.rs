@@ -1,8 +1,10 @@
+use std::collections::HashSet;
+
 use tower_lsp_server::ls_types::{
 	CompletionItem, CompletionItemKind, InsertTextFormat,
 };
 use wx_compiler::ast::StringInterner;
-use wx_compiler::tir::{TIR, TypeFormatter};
+use wx_compiler::tir::{NamespaceIndex, TIR, TypeFormatter};
 use wx_compiler::vfs::FileId;
 
 use crate::symbol_index::{SymbolIndex, SymbolKind};
@@ -135,10 +137,14 @@ pub fn local_completion_items(
 				continue;
 			}
 			let detail = formatter.display_type(local.ty).ok();
+			// `0_` sorts before `global_completion_items`' `1_` prefix, so
+			// locals are listed first regardless of alphabetical label order.
+			let sort_text = Some(format!("0_{name}"));
 			items.push(CompletionItem {
 				label: name.to_string(),
 				kind: Some(CompletionItemKind::VARIABLE),
 				detail,
+				sort_text,
 				..Default::default()
 			});
 		}
@@ -149,25 +155,72 @@ pub fn local_completion_items(
 	items
 }
 
-/// Prefix-searches `symbol_index.defs_by_name` and maps each match to a `CompletionItem`.
+/// Namespace of the module containing `file_id`, for completion requests
+/// that fall outside any function body (no enclosing-function namespace to
+/// fall back on). Only inline `module foo { }` blocks are missed here —
+/// those share the file of their enclosing function, which already carries
+/// the right namespace.
+fn file_namespace(tir: &TIR, file_id: FileId) -> Option<NamespaceIndex> {
+	tir.module_decls
+		.iter()
+		.find(|decl| decl.own_file_id == Some(file_id))
+		.map(|decl| decl.namespace_idx)
+}
+
+/// The set of namespaces whose direct symbols are visible from `start`:
+/// `start` itself, its `use path::*` wildcard imports, then each ancestor
+/// namespace (and its wildcard imports) up to the implicit root. Mirrors the
+/// walk `lookup_global_symbol` performs in the type checker, but collects
+/// every reachable namespace instead of stopping at the first name match.
+pub fn visible_namespaces(
+	tir: &TIR,
+	start: Option<NamespaceIndex>,
+) -> HashSet<Option<NamespaceIndex>> {
+	let mut visible = HashSet::new();
+	let mut current = start;
+	loop {
+		if !visible.insert(current) {
+			break;
+		}
+		match current {
+			Some(idx) => {
+				let ns = &tir.namespaces[idx as usize];
+				visible.extend(ns.wildcard_imports.iter().map(|&i| Some(i)));
+				current = ns.parent;
+			}
+			None => {
+				visible.extend(
+					tir.root_wildcard_imports.iter().map(|&i| Some(i)),
+				);
+				break;
+			}
+		}
+	}
+	visible
+}
+
+/// Prefix-searches `symbol_index.global_definitions` and maps each match visible
+/// from `visible_from` to a `CompletionItem`.
 pub fn global_completion_items(
 	tir: &TIR,
 	interner: &StringInterner,
 	symbol_index: &SymbolIndex,
 	prefix: &str,
+	visible_from: &HashSet<Option<NamespaceIndex>>,
 ) -> Vec<CompletionItem> {
-	let lower = symbol_index.defs_by_name.partition_point(|(sym, _)| {
-		interner.resolve(*sym).unwrap_or("") < prefix
+	let lower = symbol_index.global_definitions.partition_point(|def| {
+		interner.resolve(def.name).unwrap_or("") < prefix
 	});
 
-	symbol_index.defs_by_name[lower..]
+	symbol_index.global_definitions[lower..]
 		.iter()
-		.take_while(|(sym, _)| {
-			interner.resolve(*sym).unwrap_or("").starts_with(prefix)
+		.take_while(|def| {
+			interner.resolve(def.name).unwrap_or("").starts_with(prefix)
 		})
-		.filter_map(|(sym, info)| {
-			let name = interner.resolve(*sym)?.to_string();
-			let item = match &info.kind {
+		.filter(|def| visible_from.contains(&def.namespace))
+		.filter_map(|def| {
+			let name = interner.resolve(def.name)?.to_string();
+			let item = match &def.info.kind {
 				SymbolKind::Function(def_id) => {
 					let fi = tir.function_index(*def_id)? as usize;
 					let func = &tir.functions[fi];
@@ -234,7 +287,12 @@ pub fn global_completion_items(
 				},
 				_ => return None,
 			};
-			Some(item)
+			// Sorts after `local_completion_items`' `0_` prefix, so locals
+			// in scope are listed before same-prefix globals.
+			Some(CompletionItem {
+				sort_text: Some(format!("1_{}", item.label)),
+				..item
+			})
 		})
 		.collect()
 }
@@ -252,27 +310,33 @@ pub fn completion_items(
 		.rposition(|b| !b.is_ascii_alphanumeric() && b != b'_')
 		.map_or(0, |i| i + 1);
 	let prefix = &source[prefix_start..offset];
+	let cursor_offset = offset as u32;
+	let func_index = find_enclosing_function(tir, file_id, cursor_offset);
+	let current_namespace = match func_index {
+		Some(fi) => tir.functions[fi].namespace,
+		None => file_namespace(tir, file_id),
+	};
+	let visible = visible_namespaces(tir, current_namespace);
 
 	match classify_context(source, offset) {
 		CompletionContext::Identifier => {
-			let cursor_offset = offset as u32;
-			let mut items =
-				match find_enclosing_function(tir, file_id, cursor_offset) {
-					Some(func_index) => local_completion_items(
-						tir,
-						func_index,
-						interner,
-						cursor_offset,
-						prefix,
-					),
-					None => Vec::new(),
-				};
+			let mut items = match func_index {
+				Some(func_index) => local_completion_items(
+					tir,
+					func_index,
+					interner,
+					cursor_offset,
+					prefix,
+				),
+				None => Vec::new(),
+			};
 
 			items.extend(global_completion_items(
 				tir,
 				interner,
 				symbol_index,
 				prefix,
+				&visible,
 			));
 			items
 		}
@@ -286,7 +350,7 @@ pub fn completion_items(
 		}
 		CompletionContext::TypeAnnotation => {
 			// TODO: restrict to types only; for now show globals (includes structs/enums)
-			global_completion_items(tir, interner, symbol_index, prefix)
+			global_completion_items(tir, interner, symbol_index, prefix, &visible)
 		}
 	}
 }

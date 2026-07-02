@@ -55,14 +55,57 @@ fn load_crate_reports_missing_entry_file() {
 	let path_str = path.to_str().unwrap().to_string();
 
 	let mut builder = CompilationGraphBuilder::new();
-	match builder.load_binary(path_str.clone(), &NativeFileSource) {
-		Err(LoadError::ReadFailed { path: failed_path }) => {
-			assert_eq!(failed_path, path_str.replace('\\', "/"))
-		}
-		Err(other) => panic!("unexpected error: {other:?}"),
-		Ok(_) => panic!("expected missing file error"),
-	}
+	assert_eq!(
+		builder.load_binary(path_str, &NativeFileSource),
+		Err(()),
+		"expected missing entry file to be a fatal error, not a diagnostic \
+		 — there's no crate to build without it"
+	);
 
+	fs::remove_dir(&dir).unwrap();
+}
+
+#[test]
+fn load_crate_diagnoses_missing_child_module_without_aborting() {
+	// Regression test: `module boo;` referencing a file that doesn't exist
+	// yet used to abort loading the entire crate. It should instead produce
+	// a diagnostic attached to the `module boo;` declaration and let the
+	// rest of the crate — including other, unrelated top-level items in the
+	// same file — still load normally.
+	let dir = temp_test_dir("missing-child-module");
+	let path = dir.join("main.wx");
+	fs::write(&path, "module boo;\nfn works() -> i32 { 1 }").unwrap();
+
+	let mut builder = CompilationGraphBuilder::new();
+	let crate_id = builder
+		.load_binary(path.to_str().unwrap().to_string(), &NativeFileSource)
+		.expect(
+			"a missing child module should be a diagnostic, not a fatal \
+			 error — the entry file itself is still readable",
+		);
+	let graph = &builder.crates[crate_id.as_u32() as usize];
+
+	let root = &graph.modules[graph.root.as_u32() as usize];
+	assert_eq!(
+		root.children.len(),
+		0,
+		"the unresolved `boo` module should be omitted, not present as a stub"
+	);
+	assert!(
+		root.ast
+			.items
+			.iter()
+			.any(|item| matches!(&item.inner.inner, ast::Item::Function { .. })),
+		"the rest of main.wx should still parse normally"
+	);
+	assert!(
+		graph.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::ModuleFileNotFound.code())),
+		"expected a module-not-found diagnostic; got: {:?}",
+		graph.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+	);
+
+	fs::remove_file(&path).unwrap();
 	fs::remove_dir(&dir).unwrap();
 }
 
@@ -108,22 +151,28 @@ fn load_crate_rejects_ambiguous_module_paths() {
 	fs::write(&directory_path, "fn from_dir() {}").unwrap();
 
 	let mut builder = CompilationGraphBuilder::new();
-	match builder
+	let crate_id = builder
 		.load_binary(path.to_str().unwrap().to_string(), &NativeFileSource)
-	{
-		Err(LoadError::AmbiguousModule {
-			file,
-			directory_file,
-		}) => {
-			assert_eq!(file, sibling_path.to_str().unwrap().replace('\\', "/"));
-			assert_eq!(
-				directory_file,
-				directory_path.to_str().unwrap().replace('\\', "/")
-			);
-		}
-		Err(other) => panic!("unexpected error: {other:?}"),
-		Ok(_) => panic!("expected ambiguous module error"),
-	}
+		.expect(
+			"an ambiguous child module should be a diagnostic, not a fatal \
+			 error — the crate itself still loads",
+		);
+	let graph = &builder.crates[crate_id.as_u32() as usize];
+
+	let root = &graph.modules[graph.root.as_u32() as usize];
+	assert_eq!(
+		root.children.len(),
+		0,
+		"the ambiguous module should be omitted rather than arbitrarily picked"
+	);
+	assert!(
+		graph
+			.diagnostics
+			.iter()
+			.any(|d| d.code.as_deref() == Some(DiagnosticCode::AmbiguousModuleFile.code())),
+		"expected an ambiguous-module diagnostic; got: {:?}",
+		graph.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+	);
 
 	fs::remove_file(&path).unwrap();
 	fs::remove_file(&sibling_path).unwrap();
@@ -135,7 +184,7 @@ fn load_crate_rejects_ambiguous_module_paths() {
 #[test]
 fn load_virtual_compilation_resolves_child_modules_from_workspace_files() {
 	let mut builder = CompilationGraphBuilder::new();
-	let stdlib_id = builder.load_stdlib().expect("failed to load stdlib crate");
+	let stdlib_id = builder.load_stdlib();
 	let root_id = builder
 		.load_binary(
 			"src/main.wx".to_string(),

@@ -2248,6 +2248,7 @@ name = "wx-lsp-next"
 version = "0.0.1"
 dependencies = [
  "codespan-reporting",
+ "indoc",
  "serde",
  "string-interner",
  "tokio",

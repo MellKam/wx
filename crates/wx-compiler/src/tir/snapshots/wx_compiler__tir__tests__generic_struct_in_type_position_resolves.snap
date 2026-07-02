@@ -2,7 +2,7 @@
 source: crates/wx-compiler/src/tir/tests.rs
 expression: case.tir
 ---
-type_pool:
+types:
   - Error
   - Infer
   - Unit
@@ -486,6 +486,7 @@ functions:
   - id: 2
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params:
       - name: 7
@@ -557,6 +558,8 @@ functions:
   - id: 18
     file_id: 0
     namespace: 0
+    parent:
+      Trait: 0
     pub_span: ~
     type_params: []
     type_param_parent:
@@ -671,6 +674,8 @@ functions:
   - id: 19
     file_id: 0
     namespace: 0
+    parent:
+      Trait: 0
     pub_span: ~
     type_params: []
     type_param_parent:
@@ -754,6 +759,7 @@ functions:
   - id: 3
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params:
       - name: 7
@@ -810,6 +816,7 @@ functions:
   - id: 4
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params:
       - name: 7
@@ -878,6 +885,7 @@ functions:
   - id: 5
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params:
       - name: 7
@@ -961,6 +969,7 @@ functions:
   - id: 6
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params:
       - name: 14
@@ -1022,6 +1031,7 @@ functions:
   - id: 7
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params:
       - name: 14
@@ -1067,6 +1077,7 @@ functions:
   - id: 8
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params:
       - name: 7
@@ -1137,6 +1148,7 @@ functions:
   - id: 9
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params:
       - name: 11
@@ -1241,6 +1253,7 @@ functions:
   - id: 10
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params: []
     type_param_parent: ~
@@ -1275,6 +1288,7 @@ functions:
   - id: 11
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params: []
     type_param_parent: ~
@@ -1309,6 +1323,7 @@ functions:
   - id: 12
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     type_params: []
     type_param_parent: ~
@@ -1343,6 +1358,7 @@ functions:
   - id: 21
     file_id: 0
     namespace: 1
+    parent: ~
     pub_span:
       start: 1322
       end: 1325
@@ -1419,6 +1435,7 @@ functions:
   - id: 22
     file_id: 0
     namespace: 1
+    parent: ~
     pub_span:
       start: 1401
       end: 1404
@@ -1495,6 +1512,7 @@ functions:
   - id: 23
     file_id: 0
     namespace: 1
+    parent: ~
     pub_span:
       start: 1488
       end: 1491
@@ -1619,6 +1637,7 @@ functions:
   - id: 24
     file_id: 0
     namespace: 1
+    parent: ~
     pub_span:
       start: 1592
       end: 1595
@@ -1727,6 +1746,7 @@ functions:
   - id: 25
     file_id: 0
     namespace: 1
+    parent: ~
     pub_span:
       start: 1691
       end: 1694
@@ -1919,6 +1939,7 @@ functions:
   - id: 26
     file_id: 0
     namespace: 1
+    parent: ~
     pub_span:
       start: 1838
       end: 1841
@@ -2111,6 +2132,7 @@ functions:
   - id: 27
     file_id: 0
     namespace: 1
+    parent: ~
     pub_span:
       start: 1985
       end: 1988
@@ -2303,6 +2325,7 @@ functions:
   - id: 28
     file_id: 0
     namespace: 1
+    parent: ~
     pub_span:
       start: 2144
       end: 2147
@@ -2495,6 +2518,8 @@ functions:
   - id: 29
     file_id: 0
     namespace: 0
+    parent:
+      GenericImpl: 0
     pub_span:
       start: 2337
       end: 2339
@@ -2581,6 +2606,8 @@ functions:
   - id: 31
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 2430
       end: 2432
@@ -2746,6 +2773,8 @@ functions:
   - id: 32
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 2613
       end: 2615
@@ -2911,6 +2940,8 @@ functions:
   - id: 33
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 2796
       end: 2798
@@ -3005,6 +3036,8 @@ functions:
   - id: 34
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 2883
       end: 2885
@@ -3148,6 +3181,8 @@ functions:
   - id: 35
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 2985
       end: 2987
@@ -3291,6 +3326,8 @@ functions:
   - id: 36
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 3087
       end: 3089
@@ -3520,6 +3557,8 @@ functions:
   - id: 37
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 3223
       end: 3225
@@ -3659,6 +3698,8 @@ functions:
   - id: 38
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 3321
       end: 3323
@@ -3978,6 +4019,8 @@ functions:
   - id: 39
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 3514
       end: 3516
@@ -4252,6 +4295,8 @@ functions:
   - id: 40
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 3716
       end: 3718
@@ -4391,6 +4436,8 @@ functions:
   - id: 41
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 3829
       end: 3831
@@ -4710,6 +4757,8 @@ functions:
   - id: 42
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 4018
       end: 4020
@@ -5119,6 +5168,8 @@ functions:
   - id: 43
     file_id: 0
     namespace: 0
+    parent:
+      Impl: 17
     pub_span:
       start: 4253
       end: 4255
@@ -5258,6 +5309,7 @@ functions:
   - id: 46
     file_id: 1
     namespace: ~
+    parent: ~
     pub_span: ~
     type_params: []
     type_param_parent: ~
@@ -5425,22 +5477,6 @@ namespaces:
         - 35
       : Function:
           func_index: 12
-      ? - Value
-        - 40
-      : Const:
-          const_index: 2
-      ? - Value
-        - 41
-      : Const:
-          const_index: 3
-      ? - Value
-        - 44
-      : Function:
-          func_index: 1
-      ? - Value
-        - 46
-      : Function:
-          func_index: 2
     wildcard_imports: []
     accesses:
       - file_id: 1
@@ -5646,6 +5682,7 @@ constants:
   - id: 0
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span: ~
     name:
       inner: 1
@@ -5677,6 +5714,7 @@ constants:
   - id: 1
     file_id: 0
     namespace: 0
+    parent: ~
     pub_span:
       start: 41
       end: 44
@@ -5702,6 +5740,8 @@ constants:
   - id: 16
     file_id: 0
     namespace: 0
+    parent:
+      Trait: 0
     pub_span: ~
     name:
       inner: 40
@@ -5718,6 +5758,8 @@ constants:
   - id: 17
     file_id: 0
     namespace: 0
+    parent:
+      Trait: 0
     pub_span: ~
     name:
       inner: 41
@@ -5734,6 +5776,7 @@ constants:
 typesets:
   - id: 13
     file_id: 0
+    namespace: 0
     name:
       inner: 36
       span:
@@ -5757,6 +5800,7 @@ typesets:
     accesses: []
   - id: 14
     file_id: 0
+    namespace: 0
     name:
       inner: 25
       span:

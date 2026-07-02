@@ -18,7 +18,7 @@ use tower_lsp_server::ls_types::{
 	DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse,
 	Hover, HoverContents, HoverParams, HoverProviderCapability,
 	InitializeParams, InitializeResult, InitializedParams, Location,
-	MarkupContent, MarkupKind, NumberOrString, OneOf, ParameterInformation,
+	MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, ParameterInformation,
 	ParameterLabel, Position, Range, ReferenceParams, RenameParams,
 	SemanticToken, SemanticTokenType, SemanticTokensFullOptions,
 	SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
@@ -34,7 +34,7 @@ use wx_compiler::ast::TextSpan;
 use wx_compiler::tir::{
 	ModuleDeclarationKind, SourceSpan, TIR, TypeParamInfo, TypeParamOwner,
 };
-use wx_compiler::vfs::{self, FileId, FileSource, LoadError, NativeFileSource};
+use wx_compiler::vfs::{self, FileId, FileSource, NativeFileSource};
 
 mod completion;
 mod symbol_index;
@@ -74,14 +74,16 @@ struct VirtualFileContentParams {
 	uri: String,
 }
 
-#[cfg(debug_assertions)]
-macro_rules! debug_log {
-    ($($arg:tt)*) => { eprintln!($($arg)*); };
-}
-
-#[cfg(not(debug_assertions))]
-macro_rules! debug_log {
-	($($arg:tt)*) => {};
+/// Flushes buffered log lines (collected via `logs.push(...)` in plain,
+/// `Client`-less helpers like `analyze_root`/`compile_root`/`parse_root`) to
+/// the client. Not raw `eprintln!`: `vscode-languageclient` pipes a server's
+/// stderr straight into `outputChannel.error(...)`, so every line written
+/// there shows up tagged `[error]` regardless of content — `window/logMessage`
+/// is the channel that actually carries a real severity.
+async fn flush_logs(client: &Client, logs: Vec<String>) {
+	for line in logs {
+		client.log_message(MessageType::LOG, line).await;
+	}
 }
 
 #[derive(Clone)]
@@ -90,24 +92,22 @@ struct OpenDocument {
 	lsp_version: i32,
 }
 
-#[derive(Clone)]
-struct UriLocation {
-	root: PathBuf,
-	file_id: FileId,
-}
-
 #[derive(Default)]
 struct ServerState {
 	open_documents: HashMap<PathBuf, OpenDocument>,
-	file_to_root: HashMap<PathBuf, PathBuf>,
-	published_by_root: HashMap<PathBuf, HashSet<PathBuf>>,
 	workspace_folders: Vec<PathBuf>,
+	/// Compiled artifacts per crate root — the one source of truth. Which
+	/// `CompiledRoot`/`FileId` a given URI belongs to is computed on demand
+	/// by `resolve_uri` rather than tracked in a second index, since keeping
+	/// a hand-maintained reverse map in sync with this one is exactly the
+	/// kind of bookkeeping that silently drifts.
 	cached: HashMap<PathBuf, CompiledRoot>,
-	/// Maps every known file URI (`file://` or `wxstd://stdlib/`) to its location.
-	/// Single lookup point for all LSP handlers — no per-handler scheme checks.
-	uri_to_location: HashMap<String, UriLocation>,
-	/// Parse-only cache (ASTs, no TIR) per crate root; consumed by TIR build on save.
-	parse_cache: HashMap<PathBuf, ParsedCrate>,
+	/// root -> files we last published diagnostics for. Needed to know which
+	/// files to clear when a root is dropped or a file leaves its owning
+	/// root; also doubles as the reverse (file -> owning root) index via
+	/// `owning_root`, so there's no separate `file_to_root` map to drift out
+	/// of sync with it.
+	published_by_root: HashMap<PathBuf, HashSet<PathBuf>>,
 }
 
 struct AnalysisResult {
@@ -122,13 +122,6 @@ struct CompiledRoot {
 	/// LSP version of each file in the crate at the time TIR was last built.
 	/// `None` means the file was on disk (not open via LSP) at compile time.
 	compiled_versions: HashMap<PathBuf, Option<std::num::NonZeroI32>>,
-}
-
-struct ParsedCrate {
-	graph: vfs::CompilationGraph,
-	/// LSP version of each file in the crate at the time it was last parsed.
-	/// `None` means the file was on disk (not open via LSP) at parse time.
-	file_versions: HashMap<PathBuf, Option<std::num::NonZeroI32>>,
 }
 
 struct OverlayFileSource<'a> {
@@ -146,10 +139,7 @@ impl<'a> OverlayFileSource<'a> {
 }
 
 impl FileSource for OverlayFileSource<'_> {
-	fn read_to_string(
-		&self,
-		path: &str,
-	) -> std::result::Result<String, LoadError> {
+	fn read_to_string(&self, path: &str) -> std::result::Result<String, ()> {
 		if let Some(doc) = self.open_documents.get(Path::new(path)) {
 			return Ok(doc.text.clone());
 		}
@@ -167,12 +157,18 @@ struct Backend {
 	state: Arc<Mutex<ServerState>>,
 }
 
+/// Rebuild TIR this long after the last edit to a file, so completion/hover/etc.
+/// stay close to the live buffer without recompiling on every keystroke.
+const REBUILD_DEBOUNCE_MS: u64 = 250;
+
 impl LanguageServer for Backend {
 	async fn initialize(
 		&self,
 		params: InitializeParams,
 	) -> Result<InitializeResult> {
-		debug_log!("[wx-lsp] initializing...");
+		self.client
+			.log_message(MessageType::LOG, "initializing...")
+			.await;
 		let workspace_folders = params
 			.workspace_folders
 			.iter()
@@ -230,7 +226,9 @@ impl LanguageServer for Backend {
 	}
 
 	async fn initialized(&self, _: InitializedParams) {
-		debug_log!("[wx-lsp] initialized");
+		self.client
+			.log_message(MessageType::LOG, "initialized")
+			.await;
 	}
 
 	async fn shutdown(&self) -> Result<()> {
@@ -239,6 +237,7 @@ impl LanguageServer for Backend {
 
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
 		if let Some(path) = uri_to_path(&params.text_document.uri) {
+			let mut logs = Vec::new();
 			let publications = {
 				let mut state = self.state.lock().await;
 				state.open_documents.insert(
@@ -248,45 +247,77 @@ impl LanguageServer for Backend {
 						lsp_version: params.text_document.version,
 					},
 				);
-				compute_refresh(&mut state, &path)
+				compute_refresh(&mut state, &path, &mut logs)
 			};
+			flush_logs(&self.client, logs).await;
 			self.publish_all(publications).await;
 		}
 	}
 
 	async fn did_change(&self, params: DidChangeTextDocumentParams) {
-		if let Some(path) = uri_to_path(&params.text_document.uri) {
-			if let Some(change) = params.content_changes.into_iter().last() {
-				let mut state = self.state.lock().await;
-				state.open_documents.insert(
-					path.clone(),
-					OpenDocument {
-						text: change.text,
-						lsp_version: params.text_document.version,
-					},
-				);
-				// TIR is only rebuilt on save; diagnostics are deferred to did_save.
-			}
+		let Some(path) = uri_to_path(&params.text_document.uri) else {
+			return;
+		};
+		let Some(change) = params.content_changes.into_iter().last() else {
+			return;
+		};
+		let version = params.text_document.version;
+		{
+			let mut state = self.state.lock().await;
+			state.open_documents.insert(
+				path.clone(),
+				OpenDocument {
+					text: change.text,
+					lsp_version: version,
+				},
+			);
 		}
+
+		// Debounced rebuild: wait for a quiet period, then refresh only if no
+		// newer edit to this file has landed in the meantime (`lsp_version`
+		// already carries that generation number, so no separate counter is
+		// needed — a superseded task just no-ops and lets the newer one win).
+		let client = self.client.clone();
+		let state = Arc::clone(&self.state);
+		tokio::spawn(async move {
+			tokio::time::sleep(std::time::Duration::from_millis(
+				REBUILD_DEBOUNCE_MS,
+			))
+			.await;
+			let mut logs = Vec::new();
+			let publications = {
+				let mut state = state.lock().await;
+				if !is_current_version(&state, &path, version) {
+					return;
+				}
+				compute_refresh(&mut state, &path, &mut logs)
+			};
+			flush_logs(&client, logs).await;
+			publish_diagnostics(&client, publications).await;
+		});
 	}
 
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
 		if let Some(path) = uri_to_path(&params.text_document.uri) {
+			let mut logs = Vec::new();
 			let publications = {
 				let mut state = self.state.lock().await;
-				compute_refresh(&mut state, &path)
+				compute_refresh(&mut state, &path, &mut logs)
 			};
+			flush_logs(&self.client, logs).await;
 			self.publish_all(publications).await;
 		}
 	}
 
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
 		if let Some(path) = uri_to_path(&params.text_document.uri) {
+			let mut logs = Vec::new();
 			let publications = {
 				let mut state = self.state.lock().await;
 				state.open_documents.remove(&path);
-				compute_refresh(&mut state, &path)
+				compute_refresh(&mut state, &path, &mut logs)
 			};
+			flush_logs(&self.client, logs).await;
 			self.publish_all(publications).await;
 		}
 	}
@@ -294,15 +325,10 @@ impl LanguageServer for Backend {
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		let state = self.state.lock().await;
 		Ok((|| {
-			let loc = state.uri_to_location.get(
-				params
-					.text_document_position_params
-					.text_document
-					.uri
-					.as_str(),
+			let (compiled, file_id) = resolve_uri(
+				&state,
+				&params.text_document_position_params.text_document.uri,
 			)?;
-			let compiled = state.cached.get(&loc.root)?;
-			let file_id = loc.file_id;
 			let offset = position_to_offset(
 				&compiled.graph.files,
 				file_id,
@@ -332,15 +358,10 @@ impl LanguageServer for Backend {
 	) -> Result<Option<GotoDefinitionResponse>> {
 		let state = self.state.lock().await;
 		Ok((|| {
-			let loc = state.uri_to_location.get(
-				params
-					.text_document_position_params
-					.text_document
-					.uri
-					.as_str(),
+			let (compiled, file_id) = resolve_uri(
+				&state,
+				&params.text_document_position_params.text_document.uri,
 			)?;
-			let compiled = state.cached.get(&loc.root)?;
-			let file_id = loc.file_id;
 			let offset = position_to_offset(
 				&compiled.graph.files,
 				file_id,
@@ -366,11 +387,10 @@ impl LanguageServer for Backend {
 	) -> Result<Option<Vec<Location>>> {
 		let state = self.state.lock().await;
 		Ok((|| {
-			let loc = state.uri_to_location.get(
-				params.text_document_position.text_document.uri.as_str(),
+			let (compiled, file_id) = resolve_uri(
+				&state,
+				&params.text_document_position.text_document.uri,
 			)?;
-			let compiled = state.cached.get(&loc.root)?;
-			let file_id = loc.file_id;
 			let offset = position_to_offset(
 				&compiled.graph.files,
 				file_id,
@@ -417,11 +437,10 @@ impl LanguageServer for Backend {
 	) -> Result<Option<WorkspaceEdit>> {
 		let state = self.state.lock().await;
 		Ok((|| {
-			let loc = state.uri_to_location.get(
-				params.text_document_position.text_document.uri.as_str(),
+			let (compiled, file_id) = resolve_uri(
+				&state,
+				&params.text_document_position.text_document.uri,
 			)?;
-			let compiled = state.cached.get(&loc.root)?;
-			let file_id = loc.file_id;
 			let offset = position_to_offset(
 				&compiled.graph.files,
 				file_id,
@@ -462,7 +481,7 @@ impl LanguageServer for Backend {
 		&self,
 		params: DocumentFormattingParams,
 	) -> Result<Option<Vec<TextEdit>>> {
-		let mut state = self.state.lock().await;
+		let state = self.state.lock().await;
 		let Some(path) = uri_to_path(&params.text_document.uri) else {
 			return Ok(None);
 		};
@@ -474,18 +493,17 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 
-		// Ensure the parse cache is fresh for this crate root. format-on-save fires before
-		// `didSave`, so `cached` reflects the previous save; the parse cache always reflects
-		// the current in-memory text.
-		if ensure_parse_cache(&mut state, &root).is_err() {
-			return Ok(None);
-		}
-
-		let Some(parsed) = state.parse_cache.get(&root) else {
+		// Always reparse fresh from the live buffer rather than going through
+		// `cached`: format-on-save fires before `didSave`, so `cached` would
+		// still reflect the previous save. Parsing is cheap enough (~1ms on
+		// typical files) that there's no need to cache it across calls.
+		let mut logs = Vec::new();
+		let parse_result = parse_root(&state, &root, &mut logs);
+		flush_logs(&self.client, logs).await;
+		let Ok(graph) = parse_result else {
 			return Ok(None);
 		};
-		let Some(module) = parsed
-			.graph
+		let Some(module) = graph
 			.crates
 			.iter()
 			.flat_map(|cg| cg.modules.iter())
@@ -503,7 +521,7 @@ impl LanguageServer for Backend {
 		if has_errors {
 			return Ok(None);
 		}
-		let Ok(file) = parsed.graph.files.get(module.file_id) else {
+		let Ok(file) = graph.files.get(module.file_id) else {
 			return Ok(None);
 		};
 		let source = file.source.as_str();
@@ -514,19 +532,19 @@ impl LanguageServer for Backend {
 		let fmt_start = std::time::Instant::now();
 		let Ok(formatted) =
 			panic::catch_unwind(panic::AssertUnwindSafe(|| {
-				wx_fmt::format(
-					&module.ast,
-					&parsed.graph.interner,
-					source,
-					config,
-				)
+				wx_fmt::format(&module.ast, &graph.interner, source, config)
 			}))
 		else {
 			return Ok(None);
 		};
-		debug_log!("[wx-lsp] formatting took {:?}", fmt_start.elapsed());
+		self.client
+			.log_message(
+				MessageType::LOG,
+				format!("formatting took {:?}", fmt_start.elapsed()),
+			)
+			.await;
 		let Some(end) =
-			byte_to_position(&parsed.graph.files, module.file_id, source.len())
+			byte_to_position(&graph.files, module.file_id, source.len())
 		else {
 			return Ok(None);
 		};
@@ -545,22 +563,13 @@ impl LanguageServer for Backend {
 	) -> Result<Option<SignatureHelp>> {
 		let state = self.state.lock().await;
 		Ok((|| {
-			let loc = state.uri_to_location.get(
-				params
-					.text_document_position_params
-					.text_document
-					.uri
-					.as_str(),
+			let uri = &params.text_document_position_params.text_document.uri;
+			let (compiled, file_id) = resolve_uri(&state, uri)?;
+			let position = params.text_document_position_params.position;
+
+			let (source, offset) = resolve_source_and_offset(
+				&state, compiled, uri, file_id, position,
 			)?;
-			let compiled = state.cached.get(&loc.root)?;
-			let file_id = loc.file_id;
-			let source =
-				compiled.graph.files.get(file_id).ok()?.source.as_str();
-			let offset = position_to_offset(
-				&compiled.graph.files,
-				file_id,
-				params.text_document_position_params.position,
-			)? as usize;
 
 			let call = find_active_call(source, offset)?;
 			let info = compiled
@@ -636,15 +645,11 @@ impl LanguageServer for Backend {
 		params: SemanticTokensParams,
 	) -> Result<Option<SemanticTokensResult>> {
 		let state = self.state.lock().await;
-		let Some(loc) =
-			state.uri_to_location.get(params.text_document.uri.as_str())
+		let Some((compiled, file_id)) =
+			resolve_uri(&state, &params.text_document.uri)
 		else {
 			return Ok(None);
 		};
-		let Some(compiled) = state.cached.get(&loc.root) else {
-			return Ok(None);
-		};
-		let file_id = loc.file_id;
 		let files = &compiled.graph.files;
 
 		let mut data: Vec<SemanticToken> = Vec::new();
@@ -704,73 +709,53 @@ impl LanguageServer for Backend {
 	) -> Result<Option<CompletionResponse>> {
 		let state = self.state.lock().await;
 		let uri = &params.text_document_position.text_document.uri;
-		let Some(loc) = state.uri_to_location.get(uri.as_str()) else {
+		let Some((compiled, file_id)) = resolve_uri(&state, uri) else {
 			return Ok(None);
 		};
-		let Some(compiled) = state.cached.get(&loc.root) else {
-			return Ok(None);
-		};
-		let file_id = loc.file_id;
 		let position = params.text_document_position.position;
 
-		// Use current in-memory text (unsaved edits) for prefix/context classification;
-		// fall back to the compiled source if the document isn't open.
-		let path = uri_to_path(uri);
-		let items = if let Some(doc) =
-			path.as_ref().and_then(|p| state.open_documents.get(p))
-		{
-			let source = doc.text.as_str();
-			let Some(offset) = position_to_offset_in_str(source, position)
-			else {
-				return Ok(None);
-			};
-			completion::completion_items(
-				&compiled.tir,
-				&compiled.graph.interner,
-				&compiled.symbol_index,
-				file_id,
-				source,
-				offset,
-			)
-		} else {
-			let Ok(file) = compiled.graph.files.get(file_id) else {
-				return Ok(None);
-			};
-			let source = file.source.as_str();
-			let Some(offset) =
-				position_to_offset(&compiled.graph.files, file_id, position)
-			else {
-				return Ok(None);
-			};
-			completion::completion_items(
-				&compiled.tir,
-				&compiled.graph.interner,
-				&compiled.symbol_index,
-				file_id,
-				source,
-				offset as usize,
-			)
+		let Some((source, offset)) = resolve_source_and_offset(
+			&state, compiled, uri, file_id, position,
+		) else {
+			return Ok(None);
 		};
+		let completion_start = std::time::Instant::now();
+		let items = completion::completion_items(
+			&compiled.tir,
+			&compiled.graph.interner,
+			&compiled.symbol_index,
+			file_id,
+			source,
+			offset,
+		);
+		self.client
+			.log_message(
+				MessageType::LOG,
+				format!(
+					"completion took {:?}",
+					completion_start.elapsed()
+				),
+			)
+			.await;
 		Ok(Some(CompletionResponse::Array(items)))
 	}
 }
 
 impl Backend {
 	async fn publish_all(&self, publications: Vec<(PathBuf, Vec<Diagnostic>)>) {
-		for (path, diagnostics) in publications {
-			if let Some(uri) = Uri::from_file_path(&path) {
-				self.client
-					.publish_diagnostics(uri, diagnostics, None)
-					.await;
-			}
-		}
+		publish_diagnostics(&self.client, publications).await;
 	}
 
 	async fn virtual_file_content(
 		&self,
 		params: VirtualFileContentParams,
 	) -> Result<String> {
-		debug_log!("virtual_file_content uri={}", params.uri);
+		self.client
+			.log_message(
+				MessageType::LOG,
+				format!("virtual_file_content uri={}", params.uri),
+			)
+			.await;
 		let filename =
 			params.uri.strip_prefix("wx://std/").ok_or_else(|| {
 				JsonRpcError::invalid_params(format!(
@@ -789,7 +774,6 @@ impl Backend {
 
 #[tokio::main]
 async fn main() {
-	debug_log!("[wx-lsp] starting...");
 	let (service, socket) = LspService::build(|client| Backend {
 		client,
 		state: Arc::new(Mutex::new(ServerState::default())),
@@ -804,11 +788,87 @@ async fn main() {
 // ── State management
 // ──────────────────────────────────────────────────────────
 
+/// Whether `path`'s open buffer is still at `version` — i.e. no newer edit
+/// has landed since a debounced rebuild for that edit was scheduled.
+pub(crate) fn is_current_version(
+	state: &ServerState,
+	path: &Path,
+	version: i32,
+) -> bool {
+	state
+		.open_documents
+		.get(path)
+		.is_some_and(|doc| doc.lsp_version == version)
+}
+
+async fn publish_diagnostics(
+	client: &Client,
+	publications: Vec<(PathBuf, Vec<Diagnostic>)>,
+) {
+	for (path, diagnostics) in publications {
+		if let Some(uri) = Uri::from_file_path(&path) {
+			client.publish_diagnostics(uri, diagnostics, None).await;
+		}
+	}
+}
+
+/// Resolves the `CompiledRoot`/`FileId` a URI belongs to by scanning
+/// `state.cached`, rather than through a hand-maintained reverse index —
+/// see the comment on `ServerState::cached`. Matches by reconstructing each
+/// module's URI and comparing strings — not by comparing `uri_to_path(uri)`
+/// against `m.file_path`, since `Uri::to_file_path()` doesn't check the
+/// scheme and happily returns a bogus path for non-`file://` URIs (like the
+/// virtual `wx://std/...` stdlib URI), which would wrongly fail to match.
+fn resolve_uri<'a>(
+	state: &'a ServerState,
+	uri: &Uri,
+) -> Option<(&'a CompiledRoot, FileId)> {
+	state.cached.values().find_map(|compiled| {
+		compiled
+			.graph
+			.crates
+			.iter()
+			.flat_map(|cg| cg.modules.iter())
+			.find_map(|m| {
+				let matches = file_id_to_uri(compiled, m.file_id)
+					.is_some_and(|u| u.as_str() == uri.as_str());
+				matches.then_some((compiled, m.file_id))
+			})
+	})
+}
+
+/// Finds which root `file`'s diagnostics were last published under, by
+/// scanning `published_by_root` — the reverse of `ServerState::cached`'s
+/// forward (root -> files) direction, computed on demand instead of kept in
+/// a second `file -> root` map.
+fn owning_root<'a>(state: &'a ServerState, file: &Path) -> Option<&'a Path> {
+	state.published_by_root.iter().find_map(|(root, files)| {
+		files.contains(file).then_some(root.as_path())
+	})
+}
+
+/// Whether any file in `tracked` (a root's `compiled_versions`) has moved on
+/// from the version it was last built/parsed against.
+fn versions_stale(
+	tracked: &HashMap<PathBuf, Option<std::num::NonZeroI32>>,
+	open_documents: &HashMap<PathBuf, OpenDocument>,
+) -> bool {
+	tracked.iter().any(|(path, tracked_ver)| {
+		match (open_documents.get(path), tracked_ver) {
+			(Some(doc), Some(v)) => doc.lsp_version > v.get(),
+			(Some(_), None) => true, // was on disk, now open
+			(None, Some(_)) => true, // was open, now closed
+			(None, None) => false,   // still on disk
+		}
+	})
+}
+
 pub(crate) fn compute_refresh(
 	state: &mut ServerState,
 	file_path: &Path,
+	logs: &mut Vec<String>,
 ) -> Vec<(PathBuf, Vec<Diagnostic>)> {
-	let previous_root = state.file_to_root.get(file_path).cloned();
+	let previous_root = owning_root(state, file_path).map(Path::to_path_buf);
 	let current_root = discover_crate_root(
 		&state.open_documents,
 		&state.workspace_folders,
@@ -817,11 +877,11 @@ pub(crate) fn compute_refresh(
 	let mut publications = Vec::new();
 
 	if let Some(root) = current_root.as_ref() {
-		let analysis = analyze_root(state, root);
+		let analysis = analyze_root(state, root, logs);
 		publications.extend(collect_publish_operations(state, root, analysis));
 	}
 
-	if previous_root.as_ref() != current_root.as_ref() {
+	if previous_root != current_root {
 		if let Some(old_root) = previous_root {
 			if current_root.as_ref() != Some(&old_root) {
 				publications.extend(collect_clear_operations(state, &old_root));
@@ -831,72 +891,32 @@ pub(crate) fn compute_refresh(
 		}
 	}
 
-	if current_root.is_none() {
-		state.file_to_root.remove(file_path);
-	}
-
 	publications
 }
 
 pub(crate) fn analyze_root(
 	state: &mut ServerState,
 	root: &Path,
+	logs: &mut Vec<String>,
 ) -> AnalysisResult {
 	// Skip TIR rebuild if no open file's version has advanced since last compile.
 	if let Some(compiled) = state.cached.get(root) {
-		let tir_stale =
-			compiled
-				.compiled_versions
-				.iter()
-				.any(|(path, compiled_ver)| {
-					match (state.open_documents.get(path), compiled_ver) {
-						(Some(doc), Some(v)) => doc.lsp_version > v.get(),
-						(Some(_), None) => true, // was on disk, now open
-						(None, Some(_)) => true, // was open, now closed
-						(None, None) => false,   // still on disk
-					}
-				});
-		if !tir_stale {
-			debug_log!("[wx-lsp] TIR cache hit for {:?}", root);
+		if !versions_stale(&compiled.compiled_versions, &state.open_documents) {
+			logs.push(format!("TIR cache hit for {:?}", root));
 			return analysis_from_compiled_root(compiled);
 		}
 	}
 
-	// Ensure the parse cache is fresh before handing the graph to TIR.
-	if let Err(error) = ensure_parse_cache(state, root) {
-		state.cached.remove(root);
-		state.parse_cache.remove(root);
-		state.uri_to_location.retain(|_, loc| loc.root != root);
-		return analysis_from_load_error(root, error);
-	}
-
-	// Move the graph out of the parse cache — TIR::build needs ownership.
-	let Some(parsed) = state.parse_cache.remove(root) else {
-		state.cached.remove(root);
-		state.uri_to_location.retain(|_, loc| loc.root != root);
-		return AnalysisResult {
-			diagnostics_by_file: Default::default(),
-			owned_files: Default::default(),
-		};
+	let graph = match parse_root(state, root, logs) {
+		Ok(graph) => graph,
+		Err(()) => {
+			state.cached.remove(root);
+			return analysis_from_missing_entry_file(root);
+		}
 	};
 
-	let compiled = compile_root(state, parsed.graph);
+	let compiled = compile_root(state, graph, logs);
 	let result = analysis_from_compiled_root(&compiled);
-	// Rebuild URI map for this root (clear stale entries first).
-	state.uri_to_location.retain(|_, loc| loc.root != root);
-	for crate_graph in &compiled.graph.crates {
-		for module in &crate_graph.modules {
-			if let Some(uri) = file_id_to_uri(&compiled, module.file_id) {
-				state.uri_to_location.insert(
-					uri.as_str().to_string(),
-					UriLocation {
-						root: root.to_path_buf(),
-						file_id: module.file_id,
-					},
-				);
-			}
-		}
-	}
 	state.cached.insert(root.to_path_buf(), compiled);
 	result
 }
@@ -919,13 +939,6 @@ fn collect_publish_operations(
 	let publish_paths =
 		diagnostic_publish_paths(&previous, &owned_files, &diagnostics_by_file);
 
-	for path in &owned_files {
-		state.file_to_root.insert(path.clone(), root.to_path_buf());
-	}
-	state.file_to_root.retain(|path, mapped_root| {
-		mapped_root != root || owned_files.contains(path)
-	});
-
 	state
 		.published_by_root
 		.insert(root.to_path_buf(), owned_files);
@@ -945,14 +958,10 @@ fn collect_clear_operations(
 	root: &Path,
 ) -> Vec<(PathBuf, Vec<Diagnostic>)> {
 	state.cached.remove(root);
-	state.uri_to_location.retain(|_, loc| loc.root != root);
 	if let Some(previous) = state.published_by_root.remove(root) {
 		previous
 			.into_iter()
-			.map(|path| {
-				state.file_to_root.remove(&path);
-				(path, Vec::new())
-			})
+			.map(|path| (path, Vec::new()))
 			.collect()
 	} else {
 		Vec::new()
@@ -962,6 +971,7 @@ fn collect_clear_operations(
 fn compile_root(
 	state: &ServerState,
 	mut graph: vfs::CompilationGraph,
+	logs: &mut Vec<String>,
 ) -> CompiledRoot {
 	let compiled_versions = graph
 		.crates
@@ -978,7 +988,10 @@ fn compile_root(
 		.collect();
 	let tir_start = std::time::Instant::now();
 	let tir = TIR::build(&mut graph);
-	debug_log!("[wx-lsp] typechecking took {:?}", tir_start.elapsed());
+	logs.push(format!(
+		"typechecking took {:?}",
+		tir_start.elapsed()
+	));
 	let symbol_index = build_symbol_index(&tir, &graph.interner);
 	CompiledRoot {
 		graph,
@@ -988,59 +1001,30 @@ fn compile_root(
 	}
 }
 
-fn ensure_parse_cache(
-	state: &mut ServerState,
+/// Parses `root` fresh from the live overlay (open buffers over disk
+/// contents). Not cached — parsing is cheap (~1ms on typical files), and a
+/// persistent parse-only cache duplicating `cached`'s staleness tracking
+/// wasn't buying anything since every caller either needs it once
+/// (`formatting`) or immediately feeds it into a TIR rebuild anyway
+/// (`analyze_root`).
+/// Fails only if the entry file itself (`root`) can't be read — everything
+/// past that point (missing/ambiguous `module` declarations elsewhere in the
+/// crate) is a diagnostic on the resulting graph instead, since `discover_crate_root`
+/// already verified `root` exists before calling this.
+fn parse_root(
+	state: &ServerState,
 	root: &Path,
-) -> std::result::Result<(), LoadError> {
-	let is_stale = match state.parse_cache.get(root) {
-		None => true,
-		Some(cached) => {
-			cached.file_versions.iter().any(|(path, cached_ver)| {
-				match (state.open_documents.get(path), cached_ver) {
-					(Some(doc), Some(v)) => doc.lsp_version > v.get(),
-					(Some(_), None) => true, // was on disk, now open
-					(None, Some(_)) => true, // was open, now closed
-					(None, None) => false,   // still on disk
-				}
-			})
-		}
-	};
-
-	if !is_stale {
-		return Ok(());
-	}
-
+	logs: &mut Vec<String>,
+) -> std::result::Result<vfs::CompilationGraph, ()> {
 	let overlay = OverlayFileSource::new(&state.open_documents);
 	let mut builder = vfs::CompilationGraphBuilder::new();
 	let parse_start = std::time::Instant::now();
-	let stdlib_id = builder.load_stdlib()?;
+	let stdlib_id = builder.load_stdlib();
 	let root_id = builder
 		.load_binary(root.to_str().unwrap_or_default().to_string(), &overlay)?;
 	let graph = builder.build(root_id, stdlib_id);
-	debug_log!("[wx-lsp] parsing took {:?}", parse_start.elapsed());
-
-	let file_versions = graph
-		.crates
-		.iter()
-		.flat_map(|cg| cg.modules.iter())
-		.map(|m| {
-			let path = PathBuf::from(&m.file_path);
-			let ver = state
-				.open_documents
-				.get(&path)
-				.and_then(|doc| std::num::NonZeroI32::new(doc.lsp_version));
-			(path, ver)
-		})
-		.collect();
-
-	state.parse_cache.insert(
-		root.to_path_buf(),
-		ParsedCrate {
-			graph,
-			file_versions,
-		},
-	);
-	Ok(())
+	logs.push(format!("parsing took {:?}", parse_start.elapsed()));
+	Ok(graph)
 }
 
 fn analysis_from_compiled_root(compiled: &CompiledRoot) -> AnalysisResult {
@@ -1077,75 +1061,30 @@ fn analysis_from_compiled_root(compiled: &CompiledRoot) -> AnalysisResult {
 	}
 }
 
-fn analysis_from_load_error(root: &Path, error: LoadError) -> AnalysisResult {
+/// The only way `parse_root` can still fail: the entry file itself couldn't
+/// be read (e.g. deleted between `discover_crate_root`'s existence check and
+/// this call). Everything else — missing/ambiguous child modules — is now a
+/// diagnostic on the graph rather than a hard failure, so this is a rare,
+/// narrow case rather than the general error path it used to be.
+fn analysis_from_missing_entry_file(root: &Path) -> AnalysisResult {
 	let mut diagnostics_by_file = HashMap::new();
 	let mut owned_files = HashSet::new();
 
-	let (path, diagnostic) = match error {
-		// TODO: rewrite this
-		LoadError::ReadFailed { path } => {
-			let target = if Path::new(&path).is_absolute() {
-				PathBuf::from(&path)
-			} else {
-				root.to_path_buf()
-			};
-			let diagnostic = Diagnostic {
-				range: Range::default(),
-				severity: Some(DiagnosticSeverity::ERROR),
-				code: None,
-				code_description: None,
-				source: Some("wx-lsp-next".to_string()),
-				message: format!("failed to read file `{path}`"),
-				related_information: None,
-				tags: None,
-				data: None,
-			};
-			(target, diagnostic)
-		}
-		LoadError::AmbiguousModule {
-			file,
-			directory_file,
-		} => {
-			let target = if Path::new(&file).is_absolute() {
-				PathBuf::from(&file)
-			} else {
-				root.to_path_buf()
-			};
-			let diagnostic = Diagnostic {
-				range: Range::default(),
-				severity: Some(DiagnosticSeverity::ERROR),
-				code: None,
-				code_description: None,
-				source: Some("wx-lsp-next".to_string()),
-				message: format!(
-					"ambiguous module: both `{file}` and `{directory_file}` exist"
-				),
-				related_information: None,
-				tags: None,
-				data: None,
-			};
-			(target, diagnostic)
-		}
-		LoadError::TooManyFiles => {
-			let diagnostic = Diagnostic {
-				range: Range::default(),
-				severity: Some(DiagnosticSeverity::ERROR),
-				code: None,
-				code_description: None,
-				source: Some("wx-lsp-next".to_string()),
-				message: "too many files in crate".to_string(),
-				related_information: None,
-				tags: None,
-				data: None,
-			};
-			(root.to_path_buf(), diagnostic)
-		}
-	};
-
-	if path.is_absolute() {
-		owned_files.insert(path.clone());
-	}
-	diagnostics_by_file.insert(path, vec![diagnostic]);
+	owned_files.insert(root.to_path_buf());
+	diagnostics_by_file.insert(
+		root.to_path_buf(),
+		vec![Diagnostic {
+			range: Range::default(),
+			severity: Some(DiagnosticSeverity::ERROR),
+			code: None,
+			code_description: None,
+			source: Some("wx-lsp-next".to_string()),
+			message: format!("failed to read file `{}`", root.display()),
+			related_information: None,
+			tags: None,
+			data: None,
+		}],
+	);
 
 	AnalysisResult {
 		diagnostics_by_file,
@@ -1643,6 +1582,35 @@ fn symbol_kind_to_token_type(kind: &SymbolKind) -> Option<TokenType> {
 // ── Helpers
 // ───────────────────────────────────────────────────────────────────
 
+/// Resolves `(source, offset)` for `uri`/`position`, preferring the live
+/// in-memory buffer (unsaved edits) over the last-compiled source. The two
+/// can diverge in both length and line/character shape, since TIR is only
+/// rebuilt on save (see `did_change`) — resolving `source` and `offset` from
+/// two different snapshots of the file is what let a stale, shorter source
+/// get sliced with an offset computed for the live, longer one.
+fn resolve_source_and_offset<'a>(
+	state: &'a ServerState,
+	compiled: &'a CompiledRoot,
+	uri: &Uri,
+	file_id: FileId,
+	position: Position,
+) -> Option<(&'a str, usize)> {
+	let path = uri_to_path(uri);
+	if let Some(doc) =
+		path.as_ref().and_then(|p| state.open_documents.get(p))
+	{
+		let source = doc.text.as_str();
+		let offset = position_to_offset_in_str(source, position)?;
+		Some((source, offset))
+	} else {
+		let source = compiled.graph.files.get(file_id).ok()?.source.as_str();
+		let offset =
+			position_to_offset(&compiled.graph.files, file_id, position)?
+				as usize;
+		Some((source, offset))
+	}
+}
+
 fn position_to_offset(
 	files: &vfs::Files,
 	file_id: FileId,
@@ -1750,12 +1718,6 @@ fn file_id_to_uri(compiled: &CompiledRoot, file_id: FileId) -> Option<Uri> {
 		Uri::from_str(&format!("wx://std/{}", name)).ok()
 	}
 }
-
-// ── Completion
-// ────────────────────────────────────────────────────────────
-
-/// Returns the index into `tir.functions` of the function whose body contains `cursor_offset`,
-/// or `None` if the cursor is not inside any function body.
 
 #[cfg(test)]
 mod tests;

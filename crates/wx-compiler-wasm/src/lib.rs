@@ -6,17 +6,13 @@ use wx_compiler::*;
 #[wasm_bindgen]
 pub fn compile(filename: String, source: String) -> Result<Vec<u8>, JsValue> {
 	let mut builder = vfs::CompilationGraphBuilder::new();
-	let stdlib_id = builder.load_stdlib().map_err(|err| {
-		serde_wasm_bindgen::to_value(&format!("{err:?}")).unwrap()
-	})?;
+	let stdlib_id = builder.load_stdlib();
 	let root_id = builder
 		.load_binary(
 			filename.clone(),
 			&vfs::VirtualFileSource::new(HashMap::from([(filename, source)])),
 		)
-		.map_err(|err| {
-			serde_wasm_bindgen::to_value(&format!("{err:?}")).unwrap()
-		})?;
+		.expect("virtual file source always contains the entry file");
 	let mut compilation = builder.build(root_id, stdlib_id);
 	let ast_diagnostics: Vec<_> = compilation
 		.crates

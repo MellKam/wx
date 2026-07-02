@@ -52,7 +52,7 @@ impl TestCase {
 impl TestCase {
 	fn new(source: &str) -> Self {
 		let mut builder = vfs::CompilationGraphBuilder::new();
-		let stdlib_id = builder.load_stdlib().unwrap();
+		let stdlib_id = builder.load_stdlib();
 		let prefixed = format!("use std::*;\n{source}");
 		let root_id = builder
 			.load_binary(

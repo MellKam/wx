@@ -2,27 +2,77 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use codespan_reporting::diagnostic::Diagnostic;
+use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files;
 use string_interner::symbol::SymbolU32;
 
 use crate::ast;
 
+// Diagnostic codes for this stage (resolving `module foo;` declarations to
+// files and wiring up the crate graph — closer to a linker than a parser or
+// type checker). Follows the same per-stage numbering convention as
+// `ast::DiagnosticCode` (E0xxx) and `tir::DiagnosticCode` (E1xxx).
+macro_rules! define_diagnostic_codes {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $variant:ident => $code:literal,
+            )*
+        }
+    ) => {
+        $(#[$meta])*
+        $vis enum $name {
+            $($variant,)*
+        }
+
+        impl $name {
+            pub const fn code(&self) -> &'static str {
+                match self {
+                    $(Self::$variant => $code,)*
+                }
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = ();
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $($code => Ok(Self::$variant),)*
+                    _ => Err(()),
+                }
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.code())
+            }
+        }
+    };
+}
+
+define_diagnostic_codes! {
+	pub enum DiagnosticCode {
+		ModuleFileNotFound => "E2000",
+		AmbiguousModuleFile => "E2001",
+	}
+}
+
 #[cfg(test)]
 mod tests;
 
 pub trait FileSource {
-	fn read_to_string(&self, path: &str) -> Result<String, LoadError>;
+	fn read_to_string(&self, path: &str) -> Result<String, ()>;
 	fn exists(&self, path: &str) -> bool;
 }
 
 pub struct NativeFileSource;
 
 impl FileSource for NativeFileSource {
-	fn read_to_string(&self, path: &str) -> Result<String, LoadError> {
-		fs::read_to_string(Path::new(path)).map_err(|_| LoadError::ReadFailed {
-			path: path.to_string(),
-		})
+	fn read_to_string(&self, path: &str) -> Result<String, ()> {
+		fs::read_to_string(Path::new(path)).map_err(|_| ())
 	}
 
 	fn exists(&self, path: &str) -> bool {
@@ -45,13 +95,8 @@ impl VirtualFileSource {
 }
 
 impl FileSource for VirtualFileSource {
-	fn read_to_string(&self, path: &str) -> Result<String, LoadError> {
-		self.files
-			.get(path)
-			.cloned()
-			.ok_or_else(|| LoadError::ReadFailed {
-				path: path.to_string(),
-			})
+	fn read_to_string(&self, path: &str) -> Result<String, ()> {
+		self.files.get(path).cloned().ok_or(())
 	}
 
 	fn exists(&self, path: &str) -> bool {
@@ -251,7 +296,10 @@ impl CompilationGraphBuilder {
 		}
 	}
 
-	pub fn load_stdlib(&mut self) -> Result<CrateId, LoadError> {
+	/// The embedded stdlib source is always present, so this can never
+	/// actually hit the "entry point unreadable" case `load_crate` guards
+	/// against.
+	pub fn load_stdlib(&mut self) -> CrateId {
 		self.load_library(
 			"std",
 			"lib.wx".to_string(),
@@ -260,6 +308,7 @@ impl CompilationGraphBuilder {
 				STDLIB_SOURCE.to_string(),
 			)])),
 		)
+		.expect("embedded stdlib source should always be readable")
 	}
 
 	#[inline]
@@ -268,7 +317,7 @@ impl CompilationGraphBuilder {
 		name: &str,
 		entry_path: String,
 		file_source: &impl FileSource,
-	) -> Result<CrateId, LoadError> {
+	) -> Result<CrateId, ()> {
 		let name = self.interner.get_or_intern(name);
 		self.load_crate(Some(name), entry_path, file_source)
 	}
@@ -278,16 +327,21 @@ impl CompilationGraphBuilder {
 		&mut self,
 		entry_path: String,
 		file_source: &impl FileSource,
-	) -> Result<CrateId, LoadError> {
+	) -> Result<CrateId, ()> {
 		self.load_crate(None, entry_path, file_source)
 	}
 
+	/// Loads a crate starting from `entry_path`. Fails only if the entry
+	/// point itself can't be read — there's no partial crate to build
+	/// without it. Everything past that point (missing/ambiguous `module`
+	/// declarations) is recorded as a diagnostic instead of aborting, so one
+	/// broken submodule doesn't take down the whole crate.
 	pub fn load_crate(
 		&mut self,
 		name: Option<SymbolU32>,
 		entry_path: String,
 		file_source: &impl FileSource,
-	) -> Result<CrateId, LoadError> {
+	) -> Result<CrateId, ()> {
 		let crate_id = CrateId(self.crates.len() as u32);
 		let mut loader = Loader::new(self, crate_id, file_source);
 		let root = loader.load_module(entry_path.clone(), None, None)?;
@@ -338,17 +392,35 @@ impl CrateGraph {
 	}
 }
 
-#[derive(Clone, PartialEq)]
-#[derive(Debug)]
-pub enum LoadError {
-	ReadFailed {
-		path: String,
-	},
-	AmbiguousModule {
-		file: String,
-		directory_file: String,
-	},
-	TooManyFiles,
+/// Converts a `module foo;` resolution failure into a diagnostic attached to
+/// that declaration's span, rather than to the (possibly nonexistent) file
+/// it failed to resolve to.
+fn report_module_not_found(
+	file_id: FileId,
+	span: ast::TextSpan,
+	path: &str,
+) -> Diagnostic<FileId> {
+	Diagnostic::error()
+		.with_code(DiagnosticCode::ModuleFileNotFound.code())
+		.with_message(format!("module file not found: `{path}`"))
+		.with_label(
+			Label::primary(file_id, span)
+				.with_message(format!("no such file: `{path}`")),
+		)
+}
+
+fn report_ambiguous_module(
+	file_id: FileId,
+	span: ast::TextSpan,
+	file: &str,
+	directory_file: &str,
+) -> Diagnostic<FileId> {
+	Diagnostic::error()
+		.with_code(DiagnosticCode::AmbiguousModuleFile.code())
+		.with_message("ambiguous module")
+		.with_label(Label::primary(file_id, span).with_message(format!(
+			"both `{file}` and `{directory_file}` exist"
+		)))
 }
 
 struct Loader<'ctx, 'src, S: FileSource> {
@@ -377,12 +449,17 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 		}
 	}
 
+	/// Loads a single module and, recursively, every child it can resolve.
+	/// Fails only when *this* file itself can't be read — a missing or
+	/// ambiguous child `module foo;` is instead recorded as a diagnostic on
+	/// the declaration (see below) and simply omitted from `children`, so
+	/// one broken submodule doesn't take down its siblings or its parent.
 	fn load_module(
 		&mut self,
 		file_path: String,
 		name: Option<SymbolU32>,
 		parent: Option<ModuleId>,
-	) -> Result<ModuleId, LoadError> {
+	) -> Result<ModuleId, ()> {
 		let mut file_path = file_path;
 		// We normalize all path separators to '/' to ensure consistent VFS lookup
 		// across all platforms (matching virtual file schemas and test assertions).
@@ -404,18 +481,20 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 			.ctx
 			.files
 			.add(file_path.clone(), source)
-			.ok_or(LoadError::TooManyFiles)?;
+			.expect("file count should never realistically approach FileId's limit");
 		let ast = ast::Parser::parse(
 			file_id,
 			&self.ctx.files,
 			&mut self.ctx.interner,
 			&mut self.ctx.id_generator,
 		);
-		let child_names: Box<[SymbolU32]> = ast
+		let child_decls: Box<[ast::Spanned<SymbolU32>]> = ast
 			.items
 			.iter()
 			.filter_map(|item| match &item.inner.inner {
-				ast::Item::ModuleDeclaration { name, .. } => Some(name.inner),
+				ast::Item::ModuleDeclaration { name, .. } => {
+					Some(name.clone())
+				}
 				_ => None,
 			})
 			.collect();
@@ -424,7 +503,7 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 
 		let module_id = ModuleId(
 			u32::try_from(self.modules.len())
-				.map_err(|_| LoadError::TooManyFiles)?,
+				.expect("module count should never realistically approach u32::MAX"),
 		);
 		self.path_to_module.insert(file_path.clone(), module_id);
 		self.modules.push(SourceModule {
@@ -438,31 +517,49 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 			ast,
 		});
 
-		let mut children = Vec::with_capacity(child_names.len());
-		for child_name in child_names {
-			let child_path =
-				self.get_child_module_path(module_id, child_name)?;
-			let child_id = self.load_module(
-				child_path,
-				Some(child_name),
+		let mut children = Vec::with_capacity(child_decls.len());
+		for child_name in child_decls {
+			let Some(child_path) = self.resolve_child_module_path(
+				module_id,
+				child_name,
+				file_id,
+			) else {
+				continue; // already diagnosed as ambiguous
+			};
+			match self.load_module(
+				child_path.clone(),
+				Some(child_name.inner),
 				Some(module_id),
-			)?;
-			children.push(child_id);
+			) {
+				Ok(child_id) => children.push(child_id),
+				Err(()) => self.diagnostics.push(report_module_not_found(
+					file_id,
+					child_name.span,
+					&child_path,
+				)),
+			}
 		}
 		self.modules[module_id.0 as usize].children = children;
 
 		Ok(module_id)
 	}
 
-	fn get_child_module_path(
+	/// Resolves `module <child_module_name>;` declared at `child_span` in
+	/// `parent_module_id`'s file to a candidate file path. Doesn't check the
+	/// path actually exists (that's `load_module`'s job) except to detect
+	/// the ambiguous case, which it diagnoses directly since — unlike a
+	/// simple not-found — there's no single "the file" to report from
+	/// `load_module`.
+	fn resolve_child_module_path(
 		&mut self,
 		parent_module_id: ModuleId,
-		child_module_name: SymbolU32,
-	) -> Result<String, LoadError> {
+		child_module_name: ast::Spanned<SymbolU32>,
+		parent_file_id: FileId,
+	) -> Option<String> {
 		let module_name = self
 			.ctx
 			.interner
-			.resolve(child_module_name)
+			.resolve(child_module_name.inner)
 			.expect("module symbol should resolve while loading crate");
 		let parent_file_path =
 			&self.modules[parent_module_id.0 as usize].file_path;
@@ -476,16 +573,19 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 		if self.file_source.exists(&sibling_file)
 			&& self.file_source.exists(&directory_file)
 		{
-			return Err(LoadError::AmbiguousModule {
-				file: sibling_file,
-				directory_file,
-			});
+			self.diagnostics.push(report_ambiguous_module(
+				parent_file_id,
+				child_module_name.span,
+				&sibling_file,
+				&directory_file,
+			));
+			return None;
 		}
 
 		if self.file_source.exists(&sibling_file) {
-			return Ok(sibling_file);
+			return Some(sibling_file);
 		}
 
-		Ok(directory_file)
+		Some(directory_file)
 	}
 }
