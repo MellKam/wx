@@ -92,17 +92,21 @@ fn load_crate_diagnoses_missing_child_module_without_aborting() {
 		"the unresolved `boo` module should be omitted, not present as a stub"
 	);
 	assert!(
-		root.ast
-			.items
-			.iter()
-			.any(|item| matches!(&item.inner.inner, ast::Item::Function { .. })),
+		root.ast.items.iter().any(|item| matches!(
+			&item.inner.inner,
+			ast::Item::Function { .. }
+		)),
 		"the rest of main.wx should still parse normally"
 	);
 	assert!(
 		graph.diagnostics.iter().any(|d| d.code.as_deref()
 			== Some(DiagnosticCode::ModuleFileNotFound.code())),
 		"expected a module-not-found diagnostic; got: {:?}",
-		graph.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+		graph
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
 	);
 
 	fs::remove_file(&path).unwrap();
@@ -166,12 +170,14 @@ fn load_crate_rejects_ambiguous_module_paths() {
 		"the ambiguous module should be omitted rather than arbitrarily picked"
 	);
 	assert!(
+		graph.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::AmbiguousModuleFile.code())),
+		"expected an ambiguous-module diagnostic; got: {:?}",
 		graph
 			.diagnostics
 			.iter()
-			.any(|d| d.code.as_deref() == Some(DiagnosticCode::AmbiguousModuleFile.code())),
-		"expected an ambiguous-module diagnostic; got: {:?}",
-		graph.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
 	);
 
 	fs::remove_file(&path).unwrap();

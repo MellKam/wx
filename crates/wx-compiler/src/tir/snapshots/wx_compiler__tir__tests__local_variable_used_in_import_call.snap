@@ -476,7 +476,7 @@ types:
       type_args:
         - 1
         - 1
-  - Module:
+  - Namespace:
       namespace_idx: 2
   - FunctionItem:
       id: 45
@@ -5887,3 +5887,4 @@ typesets:
         span:
           start: 586
           end: 597
+type_aliases: []

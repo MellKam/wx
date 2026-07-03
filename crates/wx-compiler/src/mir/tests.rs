@@ -130,6 +130,66 @@ fn test_global_struct_type() {
 	insta::assert_yaml_snapshot!(case.mir);
 }
 
+// ── type aliases
+// ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_type_alias_to_struct_transparent_in_mir() {
+	// Field access through a non-generic alias should lower identically to
+	// direct struct field access — no alias-specific MIR shape.
+	let case = TestCase::new(indoc! {"
+        struct Point {
+            x: u32,
+            y: u32,
+        }
+
+        type Coord = Point;
+
+        fn get_x(p: Coord) -> u32 {
+            p.x
+        }
+
+        export { get_x }
+    "});
+	insta::assert_yaml_snapshot!(case.mir);
+}
+
+#[test]
+fn test_generic_type_alias_transparent_in_mir() {
+	// A parametric alias to a generic struct, instantiated at a use site,
+	// should lower to ordinary struct-field-access MIR.
+	let case = TestCase::new(indoc! {"
+        struct Wrapper<T> {
+            value: T,
+        }
+
+        type Boxed<T> = Wrapper<T>;
+
+        fn get(b: Boxed<u32>) -> u32 {
+            b.value
+        }
+
+        export { get }
+    "});
+	insta::assert_yaml_snapshot!(case.mir);
+}
+
+#[test]
+fn test_tuple_type_alias_transparent_in_mir() {
+	// A parametric alias to a tuple type, instantiated at a use site, should
+	// lower to ordinary tuple/aggregate MIR.
+	let case = TestCase::new(indoc! {"
+        type Pair<T> = (T, T);
+
+        fn make() -> Pair<u32> {
+            (1, 2)
+        }
+
+        export { make }
+    "});
+	insta::assert_yaml_snapshot!(case.mir);
+}
+
 // ── associated consts
 // ─────────────────────────────────────────────────────────
 

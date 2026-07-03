@@ -62,6 +62,8 @@ pub enum TypeParamOwner {
 	/// Non-trait generic impl block: `impl<Params> Target { }`.
 	/// Value is the index into `TIR::generic_impl_list`.
 	ImplBlock(u32),
+	/// `type Alias<T> = ...;` — the alias's own type parameters.
+	TypeAlias(DefId),
 }
 
 /// The block a function/constant is a member of, if any — an impl block or
@@ -154,7 +156,7 @@ pub enum Type {
 		memory: TypeIndex,
 		mutable: bool,
 	},
-	Module {
+	Namespace {
 		namespace_idx: u32,
 	},
 	Enum {
@@ -895,6 +897,9 @@ pub enum SymbolKind {
 		trait_index: TraitIndex,
 		assoc_name: SymbolU32,
 	},
+	TypeAlias {
+		type_alias_index: u32,
+	},
 	/// Registered during pre-scan but not yet resolved; replaced by the real
 	/// kind when `ensure_signature` runs for this `DefId`.
 	Pending(ast::DefId),
@@ -1373,6 +1378,25 @@ pub struct Struct {
 	pub accesses: Vec<SourceSpan>,
 }
 
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct TypeAlias {
+	pub id: ast::DefId,
+	pub file_id: FileId,
+	pub namespace: Option<NamespaceIndex>,
+	pub pub_span: Option<ast::TextSpan>,
+	pub name: ast::Spanned<SymbolU32>,
+	/// Empty for non-generic aliases.
+	pub type_params: Box<[TypeParamInfo]>,
+	/// The alias's target type, fully resolved. For a generic alias this may
+	/// contain `Type::TypeParam { owner: TypeParamOwner::TypeAlias(id), .. }`
+	/// placeholders, substituted via `substitute_type` at each reference site
+	/// that supplies concrete type arguments — the alias is transparent and
+	/// never appears past TIR.
+	pub template: TypeIndex,
+	pub accesses: Vec<SourceSpan>,
+}
+
 pub struct TypeFormatter<'a> {
 	tir: &'a TIR,
 	pub interner: &'a ast::StringInterner,
@@ -1413,7 +1437,7 @@ impl<'a> TypeFormatter<'a> {
 			| Type::Integer => "integer",
 			Type::Bool => "bool",
 			Type::Char => "char",
-			Type::Module { .. } => "module",
+			Type::Namespace { .. } => "module",
 			Type::Memory { .. } => "memory",
 			Type::Unit { .. } => "unit",
 			Type::Array { .. } => "array",
@@ -1558,7 +1582,7 @@ impl<'a> TypeFormatter<'a> {
 					.ok_or(std::fmt::Error)
 					.and_then(|name| f.write_str(name))
 			}
-			Type::Module { namespace_idx } => self
+			Type::Namespace { namespace_idx } => self
 				.interner
 				.resolve(self.tir.namespaces[*namespace_idx as usize].name)
 				.ok_or(std::fmt::Error)
@@ -1643,6 +1667,15 @@ impl<'a> TypeFormatter<'a> {
 					TypeParamOwner::ImplBlock(block_idx) => {
 						let symbol = self.tir.generic_impl_list
 							[*block_idx as usize]
+							.type_params[*param_index as usize]
+							.name;
+						self.interner.resolve(symbol).ok_or(std::fmt::Error)?
+					}
+					TypeParamOwner::TypeAlias(def_id) => {
+						let symbol = self.tir.type_aliases[self
+							.tir
+							.expect_type_alias_index(*def_id)
+							as usize]
 							.type_params[*param_index as usize]
 							.name;
 						self.interner.resolve(symbol).ok_or(std::fmt::Error)?
@@ -1742,6 +1775,7 @@ pub enum ItemIndex {
 	Trait(TraitIndex),
 	TraitImpl(TraitImplIndex),
 	Enum(EnumIndex),
+	TypeAlias(u32),
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1798,6 +1832,7 @@ pub struct TIR {
 	#[cfg_attr(test, serde(skip))]
 	pub lang_items: HashMap<SymbolU32, ast::DefId>,
 	pub typesets: Vec<TypeSet>,
+	pub type_aliases: Vec<TypeAlias>,
 	/// Unified lookup: maps every named item's `DefId` to its kind and dense Vec index.
 	/// Replaces the previous per-kind hashmaps (`function_index_lookup`, etc.).
 	#[cfg_attr(test, serde(skip))]
@@ -1841,6 +1876,27 @@ impl TIR {
 			#[cfg(debug_assertions)]
 			other => {
 				unreachable!("expected Struct for {id:?}, found {other:?}")
+			}
+			#[cfg(not(debug_assertions))]
+			_ => unreachable!(),
+		}
+	}
+
+	#[inline]
+	pub fn type_alias_index(&self, id: ast::DefId) -> Option<u32> {
+		match self.item_lookup.get(&id)? {
+			ItemIndex::TypeAlias(i) => Some(*i),
+			_ => None,
+		}
+	}
+
+	#[inline]
+	pub fn expect_type_alias_index(&self, id: ast::DefId) -> u32 {
+		match self.item_lookup[&id] {
+			ItemIndex::TypeAlias(i) => i,
+			#[cfg(debug_assertions)]
+			other => {
+				unreachable!("expected TypeAlias for {id:?}, found {other:?}")
 			}
 			#[cfg(not(debug_assertions))]
 			_ => unreachable!(),
@@ -2022,6 +2078,10 @@ impl TIR {
 				);
 				&self.traits[trait_idx as usize].self_type_param
 			}
+			TypeParamOwner::TypeAlias(id) => {
+				let alias_idx = self.expect_type_alias_index(id) as usize;
+				&self.type_aliases[alias_idx].type_params[abs_index]
+			}
 		}
 	}
 
@@ -2052,6 +2112,10 @@ impl TIR {
 					"only Self (index 0) is owned by a Trait"
 				);
 				&mut self.traits[trait_idx as usize].self_type_param
+			}
+			TypeParamOwner::TypeAlias(id) => {
+				let alias_idx = self.expect_type_alias_index(id) as usize;
+				&mut self.type_aliases[alias_idx].type_params[abs_index]
 			}
 		}
 	}

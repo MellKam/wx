@@ -1637,6 +1637,14 @@ pub enum Item {
 	},
 	/// `use path::*;` — wildcard import; brings all public items from the namespace into scope.
 	Use { path: Box<[Spanned<SymbolU32>]> },
+	/// `type Name = TypeExpr;` or `type Name<T> = TypeExpr;` — a transparent alias.
+	TypeAlias {
+		id: DefId,
+		pub_span: Option<TextSpan>,
+		name: Spanned<SymbolU32>,
+		type_params: Box<[TypeParam]>,
+		ty: Box<Spanned<TypeExpression>>,
+	},
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -1655,6 +1663,7 @@ impl Item {
 			| Item::Memory { .. }
 			| Item::FunctionDeclaration { .. }
 			| Item::ModuleDeclaration { .. }
+			| Item::TypeAlias { .. }
 			| Item::Use { .. } => false,
 			Item::Function { .. }
 			| Item::Export { .. }
@@ -2112,6 +2121,7 @@ impl<'ctx> Parser<'ctx> {
 			Some(Keyword::Pub) => Ok(Parser::parse_pub_item),
 			Some(Keyword::Trait) => Ok(Parser::parse_trait_item),
 			Some(Keyword::Typeset) => Ok(Parser::parse_typeset_item),
+			Some(Keyword::Type) => Ok(Parser::parse_type_alias_item),
 			_ => return Err(()),
 		}
 	}
@@ -4892,6 +4902,38 @@ impl<'ctx> Parser<'ctx> {
 		})
 	}
 
+	/// Parse `type Name = TypeExpr;` or `type Name<T> = TypeExpr;`.
+	fn parse_type_alias_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
+		let type_span = parser.lexer.next().span;
+
+		let name_span = parser.next_expect(Token::Identifier)?.span;
+		let name_symbol = parser.intern_identifier(name_span);
+
+		let type_params = if parser.lexer.peek().inner == Token::LeftArrow {
+			parser.parse_type_params()?
+		} else {
+			Box::new([])
+		};
+
+		parser.next_expect(Token::Eq)?;
+		let ty = parser.parse_type_expression()?;
+
+		let span = TextSpan::new(type_span.start, ty.span.end);
+		Ok(Spanned {
+			inner: Item::TypeAlias {
+				id: parser.id_generator.generate(),
+				pub_span: None,
+				name: Spanned {
+					inner: name_symbol,
+					span: name_span,
+				},
+				type_params,
+				ty: Box::new(ty),
+			},
+			span,
+		})
+	}
+
 	fn parse_pub_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
 		let pub_span = parser.lexer.next().span; // consume `pub`
 		let next = parser.lexer.peek();
@@ -4982,6 +5024,17 @@ impl<'ctx> Parser<'ctx> {
 			Some(Keyword::Const) => {
 				let mut item = Parser::parse_const_item(parser)?;
 				if let Item::Const {
+					pub_span: ref mut ps,
+					..
+				} = item.inner
+				{
+					*ps = Some(pub_span);
+				}
+				Ok(item)
+			}
+			Some(Keyword::Type) => {
+				let mut item = Parser::parse_type_alias_item(parser)?;
+				if let Item::TypeAlias {
 					pub_span: ref mut ps,
 					..
 				} = item.inner

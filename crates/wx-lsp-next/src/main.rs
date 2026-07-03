@@ -18,9 +18,9 @@ use tower_lsp_server::ls_types::{
 	DocumentFormattingParams, GotoDefinitionParams, GotoDefinitionResponse,
 	Hover, HoverContents, HoverParams, HoverProviderCapability,
 	InitializeParams, InitializeResult, InitializedParams, Location,
-	MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, ParameterInformation,
-	ParameterLabel, Position, Range, ReferenceParams, RenameParams,
-	SemanticToken, SemanticTokenType, SemanticTokensFullOptions,
+	MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf,
+	ParameterInformation, ParameterLabel, Position, Range, ReferenceParams,
+	RenameParams, SemanticToken, SemanticTokenType, SemanticTokensFullOptions,
 	SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
 	SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
 	SignatureHelp, SignatureHelpOptions, SignatureHelpParams,
@@ -714,9 +714,9 @@ impl LanguageServer for Backend {
 		};
 		let position = params.text_document_position.position;
 
-		let Some((source, offset)) = resolve_source_and_offset(
-			&state, compiled, uri, file_id, position,
-		) else {
+		let Some((source, offset)) =
+			resolve_source_and_offset(&state, compiled, uri, file_id, position)
+		else {
 			return Ok(None);
 		};
 		let completion_start = std::time::Instant::now();
@@ -731,10 +731,7 @@ impl LanguageServer for Backend {
 		self.client
 			.log_message(
 				MessageType::LOG,
-				format!(
-					"completion took {:?}",
-					completion_start.elapsed()
-				),
+				format!("completion took {:?}", completion_start.elapsed()),
 			)
 			.await;
 		Ok(Some(CompletionResponse::Array(items)))
@@ -988,10 +985,7 @@ fn compile_root(
 		.collect();
 	let tir_start = std::time::Instant::now();
 	let tir = TIR::build(&mut graph);
-	logs.push(format!(
-		"typechecking took {:?}",
-		tir_start.elapsed()
-	));
+	logs.push(format!("typechecking took {:?}", tir_start.elapsed()));
 	let symbol_index = build_symbol_index(&tir, &graph.interner);
 	CompiledRoot {
 		graph,
@@ -1419,6 +1413,10 @@ fn symbol_hover_text(
 					let t = tir.traits.get(*trait_idx as usize)?;
 					&t.self_type_param
 				}
+				TypeParamOwner::TypeAlias(def_id) => {
+					let ai = tir.type_alias_index(*def_id)? as usize;
+					tir.type_aliases[ai].type_params.get(param_index)?
+				}
 			};
 			let name = interner.resolve(tp.name).unwrap_or("?");
 			let bounds_str = fmt.display_bounds(&tp.bounds).unwrap_or_default();
@@ -1596,9 +1594,7 @@ fn resolve_source_and_offset<'a>(
 	position: Position,
 ) -> Option<(&'a str, usize)> {
 	let path = uri_to_path(uri);
-	if let Some(doc) =
-		path.as_ref().and_then(|p| state.open_documents.get(p))
-	{
+	if let Some(doc) = path.as_ref().and_then(|p| state.open_documents.get(p)) {
 		let source = doc.text.as_str();
 		let offset = position_to_offset_in_str(source, position)?;
 		Some((source, offset))

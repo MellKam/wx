@@ -477,11 +477,9 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 		}
 
 		let source = self.file_source.read_to_string(&file_path)?;
-		let file_id = self
-			.ctx
-			.files
-			.add(file_path.clone(), source)
-			.expect("file count should never realistically approach FileId's limit");
+		let file_id = self.ctx.files.add(file_path.clone(), source).expect(
+			"file count should never realistically approach FileId's limit",
+		);
 		let ast = ast::Parser::parse(
 			file_id,
 			&self.ctx.files,
@@ -492,19 +490,16 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 			.items
 			.iter()
 			.filter_map(|item| match &item.inner.inner {
-				ast::Item::ModuleDeclaration { name, .. } => {
-					Some(name.clone())
-				}
+				ast::Item::ModuleDeclaration { name, .. } => Some(name.clone()),
 				_ => None,
 			})
 			.collect();
 
 		self.diagnostics.extend(ast.diagnostics.iter().cloned());
 
-		let module_id = ModuleId(
-			u32::try_from(self.modules.len())
-				.expect("module count should never realistically approach u32::MAX"),
-		);
+		let module_id = ModuleId(u32::try_from(self.modules.len()).expect(
+			"module count should never realistically approach u32::MAX",
+		));
 		self.path_to_module.insert(file_path.clone(), module_id);
 		self.modules.push(SourceModule {
 			crate_id: self.crate_id,
@@ -519,11 +514,9 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 
 		let mut children = Vec::with_capacity(child_decls.len());
 		for child_name in child_decls {
-			let Some(child_path) = self.resolve_child_module_path(
-				module_id,
-				child_name,
-				file_id,
-			) else {
+			let Some(child_path) =
+				self.resolve_child_module_path(module_id, child_name, file_id)
+			else {
 				continue; // already diagnosed as ambiguous
 			};
 			match self.load_module(

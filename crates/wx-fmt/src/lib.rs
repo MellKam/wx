@@ -599,6 +599,18 @@ impl<'a> Builder<'a> {
 				let concat = self.arena.concat(items);
 				self.arena.group(concat)
 			}
+			ast::Item::TypeAlias {
+				pub_span,
+				name,
+				type_params,
+				ty,
+				..
+			} => self.build_type_alias_definition(
+				*pub_span,
+				name,
+				type_params,
+				ty,
+			),
 			ast::Item::Use { path } => {
 				let mut items: Vec<NodeId> = vec![self.text(Text::Use)];
 				for (i, segment) in path.iter().enumerate() {
@@ -987,6 +999,26 @@ impl<'a> Builder<'a> {
 		}
 		nodes.push(self.text(Text::EqSp));
 		nodes.push(self.build_expression(value));
+		nodes.push(self.text(Text::Semi));
+		self.arena.concat(nodes)
+	}
+
+	fn build_type_alias_definition(
+		&mut self,
+		pub_span: Option<ast::TextSpan>,
+		name: &ast::Spanned<SymbolU32>,
+		type_params: &[ast::TypeParam],
+		ty: &ast::Spanned<ast::TypeExpression>,
+	) -> NodeId {
+		let mut nodes: Vec<NodeId> = Vec::new();
+		if pub_span.is_some() {
+			nodes.push(self.text(Text::Pub));
+		}
+		nodes.push(self.text(Text::TypeKw));
+		nodes.push(self.symbol(name.inner));
+		self.build_type_params(&mut nodes, type_params);
+		nodes.push(self.text(Text::EqSp));
+		nodes.push(self.build_type_expression(&ty.inner));
 		nodes.push(self.text(Text::Semi));
 		self.arena.concat(nodes)
 	}

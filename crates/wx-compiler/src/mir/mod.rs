@@ -1562,18 +1562,15 @@ impl<'tir> Builder<'tir> {
 					} if !type_args.is_empty() => {
 						let concrete_args: Box<[tir::TypeIndex]> = type_args
 							.iter()
-							.map(|&ty| {
-								match &self.tir.types[ty.as_usize()] {
-									tir::Type::TypeParam {
-										param_index,
-										..
-									} => self
-										.current_substitutions
-										.get(*param_index as usize)
-										.copied()
-										.unwrap_or(ty),
-									_ => ty,
-								}
+							.map(|&ty| match &self.tir.types[ty.as_usize()] {
+								tir::Type::TypeParam {
+									param_index, ..
+								} => self
+									.current_substitutions
+									.get(*param_index as usize)
+									.copied()
+									.unwrap_or(ty),
+								_ => ty,
 							})
 							.collect();
 						let mono_id = self

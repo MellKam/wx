@@ -1784,10 +1784,7 @@ fn test_impl_trait_for_type_registers_trait_impl() {
 
 	// target type is Point (a struct)
 	assert!(
-		matches!(
-			case.tir.types[ti.target.as_usize()],
-			Type::Struct { .. }
-		),
+		matches!(case.tir.types[ti.target.as_usize()], Type::Struct { .. }),
 		"target should be a struct type"
 	);
 
@@ -2440,6 +2437,225 @@ fn test_generic_struct_init_wrong_type_arg_count_is_error() {
 			== Some(DiagnosticCode::TypeArgCountMismatch.code())),
 		"expected E1040 for wrong type arg count in init"
 	);
+}
+
+#[test]
+fn test_generic_struct_fewer_type_args_in_signature_is_error() {
+	// Padding with TypeIndex::INFER is only useful where something can later
+	// fill the gap in (e.g. from a local's initializer). A function signature
+	// has no such follow-up step, so a padded param type must still be
+	// rejected — same rule as bare `_`.
+	let case = TestCase::new(indoc! {"
+        struct Pair<T, U> { a: T, b: U }
+        fn f(p: Pair<i32>) -> i32 { p.a }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::InferInSignature),
+		"expected E1051 for partially-applied generic struct in signature, got: {:?}",
+		case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+	);
+}
+
+#[test]
+fn test_generic_struct_bare_reference_in_signature_is_error() {
+	// No turbofish at all is the extreme case of "fewer args than declared":
+	// every slot is padded, not just the trailing ones — still rejected in
+	// signature position.
+	let case = TestCase::new(indoc! {"
+        struct Pair<T, U> { a: T, b: U }
+        fn f(p: Pair) { }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::InferInSignature),
+		"expected E1051 for bare generic struct reference in signature, got: {:?}",
+		case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+	);
+}
+
+#[test]
+fn test_generic_struct_fewer_type_args_infers_from_local_initializer() {
+	// Outside signature position, a padded INFER slot is filled in later —
+	// here from the local's own initializer, which supplies both args.
+	let case = TestCase::new(indoc! {"
+        struct Pair<T, U> { a: T, b: U }
+        fn f() {
+            local p: Pair<i32> = Pair::<i32, bool>::{ a: 1, b: true }
+        }
+    "});
+	no_errors(&case);
+}
+
+#[test]
+fn test_generic_struct_too_many_type_args_still_errors() {
+	let case = TestCase::new(indoc! {"
+        struct Pair<T, U> { a: T, b: U }
+        fn f(p: Pair<i32, f64, bool>) { }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeArgCountMismatch),
+		"expected E1040 for too many type args"
+	);
+}
+
+// ── Type aliases
+// ─────────────────────────────────────────────────────────
+
+#[test]
+fn test_type_alias_simple() {
+	let case = TestCase::new(indoc! {"
+        type Foo = i32;
+        fn f(x: Foo) -> Foo { x }
+    "});
+	no_errors(&case);
+	let alias = case
+		.tir
+		.type_aliases
+		.iter()
+		.find(|a| case.graph.interner.resolve(a.name.inner) == Some("Foo"))
+		.expect("Foo alias not found");
+	assert_eq!(alias.template, TypeIndex::I32);
+}
+
+#[test]
+fn test_type_alias_to_struct_is_transparent() {
+	// Field access through the alias must type-check with no special-casing.
+	let case = TestCase::new(indoc! {"
+        struct Bar { field: i32 }
+        type Foo = Bar;
+        fn f(x: Foo) -> i32 { x.field }
+    "});
+	no_errors(&case);
+}
+
+#[test]
+fn test_type_alias_generic_rhs() {
+	// The alias's RHS is itself a generic instantiation; the alias just
+	// names the concrete `Wrapper<i32>` struct type.
+	let case = TestCase::new(indoc! {"
+        struct Wrapper<T> { data: T }
+        type WrapperI32 = Wrapper<i32>;
+        fn f(w: WrapperI32) -> i32 { w.data }
+    "});
+	no_errors(&case);
+	let alias = case
+		.tir
+		.type_aliases
+		.iter()
+		.find(|a| {
+			case.graph.interner.resolve(a.name.inner) == Some("WrapperI32")
+		})
+		.expect("WrapperI32 alias not found");
+	match &case.tir.types[alias.template.as_usize()] {
+		Type::Struct { args, .. } => {
+			assert_eq!(args.len(), 1);
+			assert_eq!(case.tir.types[args[0].as_usize()], Type::I32);
+		}
+		other => panic!("expected Type::Struct template, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_parametric_type_alias_instantiated_at_use_site() {
+	// The alias itself is generic; instantiating it with args must substitute
+	// through the tuple template, producing a plain concrete tuple type.
+	let case = TestCase::new(indoc! {"
+        type Pair<T> = (T, T);
+        fn make() -> Pair<i32> {
+            (1, 2)
+        }
+        export { make }
+    "});
+	no_errors(&case);
+	let func = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| case.graph.interner.resolve(f.name.inner) == Some("make"))
+		.expect("make function not found");
+	let result_ty = case.tir.types[func.signature_index.as_usize()].clone();
+	let Type::Function { signature } = result_ty else {
+		panic!("expected Type::Function, got {:?}", result_ty);
+	};
+	match &case.tir.types[signature.result().as_usize()] {
+		Type::Tuple { elements } => {
+			assert_eq!(elements.len(), 2);
+			assert_eq!(case.tir.types[elements[0].as_usize()], Type::I32);
+			assert_eq!(case.tir.types[elements[1].as_usize()], Type::I32);
+		}
+		other => panic!("expected Type::Tuple, got {:?}", other),
+	}
+}
+
+#[test]
+fn test_type_alias_direct_cycle_is_error() {
+	let case = TestCase::new(indoc! {"
+        type A = A;
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CyclicTypeDependency),
+		"expected E1032 for direct self-referential alias"
+	);
+}
+
+#[test]
+fn test_type_alias_mutual_cycle_is_error() {
+	let case = TestCase::new(indoc! {"
+        type A = B;
+        type B = A;
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CyclicTypeDependency),
+		"expected E1032 for mutually recursive aliases"
+	);
+}
+
+#[test]
+fn test_type_alias_wrong_type_arg_count_is_error() {
+	let case = TestCase::new(indoc! {"
+        type Pair<T> = (T, T);
+        fn f(p: Pair<i32, f64>) { }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeArgCountMismatch),
+		"expected E1040 for wrong type arg count on alias"
+	);
+}
+
+#[test]
+fn test_type_alias_fewer_type_args_in_signature_is_error() {
+	// Same rule as generic structs: a padded INFER slot has no follow-up
+	// step in signature position, so it's still rejected there.
+	let case = TestCase::new(indoc! {"
+        type Pair<T, U> = (T, U);
+        fn f(p: Pair<i32>) { }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::InferInSignature),
+		"expected E1051 for partially-applied alias in signature, got: {:?}",
+		case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+	);
+}
+
+#[test]
+fn test_type_alias_fewer_type_args_infers_from_local_initializer() {
+	let case = TestCase::new(indoc! {"
+        type Pair<T, U> = (T, U);
+        fn f() {
+            local p: Pair<i32> = (1, true)
+        }
+    "});
+	no_errors(&case);
+}
+
+#[test]
+fn test_type_alias_forward_reference_resolves() {
+	// Foo is used before its declaration further down the file.
+	let case = TestCase::new(indoc! {"
+        fn f(x: Foo) -> i32 { x.field }
+        struct Bar { field: i32 }
+        type Foo = Bar;
+    "});
+	no_errors(&case);
 }
 
 // ── Generics ─────────────────────────────────────────────────────────────────
@@ -3405,16 +3621,15 @@ fn test_memory_tagged_nested_array() {
 
 	let outer_ty = f.params[0].ty.inner;
 	let is_heap_mem = |memory: &TypeIndex| matches!(&case.tir.types[memory.as_usize()], Type::Memory { id, .. } if *id == heap_id);
-	let (inner_ty, outer_tagged) =
-		match &case.tir.types[outer_ty.as_usize()] {
-			Type::Array {
-				of,
-				size: 4,
-				memory,
-				..
-			} if is_heap_mem(memory) => (*of, true),
-			_ => (TypeIndex::ERROR, false),
-		};
+	let (inner_ty, outer_tagged) = match &case.tir.types[outer_ty.as_usize()] {
+		Type::Array {
+			of,
+			size: 4,
+			memory,
+			..
+		} if is_heap_mem(memory) => (*of, true),
+		_ => (TypeIndex::ERROR, false),
+	};
 	assert!(
 		outer_tagged,
 		"outer array should be tagged with heap memory"
@@ -5892,10 +6107,7 @@ fn test_impl_module_trait_for_type_resolves() {
 		.find(|ti| ti.members.contains_key(&draw_sym))
 		.expect("no TraitImpl has 'draw' method");
 	assert!(
-		matches!(
-			case.tir.types[ti.target.as_usize()],
-			Type::Struct { .. }
-		),
+		matches!(case.tir.types[ti.target.as_usize()], Type::Struct { .. }),
 		"target should be Point (a struct)"
 	);
 }

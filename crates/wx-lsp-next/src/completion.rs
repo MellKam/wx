@@ -189,9 +189,8 @@ pub fn visible_namespaces(
 				current = ns.parent;
 			}
 			None => {
-				visible.extend(
-					tir.root_wildcard_imports.iter().map(|&i| Some(i)),
-				);
+				visible
+					.extend(tir.root_wildcard_imports.iter().map(|&i| Some(i)));
 				break;
 			}
 		}
@@ -350,7 +349,13 @@ pub fn completion_items(
 		}
 		CompletionContext::TypeAnnotation => {
 			// TODO: restrict to types only; for now show globals (includes structs/enums)
-			global_completion_items(tir, interner, symbol_index, prefix, &visible)
+			global_completion_items(
+				tir,
+				interner,
+				symbol_index,
+				prefix,
+				&visible,
+			)
 		}
 	}
 }

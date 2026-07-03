@@ -326,6 +326,9 @@ enum AstNodeRef<'ast> {
 		import_module_index: u32,
 		decl: &'ast ast::ImportDeclaration,
 	},
+	TypeAlias {
+		item: &'ast ast::Item,
+	},
 }
 
 fn report_missing_enum_repr(span: SourceSpan) -> Diagnostic<FileId> {
@@ -1260,6 +1263,7 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 		constants: Vec::new(),
 		lang_items: HashMap::new(),
 		typesets: Vec::new(),
+		type_aliases: Vec::new(),
 		item_lookup: HashMap::new(),
 	};
 	let type_index_lookup = HashMap::from_iter(
@@ -1430,10 +1434,8 @@ impl<'ast> Builder<'ast, '_> {
 				memory: b_mem,
 				mutable: false,
 			},
-		) = (
-			&self.tir.types[a.as_usize()],
-			&self.tir.types[b.as_usize()],
-		) {
+		) = (&self.tir.types[a.as_usize()], &self.tir.types[b.as_usize()])
+		{
 			if a_to == b_to && a_mem == b_mem {
 				return true;
 			}
@@ -1476,10 +1478,8 @@ impl<'ast> Builder<'ast, '_> {
 				id: b_id,
 				type_args: ref b_args,
 			},
-		) = (
-			&self.tir.types[a.as_usize()],
-			&self.tir.types[b.as_usize()],
-		) {
+		) = (&self.tir.types[a.as_usize()], &self.tir.types[b.as_usize()])
+		{
 			let a_args = a_args.clone();
 			let b_args = b_args.clone();
 			let a_sig = self.tir.functions
@@ -1527,7 +1527,7 @@ impl<'ast> Builder<'ast, '_> {
 		let symbol = name.inner;
 		if let Some(SymbolKind::Module { namespace_idx }) = self
 			.lookup_global_symbol(namespace, (SymbolNamespace::Type, symbol))
-			.cloned()
+			
 		{
 			if let ModuleDeclarationKind::Module(decl_idx) =
 				self.tir.namespaces[namespace_idx as usize].declaration
@@ -1724,7 +1724,9 @@ impl<'ast> Builder<'ast, '_> {
 			min_pages: None,
 			max_pages: None,
 		});
-		self.tir.item_lookup.insert(id, ItemIndex::Memory(memory_index));
+		self.tir
+			.item_lookup
+			.insert(id, ItemIndex::Memory(memory_index));
 		self.insert_symbol(
 			resolve_context.namespace,
 			(SymbolNamespace::Type, name.inner),
@@ -1741,33 +1743,104 @@ impl<'ast> Builder<'ast, '_> {
 		&self,
 		namespace: Option<NamespaceIndex>,
 		key: (SymbolNamespace, SymbolU32),
-	) -> Option<&SymbolKind> {
+	) -> Option<SymbolKind> {
 		let mut current = namespace;
 		while let Some(idx) = current {
-			let ns = &self.tir.namespaces[idx as usize];
-			if let Some(kind) = ns.symbols.get(&key) {
-				return Some(kind);
+			let namespace = &self.tir.namespaces[idx as usize];
+			match namespace.symbols.get(&key).copied() {
+				Some(kind) => return Some(kind),
+				None => {},
 			}
-			for &import_idx in &ns.wildcard_imports {
-				if let Some(kind) =
-					self.tir.namespaces[import_idx as usize].symbols.get(&key)
-				{
-					return Some(kind);
+			for namespace_idx in namespace.wildcard_imports.iter().copied() {
+				match self.tir.namespaces[namespace_idx as usize].symbols.get(&key).copied() {
+					Some(kind) => return Some(kind),
+					None => {}
 				}
 			}
-			current = ns.parent;
+			current = namespace.parent;
 		}
-		if let Some(kind) = self.symbol_lookup.get(&key) {
-			return Some(kind);
-		}
-		for &import_idx in &self.root_wildcard_imports {
-			if let Some(kind) =
-				self.tir.namespaces[import_idx as usize].symbols.get(&key)
-			{
-				return Some(kind);
+		match self.symbol_lookup.get(&key).copied() {
+			Some(kind) => return Some(kind),
+			None => {},
+		};
+		for namespace_idx in self.root_wildcard_imports.iter().copied() {
+			match self.tir.namespaces[namespace_idx as usize].symbols.get(&key).copied() {
+				Some(kind) => return Some(kind),
+				None => {}
 			}
 		}
 		None
+	}
+
+	/// Looks up `key` via [`Self::lookup_global_symbol`], forcing a `Pending`
+	/// result through `ensure_signature` and re-looking it up. Returns
+	/// `Err(())` (with a cyclic-dependency diagnostic already pushed) if the
+	/// pending item is still being computed on the current call stack.
+	fn resolve_pending_global_symbol(
+		&mut self,
+		namespace: Option<NamespaceIndex>,
+		key: (SymbolNamespace, SymbolU32),
+		file_id: FileId,
+		span: TextSpan,
+	) -> Result<Option<SymbolKind>, ()> {
+		match self.lookup_global_symbol(namespace, key) {
+			Some(SymbolKind::Pending(def_id)) => {
+				if matches!(
+					self.sig_state.get(&def_id),
+					Some(SigEntry {
+						state: ComputeState::InProgress,
+						..
+					})
+				) {
+					self.tir.diagnostics.push(report_cyclic_type_dependency(
+						SourceSpan::new(file_id, span),
+					));
+					return Err(());
+				}
+				self.ensure_signature(def_id);
+				Ok(self.lookup_global_symbol(namespace, key))
+			}
+			other => Ok(other),
+		}
+	}
+
+	/// Looks up `key` in `namespace_idx`'s own symbol map — no parent-scope
+	/// or wildcard-import fallback, for `module::Name` qualified lookups —
+	/// forcing a `Pending` result through `ensure_signature` and re-looking
+	/// it up. Same cyclic-dependency handling as
+	/// [`Self::resolve_pending_global_symbol`].
+	fn resolve_pending_namespace_symbol(
+		&mut self,
+		namespace_idx: NamespaceIndex,
+		key: (SymbolNamespace, SymbolU32),
+		span: SourceSpan,
+	) -> Result<Option<SymbolKind>, ()> {
+		match self.tir.namespaces[namespace_idx as usize]
+			.symbols
+			.get(&key)
+			.copied()
+		{
+			Some(SymbolKind::Pending(def_id)) => {
+				if matches!(
+					self.sig_state.get(&def_id),
+					Some(SigEntry {
+						state: ComputeState::InProgress,
+						..
+					})
+				) {
+					self.tir.diagnostics.push(report_cyclic_type_dependency(
+						span,
+					));
+					return Err(());
+				}
+				self.ensure_signature(def_id);
+				Ok(self.tir.namespaces[namespace_idx as usize]
+					.symbols
+					.get(&key)
+					.copied())
+			}
+			other => Ok(other),
+		}
 	}
 
 	/// Resolves a single symbol name, checking local variables first, then
@@ -1789,7 +1862,6 @@ impl<'ast> Builder<'ast, '_> {
 			func_ctx.resolve_context.namespace,
 			(SymbolNamespace::Value, symbol),
 		)
-		.copied()
 		.map(ResolvedSymbol::Global)
 	}
 
@@ -1939,7 +2011,8 @@ impl<'ast> Builder<'ast, '_> {
 			| SymbolKind::Module { .. }
 			| SymbolKind::Struct { .. }
 			| SymbolKind::Trait { .. }
-			| SymbolKind::TypeSet { .. } => {
+			| SymbolKind::TypeSet { .. }
+			| SymbolKind::TypeAlias { .. } => {
 				self.tir.diagnostics.push(report_namespace_used_as_value(
 					SourceSpan::new(resolve_ctx.file_id, expr_span),
 				));
@@ -1974,7 +2047,7 @@ impl<'ast> Builder<'ast, '_> {
 				Some(self.intern_type(Type::Memory { kind, id }))
 			}
 			SymbolKind::Module { namespace_idx } => {
-				Some(self.intern_type(Type::Module { namespace_idx }))
+				Some(self.intern_type(Type::Namespace { namespace_idx }))
 			}
 			SymbolKind::Enum { enum_index } => {
 				Some(self.intern_type(Type::Enum { enum_index }))
@@ -2004,6 +2077,9 @@ impl<'ast> Builder<'ast, '_> {
 			SymbolKind::False | SymbolKind::True => Some(TypeIndex::BOOL),
 			SymbolKind::Unreachable => Some(TypeIndex::NEVER),
 			SymbolKind::Placeholder => unreachable!(),
+			SymbolKind::TypeAlias { type_alias_index } => {
+				Some(self.tir.type_aliases[type_alias_index as usize].template)
+			}
 		}
 	}
 
@@ -2060,6 +2136,11 @@ impl<'ast> Builder<'ast, '_> {
 					})
 				}
 				TypeParamOwner::Trait(_) => &[],
+				TypeParamOwner::TypeAlias(id) => {
+					self.tir.type_alias_index(id).map_or(&[], |idx| {
+						&self.tir.type_aliases[idx as usize].type_params
+					})
+				}
 			};
 			if let Some(own_idx) =
 				own_params.iter().position(|p| p.name == identifier.inner)
@@ -2108,73 +2189,13 @@ impl<'ast> Builder<'ast, '_> {
 				}
 			}
 		}
-		match self
-			.lookup_global_symbol(
-				resolve_context.namespace,
-				(SymbolNamespace::Type, identifier.inner),
-			)
-			.copied()
-		{
-			Some(SymbolKind::Pending(def_id)) => {
-				if matches!(
-					self.sig_state.get(&def_id),
-					Some(SigEntry {
-						state: ComputeState::InProgress,
-						..
-					})
-				) {
-					self.tir.diagnostics.push(report_cyclic_type_dependency(
-						SourceSpan::new(
-							resolve_context.file_id,
-							identifier.span,
-						),
-					));
-					return Err(());
-				}
-				self.ensure_signature(def_id);
-				match self
-					.lookup_global_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Type, identifier.inner),
-					)
-					.cloned()
-				{
-					Some(SymbolKind::TraitAssocType { assoc_name, .. }) => {
-						let name = self.interner.resolve(assoc_name).unwrap();
-						self.tir.diagnostics.push(report_bare_assoc_type(
-							SourceSpan::new(
-								resolve_context.file_id,
-								identifier.span,
-							),
-							name,
-						));
-						Err(())
-					}
-					Some(
-						SymbolKind::Trait { .. } | SymbolKind::TypeSet { .. },
-					) => {
-						self.tir.diagnostics.push(
-                            Diagnostic::error()
-                                .with_code(DiagnosticCode::ExpectedTrait.code())
-                                .with_message("cannot use a trait or typeset as a type; use it as a bound: `<T: TraitName>`")
-                                .with_label(Label::primary(resolve_context.file_id, identifier.span)),
-                        );
-						Err(())
-					}
-					Some(kind) => {
-						self.record_type_kind_access(
-							resolve_context.file_id,
-							kind.clone(),
-							identifier.span,
-						);
-						if let Some(ty) = self.symbol_kind_to_type(kind) {
-							return Ok(ty);
-						}
-						Err(())
-					}
-					None => Err(()),
-				}
-			}
+		let kind = self.resolve_pending_global_symbol(
+			resolve_context.namespace,
+			(SymbolNamespace::Type, identifier.inner),
+			resolve_context.file_id,
+			identifier.span,
+		)?;
+		match kind {
 			Some(SymbolKind::TraitAssocType { assoc_name, .. }) => {
 				let name = self.interner.resolve(assoc_name).unwrap();
 				self.tir.diagnostics.push(report_bare_assoc_type(
@@ -2191,6 +2212,18 @@ impl<'ast> Builder<'ast, '_> {
                         .with_label(Label::primary(resolve_context.file_id, identifier.span)),
                 );
 				Err(())
+			}
+			Some(
+				kind @ (SymbolKind::Struct { .. }
+				| SymbolKind::TypeAlias { .. }),
+			) => {
+				let ty = self.resolve_generic_type_application(
+					resolve_context,
+					kind,
+					&[],
+					identifier.span,
+				);
+				if ty == TypeIndex::ERROR { Err(()) } else { Ok(ty) }
 			}
 			Some(kind) => {
 				self.record_type_kind_access(
@@ -2215,6 +2248,64 @@ impl<'ast> Builder<'ast, '_> {
 		}
 	}
 
+	/// If `name` names a type parameter reachable from `scope` (its own
+	/// owner, or — for a function nested in an impl block — the parent impl
+	/// block), returns its absolute index. Mirrors the type-param branch of
+	/// [`Self::resolve_type_identifier`] but without any of its resolution
+	/// side effects (no interning, no access recording): used purely to
+	/// detect type-param/global shadowing before deciding whether turbofish
+	/// applies to a global struct/alias.
+	fn identifier_type_param_index(
+		&self,
+		scope: GenericScope,
+		name: SymbolU32,
+	) -> Option<u32> {
+		let own_params: &[TypeParamInfo] = match scope.owner {
+			TypeParamOwner::ImplBlock(block_idx) => {
+				&self.tir.generic_impl_list[block_idx as usize].type_params
+			}
+			TypeParamOwner::Function(id) => {
+				self.tir.function_index(id).map_or(&[], |idx| {
+					&self.tir.functions[idx as usize].type_params
+				})
+			}
+			TypeParamOwner::Struct(id) => {
+				self.tir.struct_index(id).map_or(&[], |idx| {
+					&self.tir.structs[idx as usize].type_params
+				})
+			}
+			TypeParamOwner::Trait(_) => &[],
+			TypeParamOwner::TypeAlias(id) => {
+				self.tir.type_alias_index(id).map_or(&[], |idx| {
+					&self.tir.type_aliases[idx as usize].type_params
+				})
+			}
+		};
+		if let Some(own_idx) = own_params.iter().position(|p| p.name == name) {
+			return Some(
+				(self.inherited_type_param_count(scope.owner) + own_idx)
+					as u32,
+			);
+		}
+		if let TypeParamOwner::Function(fn_id) = scope.owner {
+			if let Some(fn_idx) = self.tir.function_index(fn_id) {
+				if let Some(parent_owner) =
+					self.tir.functions[fn_idx as usize].type_param_parent
+				{
+					// ImplBlock has no grandparent, so abs_index == i.
+					if let Some(i) = self
+						.owner_type_params(parent_owner)
+						.iter()
+						.position(|p| p.name == name)
+					{
+						return Some(i as u32);
+					}
+				}
+			}
+		}
+		None
+	}
+
 	/// Like [`resolve_type`], but rejects `_` in positions where a concrete type
 	/// is required (item signatures, struct fields, globals). Emits a diagnostic
 	/// and returns `ERROR` instead of `INFER` so the rest of the compiler stays clean.
@@ -2225,7 +2316,7 @@ impl<'ast> Builder<'ast, '_> {
 		type_expr: &Spanned<ast::TypeExpression>,
 	) -> TypeIndex {
 		let ty = self.resolve_type(resolve_context, scope, type_expr);
-		if ty == TypeIndex::INFER {
+		if self.contains_infer(ty) {
 			self.tir.diagnostics.push(report_infer_in_signature(
 				SourceSpan::new(resolve_context.file_id, type_expr.span),
 			));
@@ -2243,191 +2334,7 @@ impl<'ast> Builder<'ast, '_> {
 		match &type_expr.inner {
 			ast::TypeExpression::Infer => return TypeIndex::INFER,
 			ast::TypeExpression::Path(path) => {
-				let last = path.last().expect("path is non-empty");
-
-				// ── single segment, no type args: plain identifier ─────────────
-				if path.len() == 1 && last.type_args.is_empty() {
-					return self
-						.resolve_type_identifier(
-							resolve_context,
-							scope,
-							last.ident.clone(),
-						)
-						.unwrap_or(TypeIndex::ERROR);
-				}
-
-				// ── single segment with turbofish args: `Wrapper::<T>` ─────────
-				if path.len() == 1 {
-					let Ok(base_ty) = self.resolve_type_identifier(
-						resolve_context,
-						scope,
-						last.ident.clone(),
-					) else {
-						return TypeIndex::ERROR;
-					};
-					let struct_index =
-						match &self.tir.types[base_ty.as_usize()] {
-							Type::Struct { struct_index, .. } => *struct_index,
-							_ => {
-								self.tir.diagnostics.push(
-									Diagnostic::error()
-										.with_message(
-											"type arguments are not supported here",
-										)
-										.with_label(Label::primary(
-											resolve_context.file_id,
-											type_expr.span,
-										)),
-								);
-								return TypeIndex::ERROR;
-							}
-						};
-					let type_params_len = self.tir.structs
-						[struct_index as usize]
-						.type_params
-						.len();
-					let mut resolved_args: Vec<TypeIndex> =
-						Vec::with_capacity(last.type_args.len());
-					for arg in last.type_args.iter() {
-						resolved_args.push(self.resolve_type(
-							resolve_context,
-							scope,
-							arg,
-						));
-					}
-					let resolved_args: Box<[TypeIndex]> = resolved_args.into();
-					if resolved_args.len() != type_params_len {
-						let struct_name = self
-							.interner
-							.resolve(last.ident.inner)
-							.unwrap_or("?")
-							.to_string();
-						self.tir.diagnostics.push(
-							Diagnostic::error()
-								.with_code(
-									DiagnosticCode::TypeArgCountMismatch.code(),
-								)
-								.with_message(format!(
-									"`{}` expects {} type argument{}, found {}",
-									struct_name,
-									type_params_len,
-									if type_params_len == 1 { "" } else { "s" },
-									resolved_args.len(),
-								))
-								.with_label(Label::primary(
-									resolve_context.file_id,
-									type_expr.span,
-								)),
-						);
-						return TypeIndex::ERROR;
-					}
-					return self.intern_type(Type::Struct {
-						struct_index,
-						args: resolved_args,
-					});
-				}
-
-				// ── multi-segment: walk namespace chain ────────────────────────
-				// TODO: for full LSP per-segment support, ExprKind needs a nested
-				// namespace node so each intermediate segment carries its own span and
-				// TypeIndex.  Until then each lookup registers only its own segment span.
-				let first = &path[0];
-				let Ok(mut namespace_ty) = self.resolve_type_identifier(
-					resolve_context,
-					scope,
-					first.ident.clone(),
-				) else {
-					return TypeIndex::ERROR;
-				};
-				let mut namespace_span = first.ident.span;
-
-				for seg in &path[1..path.len() - 1] {
-					match self.resolve_namespace_type_member(
-						resolve_context,
-						namespace_ty,
-						namespace_span,
-						seg.ident.clone(),
-					) {
-						Ok(ty) => {
-							namespace_ty = ty;
-							namespace_span = seg.ident.span;
-						}
-						Err(()) => return TypeIndex::ERROR,
-					}
-				}
-
-				// Resolve the last segment within the current namespace.
-				let Ok(last_ty) = self.resolve_namespace_type_member(
-					resolve_context,
-					namespace_ty,
-					namespace_span,
-					last.ident.clone(),
-				) else {
-					return TypeIndex::ERROR;
-				};
-
-				// Apply turbofish type args on the last segment if present.
-				if last.type_args.is_empty() {
-					return last_ty;
-				}
-				let struct_index = match &self.tir.types[last_ty.as_usize()]
-				{
-					Type::Struct { struct_index, .. } => *struct_index,
-					_ => {
-						self.tir.diagnostics.push(
-							Diagnostic::error()
-								.with_message(
-									"type arguments are not supported here",
-								)
-								.with_label(Label::primary(
-									resolve_context.file_id,
-									type_expr.span,
-								)),
-						);
-						return TypeIndex::ERROR;
-					}
-				};
-				let type_params_len =
-					self.tir.structs[struct_index as usize].type_params.len();
-				let mut resolved_args: Vec<TypeIndex> =
-					Vec::with_capacity(last.type_args.len());
-				for arg in last.type_args.iter() {
-					resolved_args.push(self.resolve_type(
-						resolve_context,
-						scope,
-						arg,
-					));
-				}
-				let resolved_args: Box<[TypeIndex]> = resolved_args.into();
-				if resolved_args.len() != type_params_len {
-					let struct_name = self
-						.interner
-						.resolve(last.ident.inner)
-						.unwrap_or("?")
-						.to_string();
-					self.tir.diagnostics.push(
-						Diagnostic::error()
-							.with_code(
-								DiagnosticCode::TypeArgCountMismatch.code(),
-							)
-							.with_message(format!(
-								"`{}` expects {} type argument{}, found {}",
-								struct_name,
-								type_params_len,
-								if type_params_len == 1 { "" } else { "s" },
-								resolved_args.len(),
-							))
-							.with_label(Label::primary(
-								resolve_context.file_id,
-								type_expr.span,
-							)),
-					);
-					return TypeIndex::ERROR;
-				}
-				self.intern_type(Type::Struct {
-					struct_index,
-					args: resolved_args,
-				})
+				self.resolve_path_type(resolve_context, scope, path, type_expr.span)
 			}
 			ast::TypeExpression::Function { params, result } => {
 				let result_idx = match result {
@@ -2636,7 +2543,6 @@ impl<'ast> Builder<'ast, '_> {
 						resolve_context.namespace,
 						(SymbolNamespace::Type, name.inner),
 					)
-					.copied()
 				{
 					Some(SymbolKind::Pending(def_id)) => {
 						self.ensure_signature(def_id);
@@ -2648,61 +2554,26 @@ impl<'ast> Builder<'ast, '_> {
 						resolve_context.namespace,
 						(SymbolNamespace::Type, name.inner),
 					)
-					.copied()
 				{
-					Some(SymbolKind::Struct { struct_index }) => {
-						let type_params_len = self.tir.structs
-							[struct_index as usize]
-							.type_params
-							.len();
-						let mut positional_args: Vec<TypeIndex> =
+					Some(
+						kind @ (SymbolKind::Struct { .. }
+						| SymbolKind::TypeAlias { .. }),
+					) => {
+						let mut resolved_args: Vec<TypeIndex> =
 							Vec::with_capacity(args.len());
 						for sep in args.iter() {
-							positional_args.push(self.resolve_type(
+							resolved_args.push(self.resolve_type(
 								resolve_context,
 								scope,
 								&sep.inner,
 							));
 						}
-						let positional_args: Box<[TypeIndex]> =
-							positional_args.into();
-						if positional_args.len() != type_params_len {
-							let struct_name = self
-								.interner
-								.resolve(name.inner)
-								.unwrap_or("?")
-								.to_string();
-							self.tir.diagnostics.push(
-								Diagnostic::error()
-									.with_code(
-										DiagnosticCode::TypeArgCountMismatch
-											.code(),
-									)
-									.with_message(format!(
-										"`{}` expects {} type argument{}, found {}",
-										struct_name,
-										type_params_len,
-										if type_params_len == 1 {
-											""
-										} else {
-											"s"
-										},
-										positional_args.len(),
-									))
-									.with_label(Label::primary(
-										resolve_context.file_id,
-										type_expr.span,
-									)),
-							);
-							return TypeIndex::ERROR;
-						}
-						self.tir.structs[struct_index as usize].accesses.push(
-							SourceSpan::new(resolve_context.file_id, name.span),
-						);
-						self.intern_type(Type::Struct {
-							struct_index,
-							args: positional_args,
-						})
+						self.resolve_generic_type_application(
+							resolve_context,
+							kind,
+							&resolved_args,
+							type_expr.span,
+						)
 					}
 					_ => {
 						// Not a struct — eagerly resolve args to surface type errors.
@@ -2728,6 +2599,175 @@ impl<'ast> Builder<'ast, '_> {
 				}
 			}
 		}
+	}
+
+	/// Resolves a `::`-separated path in type position — plain identifiers,
+	/// namespaced paths (`module::Type`), and turbofish generic args
+	/// (`Wrapper::<T>`, `module::Wrapper::<T>`). Shared by [`Self::resolve_type`]
+	/// and struct-init expression resolution, so both spellings of "apply type
+	/// args to a struct/alias" go through [`Self::resolve_generic_type_application`].
+	fn resolve_path_type(
+		&mut self,
+		resolve_context: ResolveContext,
+		scope: Option<GenericScope>,
+		path: &[ast::PathSegment],
+		span: TextSpan,
+	) -> TypeIndex {
+		let last = path.last().expect("path is non-empty");
+
+		// ── single segment, no type args: plain identifier ─────────────
+		if path.len() == 1 && last.type_args.is_empty() {
+			return self
+				.resolve_type_identifier(
+					resolve_context,
+					scope,
+					last.ident.clone(),
+				)
+				.unwrap_or(TypeIndex::ERROR);
+		}
+
+		// ── single segment with turbofish args: `Wrapper::<T>` ─────────
+		if path.len() == 1 {
+			// A name that shadows a type param in this scope resolves via
+			// the type-param scope, not the global symbol table, so it can
+			// never carry turbofish args. Checked without a full
+			// `resolve_type_identifier` call so a bare generic struct/alias
+			// reference below doesn't waste-intern a padded placeholder type.
+			if scope.is_some_and(|s| {
+				self.identifier_type_param_index(s, last.ident.inner)
+					.is_some()
+			}) {
+				self.tir.diagnostics.push(
+					Diagnostic::error()
+						.with_message("type arguments are not supported here")
+						.with_label(Label::primary(
+							resolve_context.file_id,
+							span,
+						)),
+				);
+				return TypeIndex::ERROR;
+			}
+			if let Some(SymbolKind::Pending(def_id)) = self
+				.lookup_global_symbol(
+					resolve_context.namespace,
+					(SymbolNamespace::Type, last.ident.inner),
+				)
+			{
+				self.ensure_signature(def_id);
+			}
+			let Some(symbol_kind) = self
+				.lookup_global_symbol(
+					resolve_context.namespace,
+					(SymbolNamespace::Type, last.ident.inner),
+				)
+			else {
+				self.tir.diagnostics.push(
+					Diagnostic::error()
+						.with_message("type arguments are not supported here")
+						.with_label(Label::primary(
+							resolve_context.file_id,
+							span,
+						)),
+				);
+				return TypeIndex::ERROR;
+			};
+			let mut resolved_args: Vec<TypeIndex> =
+				Vec::with_capacity(last.type_args.len());
+			for arg in last.type_args.iter() {
+				resolved_args.push(self.resolve_type(
+					resolve_context,
+					scope,
+					arg,
+				));
+			}
+			return self.resolve_generic_type_application(
+				resolve_context,
+				symbol_kind,
+				&resolved_args,
+				span,
+			);
+		}
+
+		// ── multi-segment: walk namespace chain ────────────────────────
+		// TODO: for full LSP per-segment support, ExprKind needs a nested
+		// namespace node so each intermediate segment carries its own span and
+		// TypeIndex.  Until then each lookup registers only its own segment span.
+		let first = &path[0];
+		let Ok(mut namespace_ty) = self.resolve_type_identifier(
+			resolve_context,
+			scope,
+			first.ident.clone(),
+		) else {
+			return TypeIndex::ERROR;
+		};
+		let mut namespace_span = first.ident.span;
+
+		for seg in &path[1..path.len() - 1] {
+			match self.resolve_namespace_type_member(
+				resolve_context,
+				namespace_ty,
+				namespace_span,
+				seg.ident.clone(),
+			) {
+				Ok(ty) => {
+					namespace_ty = ty;
+					namespace_span = seg.ident.span;
+				}
+				Err(()) => return TypeIndex::ERROR,
+			}
+		}
+
+		// Resolve the last segment within the current namespace.
+		let Ok(last_ty) = self.resolve_namespace_type_member(
+			resolve_context,
+			namespace_ty,
+			namespace_span,
+			last.ident.clone(),
+		) else {
+			return TypeIndex::ERROR;
+		};
+
+		// Apply turbofish type args on the last segment if present.
+		if last.type_args.is_empty() {
+			return last_ty;
+		}
+		// Type args on a namespaced segment are only meaningful when that
+		// namespace is a module — structs/aliases only live in module
+		// namespaces, associated-type paths never reach turbofish (see
+		// resolve_namespace_type_member).
+		let Type::Namespace { namespace_idx } =
+			self.tir.types[namespace_ty.as_usize()]
+		else {
+			self.tir.diagnostics.push(
+				Diagnostic::error()
+					.with_message("type arguments are not supported here")
+					.with_label(Label::primary(resolve_context.file_id, span)),
+			);
+			return TypeIndex::ERROR;
+		};
+		let Some(symbol_kind) = self.tir.namespaces[namespace_idx as usize]
+			.symbols
+			.get(&(SymbolNamespace::Type, last.ident.inner))
+			.copied()
+		else {
+			self.tir.diagnostics.push(
+				Diagnostic::error()
+					.with_message("type arguments are not supported here")
+					.with_label(Label::primary(resolve_context.file_id, span)),
+			);
+			return TypeIndex::ERROR;
+		};
+		let mut resolved_args: Vec<TypeIndex> =
+			Vec::with_capacity(last.type_args.len());
+		for arg in last.type_args.iter() {
+			resolved_args.push(self.resolve_type(resolve_context, scope, arg));
+		}
+		self.resolve_generic_type_application(
+			resolve_context,
+			symbol_kind,
+			&resolved_args,
+			span,
+		)
 	}
 
 	fn register_lang_items(
@@ -2787,6 +2827,10 @@ impl<'ast> Builder<'ast, '_> {
 			TypeParamOwner::Trait(trait_index) => std::slice::from_ref(
 				&self.tir.traits[trait_index as usize].self_type_param,
 			),
+			TypeParamOwner::TypeAlias(id) => {
+				let alias_index = self.tir.expect_type_alias_index(id);
+				&self.tir.type_aliases[alias_index as usize].type_params
+			}
 		}
 	}
 
@@ -2879,6 +2923,10 @@ impl<'ast> Builder<'ast, '_> {
 				let trait_ = &self.tir.traits[trait_index as usize];
 				SourceSpan::new(trait_.file_id, trait_.name.span)
 			}
+			SymbolKind::TypeAlias { type_alias_index } => {
+				let alias = &self.tir.type_aliases[type_alias_index as usize];
+				SourceSpan::new(alias.file_id, alias.name.span)
+			}
 			// these are keywords and will be handled at the parser level
 			SymbolKind::False
 			| SymbolKind::True
@@ -2962,6 +3010,19 @@ impl<'ast> Builder<'ast, '_> {
 					file_id,
 					namespace,
 					node: AstNodeRef::Enum { item },
+				});
+			}
+			ast::Item::TypeAlias { id, name, .. } => {
+				self.insert_symbol(
+					namespace,
+					(SymbolNamespace::Type, name.inner),
+					SymbolKind::Pending(*id),
+				);
+				self.ast_nodes.push(AstEntry {
+					def_id: *id,
+					file_id,
+					namespace,
+					node: AstNodeRef::TypeAlias { item },
 				});
 			}
 			ast::Item::Memory { id, name, .. } => {
@@ -3048,7 +3109,55 @@ impl<'ast> Builder<'ast, '_> {
 						},
 					));
 				}
+
 				let trait_index = self.tir.traits.len() as u32;
+				let mut member_ids: Vec<ast::DefId> = Vec::with_capacity(items.len());
+				for trait_item in items.iter() {
+					match &trait_item.inner.inner {
+						ast::TraitItem::Function { id, .. } => {
+							self.ast_nodes.push(AstEntry {
+								def_id: *id,
+								file_id,
+								namespace,
+								node: AstNodeRef::TraitFunction {
+									trait_index,
+									item: &trait_item.inner.inner,
+								},
+							});
+							member_ids.push(*id);
+						}
+						ast::TraitItem::Const { id, .. } => {
+							self.ast_nodes.push(AstEntry {
+								def_id: *id,
+								file_id,
+								namespace,
+								node: AstNodeRef::TraitConst {
+									trait_index,
+									item: &trait_item.inner.inner,
+								},
+							});
+							member_ids.push(*id);
+						}
+						ast::TraitItem::AssociatedType { id, name, .. } => {
+							self.insert_symbol(
+								namespace,
+								(SymbolNamespace::Type, name.inner),
+								SymbolKind::Pending(*id),
+							);
+							self.ast_nodes.push(AstEntry {
+								def_id: *id,
+								file_id,
+								namespace,
+								node: AstNodeRef::TraitAssociatedType {
+									trait_index,
+									item: &trait_item.inner.inner,
+								},
+							});
+							member_ids.push(*id);
+						}
+					}
+				}
+
 				let self_name_sym = self.interner.get_or_intern("Self");
 				self.tir.traits.push(Trait {
 					id: *id,
@@ -3070,7 +3179,7 @@ impl<'ast> Builder<'ast, '_> {
 					supertraits: Vec::new(),
 					members: HashMap::new(),
 					assoc_types: HashMap::new(),
-					member_ids: Vec::new(),
+					member_ids,
 					supertrait_bindings: HashMap::new(),
 					accesses: Vec::new(),
 				});
@@ -3088,53 +3197,6 @@ impl<'ast> Builder<'ast, '_> {
 					namespace,
 					node: AstNodeRef::Trait { trait_index, item },
 				});
-				let mut ids: Vec<ast::DefId> = Vec::new();
-				for ti in items.iter() {
-					match &ti.inner.inner {
-						ast::TraitItem::Function { id, .. } => {
-							self.ast_nodes.push(AstEntry {
-								def_id: *id,
-								file_id,
-								namespace,
-								node: AstNodeRef::TraitFunction {
-									trait_index,
-									item: &ti.inner.inner,
-								},
-							});
-							ids.push(*id);
-						}
-						ast::TraitItem::Const { id, .. } => {
-							self.ast_nodes.push(AstEntry {
-								def_id: *id,
-								file_id,
-								namespace,
-								node: AstNodeRef::TraitConst {
-									trait_index,
-									item: &ti.inner.inner,
-								},
-							});
-							ids.push(*id);
-						}
-						ast::TraitItem::AssociatedType { id, name, .. } => {
-							self.insert_symbol(
-								namespace,
-								(SymbolNamespace::Type, name.inner),
-								SymbolKind::Pending(*id),
-							);
-							self.ast_nodes.push(AstEntry {
-								def_id: *id,
-								file_id,
-								namespace,
-								node: AstNodeRef::TraitAssociatedType {
-									trait_index,
-									item: &ti.inner.inner,
-								},
-							});
-							ids.push(*id);
-						}
-					}
-				}
-				self.tir.traits[trait_index as usize].member_ids = ids;
 			}
 			ast::Item::Impl {
 				id: impl_id,
@@ -3489,7 +3551,6 @@ impl<'ast> Builder<'ast, '_> {
 						(SymbolNamespace::Type, name.inner),
 					)
 					.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-					.cloned()
 				{
 					let first_definition = match existing {
 						SymbolKind::Struct { struct_index } => {
@@ -3633,6 +3694,101 @@ impl<'ast> Builder<'ast, '_> {
 				);
 
 				let _ = pub_span;
+			}
+
+			// ── type alias ───────────────────────────────────────────────────
+			AstNodeRef::TypeAlias { item } => {
+				let (id, pub_span, name, ast_type_params, ty_expr) = match item
+				{
+					ast::Item::TypeAlias {
+						id,
+						pub_span,
+						name,
+						type_params,
+						ty,
+					} => (id, pub_span, name, type_params, ty),
+					_ => unreachable!(),
+				};
+
+				// Duplicate check.
+				if let Some(existing) = self
+					.lookup_global_symbol(
+						resolve_context.namespace,
+						(SymbolNamespace::Type, name.inner),
+					)
+					.filter(|k| !matches!(k, SymbolKind::Pending(_)))
+				{
+					let first_definition = self.get_symbol_location(existing);
+					let name_str = self.interner.resolve(name.inner).unwrap();
+					self.tir.diagnostics.push(report_duplicate_definition(
+						DuplicateDefinitionDiagnostic {
+							name: name_str,
+							namespace: SymbolNamespace::Type,
+							first_definition,
+							second_definition: SourceSpan::new(
+								resolve_context.file_id,
+								name.span,
+							),
+						},
+					));
+					self.sig_state.get_mut(&def_id).unwrap().state =
+						ComputeState::Done;
+					return;
+				}
+
+				let type_alias_index = self.tir.type_aliases.len() as u32;
+				self.tir
+					.item_lookup
+					.insert(*id, ItemIndex::TypeAlias(type_alias_index));
+				self.tir.type_aliases.push(TypeAlias {
+					id: *id,
+					file_id: resolve_context.file_id,
+					namespace: resolve_context.namespace,
+					pub_span: *pub_span,
+					name: name.clone(),
+					type_params: ast_type_params
+						.iter()
+						.map(|tp| {
+							TypeParamInfo::new(tp.name.inner, tp.name.span)
+						})
+						.collect(),
+					template: TypeIndex::ERROR,
+					accesses: Vec::new(),
+				});
+
+				// Deliberately NOT calling insert_symbol yet: the symbol table
+				// still holds SymbolKind::Pending(*id) while the RHS resolves,
+				// so a self-reference (`type A = A;`) hits the InProgress
+				// cyclic-dependency guard in resolve_type_identifier instead of
+				// resolving through a half-built alias. Aliases are transparent
+				// with no indirection to break a cycle, unlike struct fields.
+				self.resolve_type_param_bounds(
+					resolve_context,
+					TypeParamOwner::TypeAlias(*id),
+					None,
+					&ast_type_params,
+				);
+				let scope = if ast_type_params.is_empty() {
+					None
+				} else {
+					Some(GenericScope {
+						owner: TypeParamOwner::TypeAlias(*id),
+						self_type: None,
+					})
+				};
+				let template = self.resolve_signature_type(
+					resolve_context,
+					scope,
+					ty_expr,
+				);
+				self.tir.type_aliases[type_alias_index as usize].template =
+					template;
+
+				self.insert_symbol(
+					resolve_context.namespace,
+					(SymbolNamespace::Type, name.inner),
+					SymbolKind::TypeAlias { type_alias_index },
+				);
 			}
 
 			// ── enum ──────────────────────────────────────────────────────────
@@ -3819,9 +3975,8 @@ impl<'ast> Builder<'ast, '_> {
 							resolve_context.namespace,
 							(SymbolNamespace::Value, signature.name.inner),
 						)
-						.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-						.cloned()
-						.map(|k| self.get_symbol_location(k));
+						.filter(|kind| !matches!(kind, SymbolKind::Pending(_)))
+						.map(|kind| self.get_symbol_location(kind));
 					let attributes = self.resolve_attributes(attributes);
 					self.register_lang_items(*id, &attributes);
 					let func_index = self.tir.functions.len() as u32;
@@ -4684,7 +4839,6 @@ impl<'ast> Builder<'ast, '_> {
 							(SymbolNamespace::Value, name.inner),
 						)
 						.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-						.cloned()
 					{
 						let name_str =
 							self.interner.resolve(name.inner).unwrap();
@@ -4948,7 +5102,6 @@ impl<'ast> Builder<'ast, '_> {
 							(SymbolNamespace::Value, name.inner),
 						)
 						.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-						.cloned()
 					{
 						let name_str =
 							self.interner.resolve(name.inner).unwrap();
@@ -5450,7 +5603,7 @@ impl<'ast> Builder<'ast, '_> {
 					// own Pending — never clobber a same-named resolved symbol.
 					if matches!(
 						self.lookup_global_symbol(resolve_context.namespace, (SymbolNamespace::Type, name.inner)),
-						Some(SymbolKind::Pending(d)) if *d == *id
+						Some(SymbolKind::Pending(d)) if d == *id
 					) {
 						self.insert_symbol(
 							resolve_context.namespace,
@@ -5798,35 +5951,12 @@ impl<'ast> Builder<'ast, '_> {
 		span: TextSpan,
 	) -> Result<BoundKind, ()> {
 		let file_id = resolve_context.file_id;
-		let kind = self
-			.lookup_global_symbol(
-				resolve_context.namespace,
-				(SymbolNamespace::Type, identifier.inner),
-			)
-			.copied();
-		let kind = match kind {
-			Some(SymbolKind::Pending(def_id)) => {
-				if matches!(
-					self.sig_state.get(&def_id),
-					Some(SigEntry {
-						state: ComputeState::InProgress,
-						..
-					})
-				) {
-					self.tir.diagnostics.push(report_cyclic_type_dependency(
-						SourceSpan::new(file_id, identifier.span),
-					));
-					return Err(());
-				}
-				self.ensure_signature(def_id);
-				self.lookup_global_symbol(
-					resolve_context.namespace,
-					(SymbolNamespace::Type, identifier.inner),
-				)
-				.copied()
-			}
-			other => other,
-		};
+		let kind = self.resolve_pending_global_symbol(
+			resolve_context.namespace,
+			(SymbolNamespace::Type, identifier.inner),
+			file_id,
+			identifier.span,
+		)?;
 		match kind {
 			Some(SymbolKind::Trait { trait_index }) => {
 				self.tir.traits[trait_index as usize]
@@ -5914,7 +6044,7 @@ impl<'ast> Builder<'ast, '_> {
 		}
 		// Final segment: look up the symbol in the final namespace and convert to BoundKind.
 		let last = segs.last().unwrap();
-		let Type::Module { namespace_idx } =
+		let Type::Namespace { namespace_idx } =
 			self.tir.types[namespace_ty.as_usize()].clone()
 		else {
 			self.tir.diagnostics.push(
@@ -5926,32 +6056,11 @@ impl<'ast> Builder<'ast, '_> {
 			);
 			return Err(());
 		};
-		let kind = self.tir.namespaces[namespace_idx as usize]
-			.symbols
-			.get(&(SymbolNamespace::Type, last.ident.inner))
-			.copied();
-		let kind = match kind {
-			Some(SymbolKind::Pending(def_id)) => {
-				if matches!(
-					self.sig_state.get(&def_id),
-					Some(SigEntry {
-						state: ComputeState::InProgress,
-						..
-					})
-				) {
-					self.tir.diagnostics.push(report_cyclic_type_dependency(
-						SourceSpan::new(file_id, last.ident.span),
-					));
-					return Err(());
-				}
-				self.ensure_signature(def_id);
-				self.tir.namespaces[namespace_idx as usize]
-					.symbols
-					.get(&(SymbolNamespace::Type, last.ident.inner))
-					.copied()
-			}
-			other => other,
-		};
+		let kind = self.resolve_pending_namespace_symbol(
+			namespace_idx,
+			(SymbolNamespace::Type, last.ident.inner),
+			SourceSpan::new(file_id, last.ident.span),
+		)?;
 		match kind {
 			Some(SymbolKind::Trait { trait_index }) => {
 				self.tir.traits[trait_index as usize]
@@ -6204,6 +6313,93 @@ impl<'ast> Builder<'ast, '_> {
 		(params.into_boxed_slice(), result)
 	}
 
+	/// Finishes resolving `Alias::<T, U>` / `Alias<T, U>` once the caller has
+	/// already resolved the type arguments: checks the count against the
+	/// alias's own type params, then substitutes them into the alias's
+	/// (possibly `TypeParam`-laden) template via `substitute_type`. Aliases
+	/// are transparent: the result is always the substituted target type,
+	/// never anything alias-shaped.
+	/// Applies type arguments to a generic struct or type alias, used by every
+	/// turbofish / `GenericApplication` / bare-reference call site. Providing
+	/// fewer arguments than declared is allowed — missing trailing slots are
+	/// padded with `TypeIndex::INFER` for later inference; providing more is
+	/// an error.
+	fn resolve_generic_type_application(
+		&mut self,
+		resolve_context: ResolveContext,
+		symbol_kind: SymbolKind,
+		resolved_args: &[TypeIndex],
+		span: TextSpan,
+	) -> TypeIndex {
+		let (expected, name_sym) = match symbol_kind {
+			SymbolKind::Struct { struct_index } => {
+				let s = &self.tir.structs[struct_index as usize];
+				(s.type_params.len(), s.name.inner)
+			}
+			SymbolKind::TypeAlias { type_alias_index } => {
+				let a = &self.tir.type_aliases[type_alias_index as usize];
+				(a.type_params.len(), a.name.inner)
+			}
+			_ => {
+				self.tir.diagnostics.push(
+					Diagnostic::error()
+						.with_message(
+							"type arguments are not supported here",
+						)
+						.with_label(Label::primary(
+							resolve_context.file_id,
+							span,
+						)),
+				);
+				return TypeIndex::ERROR;
+			}
+		};
+		if resolved_args.len() > expected {
+			let name = self
+				.interner
+				.resolve(name_sym)
+				.unwrap_or("?")
+				.to_string();
+			self.tir.diagnostics.push(
+				Diagnostic::error()
+					.with_code(DiagnosticCode::TypeArgCountMismatch.code())
+					.with_message(format!(
+						"`{}` expects at most {} type argument{}, found {}",
+						name,
+						expected,
+						if expected == 1 { "" } else { "s" },
+						resolved_args.len(),
+					))
+					.with_label(Label::primary(resolve_context.file_id, span)),
+			);
+			return TypeIndex::ERROR;
+		}
+		let mut args = resolved_args.to_vec();
+		args.resize(expected, TypeIndex::INFER);
+
+		match symbol_kind {
+			SymbolKind::Struct { struct_index } => {
+				self.tir.structs[struct_index as usize]
+					.accesses
+					.push(SourceSpan::new(resolve_context.file_id, span));
+				self.intern_type(Type::Struct {
+					struct_index,
+					args: args.into_boxed_slice(),
+				})
+			}
+			SymbolKind::TypeAlias { type_alias_index } => {
+				self.tir.type_aliases[type_alias_index as usize]
+					.accesses
+					.push(SourceSpan::new(resolve_context.file_id, span));
+				let template =
+					self.tir.type_aliases[type_alias_index as usize]
+						.template;
+				self.substitute_type(template, &args)
+			}
+			_ => unreachable!("filtered above"),
+		}
+	}
+
 	fn substitute_type(
 		&mut self,
 		ty: TypeIndex,
@@ -6230,7 +6426,7 @@ impl<'ast> Builder<'ast, '_> {
 			| Type::F64
 			| Type::Char
 			| Type::Enum { .. }
-			| Type::Module { .. }
+			| Type::Namespace { .. }
 			| Type::Memory { .. }
 			| Type::AssociatedType { .. } => ty,
 			Type::TypeParam { param_index, .. } => type_args
@@ -6933,7 +7129,6 @@ impl<'ast> Builder<'ast, '_> {
 						resolve_context.namespace,
 						(SymbolNamespace::Value, symbol),
 					)
-					.cloned()
 				{
 					Some(SymbolKind::True) => Ok(Expression {
 						kind: ExprKind::Bool { value: true },
@@ -8301,7 +8496,6 @@ impl<'ast> Builder<'ast, '_> {
 					(SymbolNamespace::Value, seg.ident.inner),
 				)
 				.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-				.cloned()
 			{
 				Some(SymbolKind::Function { func_index }) => func_index,
 				_ => {
@@ -8410,23 +8604,22 @@ impl<'ast> Builder<'ast, '_> {
 		// `Wrapper::<u32>::new(...)` → instantiate to `Wrapper<u32>`.
 		if !first.type_args.is_empty() {
 			let resolve_context = func_ctx.resolve_context.clone();
-			let struct_index =
-				match &self.tir.types[namespace_ty.as_usize()] {
-					Type::Struct { struct_index, .. } => *struct_index,
-					_ => {
-						self.tir.diagnostics.push(
-							Diagnostic::error()
-								.with_message(
-									"type arguments are not supported here",
-								)
-								.with_label(Label::primary(
-									resolve_context.file_id,
-									first.ident.span,
-								)),
-						);
-						return Err(());
-					}
-				};
+			let struct_index = match &self.tir.types[namespace_ty.as_usize()] {
+				Type::Struct { struct_index, .. } => *struct_index,
+				_ => {
+					self.tir.diagnostics.push(
+						Diagnostic::error()
+							.with_message(
+								"type arguments are not supported here",
+							)
+							.with_label(Label::primary(
+								resolve_context.file_id,
+								first.ident.span,
+							)),
+					);
+					return Err(());
+				}
+			};
 			let resolved_args: Box<[TypeIndex]> = first
 				.type_args
 				.iter()
@@ -8472,10 +8665,10 @@ impl<'ast> Builder<'ast, '_> {
 		namespace_span: TextSpan,
 		member: Spanned<SymbolU32>,
 	) -> Result<TypeIndex, ()> {
-		match &self.tir.types[namespace_ty.as_usize()].clone() {
-			Type::Module { namespace_idx } => {
+		match &self.tir.types[namespace_ty.as_usize()] {
+			Type::Namespace { namespace_idx } => {
 				match &self.tir.types[namespace_ty.as_usize()] {
-					Type::Module { namespace_idx } => self.tir.namespaces
+					Type::Namespace { namespace_idx } => self.tir.namespaces
 						[*namespace_idx as usize]
 						.accesses
 						.push(SourceSpan::new(
@@ -8485,42 +8678,26 @@ impl<'ast> Builder<'ast, '_> {
 					_ => {}
 				};
 				let namespace_idx = *namespace_idx;
-				let kind = self.tir.namespaces[namespace_idx as usize]
-					.symbols
-					.get(&(SymbolNamespace::Type, member.inner))
-					.cloned();
+				let kind = self.resolve_pending_namespace_symbol(
+					namespace_idx,
+					(SymbolNamespace::Type, member.inner),
+					SourceSpan::new(resolve_context.file_id, member.span),
+				)?;
 				match kind {
-					Some(SymbolKind::Pending(def_id)) => {
-						if matches!(
-							self.sig_state.get(&def_id),
-							Some(SigEntry {
-								state: ComputeState::InProgress,
-								..
-							})
-						) {
-							self.tir.diagnostics.push(
-								report_cyclic_type_dependency(SourceSpan::new(
-									resolve_context.file_id,
-									member.span,
-								)),
-							);
-							return Err(());
-						}
-						self.ensure_signature(def_id);
-						match self.tir.namespaces[namespace_idx as usize]
-							.symbols
-							.get(&(SymbolNamespace::Type, member.inner))
-							.cloned()
-						{
-							Some(k) => {
-								self.record_type_kind_access(
-									resolve_context.file_id,
-									k.clone(),
-									member.span,
-								);
-								self.symbol_kind_to_type(k).ok_or(())
-							}
-							None => Err(()),
+					Some(
+						kind @ (SymbolKind::Struct { .. }
+						| SymbolKind::TypeAlias { .. }),
+					) => {
+						let ty = self.resolve_generic_type_application(
+							resolve_context,
+							kind,
+							&[],
+							member.span,
+						);
+						if ty == TypeIndex::ERROR {
+							Err(())
+						} else {
+							Ok(ty)
 						}
 					}
 					Some(kind) => {
@@ -8708,6 +8885,11 @@ impl<'ast> Builder<'ast, '_> {
 					.accesses
 					.push(SourceSpan::new(file_id, span));
 			}
+			SymbolKind::TypeAlias { type_alias_index } => {
+				self.tir.type_aliases[type_alias_index as usize]
+					.accesses
+					.push(SourceSpan::new(file_id, span));
+			}
 			_ => {}
 		}
 	}
@@ -8774,7 +8956,7 @@ impl<'ast> Builder<'ast, '_> {
 					}
 				}
 			}
-			Type::Module { namespace_idx } => {
+			Type::Namespace { namespace_idx } => {
 				let ns_idx = *namespace_idx;
 				match self.tir.namespaces[ns_idx as usize]
 					.symbols
@@ -8856,7 +9038,7 @@ impl<'ast> Builder<'ast, '_> {
 		let file_id = func_ctx.resolve_context.file_id;
 
 		match &self.tir.types[namespace.inner.as_usize()] {
-			Type::Module { namespace_idx } => self.tir.namespaces
+			Type::Namespace { namespace_idx } => self.tir.namespaces
 				[*namespace_idx as usize]
 				.accesses
 				.push(SourceSpan::new(file_id, namespace.span)),
@@ -9351,10 +9533,7 @@ impl<'ast> Builder<'ast, '_> {
 		if a == b {
 			return true;
 		}
-		match (
-			&self.tir.types[a.as_usize()],
-			&self.tir.types[b.as_usize()],
-		) {
+		match (&self.tir.types[a.as_usize()], &self.tir.types[b.as_usize()]) {
 			(
 				Type::Pointer { memory: a_mem, .. },
 				Type::Pointer { memory: b_mem, .. },
@@ -9432,7 +9611,7 @@ impl<'ast> Builder<'ast, '_> {
 			| Type::FunctionItem { .. }
 			| Type::Struct { .. }
 			| Type::Slice { .. }
-			| Type::Module { .. }
+			| Type::Namespace { .. }
 			| Type::Memory { .. }
 			| Type::TypeParam { .. }
 			| Type::Error
@@ -12500,39 +12679,18 @@ impl<'ast> Builder<'ast, '_> {
 		let file_id = func_ctx.resolve_context.file_id;
 
 		// ── resolve the struct TypeIndex from the path ───────────────────────
-		// Walk all namespace qualifier segments, then resolve the last segment
-		// as a type. Both single- and multi-segment cases go through the same
-		// namespace-aware lookup so module-local structs are found correctly.
-		let struct_ty = if path.len() == 1 {
-			self.resolve_type_identifier(
-				func_ctx.resolve_context,
-				Some(func_ctx.scope),
-				struct_seg.ident.clone(),
-			)?
-		} else {
-			let first = &path[0];
-			let mut namespace_ty = self.resolve_type_identifier(
-				func_ctx.resolve_context,
-				Some(func_ctx.scope),
-				first.ident.clone(),
-			)?;
-			let mut namespace_span = first.ident.span;
-			for seg in &path[1..path.len() - 1] {
-				namespace_ty = self.resolve_namespace_type_member(
-					func_ctx.resolve_context,
-					namespace_ty,
-					namespace_span,
-					seg.ident.clone(),
-				)?;
-				namespace_span = seg.ident.span;
-			}
-			self.resolve_namespace_type_member(
-				func_ctx.resolve_context,
-				namespace_ty,
-				namespace_span,
-				struct_seg.ident.clone(),
-			)?
-		};
+		// Shared with type-position resolution: handles namespace walking,
+		// turbofish (with alias support and INFER-padding for short arg
+		// lists), and plain identifiers uniformly.
+		let struct_ty = self.resolve_path_type(
+			func_ctx.resolve_context,
+			Some(func_ctx.scope),
+			path,
+			init_span,
+		);
+		if struct_ty == TypeIndex::ERROR {
+			return Err(());
+		}
 
 		let struct_index = match &self.tir.types[struct_ty.as_usize()] {
 			Type::Struct { struct_index, .. } => *struct_index,
@@ -12552,36 +12710,34 @@ impl<'ast> Builder<'ast, '_> {
 		};
 
 		// ── resolve type arguments ───────────────────────────────────────────
-		// Priority: explicit turbofish > args embedded in path type (e.g. `Self`) >
-		//           infer from expected type > empty.
+		// Priority: explicit turbofish (already resolved, alias-substituted,
+		// and INFER-padded into struct_ty's args by resolve_path_type) >
+		// args concretely embedded in path type (e.g. `Self` inside
+		// `impl<M,T> Vec<M,T>` — must be more than just INFER placeholders,
+		// or a bare generic reference padded by resolve_path_type would be
+		// mistaken for a real instantiation) > infer from expected type >
+		// empty (inferred per-field below).
 		let type_params_len =
 			self.tir.structs[struct_index as usize].type_params.len();
 		let resolved_args: Box<[TypeIndex]> = if !struct_seg
 			.type_args
 			.is_empty()
 		{
-			struct_seg
-				.type_args
-				.iter()
-				.map(|arg| {
-					self.resolve_type(
-						func_ctx.resolve_context,
-						Some(func_ctx.scope),
-						arg,
-					)
-				})
-				.collect()
+			match &self.tir.types[struct_ty.as_usize()] {
+				Type::Struct { args, .. } => args.clone(),
+				_ => Box::new([]),
+			}
 		} else if type_params_len == 0 {
 			Box::new([])
 		} else {
-			// `struct_ty` may already carry args when the path resolved to a
-			// fully-instantiated type — e.g. `Self` inside `impl<M,T> Vec<M,T>`.
 			match &self.tir.types[struct_ty.as_usize()] {
-				Type::Struct { args, .. } if args.len() == type_params_len => {
+				Type::Struct { args, .. }
+					if args.len() == type_params_len
+						&& args.iter().any(|a| *a != TypeIndex::INFER) =>
+				{
 					args.clone()
 				}
-				_ => match &self.tir.types
-					[access_ctx.expected_type.as_usize()]
+				_ => match &self.tir.types[access_ctx.expected_type.as_usize()]
 				{
 					Type::Struct {
 						struct_index: esi,
@@ -12595,27 +12751,6 @@ impl<'ast> Builder<'ast, '_> {
 				},
 			}
 		};
-
-		if !resolved_args.is_empty() && resolved_args.len() != type_params_len {
-			let struct_name = self
-				.interner
-				.resolve(self.tir.structs[struct_index as usize].name.inner)
-				.unwrap()
-				.to_string();
-			self.tir.diagnostics.push(
-				Diagnostic::error()
-					.with_code(DiagnosticCode::TypeArgCountMismatch.code())
-					.with_message(format!(
-						"`{}` expects {} type argument{}, found {}",
-						struct_name,
-						type_params_len,
-						if type_params_len == 1 { "" } else { "s" },
-						resolved_args.len(),
-					))
-					.with_label(Label::primary(file_id, init_span)),
-			);
-			return Err(());
-		}
 
 		let struct_name = self
 			.interner
@@ -13034,9 +13169,7 @@ impl<'ast> Builder<'ast, '_> {
 			SourceSpan::new(func_ctx.resolve_context.file_id, span);
 
 		let (expected_of, expected_memory, expected_size, expected_mutable) =
-			match self.tir.types[access_ctx.expected_type.as_usize()]
-				.clone()
-			{
+			match self.tir.types[access_ctx.expected_type.as_usize()].clone() {
 				Type::Array {
 					of,
 					memory,
@@ -13169,9 +13302,7 @@ impl<'ast> Builder<'ast, '_> {
 			SourceSpan::new(func_ctx.resolve_context.file_id, span);
 
 		let (expected_of, expected_memory, expected_mutable) =
-			match self.tir.types[access_ctx.expected_type.as_usize()]
-				.clone()
-			{
+			match self.tir.types[access_ctx.expected_type.as_usize()].clone() {
 				Type::Array {
 					of,
 					memory,

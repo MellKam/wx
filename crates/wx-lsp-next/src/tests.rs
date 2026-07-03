@@ -42,7 +42,10 @@ fn is_current_version_detects_superseded_edits() {
 	let mut state = ServerState::default();
 	state.open_documents.insert(
 		root.clone(),
-		OpenDocument { text: "fn test() {}".to_string(), lsp_version: 1 },
+		OpenDocument {
+			text: "fn test() {}".to_string(),
+			lsp_version: 1,
+		},
 	);
 	assert!(is_current_version(&state, &root, 1));
 
@@ -394,7 +397,8 @@ fn completion_sorts_locals_before_globals() {
 	let root = PathBuf::from("/test/main.wx");
 	// "zeta" (local) would sort after "alpha" (global) alphabetically by
 	// label — locals should still come first via `sort_text`.
-	let source = "fn alpha() -> i32 { 0 }\nfn main() -> i32 {\n    local zeta = 1;\n\n}";
+	let source =
+		"fn alpha() -> i32 { 0 }\nfn main() -> i32 {\n    local zeta = 1;\n\n}";
 	let cursor = source.find("1;\n").unwrap() + "1;\n".len();
 
 	let (_, compiled) = compile_source(&root, source);
@@ -494,8 +498,7 @@ fn completion_hides_sibling_module_items_without_use() {
 fn completion_shows_sibling_module_items_via_wildcard_use() {
 	let root = PathBuf::from("/test/main.wx");
 	let math = PathBuf::from("/test/math.wx");
-	let source =
-		"module math;\nuse math::*;\nfn main() -> i32 {\n    \n}";
+	let source = "module math;\nuse math::*;\nfn main() -> i32 {\n    \n}";
 	let cursor = source.find("\n    \n}").unwrap() + 5;
 
 	let (_, compiled) = compile_multi_source(
@@ -536,8 +539,7 @@ fn resolve_source_and_offset_prefers_live_buffer_over_stale_compiled_source() {
 	let (mut state, compiled) = compile_source(&root, stale_source);
 	state.cached.insert(root.clone(), compiled);
 
-	let live_source =
-		"module test {\n    fn foo()\n}\n\nfn test() {\n\n}";
+	let live_source = "module test {\n    fn foo()\n}\n\nfn test() {\n\n}";
 	state
 		.open_documents
 		.insert(root.clone(), open_document(live_source));
