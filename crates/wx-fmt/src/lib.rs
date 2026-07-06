@@ -611,8 +611,12 @@ impl<'a> Builder<'a> {
 				type_params,
 				ty,
 			),
-			ast::Item::Use { path } => {
-				let mut items: Vec<NodeId> = vec![self.text(Text::Use)];
+			ast::Item::Use { path, pub_span } => {
+				let mut items: Vec<NodeId> = Vec::new();
+				if pub_span.is_some() {
+					items.push(self.text(Text::Pub));
+				}
+				items.push(self.text(Text::Use));
 				for (i, segment) in path.iter().enumerate() {
 					if i > 0 {
 						items.push(self.text(Text::ColonColon));
@@ -1272,7 +1276,7 @@ impl<'a> Builder<'a> {
 	) -> NodeId {
 		match &block.inner {
 			ast::Expression::Block { statements } => {
-				self.build_block(statements, true)
+				self.build_block(block.span, statements, true)
 			}
 			_ => unreachable!("function body must be a block expression"),
 		}
@@ -1280,13 +1284,38 @@ impl<'a> Builder<'a> {
 
 	fn build_block(
 		&mut self,
+		block_span: ast::TextSpan,
 		statements: &[ast::Separated<ast::Spanned<ast::Statement>>],
 		force_break: bool,
 	) -> NodeId {
 		let mut items: Vec<NodeId> = vec![self.text(Text::LBrace)];
 
-		if !statements.is_empty() {
-			let single = !force_break && statements.len() == 1;
+		if statements.is_empty() {
+			let comments =
+				self.comments.between(block_span.start, block_span.end);
+			if !comments.is_empty() {
+				let mut inner: Vec<NodeId> = vec![self.hard_line()];
+				for (index, comment) in comments.iter().enumerate() {
+					inner.push(self.source_text(comment.span));
+					if index + 1 < comments.len() {
+						inner.push(self.hard_line());
+					}
+				}
+				let inner_concat = self.arena.concat(inner);
+				items.push(self.arena.indent(inner_concat));
+				items.push(self.hard_line());
+			}
+		} else {
+			let leading_comments = self
+				.comments
+				.between(block_span.start, statements[0].inner.span.start);
+			let last_end = statements.last().unwrap().inner.span.end as u32;
+			let trailing_comments =
+				self.comments.between(last_end, block_span.end);
+			let has_comments =
+				!leading_comments.is_empty() || !trailing_comments.is_empty();
+
+			let single = !force_break && !has_comments && statements.len() == 1;
 			let mut inner: Vec<NodeId> = Vec::new();
 			inner.push(if single {
 				self.soft_line()
@@ -1294,19 +1323,20 @@ impl<'a> Builder<'a> {
 				self.hard_line()
 			});
 
+			for comment in leading_comments {
+				inner.push(self.source_text(comment.span));
+				inner.push(self.hard_line());
+			}
+
 			for (index, statement) in statements.iter().enumerate() {
 				if index > 0 {
 					let prev_end = statements[index - 1].inner.span.end as u32;
 					let curr_start = statement.inner.span.start as u32;
-					let gap_spans: Vec<ast::TextSpan> = self
-						.comments
-						.between(prev_end, curr_start)
-						.iter()
-						.map(|c| c.span)
-						.collect();
-					let blank_end = gap_spans
+					let gap_comments =
+						self.comments.between(prev_end, curr_start);
+					let blank_end = gap_comments
 						.first()
-						.map_or(curr_start as usize, |s| s.start as usize);
+						.map_or(curr_start as usize, |c| c.span.start as usize);
 					let blank_lines = Self::count_blank_lines(
 						self.source,
 						prev_end as usize,
@@ -1315,8 +1345,8 @@ impl<'a> Builder<'a> {
 					for _ in 0..blank_lines {
 						inner.push(self.hard_line());
 					}
-					for span in &gap_spans {
-						inner.push(self.source_text(*span));
+					for comment in gap_comments {
+						inner.push(self.source_text(comment.span));
 						inner.push(self.hard_line());
 					}
 				}
@@ -1336,6 +1366,11 @@ impl<'a> Builder<'a> {
 					}
 					inner.push(self.hard_line());
 				}
+			}
+
+			for comment in trailing_comments {
+				inner.push(self.hard_line());
+				inner.push(self.source_text(comment.span));
 			}
 
 			let inner_concat = self.arena.concat(inner);
@@ -1421,7 +1456,7 @@ impl<'a> Builder<'a> {
 				self.arena.group(concat)
 			}
 			ast::Expression::Block { statements } => {
-				self.build_block(statements, false)
+				self.build_block(expression.span, statements, false)
 			}
 			ast::Expression::Unreachable => self.text(Text::Unreachable),
 			ast::Expression::IfElse {

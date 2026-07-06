@@ -25,7 +25,7 @@ functions:
                         id: 52
                     ty:
                       Function:
-                        signature_index: 2
+                        signature_index: 0
                   arguments:
                     - kind: Noop
                       ty: Unit
@@ -38,7 +38,7 @@ functions:
       ty: U32
     static_data: []
   - id: 49
-    signature_index: 4
+    signature_index: 3
     scopes:
       - kind: Block
         parent: ~
@@ -59,7 +59,7 @@ functions:
                         id: 53
                     ty:
                       Function:
-                        signature_index: 3
+                        signature_index: 2
                   arguments:
                     - kind: Noop
                       ty: Unit
@@ -72,7 +72,7 @@ functions:
       ty: U64
     static_data: []
   - id: 52
-    signature_index: 2
+    signature_index: 0
     scopes:
       - kind: Block
         parent: ~
@@ -95,7 +95,7 @@ functions:
       ty: U32
     static_data: []
   - id: 53
-    signature_index: 3
+    signature_index: 2
     scopes:
       - kind: Block
         parent: ~
@@ -119,26 +119,26 @@ functions:
     static_data: []
 signatures:
   - items:
+      - Unit
+      - U32
+      - U32
+    params_count: 2
+  - items:
+      - U32
+      - U32
+    params_count: 1
+  - items:
+      - Unit
+      - U64
+      - U64
+    params_count: 2
+  - items:
+      - U64
+      - U64
+    params_count: 1
+  - items:
       - U32
       - Bool
-    params_count: 1
-  - items:
-      - U32
-      - U32
-    params_count: 1
-  - items:
-      - Unit
-      - U32
-      - U32
-    params_count: 2
-  - items:
-      - Unit
-      - U64
-      - U64
-    params_count: 2
-  - items:
-      - U64
-      - U64
     params_count: 1
 globals: []
 exports:

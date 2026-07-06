@@ -287,11 +287,47 @@ pub enum MemorySource {
 	Internal,
 }
 
+/// A memory's index type, lowered from TIR's `TypeIndex::U32`/`U64` (see
+/// `tir::Memory::kind`) once and for all here — MIR and codegen branch on
+/// this constantly (instruction selection, pointer size), so it's kept as
+/// an exhaustively-matchable enum instead of repeated `TypeIndex` equality
+/// checks. TIR itself never needs the distinction as its own enum: it only
+/// validates the `Size` binding is one of the two and passes the
+/// `TypeIndex` straight through.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum MemoryKind {
+	Memory32,
+	Memory64,
+}
+
+impl MemoryKind {
+	#[inline]
+	pub fn pointer_size(self) -> u32 {
+		match self {
+			MemoryKind::Memory32 => 4,
+			MemoryKind::Memory64 => 8,
+		}
+	}
+
+	#[inline]
+	fn from_type_index(ty: tir::TypeIndex) -> MemoryKind {
+		if ty == tir::TypeIndex::U32 {
+			MemoryKind::Memory32
+		} else if ty == tir::TypeIndex::U64 {
+			MemoryKind::Memory64
+		} else {
+			unreachable!("TIR only ever validates Size as u32 or u64")
+		}
+	}
+}
+
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct MemoryInfo {
 	pub id: ast::DefId,
 	pub source: MemorySource,
-	pub kind: tir::MemoryKind,
+	pub kind: MemoryKind,
 	pub min_pages: Option<u32>,
 	pub max_pages: Option<u32>,
 }
@@ -608,7 +644,7 @@ impl MIR {
 				.map(|m| MemoryInfo {
 					id: m.id,
 					source: MemorySource::Internal,
-					kind: m.kind,
+					kind: MemoryKind::from_type_index(m.kind),
 					min_pages: m.min_pages,
 					max_pages: m.max_pages,
 				})
@@ -835,8 +871,10 @@ impl<'tir> Builder<'tir> {
 			| tir::Type::Array { memory, .. } => {
 				let id = self.resolve_memory_id(*memory);
 				let tir_idx = self.tir.expect_memory_index(id) as usize;
-				let pointer_size =
-					self.tir.memories[tir_idx].kind.pointer_size();
+				let pointer_size = MemoryKind::from_type_index(
+					self.tir.memories[tir_idx].kind,
+				)
+				.pointer_size();
 				Layout {
 					size: pointer_size,
 					align: pointer_size,
@@ -845,8 +883,10 @@ impl<'tir> Builder<'tir> {
 			tir::Type::Slice { memory, .. } => {
 				let id = self.resolve_memory_id(*memory);
 				let tir_idx = self.tir.expect_memory_index(id) as usize;
-				let pointer_size =
-					self.tir.memories[tir_idx].kind.pointer_size();
+				let pointer_size = MemoryKind::from_type_index(
+					self.tir.memories[tir_idx].kind,
+				)
+				.pointer_size();
 				Layout {
 					size: pointer_size * 2,
 					align: pointer_size,
@@ -923,7 +963,10 @@ impl<'tir> Builder<'tir> {
 			Type::Unit | Type::Never => Layout { size: 0, align: 1 },
 			Type::Pointer { memory } => {
 				let tir_idx = self.tir.expect_memory_index(memory) as usize;
-				let ptr_size = self.tir.memories[tir_idx].kind.pointer_size();
+				let ptr_size = MemoryKind::from_type_index(
+					self.tir.memories[tir_idx].kind,
+				)
+				.pointer_size();
 				Layout {
 					size: ptr_size,
 					align: ptr_size,
@@ -1056,12 +1099,11 @@ impl<'tir> Builder<'tir> {
 			tir::Type::Slice { memory, .. } => {
 				let memory = self.resolve_memory_id(memory);
 				let tir_idx = self.tir.expect_memory_index(memory) as usize;
+				let kind_ty = self.tir.memories[tir_idx].kind;
+				let len_ty = self.lower_type_index(kind_ty);
 				let aggregate_index = self.ensure_aggregate(Box::new([
 					Type::Pointer { memory },
-					match self.tir.memories[tir_idx].kind {
-						tir::MemoryKind::Memory32 => Type::U32,
-						tir::MemoryKind::Memory64 => Type::U64,
-					},
+					len_ty,
 				]));
 				Type::Aggregate { aggregate_index }
 			}
@@ -2392,10 +2434,8 @@ impl<'tir> Builder<'tir> {
 				let ptr_ty = Type::Pointer { memory: memory_id };
 				let tir_mem_idx =
 					self.tir.expect_memory_index(memory_id) as usize;
-				let idx_ty = match self.tir.memories[tir_mem_idx].kind {
-					tir::MemoryKind::Memory32 => Type::U32,
-					tir::MemoryKind::Memory64 => Type::U64,
-				};
+				let idx_ty =
+					self.lower_type_index(self.tir.memories[tir_mem_idx].kind);
 
 				let lowered_obj = self.lower_expression(func_ctx, object, sink);
 

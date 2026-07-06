@@ -15,7 +15,7 @@ impl<M: Memory> Layout<M> {
     }
 
     fn array<T>(count: M::Size) -> Self {
-        Self::{ size: size_of::<T>() * count, align: align_of::<T>() }
+        Self::{ size: <size_of<T>>() * count, align: align_of::<T>() }
     }
 }
 

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use leb128fmt;
 
-use crate::{ast, mir, tir};
+use crate::{ast, mir};
 
 #[derive(Clone, Copy, PartialEq, Hash, Eq)]
 #[cfg_attr(debug_assertions, derive(Debug))]
@@ -339,7 +339,7 @@ pub struct WasmModule {
 
 struct MemoryEntry {
 	wasm_index: u32,
-	kind: tir::MemoryKind,
+	kind: mir::MemoryKind,
 }
 
 pub struct Builder {
@@ -1048,11 +1048,11 @@ impl Builder {
 			}
 			SI::DataSectionEnd { memory } => {
 				match self.memories[&memory].kind {
-					tir::MemoryKind::Memory32 => {
+					mir::MemoryKind::Memory32 => {
 						sink.push(Instruction::I32Const as u8);
 						(self.static_segment_size as i32).encode(sink);
 					}
-					tir::MemoryKind::Memory64 => {
+					mir::MemoryKind::Memory64 => {
 						sink.push(Instruction::I64Const as u8);
 						(self.static_segment_size as i64).encode(sink);
 					}

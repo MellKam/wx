@@ -28,8 +28,8 @@ items:
                   Method:
                     id: 0
                     pub_span:
-                      start: 33
-                      end: 35
+                      start: 29
+                      end: 32
                     attributes:
                       - name:
                           inner: 1

@@ -280,6 +280,51 @@ fn test_trait_items() {
 }
 
 #[test]
+fn test_pub_not_permitted_in_trait_items() {
+	let case = TestCase::new(indoc! {"
+        trait Widget {
+            pub const SIZE: u32;
+            pub type Assoc;
+            pub fn render(self);
+        }
+    "});
+
+	assert_eq!(
+		diagnostic_codes(&case.ast),
+		vec!["E0014", "E0014", "E0014"]
+	);
+	let Item::Trait { items, .. } = item(&case.ast, 0) else {
+		panic!("expected trait item")
+	};
+	assert_eq!(items.len(), 3);
+}
+
+#[test]
+fn test_pub_not_applicable_to_memory_item_recovers() {
+	let case = TestCase::new(indoc! {"
+        pub memory MEM: Memory where { Size = u32 };
+        fn add(a: i32, b: i32) -> i32 { a + b }
+    "});
+
+	assert_eq!(diagnostic_codes(&case.ast), vec!["E0014"]);
+	assert!(matches!(item(&case.ast, 0), Item::Memory { .. }));
+	assert!(matches!(item(&case.ast, 1), Item::Function { .. }));
+}
+
+#[test]
+fn test_pub_use_reexports_without_diagnostic() {
+	let case = TestCase::new(indoc! {"
+        pub use foo::*;
+    "});
+
+	assert!(case.ast.diagnostics.is_empty());
+	let Item::Use { pub_span, .. } = item(&case.ast, 0) else {
+		panic!("expected use item")
+	};
+	assert!(pub_span.is_some());
+}
+
+#[test]
 fn test_export_alias() {
 	let case = TestCase::new(indoc! {"
         fn add(a: i32, b: i32) -> i32 { a + b }

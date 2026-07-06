@@ -972,6 +972,55 @@ fn test_format_comments_preserved() {
         "},
 	);
 
+	// Comment as the first thing in a block, before any statement.
+	assert_eq!(
+		fmt(indoc! {"
+            fn f() -> i32 {
+                // load value
+                42
+            }
+        "}),
+		indoc! {"
+            fn f() -> i32 {
+                // load value
+                42
+            }
+        "},
+	);
+
+	// Comment as the last thing in a block, after the final expression.
+	assert_eq!(
+		fmt(indoc! {"
+            fn f() -> i32 {
+                42
+                // load value
+            }
+        "}),
+		indoc! {"
+            fn f() -> i32 {
+                42
+                // load value
+            }
+        "},
+	);
+
+	// Comment as the only content of an otherwise empty block.
+	assert_eq!(
+		fmt(indoc! {"
+            fn f() {
+                // nothing here yet
+            }
+        "}),
+		indoc! {"
+            fn f() {
+                // nothing here yet
+            }
+        "},
+	);
+
+	// Truly empty block still collapses to `{}`.
+	assert_eq!(fmt("fn f() {}\n"), "fn f() {}\n");
+
 	// Doc comment preserved like a regular comment.
 	assert_eq!(
 		fmt(indoc! {"

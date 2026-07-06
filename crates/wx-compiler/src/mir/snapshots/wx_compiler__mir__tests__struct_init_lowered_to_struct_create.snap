@@ -4,7 +4,7 @@ expression: case.mir
 ---
 functions:
   - id: 46
-    signature_index: 2
+    signature_index: 0
     scopes:
       - kind: Block
         parent: ~
@@ -44,18 +44,18 @@ functions:
 signatures:
   - items:
       - U32
+      - U32
+      - Aggregate:
+          aggregate_index: 0
+    params_count: 2
+  - items:
+      - U32
       - Bool
     params_count: 1
   - items:
       - U32
       - U32
     params_count: 1
-  - items:
-      - U32
-      - U32
-      - Aggregate:
-          aggregate_index: 0
-    params_count: 2
 globals: []
 exports:
   - Function:

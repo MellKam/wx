@@ -1552,7 +1552,7 @@ fn test_memory_declaration_registers_kind() {
 			.iter()
 			.map(|m| m.kind)
 			.collect::<Vec<_>>(),
-		vec![MemoryKind::Memory32]
+		vec![TypeIndex::U32]
 	);
 
 	let case64 = TestCase::new_multi_file(
@@ -1570,7 +1570,7 @@ fn test_memory_declaration_registers_kind() {
 			.iter()
 			.map(|m| m.kind)
 			.collect::<Vec<_>>(),
-		vec![MemoryKind::Memory64]
+		vec![TypeIndex::U64]
 	);
 }
 
@@ -6592,5 +6592,98 @@ fn test_address_of_place_has_correct_pointer_type() {
 		case.tir.diagnostics.is_empty(),
 		"unexpected diagnostics: {:?}",
 		case.tir.diagnostics
+	);
+}
+
+// ── Phase-1 duplicate detection (struct/enum/memory) ──────────────────────
+
+#[test]
+fn test_struct_triple_duplicate_attributes_to_first_definition() {
+	// Regression test: `uses_foo` references `Foo` before any of the three
+	// same-named structs are reached in the natural Phase-2 sweep, forcing
+	// early resolution. Before the Phase-1 first-wins fix, this forced
+	// resolution of whichever struct's `Pending` marker happened to survive
+	// Phase 1's blind overwrite (the *last* one, C) — so B and C's
+	// diagnostics both misattributed to C instead of the true first
+	// definition, A. Both duplicates must now attribute to the same
+	// (first) definition.
+	let case = TestCase::new(indoc! {"
+        fn uses_foo(x: Foo) -> i32 { 0 }
+        struct Foo { a: i32 }
+        struct Foo { b: i32 }
+        struct Foo { c: i32 }
+        export { }
+    "});
+	let dup_diags: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| {
+			d.code.as_deref()
+				== Some(DiagnosticCode::DuplicateDefinition.code())
+		})
+		.collect();
+	assert_eq!(
+		dup_diags.len(),
+		2,
+		"expected exactly 2 duplicate diagnostics (B and C dup of A), got: {:?}",
+		case.tir.diagnostics
+	);
+	let previous_definition_ranges: Vec<_> = dup_diags
+		.iter()
+		.map(|d| {
+			d.labels
+				.iter()
+				.find(|l| l.message.starts_with("previous definition"))
+				.expect("missing previous-definition label")
+				.range
+				.clone()
+		})
+		.collect();
+	assert_eq!(
+		previous_definition_ranges[0], previous_definition_ranges[1],
+		"both duplicates must attribute to the same (first) definition, got: {:?}",
+		previous_definition_ranges
+	);
+}
+
+#[test]
+fn test_duplicate_enum_definition_is_error() {
+	// Regression test: Enum's duplicate check used to have no `else`
+	// branch reporting a diagnostic at all — two same-named enums were
+	// silently accepted with the second one just dropped.
+	let case = TestCase::new(indoc! {"
+        enum Foo: i32 { A }
+        enum Foo: i32 { B }
+        export { }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+		"expected duplicate definition error for two enums with same name, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_duplicate_memory_definition_is_error() {
+	// Regression test: Memory had no duplicate check anywhere — two
+	// same-named memories were silently accepted.
+	let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+        memory heap: Memory where { Size = u32 };
+        export { }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+		"expected duplicate definition error for two memories with same name, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
 	);
 }

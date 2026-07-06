@@ -72,18 +72,18 @@ functions:
     static_data: []
 signatures:
   - items:
-      - U32
-      - Bool
-    params_count: 1
-  - items:
-      - U32
-      - U32
-    params_count: 1
-  - items:
       - Unit
       - U32
       - U32
     params_count: 2
+  - items:
+      - U32
+      - U32
+    params_count: 1
+  - items:
+      - U32
+      - Bool
+    params_count: 1
 globals: []
 exports:
   - Function:

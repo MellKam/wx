@@ -164,7 +164,8 @@ pub enum Type {
 	},
 	Memory {
 		id: DefId,
-		kind: MemoryKind,
+		/// `TypeIndex::U32` or `TypeIndex::U64` — the memory's index type.
+		kind: TypeIndex,
 	},
 	/// Index into `Function::type_params`. All uses of the same param in a
 	/// function share one interned instance.
@@ -869,7 +870,8 @@ pub enum SymbolKind {
 	},
 	Memory {
 		memory_index: u32,
-		kind: MemoryKind,
+		/// `TypeIndex::U32` or `TypeIndex::U64` — the memory's index type.
+		kind: TypeIndex,
 	},
 	Trait {
 		trait_index: u32,
@@ -951,7 +953,8 @@ pub struct Memory {
 	pub id: DefId,
 	pub file_id: FileId,
 	pub name: ast::Spanned<SymbolU32>,
-	pub kind: MemoryKind,
+	/// `TypeIndex::U32` or `TypeIndex::U64` — the memory's index type.
+	pub kind: TypeIndex,
 	pub min_pages: Option<u32>,
 	pub max_pages: Option<u32>,
 }
@@ -1031,24 +1034,6 @@ pub enum FileKind {
 	/// Unused-item warnings are suppressed.
 	Library,
 	Module,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub enum MemoryKind {
-	Memory32,
-	Memory64,
-}
-
-impl MemoryKind {
-	#[inline]
-	pub fn pointer_size(self) -> u32 {
-		match self {
-			MemoryKind::Memory32 => 4,
-			MemoryKind::Memory64 => 8,
-		}
-	}
 }
 
 #[derive(Clone)]

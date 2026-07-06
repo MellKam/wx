@@ -16,13 +16,7 @@ pub struct TextSpan {
 
 impl TextSpan {
 	pub fn new(start: u32, end: u32) -> TextSpan {
-		assert!(end >= start);
-		TextSpan { start, end }
-	}
-
-	pub fn merge(self, other: TextSpan) -> TextSpan {
-		let start = core::cmp::min(self.start, other.start);
-		let end = core::cmp::max(self.end, other.end);
+		debug_assert!(end >= start);
 		TextSpan { start, end }
 	}
 
@@ -74,7 +68,6 @@ pub enum Token {
 	Char,
 	String,
 	Identifier,
-	AtIdent,
 	// Delimiters
 	Colon,
 	ColonColon,
@@ -134,7 +127,6 @@ impl std::fmt::Display for Token {
 			Char => "char",
 			String => "string",
 			Identifier => "identifier",
-			AtIdent => "@identifier",
 			Colon => ":",
 			ColonColon => "::",
 			SemiColon => ";",
@@ -239,6 +231,7 @@ define_diagnostic_codes! {
 		MissingInitializer => "E0010",
 		InvalidAttribute => "E0012",
 		InvalidNamespace => "E0013",
+		VisibilityNotPermitted => "E0014",
 		CrlfLineEndings => "W0001",
 	}
 }
@@ -580,6 +573,7 @@ impl<'a> Lexer<'a> {
 		Spanned { inner: token, span }
 	}
 
+	#[inline]
 	fn consume_and_check(
 		&mut self,
 		expect: char,
@@ -595,6 +589,7 @@ impl<'a> Lexer<'a> {
 		}
 	}
 
+	#[inline]
 	fn consume_dash(&mut self) -> Token {
 		let mut lookahead = self.chars.clone();
 		match lookahead.next().unwrap_or(EOF) {
@@ -610,6 +605,7 @@ impl<'a> Lexer<'a> {
 		}
 	}
 
+	#[inline]
 	fn consume_open_angle(&mut self) -> Token {
 		let mut lookahead = self.chars.clone();
 		match lookahead.next().unwrap_or(EOF) {
@@ -625,6 +621,7 @@ impl<'a> Lexer<'a> {
 		}
 	}
 
+	#[inline]
 	fn consume_close_angle(&mut self) -> Token {
 		let mut lookahead = self.chars.clone();
 		match lookahead.next().unwrap_or(EOF) {
@@ -1407,7 +1404,6 @@ pub enum TraitItem {
 	/// A method with an optional default body.
 	Function {
 		id: DefId,
-		pub_span: Option<TextSpan>,
 		attributes: Box<[Attribute]>,
 		signature: FunctionSignature,
 		/// `None` = abstract (must be provided by impl); `Some` = default
@@ -1419,6 +1415,7 @@ pub enum TraitItem {
 	Const {
 		id: DefId,
 		name: Spanned<SymbolU32>,
+		attributes: Box<[Attribute]>,
 		ty: Box<Spanned<TypeExpression>>,
 	},
 	/// An associated type declaration: `type Name;` or `type Name: Bound1 +
@@ -1427,6 +1424,7 @@ pub enum TraitItem {
 	AssociatedType {
 		id: DefId,
 		name: Spanned<SymbolU32>,
+		attributes: Box<[Attribute]>,
 		/// Trait bounds the concrete type must satisfy. `None` = unconstrained.
 		bounds: Option<Spanned<BoundExpression>>,
 	},
@@ -1636,7 +1634,10 @@ pub enum Item {
 		members: Box<[Separated<Spanned<TypeExpression>>]>,
 	},
 	/// `use path::*;` — wildcard import; brings all public items from the namespace into scope.
-	Use { path: Box<[Spanned<SymbolU32>]> },
+	Use {
+		pub_span: Option<TextSpan>,
+		path: Box<[Spanned<SymbolU32>]>,
+	},
 	/// `type Name = TypeExpr;` or `type Name<T> = TypeExpr;` — a transparent alias.
 	TypeAlias {
 		id: DefId,
@@ -1658,13 +1659,6 @@ pub struct StructField {
 impl Item {
 	pub fn is_block_like(&self) -> bool {
 		match self {
-			Item::Global { .. }
-			| Item::Const { .. }
-			| Item::Memory { .. }
-			| Item::FunctionDeclaration { .. }
-			| Item::ModuleDeclaration { .. }
-			| Item::TypeAlias { .. }
-			| Item::Use { .. } => false,
 			Item::Function { .. }
 			| Item::Export { .. }
 			| Item::Import { .. }
@@ -1675,6 +1669,13 @@ impl Item {
 			| Item::Module { .. }
 			| Item::Trait { .. }
 			| Item::TypeSet { .. } => true,
+			Item::Global { .. }
+			| Item::Const { .. }
+			| Item::Memory { .. }
+			| Item::FunctionDeclaration { .. }
+			| Item::ModuleDeclaration { .. }
+			| Item::TypeAlias { .. }
+			| Item::Use { .. } => false,
 		}
 	}
 }
@@ -2159,6 +2160,17 @@ impl<'ctx> Parser<'ctx> {
 				expected_token,
 			));
 			Err(())
+		}
+	}
+
+	#[inline]
+	fn peek_keyword(&mut self) -> Option<Keyword> {
+		let token = self.lexer.peek();
+		match token.inner {
+			Token::Identifier => {
+				Keyword::try_from(token.span.extract_str(self.source)).ok()
+			}
+			_ => None,
 		}
 	}
 
@@ -4404,36 +4416,12 @@ impl<'ctx> Parser<'ctx> {
 
 	fn parse_impl_member(parser: &mut Parser) -> Result<Spanned<ImplItem>, ()> {
 		let attrs = Parser::parse_attributes(parser)?;
-
-		let token = parser.lexer.peek();
-		let keyword = match token.inner {
-			Token::Identifier => {
-				Keyword::try_from(token.span.extract_str(parser.source)).ok()
-			}
+		let pub_span = match parser.peek_keyword() {
+			Some(Keyword::Pub) => Some(parser.lexer.next().span),
 			_ => None,
 		};
 
-		let pub_span = if matches!(keyword, Some(Keyword::Pub)) {
-			parser.lexer.next();
-			let next = parser.lexer.peek();
-			Some(next.span) // will be consumed below by Keyword::Fn branch
-		} else {
-			None
-		};
-
-		let keyword = if pub_span.is_some() {
-			match parser.lexer.peek().inner {
-				Token::Identifier => Keyword::try_from(
-					parser.lexer.peek().span.extract_str(parser.source),
-				)
-				.ok(),
-				_ => None,
-			}
-		} else {
-			keyword
-		};
-
-		match keyword {
+		match parser.peek_keyword() {
 			Some(Keyword::Type) => {
 				let type_span = parser.lexer.next().span;
 				let name_span = parser.next_expect(Token::Identifier)?.span;
@@ -4555,53 +4543,50 @@ impl<'ctx> Parser<'ctx> {
 		};
 
 		let first_ty = Box::new(parser.parse_type_expression()?);
+		match parser.peek_keyword() {
+			Some(Keyword::For) => {
+				parser.lexer.next(); // consume `for`
+				let target = Box::new(parser.parse_type_expression()?);
 
-		let peeked = parser.lexer.peek();
-		if peeked.inner == Token::Identifier
-			&& matches!(
-				Keyword::try_from(peeked.span.extract_str(parser.source)),
-				Ok(Keyword::For)
-			) {
-			parser.lexer.next(); // consume `for`
-			let target = Box::new(parser.parse_type_expression()?);
+				let trait_name = match first_ty.inner {
+					TypeExpression::Path(segments) => segments,
+					_ => {
+						parser.ast.diagnostics.push(
+							Diagnostic::error()
+								.with_message("expected a trait name")
+								.with_label(Label::primary(
+									parser.ast.file_id,
+									first_ty.span,
+								)),
+						);
+						return Err(());
+					}
+				};
 
-			let trait_name = match first_ty.inner {
-				TypeExpression::Path(segments) => segments,
-				_ => {
-					parser.ast.diagnostics.push(
-						Diagnostic::error()
-							.with_message("expected a trait name")
-							.with_label(Label::primary(
-								parser.ast.file_id,
-								first_ty.span,
-							)),
-					);
-					return Err(());
+				let items = SeparatedGroup {
+					open_token: Token::OpenBrace,
+					close_token: Token::CloseBrace,
+					separator_token: Token::SemiColon,
+					item_handler: Parser::parse_impl_member,
+					should_warn_missing_separator: Some(|item: &ImplItem| {
+						!item.is_block_like()
+					}),
 				}
-			};
+				.parse(parser)?;
 
-			let items = SeparatedGroup {
-				open_token: Token::OpenBrace,
-				close_token: Token::CloseBrace,
-				separator_token: Token::SemiColon,
-				item_handler: Parser::parse_impl_member,
-				should_warn_missing_separator: Some(|item: &ImplItem| {
-					!item.is_block_like()
-				}),
+				let span = TextSpan::new(impl_span.start, items.span.end);
+				return Ok(Spanned {
+					inner: Item::ImplTrait {
+						id: parser.id_generator.generate(),
+						items: items.inner,
+						target,
+						trait_name,
+					},
+					span,
+				});
 			}
-			.parse(parser)?;
-
-			let span = TextSpan::new(impl_span.start, items.span.end);
-			return Ok(Spanned {
-				inner: Item::ImplTrait {
-					id: parser.id_generator.generate(),
-					items: items.inner,
-					target,
-					trait_name,
-				},
-				span,
-			});
-		}
+			_ => {}
+		};
 
 		let items = SeparatedGroup {
 			open_token: Token::OpenBrace,
@@ -4648,48 +4633,40 @@ impl<'ctx> Parser<'ctx> {
 			separator_token: Token::SemiColon,
 			item_handler:
 				|parser: &mut Parser| -> Result<Spanned<TraitItem>, ()> {
-					let attrs = Parser::parse_attributes(parser)?;
+					let attributes = Parser::parse_attributes(parser)?;
 
-					let token = parser.lexer.peek();
-					let keyword = match token.inner {
-						Token::Identifier => Keyword::try_from(
-							token.span.extract_str(parser.source),
-						)
-						.ok(),
-						_ => None,
-					};
+					if let Some(Keyword::Pub) = parser.peek_keyword() {
+						let pub_span = parser.lexer.next().span;
+						parser.ast.diagnostics.push(
+							Diagnostic::error()
+								.with_code(
+									DiagnosticCode::VisibilityNotPermitted
+										.code(),
+								)
+								.with_message(
+									"visibility qualifiers are not permitted here",
+								)
+								.with_label(
+									Label::primary(
+										parser.ast.file_id,
+										pub_span,
+									)
+									.with_message("remove the qualifier"),
+								)
+								.with_note(
+									"trait items always share the visibility of their trait",
+								),
+						);
+					}
 
-					let pub_span = if matches!(keyword, Some(Keyword::Pub)) {
-						parser.lexer.next();
-						Some(parser.lexer.peek().span)
-					} else {
-						None
-					};
-
-					let keyword = if pub_span.is_some() {
-						match parser.lexer.peek().inner {
-							Token::Identifier => Keyword::try_from(
-								parser
-									.lexer
-									.peek()
-									.span
-									.extract_str(parser.source),
-							)
-							.ok(),
-							_ => None,
-						}
-					} else {
-						keyword
-					};
-
-					match keyword {
+					match parser.peek_keyword() {
 						Some(Keyword::Type) => {
 							let type_span = parser.lexer.next().span;
 							let name_span =
 								parser.next_expect(Token::Identifier)?.span;
 							let name_symbol =
 								parser.intern_identifier(name_span);
-							// Optional `: Bound1 + Bound2 + ...`
+
 							let bounds: Option<Spanned<BoundExpression>> =
 								if parser.lexer.next_if(Token::Colon).is_some()
 								{
@@ -4713,6 +4690,7 @@ impl<'ctx> Parser<'ctx> {
 										span: name_span,
 									},
 									bounds,
+									attributes,
 								},
 								span,
 							})
@@ -4735,6 +4713,7 @@ impl<'ctx> Parser<'ctx> {
 										span: name_span,
 									},
 									ty: Box::new(ty),
+									attributes,
 								},
 								span,
 							})
@@ -4762,8 +4741,7 @@ impl<'ctx> Parser<'ctx> {
 							Ok(Spanned {
 								inner: TraitItem::Function {
 									id: parser.id_generator.generate(),
-									pub_span,
-									attributes: attrs,
+									attributes,
 									signature: signature.inner,
 									body,
 								},
@@ -4936,121 +4914,54 @@ impl<'ctx> Parser<'ctx> {
 
 	fn parse_pub_item(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
 		let pub_span = parser.lexer.next().span; // consume `pub`
-		let next = parser.lexer.peek();
-		let keyword = match next.inner {
-			Token::Identifier => {
-				Keyword::try_from(next.span.extract_str(parser.source)).ok()
-			}
-			_ => None,
-		};
-		match keyword {
-			Some(Keyword::Fn) => {
-				let mut item = Parser::parse_function_definition_item(parser)?;
-				match &mut item.inner {
-					Item::Function { pub_span: ps, .. }
-					| Item::FunctionDeclaration { pub_span: ps, .. } => {
-						*ps = Some(pub_span);
-					}
-					_ => unreachable!(),
-				}
-				Ok(item)
-			}
-			Some(Keyword::Struct) => {
-				let mut item = Parser::parse_struct_item(parser)?;
-				if let Item::Struct {
-					pub_span: ref mut ps,
-					..
-				} = item.inner
-				{
-					*ps = Some(pub_span);
-				}
-				Ok(item)
-			}
-			Some(Keyword::Module) => {
-				let mut item = Parser::parse_module_item(parser)?;
-				match &mut item.inner {
-					Item::Module { pub_span: ps, .. }
-					| Item::ModuleDeclaration { pub_span: ps, .. } => {
-						*ps = Some(pub_span);
-					}
-					_ => unreachable!(),
-				}
-				Ok(item)
-			}
-			Some(Keyword::Trait) => {
-				let mut item = Parser::parse_trait_item(parser)?;
-				if let Item::Trait {
-					pub_span: ref mut ps,
-					..
-				} = item.inner
-				{
-					*ps = Some(pub_span);
-				}
-				Ok(item)
-			}
-			Some(Keyword::Typeset) => {
-				let mut item = Parser::parse_typeset_item(parser)?;
-				if let Item::TypeSet {
-					pub_span: ref mut ps,
-					..
-				} = item.inner
-				{
-					*ps = Some(pub_span);
-				}
-				Ok(item)
-			}
-			Some(Keyword::Global) => {
-				let mut item = Parser::parse_global_definition_item(parser)?;
-				if let Item::Global {
-					pub_span: ref mut ps,
-					..
-				} = item.inner
-				{
-					*ps = Some(pub_span);
-				}
-				Ok(item)
-			}
-			Some(Keyword::Enum) => {
-				let mut item = Parser::parse_enum_item(parser)?;
-				if let Item::Enum {
-					pub_span: ref mut ps,
-					..
-				} = item.inner
-				{
-					*ps = Some(pub_span);
-				}
-				Ok(item)
-			}
-			Some(Keyword::Const) => {
-				let mut item = Parser::parse_const_item(parser)?;
-				if let Item::Const {
-					pub_span: ref mut ps,
-					..
-				} = item.inner
-				{
-					*ps = Some(pub_span);
-				}
-				Ok(item)
-			}
-			Some(Keyword::Type) => {
-				let mut item = Parser::parse_type_alias_item(parser)?;
-				if let Item::TypeAlias {
-					pub_span: ref mut ps,
-					..
-				} = item.inner
-				{
-					*ps = Some(pub_span);
-				}
-				Ok(item)
-			}
-			_ => {
+		let token = parser.lexer.peek();
+		let handler = match parser.get_item_handler(token) {
+			Ok(handler) => handler,
+			Err(_) => {
 				parser
 					.ast
 					.diagnostics
-					.push(report_invalid_item(parser.ast.file_id, pub_span));
-				Err(())
+					.push(report_invalid_item(parser.ast.file_id, token.span));
+				return Err(());
+			}
+		};
+
+		let mut item = handler(parser)?;
+		match &mut item.inner {
+			Item::Function { pub_span: span, .. }
+			| Item::FunctionDeclaration { pub_span: span, .. }
+			| Item::Global { pub_span: span, .. }
+			| Item::Enum { pub_span: span, .. }
+			| Item::Struct { pub_span: span, .. }
+			| Item::Const { pub_span: span, .. }
+			| Item::Module { pub_span: span, .. }
+			| Item::ModuleDeclaration { pub_span: span, .. }
+			| Item::Trait { pub_span: span, .. }
+			| Item::TypeSet { pub_span: span, .. }
+			| Item::TypeAlias { pub_span: span, .. }
+			| Item::Use { pub_span: span, .. } => *span = Some(pub_span),
+			Item::Export { .. }
+			| Item::Import { .. }
+			| Item::Impl { .. }
+			| Item::ImplTrait { .. }
+			| Item::Memory { .. } => {
+				parser.ast.diagnostics.push(
+					Diagnostic::error()
+						.with_code(
+							DiagnosticCode::VisibilityNotPermitted.code(),
+						)
+						.with_message(
+							"visibility qualifiers are not permitted here",
+						)
+						.with_label(
+							Label::primary(parser.ast.file_id, pub_span)
+								.with_message("remove the qualifier"),
+						),
+				);
 			}
 		}
+
+		Ok(item)
 	}
 
 	fn parse_memory_config_field(
@@ -5424,6 +5335,7 @@ impl<'ctx> Parser<'ctx> {
 				let end = parser.lexer.next().span.end; // consume `*`
 				return Ok(Spanned {
 					inner: Item::Use {
+						pub_span: None,
 						path: path.into_boxed_slice(),
 					},
 					span: TextSpan::new(use_span.start, end),

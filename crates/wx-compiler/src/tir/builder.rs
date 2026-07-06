@@ -195,6 +195,17 @@ enum ComputeState {
 	Done,
 }
 
+/// Outcome of [`Builder::claim_name_binding`].
+#[derive(Clone, Copy, PartialEq)]
+enum PendingClaim {
+	/// No prior definition existed in this scope; `Pending(id)` was
+	/// installed and this item owns the name.
+	Claimed,
+	/// The scope already had a binding; a duplicate-definition diagnostic
+	/// was pushed against it and nothing was installed for this item.
+	Duplicate,
+}
+
 enum BoundKind {
 	Trait(TraitBound),
 	TypeSet(TypesetIndex),
@@ -1527,7 +1538,6 @@ impl<'ast> Builder<'ast, '_> {
 		let symbol = name.inner;
 		if let Some(SymbolKind::Module { namespace_idx }) = self
 			.lookup_global_symbol(namespace, (SymbolNamespace::Type, symbol))
-			
 		{
 			if let ModuleDeclarationKind::Module(decl_idx) =
 				self.tir.namespaces[namespace_idx as usize].declaration
@@ -1702,41 +1712,100 @@ impl<'ast> Builder<'ast, '_> {
 		}
 	}
 
-	/// Registers a `Memory32` stub for a `memory` declaration whose kind
-	/// bound failed to resolve (e.g. an unresolved/invalid trait bound,
-	/// often because `Memory` wasn't brought into scope). Without this,
-	/// the name stays `SymbolKind::Pending` forever and any later use of
-	/// it hits the "signature resolved but symbol still pending"
-	/// unreachable in `resolve_symbol_kind_to_expression`.
+	/// Looks up `key` in `namespace`'s own symbol map only — no parent-scope
+	/// or wildcard-import fallback. Used for Phase-1 duplicate-definition
+	/// checks (locals must silently shadow wildcard imports, matching
+	/// `Trait`'s existing pre-scan check) and for the Phase-2 "do I still
+	/// hold my own `Pending` slot" check that decides whether an item wins
+	/// its name binding.
+	fn direct_scope_lookup(
+		&self,
+		namespace: Option<NamespaceIndex>,
+		key: (SymbolNamespace, SymbolU32),
+	) -> Option<SymbolKind> {
+		if let Some(idx) = namespace {
+			self.tir.namespaces[idx as usize].symbols.get(&key).copied()
+		} else {
+			self.symbol_lookup.get(&key).copied()
+		}
+	}
+
+	/// Phase-1 registration for a name that may collide with an earlier
+	/// item in the same direct scope. `pre_scan_item` never installs
+	/// anything but `Pending`, so a collision here can only be a same-scope
+	/// duplicate — never a wildcard import, which lives in a different
+	/// scope's own map and is only ever consulted through the fallback
+	/// chain, not this direct lookup.
+	///
+	/// Callers must unconditionally allocate the item's stub/index/
+	/// `ast_nodes` entry regardless of the outcome — only the name binding
+	/// is exclusive; every syntactic occurrence still gets fully resolved.
+	fn claim_name_binding(
+		&mut self,
+		namespace: Option<NamespaceIndex>,
+		key: (SymbolNamespace, SymbolU32),
+		id: ast::DefId,
+		definition_span: SourceSpan,
+	) -> PendingClaim {
+		if let Some(existing) = self.direct_scope_lookup(namespace, key) {
+			let first_definition = self.get_symbol_location(existing);
+			let name_str = self.interner.resolve(key.1).unwrap();
+			self.tir.diagnostics.push(report_duplicate_definition(
+				DuplicateDefinitionDiagnostic {
+					name: name_str,
+					namespace: key.0,
+					first_definition,
+					second_definition: definition_span,
+				},
+			));
+			PendingClaim::Duplicate
+		} else {
+			self.insert_symbol(namespace, key, SymbolKind::Pending(id));
+			PendingClaim::Claimed
+		}
+	}
+
+	/// Binds a `memory` declaration whose kind bound failed to resolve
+	/// (e.g. an unresolved/invalid trait bound, often because `Memory`
+	/// wasn't brought into scope) to a `TypeIndex::ERROR` placeholder.
+	/// Without this, the name stays `SymbolKind::Pending` forever and any
+	/// later use of it hits the "signature resolved but symbol still
+	/// pending" unreachable in `resolve_symbol_kind_to_expression`. The
+	/// stub itself (already defaulted to `TypeIndex::ERROR`, no bounds) was
+	/// allocated in `pre_scan_item`; this only needs to bind the name. This
+	/// placeholder is never actually reached downstream: `report_invalid_
+	/// memory_kind` is an error diagnostic, and the real compile pipeline
+	/// (`wx-cli`) aborts before `MIR::build` whenever TIR has any errors.
 	fn register_placeholder_memory(
 		&mut self,
 		resolve_context: ResolveContext,
 		id: ast::DefId,
 		name: &ast::Spanned<SymbolU32>,
 	) {
-		let memory_index = self.tir.memories.len() as u32;
-		let kind = MemoryKind::Memory32;
-		self.tir.memories.push(Memory {
-			id,
-			file_id: resolve_context.file_id,
-			kind,
-			name: name.clone(),
-			min_pages: None,
-			max_pages: None,
-		});
-		self.tir
-			.item_lookup
-			.insert(id, ItemIndex::Memory(memory_index));
-		self.insert_symbol(
-			resolve_context.namespace,
-			(SymbolNamespace::Type, name.inner),
-			SymbolKind::Memory { memory_index, kind },
-		);
-		self.insert_symbol(
-			resolve_context.namespace,
-			(SymbolNamespace::Value, name.inner),
-			SymbolKind::Memory { memory_index, kind },
-		);
+		let memory_index = self.tir.expect_memory_index(id);
+		let kind = TypeIndex::ERROR;
+		let type_key = (SymbolNamespace::Type, name.inner);
+		if matches!(
+			self.direct_scope_lookup(resolve_context.namespace, type_key),
+			Some(SymbolKind::Pending(pending_id)) if pending_id == id
+		) {
+			self.insert_symbol(
+				resolve_context.namespace,
+				type_key,
+				SymbolKind::Memory { memory_index, kind },
+			);
+		}
+		let value_key = (SymbolNamespace::Value, name.inner);
+		if matches!(
+			self.direct_scope_lookup(resolve_context.namespace, value_key),
+			Some(SymbolKind::Pending(pending_id)) if pending_id == id
+		) {
+			self.insert_symbol(
+				resolve_context.namespace,
+				value_key,
+				SymbolKind::Memory { memory_index, kind },
+			);
+		}
 	}
 
 	fn lookup_global_symbol(
@@ -1749,10 +1818,14 @@ impl<'ast> Builder<'ast, '_> {
 			let namespace = &self.tir.namespaces[idx as usize];
 			match namespace.symbols.get(&key).copied() {
 				Some(kind) => return Some(kind),
-				None => {},
+				None => {}
 			}
 			for namespace_idx in namespace.wildcard_imports.iter().copied() {
-				match self.tir.namespaces[namespace_idx as usize].symbols.get(&key).copied() {
+				match self.tir.namespaces[namespace_idx as usize]
+					.symbols
+					.get(&key)
+					.copied()
+				{
 					Some(kind) => return Some(kind),
 					None => {}
 				}
@@ -1761,10 +1834,14 @@ impl<'ast> Builder<'ast, '_> {
 		}
 		match self.symbol_lookup.get(&key).copied() {
 			Some(kind) => return Some(kind),
-			None => {},
+			None => {}
 		};
 		for namespace_idx in self.root_wildcard_imports.iter().copied() {
-			match self.tir.namespaces[namespace_idx as usize].symbols.get(&key).copied() {
+			match self.tir.namespaces[namespace_idx as usize]
+				.symbols
+				.get(&key)
+				.copied()
+			{
 				Some(kind) => return Some(kind),
 				None => {}
 			}
@@ -1828,9 +1905,9 @@ impl<'ast> Builder<'ast, '_> {
 						..
 					})
 				) {
-					self.tir.diagnostics.push(report_cyclic_type_dependency(
-						span,
-					));
+					self.tir
+						.diagnostics
+						.push(report_cyclic_type_dependency(span));
 					return Err(());
 				}
 				self.ensure_signature(def_id);
@@ -2223,7 +2300,11 @@ impl<'ast> Builder<'ast, '_> {
 					&[],
 					identifier.span,
 				);
-				if ty == TypeIndex::ERROR { Err(()) } else { Ok(ty) }
+				if ty == TypeIndex::ERROR {
+					Err(())
+				} else {
+					Ok(ty)
+				}
 			}
 			Some(kind) => {
 				self.record_type_kind_access(
@@ -2269,11 +2350,10 @@ impl<'ast> Builder<'ast, '_> {
 					&self.tir.functions[idx as usize].type_params
 				})
 			}
-			TypeParamOwner::Struct(id) => {
-				self.tir.struct_index(id).map_or(&[], |idx| {
-					&self.tir.structs[idx as usize].type_params
-				})
-			}
+			TypeParamOwner::Struct(id) => self
+				.tir
+				.struct_index(id)
+				.map_or(&[], |idx| &self.tir.structs[idx as usize].type_params),
 			TypeParamOwner::Trait(_) => &[],
 			TypeParamOwner::TypeAlias(id) => {
 				self.tir.type_alias_index(id).map_or(&[], |idx| {
@@ -2283,8 +2363,7 @@ impl<'ast> Builder<'ast, '_> {
 		};
 		if let Some(own_idx) = own_params.iter().position(|p| p.name == name) {
 			return Some(
-				(self.inherited_type_param_count(scope.owner) + own_idx)
-					as u32,
+				(self.inherited_type_param_count(scope.owner) + own_idx) as u32,
 			);
 		}
 		if let TypeParamOwner::Function(fn_id) = scope.owner {
@@ -2333,9 +2412,12 @@ impl<'ast> Builder<'ast, '_> {
 	) -> TypeIndex {
 		match &type_expr.inner {
 			ast::TypeExpression::Infer => return TypeIndex::INFER,
-			ast::TypeExpression::Path(path) => {
-				self.resolve_path_type(resolve_context, scope, path, type_expr.span)
-			}
+			ast::TypeExpression::Path(path) => self.resolve_path_type(
+				resolve_context,
+				scope,
+				path,
+				type_expr.span,
+			),
 			ast::TypeExpression::Function { params, result } => {
 				let result_idx = match result {
 					Some(result) => {
@@ -2538,23 +2620,19 @@ impl<'ast> Builder<'ast, '_> {
 				}
 			}
 			ast::TypeExpression::GenericApplication { name, args } => {
-				match self
-					.lookup_global_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Type, name.inner),
-					)
-				{
+				match self.lookup_global_symbol(
+					resolve_context.namespace,
+					(SymbolNamespace::Type, name.inner),
+				) {
 					Some(SymbolKind::Pending(def_id)) => {
 						self.ensure_signature(def_id);
 					}
 					_ => {}
 				}
-				match self
-					.lookup_global_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Type, name.inner),
-					)
-				{
+				match self.lookup_global_symbol(
+					resolve_context.namespace,
+					(SymbolNamespace::Type, name.inner),
+				) {
 					Some(
 						kind @ (SymbolKind::Struct { .. }
 						| SymbolKind::TypeAlias { .. }),
@@ -2651,16 +2729,13 @@ impl<'ast> Builder<'ast, '_> {
 				.lookup_global_symbol(
 					resolve_context.namespace,
 					(SymbolNamespace::Type, last.ident.inner),
-				)
-			{
+				) {
 				self.ensure_signature(def_id);
 			}
-			let Some(symbol_kind) = self
-				.lookup_global_symbol(
-					resolve_context.namespace,
-					(SymbolNamespace::Type, last.ident.inner),
-				)
-			else {
+			let Some(symbol_kind) = self.lookup_global_symbol(
+				resolve_context.namespace,
+				(SymbolNamespace::Type, last.ident.inner),
+			) else {
 				self.tir.diagnostics.push(
 					Diagnostic::error()
 						.with_message("type arguments are not supported here")
@@ -2927,12 +3002,53 @@ impl<'ast> Builder<'ast, '_> {
 				let alias = &self.tir.type_aliases[type_alias_index as usize];
 				SourceSpan::new(alias.file_id, alias.name.span)
 			}
+			// A `Pending` entry always has a stub already pushed by
+			// `pre_scan_item` (every syntactic occurrence is unconditionally
+			// registered there, duplicate or not), so its declaration span
+			// is available via `item_lookup` even though its fields/value
+			// haven't been resolved yet.
+			SymbolKind::Pending(def_id) => {
+				match self.tir.item_lookup[&def_id] {
+					ItemIndex::Function(idx) => {
+						let f = &self.tir.functions[idx as usize];
+						SourceSpan::new(f.file_id, f.name.span)
+					}
+					ItemIndex::Global(idx) => {
+						let g = &self.tir.globals[idx as usize];
+						SourceSpan::new(g.file_id, g.name.span)
+					}
+					ItemIndex::Memory(idx) => {
+						let m = &self.tir.memories[idx as usize];
+						SourceSpan::new(m.file_id, m.name.span)
+					}
+					ItemIndex::Struct(idx) => {
+						let s = &self.tir.structs[idx as usize];
+						SourceSpan::new(s.file_id, s.name.span)
+					}
+					ItemIndex::Const(idx) => {
+						let c = &self.tir.constants[idx as usize];
+						SourceSpan::new(c.file_id, c.name.span)
+					}
+					ItemIndex::Enum(idx) => {
+						let e = &self.tir.enums[idx as usize];
+						SourceSpan::new(e.file_id, e.name.span)
+					}
+					ItemIndex::TypeAlias(idx) => {
+						let a = &self.tir.type_aliases[idx as usize];
+						SourceSpan::new(a.file_id, a.name.span)
+					}
+					ItemIndex::TypeSet(_)
+					| ItemIndex::Trait(_)
+					| ItemIndex::TraitImpl(_) => unreachable!(
+						"these kinds never install a Pending symbol"
+					),
+				}
+			}
 			// these are keywords and will be handled at the parser level
 			SymbolKind::False
 			| SymbolKind::True
 			| SymbolKind::Unreachable
-			| SymbolKind::Placeholder
-			| SymbolKind::Pending(_) => unreachable!(),
+			| SymbolKind::Placeholder => unreachable!(),
 		}
 	}
 
@@ -2947,12 +3063,65 @@ impl<'ast> Builder<'ast, '_> {
 		item: &'ast ast::Item,
 	) {
 		match item {
-			ast::Item::Function { id, signature, .. } => {
-				self.insert_symbol(
+			ast::Item::Function {
+				id,
+				signature,
+				attributes,
+				pub_span,
+				..
+			}
+			| ast::Item::FunctionDeclaration {
+				id,
+				signature,
+				attributes,
+				pub_span,
+				..
+			} => {
+				// Unlike the other kinds, Function always pushes its
+				// `ast_nodes` entry regardless of the claim below: a
+				// duplicate function still gets its own signature and body
+				// fully type-checked in Phase 2/3 (matching its existing
+				// behavior today), it just never becomes referenceable if
+				// it lost the name.
+				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Value, signature.name.inner),
-					SymbolKind::Pending(*id),
+					*id,
+					SourceSpan::new(file_id, signature.name.span),
 				);
+				// Always allocate the stub, regardless of the claim above —
+				// see the identical comment on the Struct branch. `params`/
+				// `result`/`signature_index` need Phase-2 machinery, so they
+				// stay placeholders here.
+				let resolved_attributes = self.resolve_attributes(attributes);
+				self.register_lang_items(*id, &resolved_attributes);
+				let func_index = self.tir.functions.len() as u32;
+				self.tir
+					.item_lookup
+					.insert(*id, ItemIndex::Function(func_index));
+				self.tir.functions.push(Function {
+					id: *id,
+					file_id,
+					namespace,
+					parent: None,
+					body: None,
+					type_params: signature
+						.type_params
+						.iter()
+						.map(|tp| {
+							TypeParamInfo::new(tp.name.inner, tp.name.span)
+						})
+						.collect(),
+					type_param_parent: None,
+					inherited_type_param_count: 0,
+					pub_span: *pub_span,
+					signature_index: TypeIndex::ERROR,
+					name: signature.name.clone(),
+					accesses: Vec::new(),
+					params: Box::new([]),
+					result: None,
+					attributes: resolved_attributes,
+				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
 					file_id,
@@ -2960,25 +3129,41 @@ impl<'ast> Builder<'ast, '_> {
 					node: AstNodeRef::Function { item },
 				});
 			}
-			ast::Item::FunctionDeclaration { id, signature, .. } => {
-				self.insert_symbol(
-					namespace,
-					(SymbolNamespace::Value, signature.name.inner),
-					SymbolKind::Pending(*id),
-				);
-				self.ast_nodes.push(AstEntry {
-					def_id: *id,
-					file_id,
-					namespace,
-					node: AstNodeRef::Function { item },
-				});
-			}
-			ast::Item::Global { id, name, .. } => {
-				self.insert_symbol(
+			ast::Item::Global {
+				id,
+				pub_span,
+				mut_span,
+				name,
+				..
+			} => {
+				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Value, name.inner),
-					SymbolKind::Pending(*id),
+					*id,
+					SourceSpan::new(file_id, name.span),
 				);
+				// Always allocate the stub, regardless of the claim above —
+				// see the identical comment on the Struct branch. `ty` needs
+				// Phase-2 machinery, so it stays a placeholder; `value` is
+				// resolved even later, in Phase 3 (`ensure_body`).
+				let global_index = self.tir.globals.len() as u32;
+				self.tir
+					.item_lookup
+					.insert(*id, ItemIndex::Global(global_index));
+				self.tir.globals.push(Global {
+					id: *id,
+					file_id,
+					namespace,
+					value: None,
+					name: name.clone(),
+					ty: ast::Spanned {
+						inner: TypeIndex::ERROR,
+						span: name.span,
+					},
+					pub_span: *pub_span,
+					mut_span: mut_span.clone(),
+					accesses: Vec::new(),
+				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
 					file_id,
@@ -2986,12 +3171,48 @@ impl<'ast> Builder<'ast, '_> {
 					node: AstNodeRef::Global { item },
 				});
 			}
-			ast::Item::Struct { id, name, .. } => {
-				self.insert_symbol(
+			ast::Item::Struct {
+				id,
+				pub_span,
+				name,
+				type_params,
+				..
+			} => {
+				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Type, name.inner),
-					SymbolKind::Pending(*id),
+					*id,
+					SourceSpan::new(file_id, name.span),
 				);
+				// Always allocate the stub, regardless of the claim above:
+				// every syntactic occurrence still gets its fields resolved
+				// and its own errors reported, even if it lost the name to
+				// an earlier duplicate.
+				let struct_index = self.tir.structs.len() as u32;
+				let self_type = self.intern_type(Type::Struct {
+					struct_index,
+					args: Box::new([]),
+				});
+				self.tir
+					.item_lookup
+					.insert(*id, ItemIndex::Struct(struct_index));
+				self.tir.structs.push(Struct {
+					id: *id,
+					file_id,
+					namespace,
+					pub_span: *pub_span,
+					name: name.clone(),
+					type_params: type_params
+						.iter()
+						.map(|tp| {
+							TypeParamInfo::new(tp.name.inner, tp.name.span)
+						})
+						.collect(),
+					self_type,
+					fields: Box::new([]),
+					lookup: HashMap::new(),
+					accesses: Vec::new(),
+				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
 					file_id,
@@ -2999,12 +3220,37 @@ impl<'ast> Builder<'ast, '_> {
 					node: AstNodeRef::Struct { item },
 				});
 			}
-			ast::Item::Enum { id, name, .. } => {
-				self.insert_symbol(
+			ast::Item::Enum {
+				id, pub_span, name, ..
+			} => {
+				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Type, name.inner),
-					SymbolKind::Pending(*id),
+					*id,
+					SourceSpan::new(file_id, name.span),
 				);
+				// Always allocate the stub, regardless of the claim above —
+				// see the identical comment on the Struct branch. `ty` and
+				// `variants` need Phase-2 machinery (`resolve_type`,
+				// `build_const_expression`) so they stay placeholders here;
+				// `self_type` is pure identity (`Type::Enum{enum_index}`),
+				// so it's interned now, same as Struct's `self_type`.
+				let enum_index = self.tir.enums.len() as u32;
+				let self_type = self.intern_type(Type::Enum { enum_index });
+				self.tir
+					.item_lookup
+					.insert(*id, ItemIndex::Enum(enum_index));
+				self.tir.enums.push(Enum {
+					id: *id,
+					file_id,
+					namespace,
+					pub_span: *pub_span,
+					name: name.clone(),
+					ty: TypeIndex::ERROR,
+					self_type,
+					variants: Box::new([]),
+					lookup: HashMap::new(),
+				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
 					file_id,
@@ -3012,12 +3258,43 @@ impl<'ast> Builder<'ast, '_> {
 					node: AstNodeRef::Enum { item },
 				});
 			}
-			ast::Item::TypeAlias { id, name, .. } => {
-				self.insert_symbol(
+			ast::Item::TypeAlias {
+				id,
+				pub_span,
+				name,
+				type_params,
+				..
+			} => {
+				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Type, name.inner),
-					SymbolKind::Pending(*id),
+					*id,
+					SourceSpan::new(file_id, name.span),
 				);
+				// Always allocate the stub, regardless of the claim above —
+				// see the identical comment on the Struct branch. The final
+				// resolved-symbol insert stays deferred to `ensure_signature`
+				// (after the RHS resolves), unchanged from today — see the
+				// comment there about the cyclic-dependency guard.
+				let type_alias_index = self.tir.type_aliases.len() as u32;
+				self.tir
+					.item_lookup
+					.insert(*id, ItemIndex::TypeAlias(type_alias_index));
+				self.tir.type_aliases.push(TypeAlias {
+					id: *id,
+					file_id,
+					namespace,
+					pub_span: *pub_span,
+					name: name.clone(),
+					type_params: type_params
+						.iter()
+						.map(|tp| {
+							TypeParamInfo::new(tp.name.inner, tp.name.span)
+						})
+						.collect(),
+					template: TypeIndex::ERROR,
+					accesses: Vec::new(),
+				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
 					file_id,
@@ -3026,16 +3303,40 @@ impl<'ast> Builder<'ast, '_> {
 				});
 			}
 			ast::Item::Memory { id, name, .. } => {
-				self.insert_symbol(
+				// Type and Value are independent claims — a memory can
+				// collide with, say, an existing function of the same name
+				// in Value while its Type binding is still free (or vice
+				// versa), so each is checked and diagnosed on its own.
+				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Type, name.inner),
-					SymbolKind::Pending(*id),
+					*id,
+					SourceSpan::new(file_id, name.span),
 				);
-				self.insert_symbol(
+				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Value, name.inner),
-					SymbolKind::Pending(*id),
+					*id,
+					SourceSpan::new(file_id, name.span),
 				);
+				// Always allocate the stub, regardless of the claims above
+				// — see the identical comment on the Struct branch. `kind`
+				// needs Phase-2 trait-bound resolution, so it defaults to
+				// `TypeIndex::ERROR` here (matching
+				// `register_placeholder_memory`'s existing fallback for an
+				// unresolvable kind).
+				let memory_index = self.tir.memories.len() as u32;
+				self.tir
+					.item_lookup
+					.insert(*id, ItemIndex::Memory(memory_index));
+				self.tir.memories.push(Memory {
+					id: *id,
+					file_id,
+					name: name.clone(),
+					kind: TypeIndex::ERROR,
+					min_pages: None,
+					max_pages: None,
+				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
 					file_id,
@@ -3043,12 +3344,40 @@ impl<'ast> Builder<'ast, '_> {
 					node: AstNodeRef::Memory { item },
 				});
 			}
-			ast::Item::Const { id, name, .. } => {
-				self.insert_symbol(
+			ast::Item::Const {
+				id, pub_span, name, ..
+			} => {
+				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Value, name.inner),
-					SymbolKind::Pending(*id),
+					*id,
+					SourceSpan::new(file_id, name.span),
 				);
+				// Always allocate the stub, regardless of the claim above —
+				// see the identical comment on the Struct branch. `ty`/
+				// `value` need Phase-2 machinery, so they stay placeholders;
+				// the final resolved-symbol insert stays conditioned in
+				// `ensure_signature` on the value actually resolving,
+				// unchanged from today (a const whose value fails to build
+				// never claims its name, matching current behavior).
+				let const_index = self.tir.constants.len() as ConstIndex;
+				self.tir
+					.item_lookup
+					.insert(*id, ItemIndex::Const(const_index));
+				self.tir.constants.push(Constant {
+					id: *id,
+					file_id,
+					namespace,
+					parent: None,
+					pub_span: *pub_span,
+					name: name.clone(),
+					ty: ast::Spanned {
+						inner: TypeIndex::ERROR,
+						span: name.span,
+					},
+					value: None,
+					accesses: Vec::new(),
+				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
 					file_id,
@@ -3111,7 +3440,8 @@ impl<'ast> Builder<'ast, '_> {
 				}
 
 				let trait_index = self.tir.traits.len() as u32;
-				let mut member_ids: Vec<ast::DefId> = Vec::with_capacity(items.len());
+				let mut member_ids: Vec<ast::DefId> =
+					Vec::with_capacity(items.len());
 				for trait_item in items.iter() {
 					match &trait_item.inner.inner {
 						ast::TraitItem::Function { id, .. } => {
@@ -3384,7 +3714,7 @@ impl<'ast> Builder<'ast, '_> {
 					lookup: HashMap::new(),
 				});
 			}
-			ast::Item::Use { path } => {
+			ast::Item::Use { path, pub_span: _ } => {
 				// Resolve the path to a namespace index and register it as a
 				// wildcard import on the current namespace.  Symbols are looked
 				// up lazily via `lookup_global_symbol` — no copying needed.
@@ -3534,86 +3864,37 @@ impl<'ast> Builder<'ast, '_> {
 		match node {
 			// ── struct ────────────────────────────────────────────────────────
 			AstNodeRef::Struct { item } => {
-				let (id, pub_span, name, ast_type_params, fields) = match item {
+				let (id, name, ast_type_params, fields) = match item {
 					ast::Item::Struct {
 						id,
-						pub_span,
 						name,
 						type_params,
 						fields,
-					} => (id, pub_span, name, type_params, fields),
+						..
+					} => (id, name, type_params, fields),
 					_ => unreachable!(),
 				};
-				// Duplicate check.
-				if let Some(existing) = self
-					.lookup_global_symbol(
+				let struct_index = self.tir.expect_struct_index(*id);
+				// Bind the name now, before resolving fields, exactly like
+				// the pre-refactor code did: this lets a self-referential
+				// pointer field (e.g. `*Node`) resolve directly instead of
+				// recursing into `ensure_signature` again. Only do this if
+				// this occurrence still holds its own `Pending` slot — if
+				// an earlier duplicate already claimed the name (or, for a
+				// duplicate itself, if it never held the slot to begin
+				// with), skip the bind: this struct still gets its fields
+				// fully resolved below, it just never becomes referenceable.
+				let key = (SymbolNamespace::Type, name.inner);
+				if matches!(
+					self.direct_scope_lookup(resolve_context.namespace, key),
+					Some(SymbolKind::Pending(pending_id)) if pending_id == *id
+				) {
+					self.insert_symbol(
 						resolve_context.namespace,
-						(SymbolNamespace::Type, name.inner),
-					)
-					.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-				{
-					let first_definition = match existing {
-						SymbolKind::Struct { struct_index } => {
-							let struct_ =
-								&self.tir.structs[struct_index as usize];
-							SourceSpan::new(struct_.file_id, struct_.name.span)
-						}
-						_ => {
-							SourceSpan::new(resolve_context.file_id, name.span)
-						}
-					};
-					let name_str = self.interner.resolve(name.inner).unwrap();
-					self.tir.diagnostics.push(report_duplicate_definition(
-						DuplicateDefinitionDiagnostic {
-							name: name_str,
-							namespace: SymbolNamespace::Type,
-							first_definition,
-							second_definition: SourceSpan::new(
-								resolve_context.file_id,
-								name.span,
-							),
-						},
-					));
-					self.sig_state.get_mut(&def_id).unwrap().state =
-						ComputeState::Done;
-					return;
+						key,
+						SymbolKind::Struct { struct_index },
+					);
 				}
-
-				// Resolve type params, then build a scope that lets field
-				// Pre-register the struct before resolving fields: allows field
-				// types to reference the struct itself via indirection (e.g. `*Node`)
-				// without a false cycle error. Direct self-reference is caught by
-				// `check_struct_fields_for_direct_recursion` below.
-				let struct_index = self.tir.structs.len() as u32;
-				let self_type = self.intern_type(Type::Struct {
-					struct_index,
-					args: Box::new([]),
-				});
-				self.tir
-					.item_lookup
-					.insert(*id, ItemIndex::Struct(struct_index));
-				self.tir.structs.push(Struct {
-					id: *id,
-					file_id: resolve_context.file_id,
-					namespace: resolve_context.namespace,
-					pub_span: *pub_span,
-					name: name.clone(),
-					type_params: ast_type_params
-						.iter()
-						.map(|tp| {
-							TypeParamInfo::new(tp.name.inner, tp.name.span)
-						})
-						.collect(),
-					self_type,
-					fields: Box::new([]),
-					lookup: HashMap::new(),
-					accesses: Vec::new(),
-				});
-				self.insert_symbol(
-					resolve_context.namespace,
-					(SymbolNamespace::Type, name.inner),
-					SymbolKind::Struct { struct_index },
-				);
 				// Resolve bounds now that the struct is registered and names are in TIR.
 				self.resolve_type_param_bounds(
 					resolve_context,
@@ -3692,69 +3973,21 @@ impl<'ast> Builder<'ast, '_> {
 					struct_index,
 					SourceSpan::new(resolve_context.file_id, name.span),
 				);
-
-				let _ = pub_span;
 			}
 
 			// ── type alias ───────────────────────────────────────────────────
 			AstNodeRef::TypeAlias { item } => {
-				let (id, pub_span, name, ast_type_params, ty_expr) = match item
-				{
+				let (id, name, ast_type_params, ty_expr) = match item {
 					ast::Item::TypeAlias {
 						id,
-						pub_span,
 						name,
 						type_params,
 						ty,
-					} => (id, pub_span, name, type_params, ty),
+						..
+					} => (id, name, type_params, ty),
 					_ => unreachable!(),
 				};
-
-				// Duplicate check.
-				if let Some(existing) = self
-					.lookup_global_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Type, name.inner),
-					)
-					.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-				{
-					let first_definition = self.get_symbol_location(existing);
-					let name_str = self.interner.resolve(name.inner).unwrap();
-					self.tir.diagnostics.push(report_duplicate_definition(
-						DuplicateDefinitionDiagnostic {
-							name: name_str,
-							namespace: SymbolNamespace::Type,
-							first_definition,
-							second_definition: SourceSpan::new(
-								resolve_context.file_id,
-								name.span,
-							),
-						},
-					));
-					self.sig_state.get_mut(&def_id).unwrap().state =
-						ComputeState::Done;
-					return;
-				}
-
-				let type_alias_index = self.tir.type_aliases.len() as u32;
-				self.tir
-					.item_lookup
-					.insert(*id, ItemIndex::TypeAlias(type_alias_index));
-				self.tir.type_aliases.push(TypeAlias {
-					id: *id,
-					file_id: resolve_context.file_id,
-					namespace: resolve_context.namespace,
-					pub_span: *pub_span,
-					name: name.clone(),
-					type_params: ast_type_params
-						.iter()
-						.map(|tp| {
-							TypeParamInfo::new(tp.name.inner, tp.name.span)
-						})
-						.collect(),
-					template: TypeIndex::ERROR,
-					accesses: Vec::new(),
-				});
+				let type_alias_index = self.tir.expect_type_alias_index(*id);
 
 				// Deliberately NOT calling insert_symbol yet: the symbol table
 				// still holds SymbolKind::Pending(*id) while the RHS resolves,
@@ -3784,28 +4017,34 @@ impl<'ast> Builder<'ast, '_> {
 				self.tir.type_aliases[type_alias_index as usize].template =
 					template;
 
-				self.insert_symbol(
-					resolve_context.namespace,
-					(SymbolNamespace::Type, name.inner),
-					SymbolKind::TypeAlias { type_alias_index },
-				);
+				// Bind the name only if this occurrence still holds its own
+				// `Pending` slot — see the identical comment on the Struct
+				// branch.
+				let key = (SymbolNamespace::Type, name.inner);
+				if matches!(
+					self.direct_scope_lookup(resolve_context.namespace, key),
+					Some(SymbolKind::Pending(pending_id)) if pending_id == *id
+				) {
+					self.insert_symbol(
+						resolve_context.namespace,
+						key,
+						SymbolKind::TypeAlias { type_alias_index },
+					);
+				}
 			}
 
 			// ── enum ──────────────────────────────────────────────────────────
 			AstNodeRef::Enum { item } => {
 				if let ast::Item::Enum {
 					id,
-					pub_span,
 					name,
 					repr,
 					variants,
+					..
 				} = item
 				{
-					if !matches!(
-						self.lookup_global_symbol(resolve_context.namespace, (SymbolNamespace::Type, name.inner)),
-						Some(k) if !matches!(k, SymbolKind::Pending(_))
-					) {
-						let enum_index = self.tir.enums.len() as u32;
+					let enum_index = self.tir.expect_enum_index(*id);
+					{
 						let ty = match repr {
 							Some(r) => {
 								self.resolve_type(resolve_context, None, &**r)
@@ -3928,84 +4167,34 @@ impl<'ast> Builder<'ast, '_> {
 							});
 						}
 
-						let self_type =
-							self.intern_type(Type::Enum { enum_index });
-						self.tir.enums.push(Enum {
-							id: *id,
-							file_id: resolve_context.file_id,
-							namespace: resolve_context.namespace,
-							pub_span: *pub_span,
-							name: name.clone(),
-							ty,
-							self_type,
-							variants: tir_variants.into_boxed_slice(),
-							lookup: variant_lookup,
-						});
-						self.tir
-							.item_lookup
-							.insert(*id, ItemIndex::Enum(enum_index));
+						let e = &mut self.tir.enums[enum_index as usize];
+						e.ty = ty;
+						e.variants = tir_variants.into_boxed_slice();
+						e.lookup = variant_lookup;
+					}
+
+					// Bind the name only if this occurrence still holds its
+					// own `Pending` slot — see the identical comment on the
+					// Struct branch.
+					let key = (SymbolNamespace::Type, name.inner);
+					if matches!(
+						self.direct_scope_lookup(resolve_context.namespace, key),
+						Some(SymbolKind::Pending(pending_id)) if pending_id == *id
+					) {
 						self.insert_symbol(
 							resolve_context.namespace,
-							(SymbolNamespace::Type, name.inner),
+							key,
 							SymbolKind::Enum { enum_index },
 						);
-						let _ = id;
 					}
 				}
 			}
 
 			// ── free function / function declaration ──────────────────────────
 			AstNodeRef::Function { item } => match item {
-				ast::Item::Function {
-					id,
-					signature,
-					attributes,
-					pub_span,
-					..
-				}
-				| ast::Item::FunctionDeclaration {
-					id,
-					signature,
-					attributes,
-					pub_span,
-					..
-				} => {
-					let existing_span = self
-						.lookup_global_symbol(
-							resolve_context.namespace,
-							(SymbolNamespace::Value, signature.name.inner),
-						)
-						.filter(|kind| !matches!(kind, SymbolKind::Pending(_)))
-						.map(|kind| self.get_symbol_location(kind));
-					let attributes = self.resolve_attributes(attributes);
-					self.register_lang_items(*id, &attributes);
-					let func_index = self.tir.functions.len() as u32;
-					self.tir.functions.push(Function {
-						id: *id,
-						file_id: resolve_context.file_id,
-						namespace: resolve_context.namespace,
-						parent: None,
-						body: None,
-						type_params: signature
-							.type_params
-							.iter()
-							.map(|tp| {
-								TypeParamInfo::new(tp.name.inner, tp.name.span)
-							})
-							.collect(),
-						type_param_parent: None,
-						inherited_type_param_count: 0,
-						pub_span: *pub_span,
-						signature_index: TypeIndex::ERROR,
-						name: signature.name.clone(),
-						accesses: Vec::new(),
-						params: Box::new([]),
-						result: None,
-						attributes,
-					});
-					self.tir
-						.item_lookup
-						.insert(*id, ItemIndex::Function(func_index));
+				ast::Item::Function { id, signature, .. }
+				| ast::Item::FunctionDeclaration { id, signature, .. } => {
+					let func_index = self.tir.expect_function_index(*id);
 					self.resolve_type_param_bounds(
 						resolve_context,
 						TypeParamOwner::Function(*id),
@@ -4027,33 +4216,20 @@ impl<'ast> Builder<'ast, '_> {
 					func.params = params;
 					func.result = result;
 					func.signature_index = signature_index;
-					match existing_span {
-						Some(first_definition) => {
-							let name = self
-								.interner
-								.resolve(signature.name.inner)
-								.unwrap();
-							self.tir.diagnostics.push(
-								report_duplicate_definition(
-									DuplicateDefinitionDiagnostic {
-										name,
-										namespace: SymbolNamespace::Value,
-										first_definition,
-										second_definition: SourceSpan::new(
-											resolve_context.file_id,
-											signature.name.span,
-										),
-									},
-								),
-							);
-						}
-						None => {
-							self.insert_symbol(
-								resolve_context.namespace,
-								(SymbolNamespace::Value, signature.name.inner),
-								SymbolKind::Function { func_index },
-							);
-						}
+
+					// Bind the name only if this occurrence still holds its
+					// own `Pending` slot — see the identical comment on the
+					// Struct branch.
+					let key = (SymbolNamespace::Value, signature.name.inner);
+					if matches!(
+						self.direct_scope_lookup(resolve_context.namespace, key),
+						Some(SymbolKind::Pending(pending_id)) if pending_id == *id
+					) {
+						self.insert_symbol(
+							resolve_context.namespace,
+							key,
+							SymbolKind::Function { func_index },
+						);
 					}
 				}
 				_ => {}
@@ -4788,7 +4964,7 @@ impl<'ast> Builder<'ast, '_> {
 					owner: TypeParamOwner::Trait(trait_index),
 					self_type: Some(self_type_param),
 				};
-				if let ast::TraitItem::Const { id, name, ty } = item {
+				if let ast::TraitItem::Const { id, name, ty, .. } = item {
 					let ty_idx = self.resolve_type(
 						resolve_context,
 						Some(self_scope),
@@ -4824,82 +5000,47 @@ impl<'ast> Builder<'ast, '_> {
 
 			// ── global ────────────────────────────────────────────────────────
 			AstNodeRef::Global { item } => {
-				if let ast::Item::Global {
-					pub_span,
-					mut_span,
-					name,
-					ty,
-					id,
-					..
-				} = item
-				{
-					if let Some(first_def) = self
-						.lookup_global_symbol(
-							resolve_context.namespace,
-							(SymbolNamespace::Value, name.inner),
-						)
-						.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-					{
-						let name_str =
-							self.interner.resolve(name.inner).unwrap();
-						let first_definition =
-							self.get_symbol_location(first_def);
-						self.tir.diagnostics.push(report_duplicate_definition(
-							DuplicateDefinitionDiagnostic {
-								name: name_str,
-								namespace: SymbolNamespace::Value,
-								first_definition,
-								second_definition: SourceSpan::new(
-									resolve_context.file_id,
-									name.span,
-								),
-							},
-						));
-					} else {
-						let (ty, ty_span) = match ty {
-							Some(ty) => (
-								self.resolve_signature_type(
-									resolve_context,
-									None,
-									ty,
-								),
-								ty.span,
+				if let ast::Item::Global { name, ty, id, .. } = item {
+					let global_index = self.tir.expect_global_index(*id);
+					let (ty_idx, ty_span) = match ty {
+						Some(ty) => (
+							self.resolve_signature_type(
+								resolve_context,
+								None,
+								ty,
 							),
-							None => {
-								self.tir.diagnostics.push(
-									report_type_annotation_required(
-										SourceSpan::new(
-											resolve_context.file_id,
-											name.span,
-										),
+							ty.span,
+						),
+						None => {
+							self.tir.diagnostics.push(
+								report_type_annotation_required(
+									SourceSpan::new(
+										resolve_context.file_id,
+										name.span,
 									),
-								);
-								(TypeIndex::ERROR, name.span)
-							}
-						};
-						let global_index = self.tir.globals.len() as u32;
+								),
+							);
+							(TypeIndex::ERROR, name.span)
+						}
+					};
+					self.tir.globals[global_index as usize].ty = ast::Spanned {
+						inner: ty_idx,
+						span: ty_span,
+					};
+
+					// Bind the name only if this occurrence still holds its
+					// own `Pending` slot — see the identical comment on the
+					// Struct branch.
+					let key = (SymbolNamespace::Value, name.inner);
+					if matches!(
+						self.direct_scope_lookup(resolve_context.namespace, key),
+						Some(SymbolKind::Pending(pending_id)) if pending_id == *id
+					) {
 						self.insert_symbol(
 							resolve_context.namespace,
-							(SymbolNamespace::Value, name.inner),
+							key,
 							SymbolKind::Global { global_index },
 						);
-						self.tir.globals.push(Global {
-							id: *id,
-							file_id: resolve_context.file_id,
-							namespace: resolve_context.namespace,
-							value: None,
-							name: name.clone(),
-							ty: ast::Spanned {
-								inner: ty,
-								span: ty_span,
-							},
-							pub_span: *pub_span,
-							mut_span: mut_span.clone(),
-							accesses: Vec::new(),
-						});
-						self.tir
-							.item_lookup
-							.insert(*id, ItemIndex::Global(global_index));
 					}
 				}
 			}
@@ -4975,11 +5116,10 @@ impl<'ast> Builder<'ast, '_> {
 					let size_symbol = self.interner.get_or_intern("Size");
 					let memory_kind = match bindings.get(&size_symbol).copied()
 					{
-						Some(ty) if ty == TypeIndex::U32 => {
-							MemoryKind::Memory32
-						}
-						Some(ty) if ty == TypeIndex::U64 => {
-							MemoryKind::Memory64
+						Some(ty)
+							if ty == TypeIndex::U32 || ty == TypeIndex::U64 =>
+						{
+							ty
 						}
 						_ => {
 							self.tir.diagnostics.push(
@@ -5005,8 +5145,8 @@ impl<'ast> Builder<'ast, '_> {
 					for tid in trait_fn_ids {
 						self.ensure_signature(tid);
 					}
-					let memory_index = self.tir.memories.len() as u32;
-					self.tir.memories.push(Memory {
+					let memory_index = self.tir.expect_memory_index(*id);
+					self.tir.memories[memory_index as usize] = Memory {
 						id: *id,
 						file_id: resolve_context.file_id,
 						kind: memory_kind,
@@ -5017,10 +5157,7 @@ impl<'ast> Builder<'ast, '_> {
 						max_pages: config.as_ref().and_then(|c| {
 							c.max_pages.as_ref().map(|s| s.inner)
 						}),
-					});
-					self.tir
-						.item_lookup
-						.insert(*id, ItemIndex::Memory(memory_index));
+					};
 					let memory_type = self.intern_type(Type::Memory {
 						kind: memory_kind,
 						id: *id,
@@ -5067,22 +5204,39 @@ impl<'ast> Builder<'ast, '_> {
 						ItemIndex::TraitImpl(trait_impl_index),
 					);
 
-					self.insert_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Type, name.inner),
-						SymbolKind::Memory {
-							memory_index,
-							kind: memory_kind,
-						},
-					);
-					self.insert_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Value, name.inner),
-						SymbolKind::Memory {
-							memory_index,
-							kind: memory_kind,
-						},
-					);
+					// Bind each namespace only if this occurrence still holds
+					// its own `Pending` slot there — see the identical
+					// comment on the Struct branch. Type and Value are
+					// independent claims (mirroring the two separate
+					// `claim_name_binding` calls in `pre_scan_item`).
+					let type_key = (SymbolNamespace::Type, name.inner);
+					if matches!(
+						self.direct_scope_lookup(resolve_context.namespace, type_key),
+						Some(SymbolKind::Pending(pending_id)) if pending_id == *id
+					) {
+						self.insert_symbol(
+							resolve_context.namespace,
+							type_key,
+							SymbolKind::Memory {
+								memory_index,
+								kind: memory_kind,
+							},
+						);
+					}
+					let value_key = (SymbolNamespace::Value, name.inner);
+					if matches!(
+						self.direct_scope_lookup(resolve_context.namespace, value_key),
+						Some(SymbolKind::Pending(pending_id)) if pending_id == *id
+					) {
+						self.insert_symbol(
+							resolve_context.namespace,
+							value_key,
+							SymbolKind::Memory {
+								memory_index,
+								kind: memory_kind,
+							},
+						);
+					}
 				}
 			}
 
@@ -5090,79 +5244,55 @@ impl<'ast> Builder<'ast, '_> {
 			AstNodeRef::Const { item } => {
 				if let ast::Item::Const {
 					id,
-					pub_span,
 					name,
 					ty,
 					value,
+					..
 				} = item
 				{
-					if let Some(first_def) = self
-						.lookup_global_symbol(
-							resolve_context.namespace,
-							(SymbolNamespace::Value, name.inner),
-						)
-						.filter(|k| !matches!(k, SymbolKind::Pending(_)))
-					{
-						let name_str =
-							self.interner.resolve(name.inner).unwrap();
-						let first_definition =
-							self.get_symbol_location(first_def);
-						self.tir.diagnostics.push(report_duplicate_definition(
-							DuplicateDefinitionDiagnostic {
-								name: name_str,
-								namespace: SymbolNamespace::Value,
-								first_definition,
-								second_definition: SourceSpan::new(
-									resolve_context.file_id,
-									name.span,
-								),
-							},
-						));
-					} else {
-						let (ty_idx, ty_span) = match ty {
-							Some(ty) => (
-								self.resolve_type(resolve_context, None, ty),
-								ty.span,
-							),
-							None => {
-								self.tir.diagnostics.push(
-									report_type_annotation_required(
-										SourceSpan::new(
-											resolve_context.file_id,
-											name.span,
-										),
+					let const_index = self.tir.expect_const_index(*id);
+					let (ty_idx, ty_span) = match ty {
+						Some(ty) => (
+							self.resolve_type(resolve_context, None, ty),
+							ty.span,
+						),
+						None => {
+							self.tir.diagnostics.push(
+								report_type_annotation_required(
+									SourceSpan::new(
+										resolve_context.file_id,
+										name.span,
 									),
-								);
-								(TypeIndex::ERROR, name.span)
-							}
+								),
+							);
+							(TypeIndex::ERROR, name.span)
+						}
+					};
+					self.tir.constants[const_index as usize].ty =
+						ast::Spanned {
+							inner: ty_idx,
+							span: ty_span,
 						};
-						if let Ok(value_expr) = self.build_const_expression(
-							resolve_context,
-							value,
-							ty_idx,
+					// A const whose value fails to build never claims its
+					// name, matching current behavior — the stub still
+					// exists (for `item_lookup`/duplicate-span purposes)
+					// with `value: None`, but stays permanently `Pending`.
+					if let Ok(value_expr) = self.build_const_expression(
+						resolve_context,
+						value,
+						ty_idx,
+					) {
+						self.tir.constants[const_index as usize].value =
+							Some(Box::new(value_expr));
+
+						let key = (SymbolNamespace::Value, name.inner);
+						if matches!(
+							self.direct_scope_lookup(resolve_context.namespace, key),
+							Some(SymbolKind::Pending(pending_id)) if pending_id == *id
 						) {
-							let const_index =
-								self.tir.constants.len() as ConstIndex;
-							self.tir.constants.push(Constant {
-								id: *id,
-								file_id: resolve_context.file_id,
-								namespace: resolve_context.namespace,
-								parent: None,
-								pub_span: *pub_span,
-								name: name.clone(),
-								ty: ast::Spanned {
-									inner: ty_idx,
-									span: ty_span,
-								},
-								value: Some(Box::new(value_expr)),
-								accesses: Vec::new(),
-							});
-							self.tir
-								.item_lookup
-								.insert(*id, ItemIndex::Const(const_index));
 							self.insert_symbol(
 								resolve_context.namespace,
-								(SymbolNamespace::Value, name.inner),
+								key,
 								SymbolKind::Const { const_index },
 							);
 						}
@@ -6343,9 +6473,7 @@ impl<'ast> Builder<'ast, '_> {
 			_ => {
 				self.tir.diagnostics.push(
 					Diagnostic::error()
-						.with_message(
-							"type arguments are not supported here",
-						)
+						.with_message("type arguments are not supported here")
 						.with_label(Label::primary(
 							resolve_context.file_id,
 							span,
@@ -6355,11 +6483,8 @@ impl<'ast> Builder<'ast, '_> {
 			}
 		};
 		if resolved_args.len() > expected {
-			let name = self
-				.interner
-				.resolve(name_sym)
-				.unwrap_or("?")
-				.to_string();
+			let name =
+				self.interner.resolve(name_sym).unwrap_or("?").to_string();
 			self.tir.diagnostics.push(
 				Diagnostic::error()
 					.with_code(DiagnosticCode::TypeArgCountMismatch.code())
@@ -6392,8 +6517,7 @@ impl<'ast> Builder<'ast, '_> {
 					.accesses
 					.push(SourceSpan::new(resolve_context.file_id, span));
 				let template =
-					self.tir.type_aliases[type_alias_index as usize]
-						.template;
+					self.tir.type_aliases[type_alias_index as usize].template;
 				self.substitute_type(template, &args)
 			}
 			_ => unreachable!("filtered above"),
@@ -7124,12 +7248,10 @@ impl<'ast> Builder<'ast, '_> {
 				// Single-segment path: bool literal, named const, or error.
 				let seg = path.last().expect("path non-empty");
 				let symbol = seg.ident.inner;
-				match self
-					.lookup_global_symbol(
-						resolve_context.namespace,
-						(SymbolNamespace::Value, symbol),
-					)
-				{
+				match self.lookup_global_symbol(
+					resolve_context.namespace,
+					(SymbolNamespace::Value, symbol),
+				) {
 					Some(SymbolKind::True) => Ok(Expression {
 						kind: ExprKind::Bool { value: true },
 						ty: TypeIndex::BOOL,
@@ -9596,10 +9718,7 @@ impl<'ast> Builder<'ast, '_> {
 						let kind = self.tir.memories
 							[self.tir.expect_memory_index(*id) as usize]
 							.kind;
-						match kind {
-							MemoryKind::Memory32 => Some(WasmScalar::I32),
-							MemoryKind::Memory64 => Some(WasmScalar::I64),
-						}
+						self.type_scalar(kind)
 					}
 					_ => None,
 				}
@@ -12719,38 +12838,37 @@ impl<'ast> Builder<'ast, '_> {
 		// empty (inferred per-field below).
 		let type_params_len =
 			self.tir.structs[struct_index as usize].type_params.len();
-		let resolved_args: Box<[TypeIndex]> = if !struct_seg
-			.type_args
-			.is_empty()
-		{
-			match &self.tir.types[struct_ty.as_usize()] {
-				Type::Struct { args, .. } => args.clone(),
-				_ => Box::new([]),
-			}
-		} else if type_params_len == 0 {
-			Box::new([])
-		} else {
-			match &self.tir.types[struct_ty.as_usize()] {
-				Type::Struct { args, .. }
-					if args.len() == type_params_len
-						&& args.iter().any(|a| *a != TypeIndex::INFER) =>
-				{
-					args.clone()
+		let resolved_args: Box<[TypeIndex]> =
+			if !struct_seg.type_args.is_empty() {
+				match &self.tir.types[struct_ty.as_usize()] {
+					Type::Struct { args, .. } => args.clone(),
+					_ => Box::new([]),
 				}
-				_ => match &self.tir.types[access_ctx.expected_type.as_usize()]
-				{
-					Type::Struct {
-						struct_index: esi,
-						args,
-					} if *esi == struct_index
-						&& args.len() == type_params_len =>
+			} else if type_params_len == 0 {
+				Box::new([])
+			} else {
+				match &self.tir.types[struct_ty.as_usize()] {
+					Type::Struct { args, .. }
+						if args.len() == type_params_len
+							&& args.iter().any(|a| *a != TypeIndex::INFER) =>
 					{
 						args.clone()
 					}
-					_ => Box::new([]),
-				},
-			}
-		};
+					_ => match &self.tir.types
+						[access_ctx.expected_type.as_usize()]
+					{
+						Type::Struct {
+							struct_index: esi,
+							args,
+						} if *esi == struct_index
+							&& args.len() == type_params_len =>
+						{
+							args.clone()
+						}
+						_ => Box::new([]),
+					},
+				}
+			};
 
 		let struct_name = self
 			.interner
@@ -13117,10 +13235,7 @@ impl<'ast> Builder<'ast, '_> {
 		match &self.tir.types[memory.as_usize()].clone() {
 			Type::Memory { id, .. } => {
 				let idx = self.tir.expect_memory_index(*id);
-				match self.tir.memories[idx as usize].kind {
-					MemoryKind::Memory32 => TypeIndex::U32,
-					MemoryKind::Memory64 => TypeIndex::U64,
-				}
+				self.tir.memories[idx as usize].kind
 			}
 			Type::TypeParam { owner, param_index } => {
 				// Generic `M: Memory` — the index type is `M::Size`.
