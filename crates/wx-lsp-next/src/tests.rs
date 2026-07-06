@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use tower_lsp_server::ls_types::{
-	Diagnostic, DiagnosticSeverity, Position, Range, Uri,
+	Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri,
 };
 use wx_compiler::vfs::FileId;
 
@@ -595,6 +596,100 @@ fn resolve_uri_finds_virtual_stdlib_module() {
 		resolved.map(|(_, file_id)| file_id),
 		Some(stdlib_file_id),
 		"resolve_uri should find the stdlib module via its constructed wx:// URI"
+	);
+}
+
+#[test]
+fn full_diagnostic_renders_and_handles_bad_index() {
+	let root = PathBuf::from("/test/main.wx");
+	let (_, compiled) = compile_source(
+		&root,
+		"fn main() {\n    local x: i32 = 1;\n}\nexport { main }\n",
+	);
+
+	assert!(
+		compiled
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.code.as_deref() == Some("W1001")),
+		"expected an unused-variable warning to drive this test's diagnostic"
+	);
+
+	let uri = Uri::from_file_path(&root).unwrap();
+	let mut state = ServerState::default();
+	state.cached.insert(root.clone(), compiled);
+
+	let rendered = crate::render_full_diagnostic(&state, &uri, 0);
+	assert!(
+		rendered.contains('x'),
+		"expected the rendered diagnostic to include the source snippet: {rendered}"
+	);
+	assert!(
+		rendered.contains('\x1b'),
+		"expected ANSI escape codes so the client can color the view: {rendered:?}"
+	);
+
+	let out_of_range = crate::render_full_diagnostic(&state, &uri, 99);
+	assert!(
+		out_of_range.contains("Unable to find original wx diagnostic"),
+		"expected a fallback message for an out-of-range index: {out_of_range}"
+	);
+
+	let untracked_uri = Uri::from_str("file:///not/a/tracked/file.wx").unwrap();
+	let untracked = crate::render_full_diagnostic(&state, &untracked_uri, 0);
+	assert!(
+		untracked.contains("Unable to find original wx diagnostic"),
+		"expected a fallback message for a URI outside any tracked root: {untracked}"
+	);
+}
+
+#[test]
+fn unused_enum_variants_get_one_squiggle_each() {
+	// `report_unused_enum_variants` has no primary label — every listed
+	// variant is equally "the problem" — so `diagnostic_locations` must
+	// expand it into one LSP diagnostic per variant instead of collapsing
+	// to whichever label happens to be first in the vec (regression test
+	// for the bug where only the first unused variant got underlined).
+	let root = PathBuf::from("/test/main.wx");
+	let (_, compiled) = compile_source(
+		&root,
+		indoc::indoc! {"
+			enum Direction: i32 {
+			    Right,
+			    Down,
+			    Left,
+			}
+			fn get_right() -> Direction {
+			    Direction::Right
+			}
+			export { get_right }
+		"},
+	);
+
+	let analysis = crate::analysis_from_compiled_root(&compiled);
+	let diagnostics = analysis
+		.diagnostics_by_file
+		.get(&root)
+		.expect("expected diagnostics for main.wx");
+
+	let unused: Vec<_> = diagnostics
+		.iter()
+		.filter(|d| {
+			d.code.as_ref().is_some_and(
+				|code| matches!(code, NumberOrString::String(s) if s == "W1009"),
+			)
+		})
+		.collect();
+
+	assert_eq!(
+		unused.len(),
+		2,
+		"expected one LSP diagnostic per unused variant (Down, Left), got: {diagnostics:?}"
+	);
+	assert_ne!(
+		unused[0].range, unused[1].range,
+		"each unused variant should get its own distinct squiggle range"
 	);
 }
 

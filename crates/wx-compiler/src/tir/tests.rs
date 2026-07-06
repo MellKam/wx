@@ -2452,7 +2452,11 @@ fn test_generic_struct_fewer_type_args_in_signature_is_error() {
 	assert!(
 		has_error_code(&case.tir, DiagnosticCode::InferInSignature),
 		"expected E1051 for partially-applied generic struct in signature, got: {:?}",
-		case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
 	);
 }
 
@@ -2468,7 +2472,11 @@ fn test_generic_struct_bare_reference_in_signature_is_error() {
 	assert!(
 		has_error_code(&case.tir, DiagnosticCode::InferInSignature),
 		"expected E1051 for bare generic struct reference in signature, got: {:?}",
-		case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
 	);
 }
 
@@ -2632,7 +2640,11 @@ fn test_type_alias_fewer_type_args_in_signature_is_error() {
 	assert!(
 		has_error_code(&case.tir, DiagnosticCode::InferInSignature),
 		"expected E1051 for partially-applied alias in signature, got: {:?}",
-		case.tir.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>(),
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
 	);
 }
 
@@ -4882,17 +4894,17 @@ fn test_enum_variants_are_populated() {
 		.expect("Color enum not found");
 
 	assert_eq!(enum_.variants.len(), 3, "expected 3 variants");
-	assert!(enum_.lookup.len() == 3);
+	assert!(enum_.variant_lookup.len() == 3);
 
-	let red_idx = *enum_.lookup.values().min().unwrap();
+	let red_idx = *enum_.variant_lookup.values().min().unwrap();
 	let red = &enum_.variants[red_idx as usize];
-	assert!(matches!(red.value.kind, ExprKind::Int { value: 1 }));
+	assert_eq!(red.const_value, Some(ConstValue::Int(1)));
 
 	let green = &enum_.variants[1];
-	assert!(matches!(green.value.kind, ExprKind::Int { value: 2 }));
+	assert_eq!(green.const_value, Some(ConstValue::Int(2)));
 
 	let blue = &enum_.variants[2];
-	assert!(matches!(blue.value.kind, ExprKind::Int { value: 3 }));
+	assert_eq!(blue.const_value, Some(ConstValue::Int(3)));
 }
 
 #[test]
@@ -4925,12 +4937,12 @@ fn test_enum_all_implicit_variants() {
 
 	assert_eq!(enum_.variants.len(), 4);
 	for (i, variant) in enum_.variants.iter().enumerate() {
-		assert!(
-			matches!(variant.value.kind, ExprKind::Int { value } if value == i as i64),
-			"variant {} should have value {}, got {:?}",
+		assert_eq!(
+			variant.const_value,
+			Some(ConstValue::Int(i as i64)),
+			"variant {} should have value {}",
 			i,
-			i,
-			variant.value.kind
+			i
 		);
 	}
 }
@@ -4996,12 +5008,43 @@ fn test_enum_missing_repr_is_error() {
         }
     "});
 	assert!(
+		has_error_code(&case.tir, DiagnosticCode::MissingEnumRepr),
+		"expected E1036 (MissingEnumRepr), got: {:?}",
 		case.tir
 			.diagnostics
 			.iter()
-			.any(|d| d.severity == Severity::Error),
-		"expected an error for enum without repr type"
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
 	);
+}
+
+#[test]
+fn test_enum_missing_repr_with_explicit_values_reports_once() {
+	// Explicit variant values used to be type-checked against the repr type
+	// even when the repr itself failed to resolve, cascading into a spurious
+	// "unable to coerce"/"type annotation required" pair per variant on top
+	// of the one real "enum requires a repr type" error.
+	let case = TestCase::new(indoc! {"
+        enum Direction {
+            Right = 0,
+            Down = 1,
+            Left = 2,
+            Up = 3,
+        }
+    "});
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert_eq!(
+		errors.len(),
+		1,
+		"expected exactly one diagnostic, got: {:?}",
+		errors.iter().map(|d| &d.message).collect::<Vec<_>>()
+	);
+	assert!(has_error_code(&case.tir, DiagnosticCode::MissingEnumRepr));
 }
 
 #[test]
@@ -5013,11 +5056,448 @@ fn test_enum_duplicate_variant_is_error() {
         }
     "});
 	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+		"expected E1000 (DuplicateDefinition), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_repr_not_integer_is_error() {
+	let case = TestCase::new(indoc! {"
+        enum Color: bool {
+            Red,
+            Green,
+        }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::EnumReprNotInteger),
+		"expected E1055 (EnumReprNotInteger), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_constant_folds_arithmetic_for_auto_increment() {
+	// Regression test for the motivating bug: `next_auto_value` used to only
+	// special-case a bare `Int` literal, so `B` got a stale value instead of the
+	// correctly-folded `1 + 1 = 2` from `A`.
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            A = 1 + 1,
+            B,
+        }
+        export {}
+    "});
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(errors.is_empty(), "{:?}", errors);
+
+	let enum_ = case
+		.tir
+		.enums
+		.iter()
+		.find(|e| case.graph.interner.resolve(e.name.inner) == Some("Color"))
+		.expect("Color enum not found");
+
+	assert_eq!(enum_.variants[0].const_value, Some(ConstValue::Int(2)));
+	assert_eq!(enum_.variants[1].const_value, Some(ConstValue::Int(3)));
+}
+
+#[test]
+fn test_enum_negation_folds_for_signed_repr() {
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            A = -1,
+        }
+        export {}
+    "});
+	let errors: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| d.severity == Severity::Error)
+		.collect();
+	assert!(errors.is_empty(), "{:?}", errors);
+	let enum_ = case
+		.tir
+		.enums
+		.iter()
+		.find(|e| case.graph.interner.resolve(e.name.inner) == Some("Color"))
+		.expect("Color enum not found");
+	assert_eq!(enum_.variants[0].const_value, Some(ConstValue::Int(-1)));
+}
+
+#[test]
+fn test_enum_duplicate_value_is_error() {
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            A,
+            B = 0,
+        }
+        export {}
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::EnumDuplicateValue),
+		"expected E1056 (EnumDuplicateValue) for auto-value colliding with explicit value, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_duplicate_value_groups_all_colliding_variants() {
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            A = 1,
+            B = 1,
+            C = 1,
+        }
+        export {}
+    "});
+	let dup_diags: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| {
+			d.code.as_deref() == Some(DiagnosticCode::EnumDuplicateValue.code())
+		})
+		.collect();
+	assert_eq!(
+		dup_diags.len(),
+		1,
+		"expected exactly one grouped diagnostic for all three colliding variants, got: {:?}",
+		case.tir.diagnostics
+	);
+	// Primary label (enum name) + one secondary label per colliding variant (3).
+	assert_eq!(dup_diags[0].labels.len(), 4);
+}
+
+#[test]
+fn test_enum_range_check_explicit_literal_is_error() {
+	let case = TestCase::new(indoc! {"
+        enum Color: i8 {
+            A = 300,
+        }
+        export {}
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::IntegerLiteralOutOfRange),
+		"expected E1004 (IntegerLiteralOutOfRange), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_auto_increment_overflow_is_error() {
+	let case = TestCase::new(indoc! {"
+        enum Color: u8 {
+            A = 255,
+            B,
+        }
+        export {}
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::IntegerLiteralOutOfRange),
+		"expected E1004 (IntegerLiteralOutOfRange) for auto-increment overflowing u8, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_negative_value_on_unsigned_repr_is_error() {
+	let case = TestCase::new(indoc! {"
+        enum Color: u32 {
+            A = -1,
+        }
+        export {}
+    "});
+	assert!(
 		case.tir
 			.diagnostics
 			.iter()
 			.any(|d| d.severity == Severity::Error),
-		"expected an error for duplicate variant name"
+		"expected an error for negative value on unsigned repr, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_type_mismatched_value_is_error() {
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            A = true,
+        }
+        export {}
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::TypeMistmatch),
+		"expected E1001 (TypeMistmatch), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_not_const_evaluatable_value_is_error() {
+	// `%` by a literal `0` builds fine (it's a valid integer expression) but
+	// doesn't fold — must not reuse `report_non_constant_global_initializer`'s
+	// "add `mut`" wording, since enum variants (like consts) can never be `mut`.
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            A = 32 % 0,
+        }
+        export {}
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::NotConstEvaluatable),
+		"expected E1057 (NotConstEvaluatable), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_const_not_const_evaluatable_value_is_error() {
+	let case = TestCase::new(indoc! {"
+        const GRID_W: i32 = 32 % 0;
+        export {}
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::NotConstEvaluatable),
+		"expected E1057 (NotConstEvaluatable), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_unused_is_warned() {
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red,
+            Green,
+        }
+        export {}
+    "});
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedItem.code())
+			&& d.message.contains("Color")),
+		"expected W1004 for unused enum `Color`, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_pub_enum_no_unused_warn() {
+	let case = TestCase::new(indoc! {"
+        pub enum Color: i32 {
+            Red,
+            Green,
+        }
+        export {}
+    "});
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedItem.code())
+			&& d.message.contains("Color")),
+		"pub enum should not warn as unused even with no in-crate references"
+	);
+}
+
+#[test]
+fn test_enum_variant_unused_is_warned() {
+	// The enum itself is used (so it doesn't get the whole-enum warning),
+	// but `Green` is never referenced through `Color::Green`.
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red,
+            Green,
+        }
+        fn get_red() -> Color {
+            Color::Red
+        }
+        export { get_red }
+    "});
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedEnumVariant.code())
+			&& d.message.contains("Green")),
+		"expected W1009 for unused variant `Green`, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedEnumVariant.code())
+			&& d.message.contains("Red")),
+		"`Red` is referenced and should not warn"
+	);
+}
+
+#[test]
+fn test_enum_all_variants_used_no_warn() {
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red,
+            Green,
+        }
+        fn both(c: Color) -> bool {
+            c == Color::Red || c == Color::Green
+        }
+        export { both }
+    "});
+	assert!(
+		!case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedEnumVariant.code())),
+		"all variants referenced should not warn, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_two_unused_variants_grouped_without_oxford_comma() {
+	let case = TestCase::new(indoc! {"
+        enum Direction: i32 {
+            Right,
+            Down,
+            Left,
+        }
+        fn get_right() -> Direction {
+            Direction::Right
+        }
+        export { get_right }
+    "});
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedEnumVariant.code())
+			&& d.message == "variants `Down` and `Left` are never constructed"),
+		"expected exact grouped message for 2 unused variants, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_five_unused_variants_grouped_with_oxford_comma() {
+	let case = TestCase::new(indoc! {"
+        enum Direction: i32 {
+            Right,
+            Down,
+            Left,
+            Up,
+            Boo,
+            Bar,
+        }
+        fn get_right() -> Direction {
+            Direction::Right
+        }
+        export { get_right }
+    "});
+	assert!(
+		case.tir.diagnostics.iter().any(|d| d.code.as_deref()
+			== Some(DiagnosticCode::UnusedEnumVariant.code())
+			&& d.message
+				== "variants `Down`, `Left`, `Up`, `Boo`, and `Bar` are never constructed"),
+		"expected exact grouped message for 5 unused variants, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_enum_six_unused_variants_collapses_to_generic_message() {
+	let case = TestCase::new(indoc! {"
+        enum Direction: i32 {
+            Right,
+            Down,
+            Left,
+            Up,
+            Boo,
+            Bar,
+            Baz,
+        }
+        fn get_right() -> Direction {
+            Direction::Right
+        }
+        export { get_right }
+    "});
+	let matches: Vec<_> = case
+		.tir
+		.diagnostics
+		.iter()
+		.filter(|d| {
+			d.code.as_deref() == Some(DiagnosticCode::UnusedEnumVariant.code())
+		})
+		.collect();
+	assert_eq!(
+		matches.len(),
+		1,
+		"expected exactly one grouped diagnostic, got: {:?}",
+		matches
+	);
+	assert_eq!(
+		matches[0].message,
+		"multiple variants are never constructed"
+	);
+	assert_eq!(
+		matches[0].labels.len(),
+		6,
+		"expected one label per unused variant"
 	);
 }
 

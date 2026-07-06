@@ -3,15 +3,15 @@ use std::collections::HashMap;
 use crate::vfs::{CrateId, Files};
 use crate::{ast::MethodCallExpr, tir::*};
 
-struct FunctionContext {
+struct ExprContext {
 	lookup: HashMap<(ScopeIndex, SymbolU32), LocalIndex>,
 	scope_index: ScopeIndex,
 	stack: StackFrame,
 	resolve_context: ResolveContext,
-	scope: GenericScope,
+	scope: Option<GenericScope>,
 }
 
-impl FunctionContext {
+impl ExprContext {
 	fn push_local(&mut self, local: Local) -> LocalIndex {
 		let name_symbol = local.name.inner;
 		let index = self.stack.push_local(self.scope_index, local);
@@ -358,6 +358,94 @@ fn report_missing_enum_repr(span: SourceSpan) -> Diagnostic<FileId> {
 		.with_label(span.primary_label().with_message("add `: <type>` here"))
 }
 
+fn report_enum_repr_not_integer(
+	fmt: TypeFormatter,
+	ty: TypeIndex,
+	span: SourceSpan,
+) -> Diagnostic<FileId> {
+	Diagnostic::error()
+		.with_code(DiagnosticCode::EnumReprNotInteger.code())
+		.with_message("enum repr type must be an integer type")
+		.with_label(span.primary_label().with_message(format!(
+			"`{}` is not an integer type",
+			fmt.display_type(ty).unwrap_or_default()
+		)))
+}
+
+/// One diagnostic per colliding value, not pairwise: primary label on the enum's own
+/// name, one secondary label per variant that shares `value` (all of them, not just
+/// the 2nd/3rd onward) — mirrors rustc's grouped `E0081` presentation.
+fn report_enum_duplicate_value(
+	enum_name_span: SourceSpan,
+	value: i64,
+	variant_spans: &[SourceSpan],
+) -> Diagnostic<FileId> {
+	let mut diagnostic = Diagnostic::error()
+		.with_code(DiagnosticCode::EnumDuplicateValue.code())
+		.with_message(format!(
+			"multiple variants of this enum have the same value `{value}`"
+		))
+		.with_label(enum_name_span.primary_label());
+	for span in variant_spans {
+		diagnostic = diagnostic.with_label(
+			span.secondary_label()
+				.with_message(format!("value `{value}` assigned here")),
+		);
+	}
+	diagnostic
+}
+
+fn report_unused_enum_variants(
+	interner: &ast::StringInterner,
+	file_id: FileId,
+	unused_variants: &[Spanned<SymbolU32>],
+) -> Diagnostic<FileId> {
+	let message = match unused_variants.len() {
+		1 => {
+			let name = interner.resolve(unused_variants[0].inner).unwrap();
+			format!("variant `{name}` is never constructed")
+		}
+		2 => {
+			let a = interner.resolve(unused_variants[0].inner).unwrap();
+			let b = interner.resolve(unused_variants[1].inner).unwrap();
+			format!("variants `{a}` and `{b}` are never constructed")
+		}
+		3..=5 => {
+			let (last, rest) = unused_variants.split_last().unwrap();
+			let rest = rest
+				.iter()
+				.map(|name| {
+					format!("`{}`", interner.resolve(name.inner).unwrap())
+				})
+				.collect::<Vec<_>>()
+				.join(", ");
+			let last = interner.resolve(last.inner).unwrap();
+			format!("variants {rest}, and `{last}` are never constructed")
+		}
+		_ => "multiple variants are never constructed".to_string(),
+	};
+	let mut diagnostic = Diagnostic::warning()
+		.with_code(DiagnosticCode::UnusedEnumVariant.code())
+		.with_message(message);
+	for name in unused_variants {
+		diagnostic = diagnostic
+			.with_label(SourceSpan::new(file_id, name.span).secondary_label());
+	}
+	diagnostic
+}
+
+/// For const initializers and enum variant values (never `mut`-able) that build
+/// successfully but don't fold — distinct from `report_non_constant_global_initializer`,
+/// whose "add `mut`" suggestion only makes sense for globals.
+fn report_not_const_evaluatable(span: SourceSpan) -> Diagnostic<FileId> {
+	Diagnostic::error()
+		.with_code(DiagnosticCode::NotConstEvaluatable.code())
+		.with_message(
+			"expression cannot be evaluated as a compile-time constant",
+		)
+		.with_label(span.primary_label())
+}
+
 fn report_missing_function_body(span: SourceSpan) -> Diagnostic<FileId> {
 	Diagnostic::error()
 		.with_code(DiagnosticCode::MissingFunctionBody.code())
@@ -594,16 +682,6 @@ fn report_integer_literal_for_float_type(
 		.with_message("cannot use an integer literal for a float type")
 		.with_label(span.primary_label())
 		.with_note("consider adding a decimal point, e.g. `1.0` instead of `1`")
-}
-
-fn report_float_literal_for_integer_type(
-	span: SourceSpan,
-) -> Diagnostic<FileId> {
-	Diagnostic::error()
-		.with_code(DiagnosticCode::LiteralTypeMismatch.code())
-		.with_message("cannot use a float literal for an integer type")
-		.with_label(span.primary_label())
-		.with_note("remove the decimal point, e.g. `1` instead of `1.0`")
 }
 
 fn report_invalid_self_type(
@@ -1937,7 +2015,7 @@ impl<'ast> Builder<'ast, '_> {
 	/// contexts without a function scope (const/global initializers).
 	fn resolve_symbol(
 		&self,
-		func_ctx: &FunctionContext,
+		func_ctx: &ExprContext,
 		symbol: SymbolU32,
 	) -> Option<ResolvedSymbol> {
 		if let Some((scope_index, local_index)) = func_ctx.resolve_local(symbol)
@@ -1959,7 +2037,7 @@ impl<'ast> Builder<'ast, '_> {
 	/// the not-found diagnostic when `resolve_symbol` returned `None`.
 	fn resolved_symbol_to_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		resolved: ResolvedSymbol,
 		expr_span: TextSpan,
@@ -3089,22 +3167,12 @@ impl<'ast> Builder<'ast, '_> {
 				pub_span,
 				..
 			} => {
-				// Unlike the other kinds, Function always pushes its
-				// `ast_nodes` entry regardless of the claim below: a
-				// duplicate function still gets its own signature and body
-				// fully type-checked in Phase 2/3 (matching its existing
-				// behavior today), it just never becomes referenceable if
-				// it lost the name.
 				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Value, signature.name.inner),
 					*id,
 					SourceSpan::new(file_id, signature.name.span),
 				);
-				// Always allocate the stub, regardless of the claim above —
-				// see the identical comment on the Struct branch. `params`/
-				// `result`/`signature_index` need Phase-2 machinery, so they
-				// stay placeholders here.
 				let resolved_attributes = self.resolve_attributes(attributes);
 				self.register_lang_items(*id, &resolved_attributes);
 				let func_index = self.tir.functions.len() as u32;
@@ -3154,10 +3222,6 @@ impl<'ast> Builder<'ast, '_> {
 					*id,
 					SourceSpan::new(file_id, name.span),
 				);
-				// Always allocate the stub, regardless of the claim above —
-				// see the identical comment on the Struct branch. `ty` needs
-				// Phase-2 machinery, so it stays a placeholder; `value` is
-				// resolved even later, in Phase 3 (`ensure_body`).
 				let global_index = self.tir.globals.len() as u32;
 				self.tir
 					.item_lookup
@@ -3196,10 +3260,6 @@ impl<'ast> Builder<'ast, '_> {
 					*id,
 					SourceSpan::new(file_id, name.span),
 				);
-				// Always allocate the stub, regardless of the claim above:
-				// every syntactic occurrence still gets its fields resolved
-				// and its own errors reported, even if it lost the name to
-				// an earlier duplicate.
 				let struct_index = self.tir.structs.len() as u32;
 				let self_type = self.intern_type(Type::Struct {
 					struct_index,
@@ -3241,12 +3301,6 @@ impl<'ast> Builder<'ast, '_> {
 					*id,
 					SourceSpan::new(file_id, name.span),
 				);
-				// Always allocate the stub, regardless of the claim above —
-				// see the identical comment on the Struct branch. `ty` and
-				// `variants` need Phase-2 machinery (`resolve_type`,
-				// `build_const_expression`) so they stay placeholders here;
-				// `self_type` is pure identity (`Type::Enum{enum_index}`),
-				// so it's interned now, same as Struct's `self_type`.
 				let enum_index = self.tir.enums.len() as u32;
 				let self_type = self.intern_type(Type::Enum { enum_index });
 				self.tir
@@ -3258,10 +3312,11 @@ impl<'ast> Builder<'ast, '_> {
 					namespace,
 					pub_span: *pub_span,
 					name: name.clone(),
-					ty: TypeIndex::ERROR,
+					repr_type: TypeIndex::ERROR,
 					self_type,
 					variants: Box::new([]),
-					lookup: HashMap::new(),
+					variant_lookup: HashMap::new(),
+					accesses: Vec::new(),
 				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
@@ -3283,11 +3338,6 @@ impl<'ast> Builder<'ast, '_> {
 					*id,
 					SourceSpan::new(file_id, name.span),
 				);
-				// Always allocate the stub, regardless of the claim above —
-				// see the identical comment on the Struct branch. The final
-				// resolved-symbol insert stays deferred to `ensure_signature`
-				// (after the RHS resolves), unchanged from today — see the
-				// comment there about the cyclic-dependency guard.
 				let type_alias_index = self.tir.type_aliases.len() as u32;
 				self.tir
 					.item_lookup
@@ -3315,10 +3365,6 @@ impl<'ast> Builder<'ast, '_> {
 				});
 			}
 			ast::Item::Memory { id, name, .. } => {
-				// Type and Value are independent claims — a memory can
-				// collide with, say, an existing function of the same name
-				// in Value while its Type binding is still free (or vice
-				// versa), so each is checked and diagnosed on its own.
 				self.claim_name_binding(
 					namespace,
 					(SymbolNamespace::Type, name.inner),
@@ -3331,12 +3377,6 @@ impl<'ast> Builder<'ast, '_> {
 					*id,
 					SourceSpan::new(file_id, name.span),
 				);
-				// Always allocate the stub, regardless of the claims above
-				// — see the identical comment on the Struct branch. `kind`
-				// needs Phase-2 trait-bound resolution, so it defaults to
-				// `TypeIndex::ERROR` here (matching
-				// `register_placeholder_memory`'s existing fallback for an
-				// unresolvable kind).
 				let memory_index = self.tir.memories.len() as u32;
 				self.tir
 					.item_lookup
@@ -3365,13 +3405,6 @@ impl<'ast> Builder<'ast, '_> {
 					*id,
 					SourceSpan::new(file_id, name.span),
 				);
-				// Always allocate the stub, regardless of the claim above —
-				// see the identical comment on the Struct branch. `ty`/
-				// `value` need Phase-2 machinery, so they stay placeholders;
-				// the final resolved-symbol insert stays conditioned in
-				// `ensure_signature` on the value actually resolving,
-				// unchanged from today (a const whose value fails to build
-				// never claims its name, matching current behavior).
 				let const_index = self.tir.constants.len() as ConstIndex;
 				self.tir
 					.item_lookup
@@ -3388,6 +3421,7 @@ impl<'ast> Builder<'ast, '_> {
 						span: name.span,
 					},
 					value: None,
+					const_value: None,
 					accesses: Vec::new(),
 				});
 				self.ast_nodes.push(AstEntry {
@@ -3422,11 +3456,6 @@ impl<'ast> Builder<'ast, '_> {
 			ast::Item::Trait {
 				id, name, items, ..
 			} => {
-				// Traits are structural containers; allocate the slot and register
-				// each item's DefId so ensure_signature can fill it in on demand.
-				//
-				// Duplicate check against direct-scope symbols only (not wildcard
-				// imports — local definitions intentionally shadow those silently).
 				let trait_key = (SymbolNamespace::Type, name.inner);
 				let existing_direct = if let Some(idx) = namespace {
 					self.tir.namespaces[idx as usize].symbols.get(&trait_key)
@@ -4056,134 +4085,13 @@ impl<'ast> Builder<'ast, '_> {
 				} = item
 				{
 					let enum_index = self.tir.expect_enum_index(*id);
-					{
-						let ty = match repr {
-							Some(r) => {
-								self.resolve_type(resolve_context, None, &**r)
-							}
-							None => {
-								self.tir.diagnostics.push(
-									report_missing_enum_repr(SourceSpan::new(
-										resolve_context.file_id,
-										name.span,
-									)),
-								);
-								TypeIndex::ERROR
-							}
-						};
-
-						let mut tir_variants: Vec<EnumVariant> =
-							Vec::with_capacity(variants.len());
-						let mut variant_lookup: HashMap<
-							SymbolU32,
-							EnumVariantIndex,
-						> = HashMap::with_capacity(variants.len());
-						let mut seen_variants: HashMap<
-							SymbolU32,
-							ast::TextSpan,
-						> = HashMap::new();
-						let mut next_auto_value: i64 = 0;
-
-						for ast_variant in variants.iter() {
-							let v = &ast_variant.inner.inner;
-							let v_sym = v.name.inner;
-
-							if let Some(&first_span) = seen_variants.get(&v_sym)
-							{
-								let vname = self
-									.interner
-									.resolve(v_sym)
-									.unwrap()
-									.to_string();
-								self.tir.diagnostics.push(
-									report_duplicate_definition(
-										DuplicateDefinitionDiagnostic {
-											name: &vname,
-											namespace: SymbolNamespace::Value,
-											first_definition: SourceSpan::new(
-												resolve_context.file_id,
-												first_span,
-											),
-											second_definition: SourceSpan::new(
-												resolve_context.file_id,
-												v.name.span,
-											),
-										},
-									),
-								);
-								continue;
-							}
-							seen_variants.insert(v_sym, v.name.span);
-
-							let value_expr = match &v.value {
-								Some(explicit_expr) => {
-									if ty == TypeIndex::ERROR {
-										next_auto_value =
-											next_auto_value.wrapping_add(1);
-										Expression {
-											kind: ExprKind::Error,
-											ty: TypeIndex::ERROR,
-											span: explicit_expr.span,
-										}
-									} else {
-										match self.build_const_expression(
-											resolve_context,
-											explicit_expr,
-											ty,
-										) {
-											Ok(expr) => {
-												if let ExprKind::Int { value } =
-													expr.kind
-												{
-													next_auto_value =
-														value.wrapping_add(1);
-												} else {
-													next_auto_value =
-														next_auto_value
-															.wrapping_add(1);
-												}
-												expr
-											}
-											Err(_) => {
-												next_auto_value =
-													next_auto_value
-														.wrapping_add(1);
-												Expression {
-													kind: ExprKind::Error,
-													ty: TypeIndex::ERROR,
-													span: explicit_expr.span,
-												}
-											}
-										}
-									}
-								}
-								None => {
-									let auto_val = next_auto_value;
-									next_auto_value =
-										next_auto_value.wrapping_add(1);
-									Expression {
-										kind: ExprKind::Int { value: auto_val },
-										ty,
-										span: v.name.span,
-									}
-								}
-							};
-
-							let variant_index =
-								tir_variants.len() as EnumVariantIndex;
-							variant_lookup.insert(v_sym, variant_index);
-							tir_variants.push(EnumVariant {
-								name: v.name.clone(),
-								value: Box::new(value_expr),
-								accesses: Vec::new(),
-							});
-						}
-
-						let e = &mut self.tir.enums[enum_index as usize];
-						e.ty = ty;
-						e.variants = tir_variants.into_boxed_slice();
-						e.lookup = variant_lookup;
-					}
+					self.build_enum(
+						resolve_context,
+						name,
+						repr.as_deref(),
+						variants,
+						enum_index,
+					);
 
 					// Bind the name only if this occurrence still holds its
 					// own `Pending` slot — see the identical comment on the
@@ -4274,11 +4182,26 @@ impl<'ast> Builder<'ast, '_> {
 						),
 						None => TypeIndex::ERROR,
 					};
-					if let Ok(value_expr) = self.build_const_expression(
+					if let Ok(value_expr) = self.build_const_context_expression(
 						resolve_context,
 						value,
 						resolved_ty,
 					) {
+						let const_value =
+							match self.eval_const_expr(&value_expr) {
+								Ok(v) => Some(v),
+								Err(_) => {
+									self.tir.diagnostics.push(
+										report_not_const_evaluatable(
+											SourceSpan::new(
+												resolve_context.file_id,
+												value.span,
+											),
+										),
+									);
+									None
+								}
+							};
 						let const_index =
 							self.tir.constants.len() as ConstIndex;
 						self.tir.constants.push(Constant {
@@ -4293,6 +4216,7 @@ impl<'ast> Builder<'ast, '_> {
 								span: name.span,
 							},
 							value: Some(Box::new(value_expr)),
+							const_value,
 							accesses: Vec::new(),
 						});
 						self.tir
@@ -4995,6 +4919,7 @@ impl<'ast> Builder<'ast, '_> {
 							span: ty.span,
 						},
 						value: None,
+						const_value: None,
 						accesses: Vec::new(),
 					});
 					self.tir
@@ -5289,13 +5214,30 @@ impl<'ast> Builder<'ast, '_> {
 					// name, matching current behavior — the stub still
 					// exists (for `item_lookup`/duplicate-span purposes)
 					// with `value: None`, but stays permanently `Pending`.
-					if let Ok(value_expr) = self.build_const_expression(
+					if let Ok(value_expr) = self.build_const_context_expression(
 						resolve_context,
 						value,
 						ty_idx,
 					) {
+						let const_value =
+							match self.eval_const_expr(&value_expr) {
+								Ok(v) => Some(v),
+								Err(_) => {
+									self.tir.diagnostics.push(
+										report_not_const_evaluatable(
+											SourceSpan::new(
+												resolve_context.file_id,
+												value.span,
+											),
+										),
+									);
+									None
+								}
+							};
 						self.tir.constants[const_index as usize].value =
 							Some(Box::new(value_expr));
+						self.tir.constants[const_index as usize].const_value =
+							const_value;
 
 						let key = (SymbolNamespace::Value, name.inner);
 						if matches!(
@@ -5669,11 +5611,26 @@ impl<'ast> Builder<'ast, '_> {
 						),
 						None => TypeIndex::ERROR,
 					};
-					if let Ok(value_expr) = self.build_const_expression(
+					if let Ok(value_expr) = self.build_const_context_expression(
 						resolve_context,
 						value,
 						resolved_ty,
 					) {
+						let const_value =
+							match self.eval_const_expr(&value_expr) {
+								Ok(v) => Some(v),
+								Err(_) => {
+									self.tir.diagnostics.push(
+										report_not_const_evaluatable(
+											SourceSpan::new(
+												resolve_context.file_id,
+												value.span,
+											),
+										),
+									);
+									None
+								}
+							};
 						let const_index =
 							self.tir.constants.len() as ConstIndex;
 						self.tir.constants.push(Constant {
@@ -5688,6 +5645,7 @@ impl<'ast> Builder<'ast, '_> {
 								span: name.span,
 							},
 							value: Some(Box::new(value_expr)),
+							const_value,
 							accesses: Vec::new(),
 						});
 						self.tir
@@ -5981,7 +5939,7 @@ impl<'ast> Builder<'ast, '_> {
 					inferred_type: TypeIndex::INFER,
 					expected_type: global_ty,
 				};
-				let mut func_ctx = FunctionContext {
+				let mut func_ctx = ExprContext {
 					stack: StackFrame {
 						scopes: vec![root_scope],
 						labels: Vec::new(),
@@ -5989,10 +5947,9 @@ impl<'ast> Builder<'ast, '_> {
 					scope_index: 0 as ScopeIndex,
 					lookup: HashMap::new(),
 					resolve_context: ResolveContext::new(file_id, namespace),
-					scope: GenericScope {
-						owner: TypeParamOwner::Function(*id),
-						self_type: None,
-					},
+					// Globals can't be generic and have no `Self` — no honest
+					// `GenericScope` to give them.
+					scope: None,
 				};
 				let mut value_expr = match self.build_expression(
 					&mut func_ctx,
@@ -7231,219 +7188,367 @@ impl<'ast> Builder<'ast, '_> {
 		}
 	}
 
-	fn build_const_expression(
+	/// Resolves an enum's repr type, folds every variant's value (explicit or
+	/// auto-incremented) to a `ConstValue`, range-checks it against the repr, and
+	/// reports one grouped diagnostic per set of variants that collide on the same
+	/// value. Writes `ty`/`variants`/`lookup` directly onto `self.tir.enums[enum_index]`.
+	fn build_enum(
+		&mut self,
+		resolve_context: ResolveContext,
+		name: &ast::Spanned<SymbolU32>,
+		repr_type: Option<&ast::Spanned<ast::TypeExpression>>,
+		ast_variants: &[ast::Separated<ast::Spanned<ast::EnumVariant>>],
+		enum_index: EnumIndex,
+	) {
+		let repr_type = match repr_type {
+			Some(repr_type) => {
+				let resolved =
+					self.resolve_type(resolve_context, None, repr_type);
+				if resolved != TypeIndex::ERROR && !resolved.is_integer() {
+					self.tir.diagnostics.push(report_enum_repr_not_integer(
+						TypeFormatter::new(&self.tir, &self.interner),
+						resolved,
+						SourceSpan::new(
+							resolve_context.file_id,
+							repr_type.span,
+						),
+					));
+					TypeIndex::ERROR
+				} else {
+					resolved
+				}
+			}
+			None => {
+				self.tir.diagnostics.push(report_missing_enum_repr(
+					SourceSpan::new(resolve_context.file_id, name.span),
+				));
+				TypeIndex::ERROR
+			}
+		};
+		let ty_range = IntegerRange::for_integer_type(repr_type);
+
+		let mut variants: Vec<EnumVariant> =
+			Vec::with_capacity(ast_variants.len());
+		let mut variant_lookup: HashMap<SymbolU32, EnumVariantIndex> =
+			HashMap::with_capacity(variants.len());
+		let mut next_auto_value: i64 = 0;
+
+		for ast_variant in ast_variants.iter().map(|v| &v.inner.inner) {
+			if let Some(first_index) =
+				variant_lookup.get(&ast_variant.name.inner).copied()
+			{
+				let first_span = variants[first_index as usize].name.span;
+				let vname =
+					self.interner.resolve(ast_variant.name.inner).unwrap();
+				self.tir.diagnostics.push(report_duplicate_definition(
+					DuplicateDefinitionDiagnostic {
+						name: vname,
+						namespace: SymbolNamespace::Value,
+						first_definition: SourceSpan::new(
+							resolve_context.file_id,
+							first_span,
+						),
+						second_definition: SourceSpan::new(
+							resolve_context.file_id,
+							ast_variant.name.span,
+						),
+					},
+				));
+				continue;
+			}
+
+			let (value, const_value) = match &ast_variant.value {
+				// `repr_type` is `ERROR` only because it already failed to
+				// resolve (missing or non-integer repr) — that's reported
+				// once on the enum itself, so don't also try to type-check
+				// every variant's value against it and cascade into
+				// "unable to coerce"/"type annotation required" per variant.
+				Some(_) if repr_type == TypeIndex::ERROR => (None, None),
+				Some(value_expr) => {
+					match self.build_const_context_expression(
+						resolve_context,
+						value_expr,
+						repr_type,
+					) {
+						Ok(expr) => {
+							let value = match self.eval_const_expr(&expr) {
+								Ok(ConstValue::Int(v)) => Some(v),
+								Ok(_) => None,
+								Err(_) => {
+									self.tir.diagnostics.push(
+										report_not_const_evaluatable(
+											SourceSpan::new(
+												resolve_context.file_id,
+												value_expr.span,
+											),
+										),
+									);
+									None
+								}
+							};
+							(Some(Box::new(expr)), value)
+						}
+						Err(_) => (None, None),
+					}
+				}
+				None => {
+					if let Some(ref range) = ty_range {
+						if !range.contains(next_auto_value) {
+							self.tir.diagnostics.push(
+								report_integer_literal_out_of_range(
+									TypeFormatter::new(
+										&self.tir,
+										&self.interner,
+									),
+									IntegerLiteralOutOfRangeDiagnostic {
+										ty: repr_type,
+										value: next_auto_value,
+										span: SourceSpan::new(
+											resolve_context.file_id,
+											ast_variant.name.span,
+										),
+									},
+								),
+							);
+						}
+					}
+					(None, Some(next_auto_value))
+				}
+			};
+			next_auto_value = match const_value {
+				Some(value) => value.wrapping_add(1),
+				None => next_auto_value.wrapping_add(1),
+			};
+
+			let variant_index = variants.len() as EnumVariantIndex;
+			variant_lookup.insert(ast_variant.name.inner, variant_index);
+			variants.push(EnumVariant {
+				name: ast_variant.name,
+				value,
+				const_value: const_value.map(ConstValue::Int),
+				accesses: Vec::new(),
+			});
+		}
+
+		self.report_enum_duplicate_values(
+			resolve_context,
+			name.span,
+			&variants,
+		);
+
+		let enumeration = &mut self.tir.enums[enum_index as usize];
+		enumeration.repr_type = repr_type;
+		enumeration.variants = variants.into_boxed_slice();
+		enumeration.variant_lookup = variant_lookup;
+	}
+
+	/// Reports one grouped diagnostic per set of variants that share the same
+	/// discriminant value (rustc's `E0081`-style grouping, primary label on
+	/// the enum name, one secondary label per colliding variant).
+	///
+	/// Runs as a single pass over the already-built `tir_variants` rather than
+	/// accumulating a `HashMap<i64, Vec<SourceSpan>>` while folding: that would
+	/// allocate a `Vec` for every *unique* value, even though the overwhelming
+	/// majority of enums have no collisions at all and every such `Vec` would
+	/// just be thrown away. Sorting by value once and scanning for runs keeps
+	/// the common (no-duplicates) case to a single flat allocation.
+	fn report_enum_duplicate_values(
+		&mut self,
+		resolve_context: ResolveContext,
+		enum_name_span: ast::TextSpan,
+		tir_variants: &[EnumVariant],
+	) {
+		let mut by_value: Vec<(i64, &EnumVariant)> = tir_variants
+			.iter()
+			.filter_map(|variant| match variant.const_value {
+				Some(ConstValue::Int(value)) => Some((value, variant)),
+				_ => None,
+			})
+			.collect();
+		by_value.sort_unstable_by_key(|(value, _)| *value);
+
+		let mut duplicate_groups: Vec<(i64, Vec<SourceSpan>)> = Vec::new();
+		let mut i = 0;
+		while i < by_value.len() {
+			let mut j = i + 1;
+			while j < by_value.len() && by_value[j].0 == by_value[i].0 {
+				j += 1;
+			}
+			if j - i > 1 {
+				let spans = by_value[i..j]
+					.iter()
+					.map(|(_, variant)| {
+						// Auto-incremented variants have no explicit
+						// expression (see `build_enum`) — point at the
+						// variant's name instead.
+						let span = variant
+							.value
+							.as_deref()
+							.map_or(variant.name.span, |expr| expr.span);
+						SourceSpan::new(resolve_context.file_id, span)
+					})
+					.collect();
+				duplicate_groups.push((by_value[i].0, spans));
+			}
+			i = j;
+		}
+
+		// Grouping above is ordered by value, not by where it appears in
+		// source — re-sort just the (typically few) colliding groups by their
+		// earliest span so diagnostics come out in source order.
+		duplicate_groups
+			.sort_by_key(|(_, spans)| spans.iter().map(|s| s.span.start).min());
+		for (value, spans) in &duplicate_groups {
+			self.tir.diagnostics.push(report_enum_duplicate_value(
+				SourceSpan::new(resolve_context.file_id, enum_name_span),
+				*value,
+				spans,
+			));
+		}
+	}
+
+	/// Evaluates the compile-time value of an already-built `Expression`, for the
+	/// small subset of shapes that are actually constant. `Err(())` means "does not
+	/// fold" — for the const-initializer/enum-variant callers, that doubles as "not a
+	/// constant expression," since `build_expression` itself imposes no shape
+	/// restriction. Recursive calls propagate `Err(())` via `?` without pushing a
+	/// diagnostic; only the top-level call site reports one.
+	///
+	/// `Const`/`NamespaceAccess` references read the referenced constant's own
+	/// already-cached `const_value` rather than re-walking its expression tree, so a
+	/// chain of const-on-const arithmetic stays linear instead of blowing up.
+	fn eval_const_expr(&self, expr: &Expression) -> Result<ConstValue, ()> {
+		match &expr.kind {
+			ExprKind::Int { value } => Ok(ConstValue::Int(*value)),
+			ExprKind::Float { value } => Ok(ConstValue::Float(*value)),
+			ExprKind::Bool { value } => Ok(ConstValue::Bool(*value)),
+			ExprKind::Char { value } => Ok(ConstValue::Char(*value)),
+			ExprKind::Unary { operator, operand } => {
+				let ConstValue::Int(value) = self.eval_const_expr(operand)?
+				else {
+					return Err(());
+				};
+				match operator.inner {
+					ast::UnaryOp::InvertSign => Ok(ConstValue::Int(-value)),
+					ast::UnaryOp::BitNot => Ok(ConstValue::Int(!value)),
+					ast::UnaryOp::Not => Err(()),
+				}
+			}
+			ExprKind::Binary {
+				operator,
+				left,
+				right,
+			} => {
+				let ConstValue::Int(left) = self.eval_const_expr(left)? else {
+					return Err(());
+				};
+				let ConstValue::Int(right) = self.eval_const_expr(right)?
+				else {
+					return Err(());
+				};
+				match operator.inner {
+					ast::BinaryOp::Add => {
+						Ok(ConstValue::Int(left.wrapping_add(right)))
+					}
+					ast::BinaryOp::Sub => {
+						Ok(ConstValue::Int(left.wrapping_sub(right)))
+					}
+					ast::BinaryOp::Mul => {
+						Ok(ConstValue::Int(left.wrapping_mul(right)))
+					}
+					ast::BinaryOp::Div => {
+						if right == 0 {
+							Err(())
+						} else {
+							Ok(ConstValue::Int(left.wrapping_div(right)))
+						}
+					}
+					ast::BinaryOp::Rem => {
+						if right == 0 {
+							Err(())
+						} else {
+							Ok(ConstValue::Int(left.wrapping_rem(right)))
+						}
+					}
+					_ => Err(()),
+				}
+			}
+			ExprKind::Const { id } => {
+				let const_index = self.tir.expect_const_index(*id);
+				self.tir.constants[const_index as usize]
+					.const_value
+					.ok_or(())
+			}
+			ExprKind::NamespaceAccess { member, .. } => {
+				self.eval_const_expr(member)
+			}
+			_ => Err(()),
+		}
+	}
+
+	/// Builds a constant-context expression (enum variant value, const initializer)
+	/// via the general expression builder, using a throwaway single-scope
+	/// `BodyContext` (mirrors the `Global` initializer path). `scope: None` since
+	/// const expressions can never be generic and have no `Self`. Coerces untyped
+	/// int/float literals to `ty` and reports a type mismatch if the result doesn't
+	/// match — same idiom `Global` initializers already use. Does *not* check
+	/// constant-ness; callers that need that call `eval_const_expr` on the result.
+	fn build_const_context_expression(
 		&mut self,
 		resolve_context: ResolveContext,
 		expr: &ast::Spanned<ast::Expression>,
-		expected_type: TypeIndex,
+		ty: TypeIndex,
 	) -> Result<Expression, ()> {
-		match &expr.inner {
-			ast::Expression::Int { value } => Ok(Expression {
-				kind: ExprKind::Int { value: *value },
-				ty: expected_type,
-				span: expr.span,
-			}),
-			ast::Expression::Float { value } => {
-				let is_float_type = expected_type == TypeIndex::F32
-					|| expected_type == TypeIndex::F64
-					|| expected_type == TypeIndex::ERROR;
-				if !is_float_type {
-					self.tir.diagnostics.push(
-						report_float_literal_for_integer_type(SourceSpan::new(
-							resolve_context.file_id,
-							expr.span,
-						)),
-					);
-					return Err(());
-				}
-				Ok(Expression {
-					kind: ExprKind::Float { value: *value },
-					ty: expected_type,
-					span: expr.span,
-				})
-			}
-			ast::Expression::Path(path) if path.len() == 1 => {
-				// Single-segment path: bool literal, named const, or error.
-				let seg = path.last().expect("path non-empty");
-				let symbol = seg.ident.inner;
-				match self.lookup_global_symbol(
-					resolve_context.namespace,
-					(SymbolNamespace::Value, symbol),
-				) {
-					Some(SymbolKind::True) => Ok(Expression {
-						kind: ExprKind::Bool { value: true },
-						ty: TypeIndex::BOOL,
-						span: expr.span,
-					}),
-					Some(SymbolKind::False) => Ok(Expression {
-						kind: ExprKind::Bool { value: false },
-						ty: TypeIndex::BOOL,
-						span: expr.span,
-					}),
-					Some(SymbolKind::Const { const_index }) => {
-						let constant =
-							&mut self.tir.constants[const_index as usize];
-						constant.accesses.push(SourceSpan::new(
-							resolve_context.file_id,
-							expr.span,
-						));
-						let id = constant.id;
-						let ty = constant.ty.inner;
-						Ok(Expression {
-							kind: ExprKind::Const { id },
-							ty,
-							span: expr.span,
-						})
-					}
-					_ => {
-						self.tir.diagnostics.push(
-							report_non_constant_global_initializer(
-								SourceSpan::new(
-									resolve_context.file_id,
-									expr.span,
-								),
-							),
-						);
-						Err(())
-					}
-				}
-			}
-			ast::Expression::Path(path) if path.len() == 2 => {
-				// Two-segment path: `Namespace::ASSOCIATED_CONST` in const context.
-				// Only associated consts are valid here (methods, types, etc. are not).
-				let first = &path[0];
-				let last = &path[1];
-				let file_id = resolve_context.file_id;
-				let namespace_span = first.ident.span;
-				let member_span = last.ident.span;
+		let root_scope = BlockScope {
+			parent: None,
+			label: None,
+			kind: BlockKind::Block,
+			span: expr.span,
+			locals: Vec::new(),
+			inferred_type: TypeIndex::INFER,
+			expected_type: ty,
+		};
+		let mut func_ctx = ExprContext {
+			stack: StackFrame {
+				scopes: vec![root_scope],
+				labels: Vec::new(),
+			},
+			scope_index: 0 as ScopeIndex,
+			lookup: HashMap::new(),
+			resolve_context,
+			scope: None,
+		};
+		let mut value_expr = self.build_expression(
+			&mut func_ctx,
+			AccessContext {
+				expected_type: ty,
+				access_kind: AccessKind::Read,
+			},
+			expr,
+		)?;
 
-				let namespace_ty = self.resolve_type_identifier(
-					resolve_context,
-					None,
-					first.ident.clone(),
-				)?;
-
-				let member_sym = last.ident.inner;
-				let entry = self
-					.tir
-					.impl_members
-					.get(&namespace_ty)
-					.and_then(|m| m.get(&member_sym))
-					.cloned();
-				match entry {
-					Some(ImplEntry::AssociatedConst { id, ty }) => {
-						if let Some(ci) = self.tir.const_index(id) {
-							self.tir.constants[ci as usize]
-								.accesses
-								.push(SourceSpan::new(file_id, member_span));
-						}
-						Ok(Expression {
-							kind: ExprKind::NamespaceAccess {
-								namespace: ast::Spanned {
-									inner: namespace_ty,
-									span: namespace_span,
-								},
-								member: Box::new(Expression {
-									kind: ExprKind::Const { id },
-									ty,
-									span: member_span,
-								}),
-							},
-							ty,
-							span: expr.span,
-						})
-					}
-					_ => {
-						self.tir.diagnostics.push(
-							report_non_constant_global_initializer(
-								SourceSpan::new(file_id, expr.span),
-							),
-						);
-						Err(())
-					}
-				}
-			}
-			ast::Expression::Unary { operator, operand } => {
-				let operand_expr = self.build_const_expression(
-					resolve_context,
-					operand,
-					expected_type,
-				)?;
-
-				Ok(Expression {
-					kind: ExprKind::Unary {
-						operator: operator.clone(),
-						operand: Box::new(operand_expr),
-					},
-					ty: expected_type,
-					span: expr.span,
-				})
-			}
-			ast::Expression::Binary {
-				left,
-				right,
-				operator,
-			} => {
-				let left_expr = self.build_const_expression(
-					resolve_context,
-					left,
-					expected_type,
-				)?;
-				let right_expr = self.build_const_expression(
-					resolve_context,
-					right,
-					expected_type,
-				)?;
-
-				let result_ty = match operator.inner {
-					operator
-						if operator.is_comparison()
-							|| operator.is_logical() =>
-					{
-						TypeIndex::BOOL
-					}
-					_ => left_expr.ty,
-				};
-
-				Ok(Expression {
-					kind: ExprKind::Binary {
-						operator: operator.clone(),
-						left: Box::new(left_expr),
-						right: Box::new(right_expr),
-					},
-					ty: result_ty,
-					span: expr.span,
-				})
-			}
-			ast::Expression::Grouping { value } => self.build_const_expression(
-				resolve_context,
-				value,
-				expected_type,
-			),
-			ast::Expression::Cast { value, ty } => {
-				let cast_type = self.resolve_type(resolve_context, None, &ty);
-				let value_expr = self.build_const_expression(
-					resolve_context,
-					value,
-					cast_type,
-				)?;
-
-				Ok(Expression {
-					kind: value_expr.kind,
-					ty: cast_type,
-					span: expr.span,
-				})
-			}
-			_ => {
-				self.tir.diagnostics.push(
-					report_non_constant_global_initializer(SourceSpan::new(
-						resolve_context.file_id,
-						expr.span,
-					)),
-				);
-				Err(())
-			}
+		if value_expr.ty.is_comptime_number() && ty != TypeIndex::INFER {
+			_ = self.coerce_untyped_expr(&mut func_ctx, &mut value_expr, ty);
 		}
+
+		if value_expr.ty.is_comptime_number() {
+			self.tir.diagnostics.push(report_type_annotation_required(
+				SourceSpan::new(resolve_context.file_id, expr.span),
+			));
+			return Err(());
+		}
+		if ty != TypeIndex::ERROR && !self.coercible_to(value_expr.ty, ty) {
+			self.tir.diagnostics.push(report_type_mistmatch(
+				TypeFormatter::new(&self.tir, &self.interner),
+				TypeMistmatchDiagnostic {
+					expected_type: ty,
+					actual_type: value_expr.ty,
+					span: SourceSpan::new(resolve_context.file_id, expr.span),
+				},
+			));
+			return Err(());
+		}
+		Ok(value_expr)
 	}
 
 	fn build_function_body(
@@ -7489,7 +7594,7 @@ impl<'ast> Builder<'ast, '_> {
 				.unwrap_or(TypeIndex::UNIT),
 		};
 
-		let mut ctx = FunctionContext {
+		let mut ctx = ExprContext {
 			stack: StackFrame {
 				scopes: vec![root_scope],
 				labels: Vec::new(),
@@ -7497,10 +7602,10 @@ impl<'ast> Builder<'ast, '_> {
 			scope_index: 0 as ScopeIndex,
 			lookup,
 			resolve_context,
-			scope: GenericScope {
+			scope: Some(GenericScope {
 				owner: scope.owner,
 				self_type: scope.self_type,
-			},
+			}),
 		};
 		let result = self.build_block_expression(&mut ctx, &block)?;
 		self.report_stack_warnings(ctx.resolve_context.file_id, &ctx.stack);
@@ -7512,7 +7617,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_block_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		block: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
 		let statements = match &block.inner {
@@ -7666,9 +7771,11 @@ impl<'ast> Builder<'ast, '_> {
 								|| access.kind == AccessKind::ReadWrite
 						}) =>
 					{
-						self.tir.diagnostics.push(report_unnecessary_mutability(
-							SourceSpan::new(file_id, mut_span),
-						));
+						self.tir.diagnostics.push(
+							report_unnecessary_mutability(SourceSpan::new(
+								file_id, mut_span,
+							)),
+						);
 					}
 					_ => {}
 				}
@@ -8035,11 +8142,44 @@ impl<'ast> Builder<'ast, '_> {
 				}
 			}
 		}
+
+		for enum_index in 0..self.tir.enums.len() as EnumIndex {
+			let enum_ = &self.tir.enums[enum_index as usize];
+			if enum_.pub_span.is_none() && enum_.accesses.is_empty() {
+				let name = self.interner.resolve(enum_.name.inner).unwrap();
+				self.tir.diagnostics.push(
+					Diagnostic::warning()
+						.with_code(code)
+						.with_message(format!("enum `{}` is never used", name))
+						.with_label(
+							SourceSpan::new(enum_.file_id, enum_.name.span)
+								.primary_label(),
+						),
+				);
+				continue;
+			}
+
+			let unused_variants: Box<_> = enum_
+				.variants
+				.iter()
+				.filter(|v| v.accesses.is_empty())
+				.map(|v| v.name)
+				.collect();
+			if unused_variants.is_empty() {
+				continue;
+			}
+			let diagnostic = report_unused_enum_variants(
+				&self.interner,
+				enum_.file_id,
+				&unused_variants,
+			);
+			self.tir.diagnostics.push(diagnostic);
+		}
 	}
 
 	fn build_block_result(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		result: Option<&Spanned<ast::Expression>>,
 	) -> Result<Option<Expression>, ()> {
 		match result {
@@ -8087,7 +8227,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_block_statements(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		statements: &[Separated<Spanned<ast::Statement>>],
 	) -> BlockState {
 		let mut expressions = Vec::with_capacity(statements.len());
@@ -8174,7 +8314,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_expression_statement(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		stmt: &ast::Statement,
 	) -> Result<Expression, ()> {
 		let value = match &stmt {
@@ -8220,7 +8360,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
@@ -8468,7 +8608,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_object_access_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		object: &Spanned<ast::Expression>,
 		member: Spanned<SymbolU32>,
@@ -8601,7 +8741,7 @@ impl<'ast> Builder<'ast, '_> {
 	///   `build_namespace_member_expression`
 	fn build_path_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		path: &[ast::PathSegment],
 		expr_span: TextSpan,
@@ -8710,7 +8850,7 @@ impl<'ast> Builder<'ast, '_> {
 				.map(|arg| {
 					self.resolve_type(
 						func_ctx.resolve_context,
-						Some(func_ctx.scope),
+						func_ctx.scope,
 						arg,
 					)
 				})
@@ -8739,7 +8879,7 @@ impl<'ast> Builder<'ast, '_> {
 		let first = &path[0];
 		let mut namespace_ty = self.resolve_type_identifier(
 			func_ctx.resolve_context,
-			Some(func_ctx.scope),
+			func_ctx.scope,
 			first.ident.clone(),
 		)?;
 		let mut namespace_span = first.ident.span;
@@ -9019,6 +9159,11 @@ impl<'ast> Builder<'ast, '_> {
 					.accesses
 					.push(SourceSpan::new(file_id, span));
 			}
+			SymbolKind::Enum { enum_index } => {
+				self.tir.enums[enum_index as usize]
+					.accesses
+					.push(SourceSpan::new(file_id, span));
+			}
 			SymbolKind::Trait { trait_index } => {
 				self.tir.traits[trait_index as usize]
 					.accesses
@@ -9081,7 +9226,7 @@ impl<'ast> Builder<'ast, '_> {
 			Type::Enum { enum_index } => {
 				let enum_idx = *enum_index;
 				match self.tir.enums[enum_idx as usize]
-					.lookup
+					.variant_lookup
 					.get(&member.inner)
 					.copied()
 				{
@@ -9174,7 +9319,7 @@ impl<'ast> Builder<'ast, '_> {
 	/// `TypeIndex` has already been resolved.
 	fn build_namespace_member_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		namespace: Spanned<TypeIndex>,
 		segment: &ast::PathSegment,
 		expr_span: TextSpan,
@@ -9242,7 +9387,7 @@ impl<'ast> Builder<'ast, '_> {
 				{
 					*slot = self.resolve_type(
 						func_ctx.resolve_context,
-						Some(func_ctx.scope),
+						func_ctx.scope,
 						ast_arg,
 					);
 				}
@@ -9330,7 +9475,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_label_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
@@ -9377,7 +9522,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_loop_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 		label: Option<LabelIndex>,
@@ -9435,7 +9580,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_continue_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
 		let label = match &expr.inner {
@@ -9504,7 +9649,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_if_else_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 		label: Option<LabelIndex>,
@@ -9634,7 +9779,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_cast_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
@@ -9644,7 +9789,7 @@ impl<'ast> Builder<'ast, '_> {
 		};
 
 		let cast_type =
-			self.resolve_type(ctx.resolve_context, Some(ctx.scope), &cast_type);
+			self.resolve_type(ctx.resolve_context, ctx.scope, &cast_type);
 		if cast_type == TypeIndex::ERROR {
 			return self.build_expression(ctx, access_ctx, value);
 		}
@@ -9740,7 +9885,7 @@ impl<'ast> Builder<'ast, '_> {
 			| Type::Char
 			| Type::Function { .. } => Some(WasmScalar::I32),
 			Type::Enum { enum_index } => {
-				let repr_type = self.tir.enums[*enum_index as usize].ty;
+				let repr_type = self.tir.enums[*enum_index as usize].repr_type;
 				self.type_scalar(repr_type)
 			}
 			Type::U64 | Type::I64 => Some(WasmScalar::I64),
@@ -9778,7 +9923,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_break_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
 		let (label, value) = match &expr.inner {
@@ -9928,7 +10073,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_type_application_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		callee: &Spanned<ast::Expression>,
 		_args: &[Spanned<ast::TypeExpression>],
 		expr_span: ast::TextSpan,
@@ -9953,7 +10098,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_binary_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
@@ -10001,7 +10146,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_unary_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
@@ -10098,7 +10243,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_logical_binary_expr(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
 		let (left, right, operator) = match &expr.inner {
@@ -10179,7 +10324,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_bitwise_binary_expr(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 		access_ctx: AccessContext,
 	) -> Result<Expression, ()> {
@@ -10367,7 +10512,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_comparison_binary_expr(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
 		let (left, right, operator) = match &expr.inner {
@@ -10558,7 +10703,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_assignment_expr(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
 		let (left, right, operator) = match &expr.inner {
@@ -10843,7 +10988,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_arithmetic_assignment_expr(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
 		let (left, right, operator) = match &expr.inner {
@@ -11144,7 +11289,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_return_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
 		let value = match &expr.inner {
@@ -11262,7 +11407,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_arithmetic_expr(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &Spanned<ast::Expression>,
 		access_ctx: AccessContext,
 	) -> Result<Expression, ()> {
@@ -11584,7 +11729,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_generic_call_arguments(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		func_index: FunctionIndex,
 		arguments: &mut [Expression],
 		mut type_args: Box<[TypeIndex]>,
@@ -11748,7 +11893,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_call_arguments(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		arguments: &[Separated<Spanned<ast::Expression>>],
 		params: &[TypeIndex],
 		type_args: &[TypeIndex],
@@ -11816,7 +11961,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_call_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
@@ -12103,7 +12248,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_method_call_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
 	) -> Result<Expression, ()> {
@@ -12223,7 +12368,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_local_definition_statement(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		stmt: &Separated<Spanned<ast::Statement>>,
 	) -> Result<Expression, ()> {
 		let (mut_span, name, ty, value) = match &stmt.inner.inner {
@@ -12251,9 +12396,7 @@ impl<'ast> Builder<'ast, '_> {
 		};
 
 		let expected_type = match ty {
-			Some(ty) => {
-				self.resolve_type(ctx.resolve_context, Some(ctx.scope), ty)
-			}
+			Some(ty) => self.resolve_type(ctx.resolve_context, ctx.scope, ty),
 			None => TypeIndex::INFER,
 		};
 		let value_result = self.build_expression(
@@ -12313,7 +12456,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn resolve_local_type(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		name_span: TextSpan,
 		value: &mut Expression,
 		expected_type: TypeIndex,
@@ -12373,7 +12516,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn coerce_untyped_expr(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &mut Expression,
 		target_type: TypeIndex,
 	) -> Result<(), ()> {
@@ -12689,7 +12832,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn coerce_untyped_unary_expr(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &mut Expression,
 		target_idx: TypeIndex,
 	) -> Result<(), ()> {
@@ -12721,7 +12864,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn coerce_untyped_binary_expression(
 		&mut self,
-		ctx: &mut FunctionContext,
+		ctx: &mut ExprContext,
 		expr: &mut Expression,
 		target_idx: TypeIndex,
 	) -> Result<(), ()> {
@@ -12776,7 +12919,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_struct_init_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		init_span: ast::TextSpan,
 		path: &[ast::PathSegment],
@@ -12791,7 +12934,7 @@ impl<'ast> Builder<'ast, '_> {
 		// lists), and plain identifiers uniformly.
 		let struct_ty = self.resolve_path_type(
 			func_ctx.resolve_context,
-			Some(func_ctx.scope),
+			func_ctx.scope,
 			path,
 			init_span,
 		);
@@ -13045,7 +13188,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_tuple_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		span: ast::TextSpan,
 		ast_elements: &[ast::Spanned<ast::Expression>],
 		access_ctx: AccessContext,
@@ -13126,7 +13269,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_deref_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		span: ast::TextSpan,
 		pointer: &Spanned<ast::Expression>,
@@ -13263,7 +13406,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_array_literal_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		span: ast::TextSpan,
 		elements: &[ast::Spanned<ast::Expression>],
@@ -13395,7 +13538,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_array_repeat_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		span: ast::TextSpan,
 		value_expr: &ast::Spanned<ast::Expression>,
@@ -13514,7 +13657,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_index_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		access_ctx: AccessContext,
 		span: ast::TextSpan,
 		object_expr: &ast::Spanned<ast::Expression>,
@@ -13617,7 +13760,7 @@ impl<'ast> Builder<'ast, '_> {
 
 	fn build_slice_range_expression(
 		&mut self,
-		func_ctx: &mut FunctionContext,
+		func_ctx: &mut ExprContext,
 		span: ast::TextSpan,
 		object_expr: &ast::Spanned<ast::Expression>,
 		start_expr: &Option<Box<ast::Spanned<ast::Expression>>>,

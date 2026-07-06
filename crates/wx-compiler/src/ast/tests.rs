@@ -289,10 +289,7 @@ fn test_pub_not_permitted_in_trait_items() {
         }
     "});
 
-	assert_eq!(
-		diagnostic_codes(&case.ast),
-		vec!["E0014", "E0014", "E0014"]
-	);
+	assert_eq!(diagnostic_codes(&case.ast), vec!["E0014", "E0014", "E0014"]);
 	let Item::Trait { items, .. } = item(&case.ast, 0) else {
 		panic!("expected trait item")
 	};

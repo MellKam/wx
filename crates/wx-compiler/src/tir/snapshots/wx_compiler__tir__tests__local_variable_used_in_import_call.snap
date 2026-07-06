@@ -5877,6 +5877,8 @@ constants:
       span:
         start: 28
         end: 39
+    const_value:
+      Int: 32
     accesses:
       - file_id: 0
         span:
@@ -5911,6 +5913,8 @@ constants:
       span:
         start: 68
         end: 73
+    const_value:
+      Int: 65536
     accesses: []
   - id: 16
     file_id: 0
@@ -5929,6 +5933,7 @@ constants:
         start: 1060
         end: 1063
     value: ~
+    const_value: ~
     accesses: []
   - id: 17
     file_id: 0
@@ -5947,6 +5952,7 @@ constants:
         start: 1085
         end: 1094
     value: ~
+    const_value: ~
     accesses: []
 typesets:
   - id: 13

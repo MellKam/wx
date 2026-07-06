@@ -1122,7 +1122,7 @@ impl<'tir> Builder<'tir> {
 				Type::Aggregate { aggregate_index }
 			}
 			tir::Type::Enum { enum_index } => {
-				let repr_ty = self.tir.enums[enum_index as usize].ty;
+				let repr_ty = self.tir.enums[enum_index as usize].repr_type;
 				self.lower_type_index(repr_ty)
 			}
 			_ => unreachable!(),
@@ -1549,6 +1549,33 @@ impl<'tir> Builder<'tir> {
 		})
 	}
 
+	/// Lowers an already-folded compile-time constant value directly to a MIR
+	/// scalar — shared by every place that reads a `ConstValue` cached on TIR
+	/// (`Constant`, `EnumVariant`) so codegen never has to re-walk the original
+	/// expression tree just to rediscover a value TIR already computed.
+	fn lower_const_value(const_value: tir::ConstValue, ty: Type) -> Expression {
+		match const_value {
+			tir::ConstValue::Int(value) => Expression {
+				kind: ExprKind::Int { value },
+				ty,
+			},
+			tir::ConstValue::Float(value) => Expression {
+				kind: ExprKind::Float { value },
+				ty,
+			},
+			tir::ConstValue::Bool(value) => Expression {
+				kind: ExprKind::Bool { value },
+				ty,
+			},
+			tir::ConstValue::Char(value) => Expression {
+				kind: ExprKind::Int {
+					value: value as i64,
+				},
+				ty,
+			},
+		}
+	}
+
 	fn lower_expression(
 		&mut self,
 		func_ctx: &mut FunctionContext,
@@ -1684,7 +1711,19 @@ impl<'tir> Builder<'tir> {
 			} => {
 				let enum_ = &self.tir.enums[*enum_index as usize];
 				let variant = &enum_.variants[*variant_index as usize];
-				self.lower_expression(func_ctx, &variant.value, sink)
+				match variant.const_value {
+					Some(const_value) => Self::lower_const_value(
+						const_value,
+						self.lower_type_index(expr.ty),
+					),
+					// Error-free TIR guarantees every variant folds to a
+					// constant — see the `NotConstEvaluatable`/range checks
+					// in `Builder::build_enum`. MIR::build assumes TIR has
+					// no errors (the CLI aborts beforehand otherwise).
+					None => unreachable!(
+						"enum variant without a folded compile-time value"
+					),
+				}
 			}
 			tir::ExprKind::GenericCall {
 				id,
@@ -1886,22 +1925,12 @@ impl<'tir> Builder<'tir> {
 				if let tir::ExprKind::Const { id } = &member.kind {
 					let const_idx = self.tir.expect_const_index(*id) as usize;
 					let result_ty = self.lower_type_index(expr.ty);
-					if let Some(value_expr) =
-						&self.tir.constants[const_idx].value
+					if let Some(const_value) =
+						self.tir.constants[const_idx].const_value
 					{
-						match &value_expr.kind {
-							tir::ExprKind::Int { value } => Expression {
-								kind: ExprKind::Int { value: *value },
-								ty: result_ty,
-							},
-							tir::ExprKind::Float { value } => Expression {
-								kind: ExprKind::Float { value: *value },
-								ty: result_ty,
-							},
-							_ => todo!(
-								"complex const expression in MIR lowering"
-							),
-						}
+						Self::lower_const_value(const_value, result_ty)
+					} else if self.tir.constants[const_idx].value.is_some() {
+						todo!("complex const expression in MIR lowering")
 					} else {
 						// Compiler-implemented constant — dispatch on namespace type.
 						let const_name_sym =
@@ -1939,23 +1968,16 @@ impl<'tir> Builder<'tir> {
 			tir::ExprKind::Const { id } => {
 				let const_idx = self.tir.expect_const_index(*id) as usize;
 				let result_ty = self.lower_type_index(expr.ty);
-				match &self.tir.constants[const_idx].value {
-					Some(value_expr) => match &value_expr.kind {
-						tir::ExprKind::Int { value } => Expression {
-							kind: ExprKind::Int { value: *value },
-							ty: result_ty,
-						},
-						tir::ExprKind::Float { value } => Expression {
-							kind: ExprKind::Float { value: *value },
-							ty: result_ty,
-						},
-						_ => todo!("complex const expression in MIR lowering"),
-					},
-					None => {
-						unreachable!(
-							"compiler-implemented constant referenced outside namespace access"
-						)
-					}
+				if let Some(const_value) =
+					self.tir.constants[const_idx].const_value
+				{
+					Self::lower_const_value(const_value, result_ty)
+				} else if self.tir.constants[const_idx].value.is_some() {
+					todo!("complex const expression in MIR lowering")
+				} else {
+					unreachable!(
+						"compiler-implemented constant referenced outside namespace access"
+					)
 				}
 			}
 			tir::ExprKind::ObjectAccess { object, member } => {

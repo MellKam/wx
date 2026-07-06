@@ -11,6 +11,13 @@
 		"noImplicitReturns": true,
 		"noFallthroughCasesInSwitch": true,
 		"noUnusedParameters": true,
-		"skipLibCheck": true
+		"skipLibCheck": true,
+		"paths": {
+			// `ansi-sequence-parser`'s `exports` map has no `types` condition,
+			// so `moduleResolution: nodenext` refuses to fall back to its
+			// `types` field and silently resolves the import as `any`. Point
+			// straight at the shipped `.d.ts` instead.
+			"ansi-sequence-parser": ["./node_modules/ansi-sequence-parser/dist/index.d.ts"]
+		}
 	}
 }

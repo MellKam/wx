@@ -327,6 +327,8 @@ pub struct Constant {
 	pub name: ast::Spanned<SymbolU32>,
 	pub ty: ast::Spanned<TypeIndex>,
 	pub value: Option<Box<Expression>>,
+	/// Compile-time value of `value`, if it folds — see `Builder::eval_const_expr`.
+	pub const_value: Option<ConstValue>,
 	pub accesses: Vec<SourceSpan>,
 }
 
@@ -691,6 +693,20 @@ pub struct Expression {
 	pub span: ast::TextSpan,
 }
 
+/// The compile-time value of a constant expression (enum variant value, `const`
+/// initializer). Cached alongside the built `Expression` tree rather than replacing
+/// it, so the tree stays available for LSP/semantic-analysis use while codegen and
+/// validation can read the value directly without re-interpreting the tree.
+#[derive(Clone, Copy, PartialEq)]
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum ConstValue {
+	Int(i64),
+	Float(f64),
+	Bool(bool),
+	Char(char),
+}
+
 #[derive(Clone, Copy, PartialEq)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -844,23 +860,24 @@ pub struct Enum {
 	pub namespace: Option<NamespaceIndex>,
 	pub pub_span: Option<ast::TextSpan>,
 	pub name: ast::Spanned<SymbolU32>,
-	pub ty: TypeIndex,
-	/// `Type::Enum { enum_index }` for this enum.
-	#[cfg_attr(test, serde(skip))]
+	pub repr_type: TypeIndex,
 	pub self_type: TypeIndex,
 	pub variants: Box<[EnumVariant]>,
 	#[cfg_attr(
 		test,
 		serde(serialize_with = "crate::testing::serialize_sorted_map")
 	)]
-	pub lookup: HashMap<SymbolU32, EnumVariantIndex>,
+	pub variant_lookup: HashMap<SymbolU32, EnumVariantIndex>,
+	pub accesses: Vec<SourceSpan>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct EnumVariant {
 	pub name: ast::Spanned<SymbolU32>,
-	pub value: Box<Expression>,
+	pub value: Option<Box<Expression>>,
+	/// Compile-time value of `value`, if it folds — see `Builder::eval_const_expr`.
+	pub const_value: Option<ConstValue>,
 	pub accesses: Vec<SourceSpan>,
 }
 
@@ -1312,6 +1329,10 @@ define_diagnostic_codes! {
 		MissingElseBlock => "E1052",
 		InvalidSelfType => "E1053",
 		ContinueOutsideOfLoop => "E1054",
+		EnumReprNotInteger => "E1055",
+		EnumDuplicateValue => "E1056",
+		NotConstEvaluatable => "E1057",
+		UnusedEnumVariant => "W1009",
 	}
 }
 

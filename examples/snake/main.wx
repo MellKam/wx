@@ -24,6 +24,17 @@ import "host" {
   fn get_time_ms() -> i64;
 }
 
+enum Direction: u32 {
+  Right = 0,
+  Down = 1,
+  Left = 2,
+  Up = 3,
+}
+
+fn test() -> Direction {
+  Direction::Right
+}
+
 const CELL_SIZE: i32 = 8;
 const GRID_W: i32 = 32;
 const GRID_H: i32 = 24;

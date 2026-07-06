@@ -73,6 +73,48 @@ fn test_char_lowered_to_u32() {
 	insta::assert_yaml_snapshot!(case.mir);
 }
 
+// ── enums
+// ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_enum_variant_lowered_to_repr_scalar() {
+	// Enums have no runtime representation — Color::Green erases to the repr
+	// scalar type (i32) at MIR/codegen time.
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red = 1,
+            Green,
+            Blue,
+        }
+
+        fn get_green() -> Color {
+            Color::Green
+        }
+
+        export { get_green }
+    "});
+	insta::assert_yaml_snapshot!(case.mir);
+}
+
+#[test]
+fn test_enum_folded_arithmetic_variant_lowered() {
+	// Regression test for the constant-folding work: `Red`'s value is
+	// `1 + 1`, an arithmetic expression, not a bare literal — MIR lowering
+	// must still erase it to a concrete scalar.
+	let case = TestCase::new(indoc! {"
+        enum Color: i32 {
+            Red = 1 + 1,
+        }
+
+        fn get_red() -> Color {
+            Color::Red
+        }
+
+        export { get_red }
+    "});
+	insta::assert_yaml_snapshot!(case.mir);
+}
+
 // ── structs
 // ───────────────────────────────────────────────────────────────────
 

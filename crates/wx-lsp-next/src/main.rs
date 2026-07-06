@@ -5,9 +5,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use codespan_reporting::diagnostic::{
-	Diagnostic as CodeDiagnostic, LabelStyle, Severity,
+	Diagnostic as CodeDiagnostic, Label, LabelStyle, Severity,
 };
 use codespan_reporting::files::Files as _;
+use codespan_reporting::term;
+use codespan_reporting::term::termcolor::Ansi;
 use tokio::sync::Mutex;
 use tower_lsp_server::jsonrpc::{Error as JsonRpcError, Result};
 use tower_lsp_server::ls_types::{
@@ -72,6 +74,12 @@ const SEMANTIC_TOKEN_TYPES: &[SemanticTokenType] = &[
 #[derive(serde::Deserialize)]
 struct VirtualFileContentParams {
 	uri: String,
+}
+
+#[derive(serde::Deserialize)]
+struct FullDiagnosticParams {
+	uri: String,
+	index: usize,
 }
 
 /// Flushes buffered log lines (collected via `logs.push(...)` in plain,
@@ -767,6 +775,85 @@ impl Backend {
 			))),
 		}
 	}
+
+	/// Re-renders one diagnostic's full, source-snippet-annotated text on
+	/// demand — see `notes/lsp-full-diagnostic-view-plan.md`. Deliberately
+	/// doesn't cache anything new: `state.cached` already keeps the raw
+	/// `codespan_reporting::Diagnostic<FileId>` values alive for as long as
+	/// this can usefully be called, so this just re-derives the same
+	/// `(path, index)` list `add_compiler_diagnostic` would have produced and
+	/// re-renders the one entry the client clicked.
+	async fn full_diagnostic(
+		&self,
+		params: FullDiagnosticParams,
+	) -> Result<String> {
+		let uri = Uri::from_str(&params.uri).map_err(|_| {
+			JsonRpcError::invalid_params(format!("bad uri: {}", params.uri))
+		})?;
+		let state = self.state.lock().await;
+		Ok(render_full_diagnostic(&state, &uri, params.index))
+	}
+}
+
+/// Re-renders one diagnostic's full, source-snippet-annotated text on
+/// demand — see `notes/lsp-full-diagnostic-view-plan.md`. Deliberately
+/// doesn't cache anything new: `state.cached` already keeps the raw
+/// `codespan_reporting::Diagnostic<FileId>` values alive for as long as this
+/// can usefully be called, so this just re-derives the same `(path, index)`
+/// list `add_compiler_diagnostic` would have produced and re-renders the one
+/// entry the client clicked. Free function (rather than a `Backend` method
+/// body) so it's directly testable without a real `Client`.
+fn render_full_diagnostic(
+	state: &ServerState,
+	uri: &Uri,
+	index: usize,
+) -> String {
+	let Some((compiled, _file_id)) = resolve_uri(state, uri) else {
+		return "Unable to find original wx diagnostic (file is no longer tracked)."
+			.to_string();
+	};
+	let Some(target_path) = uri_to_path(uri) else {
+		return "Unable to find original wx diagnostic.".to_string();
+	};
+	// Same order `analysis_from_compiled_root`/`add_compiler_diagnostic`
+	// iterate and expand in — crate diagnostics per crate, then TIR
+	// diagnostics, one slot per `diagnostic_locations` entry matching this
+	// path (a diagnostic with no primary label, like unused-enum-variant
+	// warnings, contributes one slot per variant) — so `index` lines up
+	// exactly with what the client saw when this was published.
+	let diagnostic = compiled
+		.graph
+		.crates
+		.iter()
+		.flat_map(|cg| cg.diagnostics.iter())
+		.chain(compiled.tir.diagnostics.iter())
+		.flat_map(|d| {
+			let target_path = &target_path;
+			diagnostic_locations(&compiled.graph.files, d)
+				.into_iter()
+				.filter(move |(path, _)| path == target_path)
+				.map(move |_| d)
+		})
+		.nth(index);
+	let Some(diagnostic) = diagnostic else {
+		return "Unable to find original wx diagnostic (it may have changed since this link was created)."
+			.to_string();
+	};
+	// ANSI-colored, not `emit_to_string`'s plain output: the client strips
+	// (for the virtual doc's text) and separately re-parses (for
+	// `TextEditorDecorationType`s matching the user's terminal theme) the
+	// same escape codes `wx-cli` prints to a real terminal — see
+	// `notes/lsp-full-diagnostic-view-plan.md`.
+	let mut buffer = Ansi::new(Vec::new());
+	if let Err(err) = term::emit_to_write_style(
+		&mut buffer,
+		&term::Config::default(),
+		&compiled.graph.files,
+		diagnostic,
+	) {
+		return format!("Unable to render wx diagnostic: {err}");
+	}
+	String::from_utf8(buffer.into_inner()).unwrap_or_default()
 }
 
 #[tokio::main]
@@ -776,6 +863,7 @@ async fn main() {
 		state: Arc::new(Mutex::new(ServerState::default())),
 	})
 	.custom_method("wx/virtualFileContent", Backend::virtual_file_content)
+	.custom_method("wx/fullDiagnostic", Backend::full_diagnostic)
 	.finish();
 	Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
 		.serve(service)
@@ -1072,7 +1160,7 @@ fn analysis_from_missing_entry_file(root: &Path) -> AnalysisResult {
 			severity: Some(DiagnosticSeverity::ERROR),
 			code: None,
 			code_description: None,
-			source: Some("wx-lsp-next".to_string()),
+			source: Some("wx-lsp".to_string()),
 			message: format!("failed to read file `{}`", root.display()),
 			related_information: None,
 			tags: None,
@@ -1097,46 +1185,72 @@ pub(crate) fn diagnostic_publish_paths(
 	paths
 }
 
-fn add_compiler_diagnostic(
-	grouped: &mut HashMap<PathBuf, Vec<Diagnostic>>,
+/// Resolves one label to the absolute path + LSP range it points at, or
+/// `None` if the label's file has no name, the name isn't an absolute path
+/// (true for stdlib's virtual `wx://std/...` "files"), or the span doesn't
+/// map to a valid range.
+fn label_location(
 	files: &vfs::Files,
-	diagnostic: &CodeDiagnostic<FileId>,
-) {
-	let Some(label) = diagnostic
-		.labels
-		.iter()
-		.find(|label| label.style == LabelStyle::Primary)
-		.or_else(|| diagnostic.labels.first())
-	else {
-		return;
-	};
-
-	let Ok(name) = files.name(label.file_id) else {
-		return;
-	};
-	let path = PathBuf::from(name);
+	label: &Label<FileId>,
+) -> Option<(PathBuf, Range)> {
+	let path = PathBuf::from(files.name(label.file_id).ok()?);
 	if !path.is_absolute() {
-		return;
+		return None;
 	}
-
-	let Some(range) = span_to_range(
+	let range = span_to_range(
 		files,
 		SourceSpan::new(
 			label.file_id,
 			TextSpan::new(label.range.start as u32, label.range.end as u32),
 		),
-	) else {
-		return;
-	};
+	)?;
+	Some((path, range))
+}
 
+/// Returns the absolute path + LSP range(s) a diagnostic should be filed
+/// under. A diagnostic with a primary label collapses to that one location —
+/// secondary labels are supplementary context for that one site (e.g.
+/// `report_enum_duplicate_value`'s "value assigned here" labels) and become
+/// `related_information` instead, not separate squiggles. A diagnostic with
+/// *no* primary label (e.g. `report_unused_enum_variants`, where every listed
+/// variant is equally "the problem") instead gets one location per label, so
+/// each is independently squiggled rather than arbitrarily collapsing to
+/// whichever label happens to be first in the vec — LSP's `Diagnostic` only
+/// carries a single `range`, so multiple equally-important locations can only
+/// be represented as multiple `Diagnostic`s.
+///
+/// Single source of truth for "which diagnostics belong to file X, in what
+/// order, and how many slots each contributes" — used both when building the
+/// published list and when re-deriving it later for `wx/fullDiagnostic`, so
+/// the two can't silently drift apart.
+fn diagnostic_locations(
+	files: &vfs::Files,
+	diagnostic: &CodeDiagnostic<FileId>,
+) -> Vec<(PathBuf, Range)> {
+	if let Some(primary) = diagnostic
+		.labels
+		.iter()
+		.find(|label| label.style == LabelStyle::Primary)
+	{
+		return label_location(files, primary).into_iter().collect();
+	}
+	diagnostic
+		.labels
+		.iter()
+		.filter_map(|label| label_location(files, label))
+		.collect()
+}
+
+fn add_compiler_diagnostic(
+	grouped: &mut HashMap<PathBuf, Vec<Diagnostic>>,
+	files: &vfs::Files,
+	diagnostic: &CodeDiagnostic<FileId>,
+) {
 	let label_messages: Vec<String> = diagnostic
 		.labels
 		.iter()
 		.filter_map(|label| {
-			(!label.message.is_empty()).then(|| match label.style {
-				LabelStyle::Primary => label.message.clone(),
-				LabelStyle::Secondary => format!("note: {}", label.message),
-			})
+			(!label.message.is_empty()).then(|| label.message.clone())
 		})
 		.collect();
 	let message = if label_messages.is_empty() {
@@ -1145,42 +1259,50 @@ fn add_compiler_diagnostic(
 		format!("{}\n{}", diagnostic.message, label_messages.join("\n"))
 	};
 
-	let primary_uri = Uri::from_file_path(&path);
-	let related_information = diagnostic_related_information(
-		files,
-		diagnostic,
-		primary_uri.as_ref(),
-		range,
-	);
-
 	let tags = diagnostic.code.as_ref().and_then(|code| {
 		use std::str::FromStr;
-
 		use wx_compiler::tir::DiagnosticCode;
-		DiagnosticCode::from_str(code).ok().and_then(|c| match c {
-			DiagnosticCode::UnreachableCode
-			| DiagnosticCode::UnusedVariable
-			| DiagnosticCode::UnusedTypeParam
-			| DiagnosticCode::UnnecessaryMutability
-			| DiagnosticCode::UnusedItem => Some(vec![DiagnosticTag::UNNECESSARY]),
-			_ => None,
-		})
+		DiagnosticCode::from_str(code)
+			.ok()
+			.and_then(|code| match code {
+				DiagnosticCode::UnreachableCode
+				| DiagnosticCode::UnusedVariable
+				| DiagnosticCode::UnusedTypeParam
+				| DiagnosticCode::UnnecessaryMutability
+				| DiagnosticCode::UnusedItem
+				| DiagnosticCode::UnusedEnumVariant
+				| DiagnosticCode::UnusedLabel
+				| DiagnosticCode::UnusedStructField => {
+					Some(vec![DiagnosticTag::UNNECESSARY])
+				}
+				_ => None,
+			})
 	});
 
-	grouped.entry(path).or_default().push(Diagnostic {
-		range,
-		severity: Some(severity_to_lsp(diagnostic.severity)),
-		code: diagnostic
-			.code
-			.as_ref()
-			.map(|code| NumberOrString::String(code.to_string())),
-		code_description: None,
-		source: Some("wx".to_string()),
-		message,
-		related_information,
-		tags,
-		data: None,
-	});
+	for (path, range) in diagnostic_locations(files, diagnostic) {
+		let primary_uri = Uri::from_file_path(&path);
+		let related_information = diagnostic_related_information(
+			files,
+			diagnostic,
+			primary_uri.as_ref(),
+			range,
+		);
+
+		grouped.entry(path).or_default().push(Diagnostic {
+			range,
+			severity: Some(severity_to_lsp(diagnostic.severity)),
+			code: diagnostic
+				.code
+				.as_ref()
+				.map(|code| NumberOrString::String(code.to_string())),
+			code_description: None,
+			source: Some("wx".to_string()),
+			message: message.clone(),
+			related_information,
+			tags: tags.clone(),
+			data: None,
+		});
+	}
 }
 
 fn diagnostic_related_information(
@@ -1318,7 +1440,7 @@ fn symbol_hover_text(
 			let enum_ = tir.enums.get(tir.enum_index(*def_id)? as usize)?;
 			let name = interner.resolve(enum_.name.inner).unwrap_or("?");
 			let pub_prefix = if enum_.pub_span.is_some() { "pub " } else { "" };
-			let repr = fmt.display_type(enum_.ty).unwrap();
+			let repr = fmt.display_type(enum_.repr_type).unwrap();
 			Some(format!("{pub_prefix}enum {name}: {repr} {{ ... }}"))
 		}
 		SymbolKind::Local {
