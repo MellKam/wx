@@ -1922,47 +1922,53 @@ impl<'tir> Builder<'tir> {
 				}
 			}
 			tir::ExprKind::NamespaceAccess { namespace, member } => {
-				if let tir::ExprKind::Const { id } = &member.kind {
-					let const_idx = self.tir.expect_const_index(*id) as usize;
-					let result_ty = self.lower_type_index(expr.ty);
-					if let Some(const_value) =
-						self.tir.constants[const_idx].const_value
-					{
-						Self::lower_const_value(const_value, result_ty)
-					} else if self.tir.constants[const_idx].value.is_some() {
-						todo!("complex const expression in MIR lowering")
-					} else {
-						// Compiler-implemented constant — dispatch on namespace type.
-						let const_name_sym =
-							self.tir.constants[const_idx].name.inner;
-						let namespace_ty = namespace.inner;
-						let const_name =
-							self.interner.resolve(const_name_sym).unwrap();
-						match &self.tir.types[namespace_ty.as_usize()] {
-							tir::Type::Memory { id, .. } => match const_name {
-								"DATA_END" => Expression {
-									kind: ExprKind::MemoryOffset {
-										memory: *id,
-									},
-									ty: result_ty,
-								},
-								"MEMORY_INDEX" => Expression {
-									kind: ExprKind::MemoryIndex { memory: *id },
-									ty: result_ty,
-								},
-								_ => todo!(
-									"unknown memory compiler constant: {}",
-									const_name
-								),
-							},
-							_ => todo!(
-								"unknown compiler-implemented constant: {}",
-								const_name
-							),
+				match &member.kind {
+					tir::ExprKind::Const { id } => {
+						let const_idx =
+							self.tir.expect_const_index(*id) as usize;
+						let result_ty = self.lower_type_index(expr.ty);
+						match &self.tir.types[namespace.inner.as_usize()] {
+							tir::Type::Memory { id, .. } => {
+								let const_name_sym =
+									self.tir.constants[const_idx].name.inner;
+								let const_name = self
+									.interner
+									.resolve(const_name_sym)
+									.unwrap();
+								match const_name {
+									"DATA_END" => {
+										return Expression {
+											kind: ExprKind::MemoryOffset {
+												memory: *id,
+											},
+											ty: result_ty,
+										};
+									}
+									"MEMORY_INDEX" => {
+										return Expression {
+											kind: ExprKind::MemoryIndex {
+												memory: *id,
+											},
+											ty: result_ty,
+										};
+									}
+									_ => unreachable!(),
+								}
+							}
+							_ => {}
+						};
+
+						match self.tir.constants[const_idx].const_value {
+							Some(const_value) => {
+								return Self::lower_const_value(
+									const_value,
+									result_ty,
+								);
+							}
+							None => unreachable!(),
 						}
 					}
-				} else {
-					self.lower_expression(func_ctx, member, sink)
+					_ => self.lower_expression(func_ctx, member, sink),
 				}
 			}
 			tir::ExprKind::Const { id } => {
