@@ -1226,10 +1226,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 1359
+              end: 1381
             locals: []
             inferred_type: 63
             expected_type: 63
@@ -1303,10 +1307,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 1446
+              end: 1468
             locals: []
             inferred_type: 67
             expected_type: 67
@@ -1395,10 +1403,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 1537
+              end: 1572
             locals:
               - name:
                   inner: 47
@@ -1524,10 +1536,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 1647
+              end: 1671
             locals:
               - name:
                   inner: 47
@@ -1660,10 +1676,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 1753
+              end: 1818
             locals:
               - name:
                   inner: 47
@@ -1853,10 +1873,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 1900
+              end: 1965
             locals:
               - name:
                   inner: 47
@@ -2046,10 +2070,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 2059
+              end: 2124
             locals:
               - name:
                   inner: 47
@@ -2239,10 +2267,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 2218
+              end: 2283
             locals:
               - name:
                   inner: 47
@@ -2361,10 +2393,14 @@ functions:
     attributes: []
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 81
+              end: 113
             locals: []
             inferred_type: 18
             expected_type: 18
@@ -2435,10 +2471,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 1162
+              end: 1202
             locals:
               - name:
                   inner: 45
@@ -2540,10 +2580,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 1250
+              end: 1283
             locals:
               - name:
                   inner: 45
@@ -2627,10 +2671,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 2361
+              end: 2392
             locals:
               - name:
                   inner: 45
@@ -2714,10 +2762,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 2466
+              end: 2589
             locals:
               - name:
                   inner: 45
@@ -2744,12 +2796,18 @@ functions:
           - kind: Block
             label: ~
             parent: 0
+            span:
+              start: 2505
+              end: 2569
             locals: []
             inferred_type: 17
             expected_type: 17
           - kind: Block
             label: ~
             parent: 0
+            span:
+              start: 2575
+              end: 2583
             locals: []
             inferred_type: 17
             expected_type: 17
@@ -2881,10 +2939,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 2649
+              end: 2772
             locals:
               - name:
                   inner: 45
@@ -2911,12 +2973,18 @@ functions:
           - kind: Block
             label: ~
             parent: 0
+            span:
+              start: 2688
+              end: 2752
             locals: []
             inferred_type: 17
             expected_type: 17
           - kind: Block
             label: ~
             parent: 0
+            span:
+              start: 2758
+              end: 2766
             locals: []
             inferred_type: 17
             expected_type: 17
@@ -3048,10 +3116,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 2822
+              end: 2859
             locals:
               - name:
                   inner: 45
@@ -3148,10 +3220,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 2919
+              end: 2961
             locals:
               - name:
                   inner: 45
@@ -3293,10 +3369,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 3021
+              end: 3063
             locals:
               - name:
                   inner: 45
@@ -3434,10 +3514,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 3124
+              end: 3199
             locals:
               - name:
                   inner: 45
@@ -3665,10 +3749,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 3255
+              end: 3297
             locals:
               - name:
                   inner: 45
@@ -3806,10 +3894,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 3360
+              end: 3490
             locals:
               - name:
                   inner: 45
@@ -4127,10 +4219,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 3551
+              end: 3692
             locals:
               - name:
                   inner: 45
@@ -4403,10 +4499,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 3750
+              end: 3805
             locals:
               - name:
                   inner: 45
@@ -4544,10 +4644,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 3864
+              end: 3994
             locals:
               - name:
                   inner: 45
@@ -4865,10 +4969,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 4056
+              end: 4229
             locals:
               - name:
                   inner: 45
@@ -5276,10 +5384,14 @@ functions:
       - Inline
     body:
       stack:
+        labels: []
         scopes:
           - kind: Block
             label: ~
             parent: ~
+            span:
+              start: 4287
+              end: 4329
             locals:
               - name:
                   inner: 45

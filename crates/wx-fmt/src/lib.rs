@@ -2107,7 +2107,7 @@ impl<'a> Renderer<'a> {
 			}
 			Node::Group(inner_id) => {
 				let mode = if self.measure_flat(id)
-					<= self.config.max_line_width as usize - self.position
+					<= (self.config.max_line_width as usize).saturating_sub(self.position)
 				{
 					RenderMode::Flat
 				} else {

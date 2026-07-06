@@ -49,13 +49,22 @@ impl FunctionContext {
 		result
 	}
 
-	fn resolve_label(&self, symbol: SymbolU32) -> Option<ScopeIndex> {
+	fn resolve_label(
+		&self,
+		symbol: SymbolU32,
+	) -> Option<(ScopeIndex, LabelIndex)> {
 		let mut scope_index = self.scope_index;
 
 		loop {
 			let scope = &self.stack.scopes[scope_index as usize];
-			if scope.label.as_ref().is_some_and(|l| l.name == symbol) {
-				return Some(scope_index);
+			match scope.label {
+				Some(label_index)
+					if self.stack.labels[label_index as usize].name.inner
+						== symbol =>
+				{
+					return Some((scope_index, label_index));
+				}
+				_ => {}
 			}
 
 			scope_index = match scope.parent {
@@ -805,19 +814,22 @@ fn report_binary_expression_mistmatch(
 		)
 }
 
-fn report_undeclared_label(span: SourceSpan) -> Diagnostic<FileId> {
+fn report_undeclared_label(
+	label_name: &str,
+	span: SourceSpan,
+) -> Diagnostic<FileId> {
 	Diagnostic::error()
 		.with_code(DiagnosticCode::UndeclaredLabel.code())
-		.with_message("undeclared label")
-		.with_label(span.primary_label())
+		.with_message(format!("use of undeclared label `{}`", label_name))
+		.with_label(span.primary_label().with_message("undeclared label"))
 }
 
 fn report_break_outside_of_loop(span: SourceSpan) -> Diagnostic<FileId> {
 	Diagnostic::error()
 		.with_code(DiagnosticCode::BreakOutsideOfLoop.code())
-		.with_message("`break` outside of loop")
+		.with_message("`break` outside of a loop or labeled block")
 		.with_label(span.primary_label())
-		.with_note("`break` is only allowed inside loops or labeled blocks")
+		.with_note("cannot `break` outside of a loop or labeled block")
 }
 
 fn report_cannot_mutate_immutable(span: SourceSpan) -> Diagnostic<FileId> {
@@ -1957,14 +1969,15 @@ impl<'ast> Builder<'ast, '_> {
 				scope_index,
 				local_index,
 			} => {
-				let local = func_ctx
-					.stack
-					.get_mut_local(scope_index, local_index)
-					.unwrap();
-				local.accesses.push(LocalAccess {
-					kind: access_ctx.access_kind,
-					span: expr_span,
-				});
+				func_ctx.stack.record_local_access(
+					scope_index,
+					local_index,
+					LocalAccess {
+						kind: access_ctx.access_kind,
+						span: expr_span,
+					},
+				);
+				let local = func_ctx.stack.get_local(scope_index, local_index);
 				if matches!(
 					access_ctx.access_kind,
 					AccessKind::Write | AccessKind::ReadWrite
@@ -1977,13 +1990,12 @@ impl<'ast> Builder<'ast, '_> {
 						),
 					));
 				}
-				let ty = local.ty;
 				Ok(Expression {
 					kind: ExprKind::Local {
 						local_index,
 						scope_index,
 					},
-					ty,
+					ty: local.ty,
 					span: expr_span,
 				})
 			}
@@ -5972,6 +5984,7 @@ impl<'ast> Builder<'ast, '_> {
 				let mut func_ctx = FunctionContext {
 					stack: StackFrame {
 						scopes: vec![root_scope],
+						labels: Vec::new(),
 					},
 					scope_index: 0 as ScopeIndex,
 					lookup: HashMap::new(),
@@ -6037,6 +6050,11 @@ impl<'ast> Builder<'ast, '_> {
 						),
 					);
 				}
+
+				self.report_stack_warnings(
+					func_ctx.resolve_context.file_id,
+					&func_ctx.stack,
+				);
 
 				self.tir.globals[global_index as usize].value =
 					Some(FunctionBody {
@@ -7474,6 +7492,7 @@ impl<'ast> Builder<'ast, '_> {
 		let mut ctx = FunctionContext {
 			stack: StackFrame {
 				scopes: vec![root_scope],
+				labels: Vec::new(),
 			},
 			scope_index: 0 as ScopeIndex,
 			lookup,
@@ -7483,9 +7502,10 @@ impl<'ast> Builder<'ast, '_> {
 				self_type: scope.self_type,
 			},
 		};
-		let result = self.build_block_expression(&mut ctx, &block);
+		let result = self.build_block_expression(&mut ctx, &block)?;
+		self.report_stack_warnings(ctx.resolve_context.file_id, &ctx.stack);
 		Ok(FunctionBody {
-			block: Box::new(result?),
+			block: Box::new(result),
 			stack: ctx.stack,
 		})
 	}
@@ -7513,10 +7533,6 @@ impl<'ast> Builder<'ast, '_> {
 
 		let expressions = match self.build_block_statements(ctx, statements) {
 			BlockState::Exhaustive(expressions) => {
-				self.report_local_warnings(
-					ctx.resolve_context.file_id,
-					&ctx.stack.scopes[ctx.scope_index as usize],
-				);
 				let unreachable_start = statements
 					.get(expressions.len())
 					.map(|s| s.inner.span.start)
@@ -7569,11 +7585,6 @@ impl<'ast> Builder<'ast, '_> {
 					None => None,
 				};
 
-				self.report_local_warnings(
-					ctx.resolve_context.file_id,
-					&ctx.stack.scopes[ctx.scope_index as usize],
-				);
-
 				let scope = &ctx.stack.scopes[ctx.scope_index as usize];
 				let inferred_type =
 					scope.inferred_type.infer_or(TypeIndex::NEVER);
@@ -7589,11 +7600,6 @@ impl<'ast> Builder<'ast, '_> {
 			}
 			BlockKind::Block => {
 				let result = self.build_block_result(ctx, result.as_deref())?;
-
-				self.report_local_warnings(
-					ctx.resolve_context.file_id,
-					&ctx.stack.scopes[ctx.scope_index as usize],
-				);
 
 				let scope = &ctx.stack.scopes[ctx.scope_index as usize];
 				let inferred_type = scope.inferred_type;
@@ -7630,26 +7636,42 @@ impl<'ast> Builder<'ast, '_> {
 		}
 	}
 
-	fn report_local_warnings(&mut self, file_id: FileId, block: &BlockScope) {
-		for local in block.locals.iter() {
-			if local.accesses.is_empty() && local.ty != TypeIndex::ERROR {
-				self.tir.diagnostics.push(report_unused_variable(
-					SourceSpan::new(file_id, local.name.span),
-				));
+	fn report_stack_warnings(&mut self, file_id: FileId, stack: &StackFrame) {
+		for label in stack.labels.iter() {
+			if label.accesses.is_empty() {
+				self.tir.diagnostics.push(
+					Diagnostic::warning()
+						.with_code(DiagnosticCode::UnusedLabel.code())
+						.with_message("unused label")
+						.with_label(
+							SourceSpan::new(file_id, label.name.span)
+								.primary_label(),
+						),
+				);
 			}
+		}
 
-			match local.mut_span {
-				Some(mut_span)
-					if !local.accesses.iter().any(|access| {
-						access.kind == AccessKind::Write
-							|| access.kind == AccessKind::ReadWrite
-					}) =>
-				{
-					self.tir.diagnostics.push(report_unnecessary_mutability(
-						SourceSpan::new(file_id, mut_span),
+		for scope in stack.scopes.iter() {
+			for local in scope.locals.iter() {
+				if local.accesses.is_empty() && local.ty != TypeIndex::ERROR {
+					self.tir.diagnostics.push(report_unused_variable(
+						SourceSpan::new(file_id, local.name.span),
 					));
 				}
-				_ => {}
+
+				match local.mut_span {
+					Some(mut_span)
+						if !local.accesses.iter().any(|access| {
+							access.kind == AccessKind::Write
+								|| access.kind == AccessKind::ReadWrite
+						}) =>
+					{
+						self.tir.diagnostics.push(report_unnecessary_mutability(
+							SourceSpan::new(file_id, mut_span),
+						));
+					}
+					_ => {}
+				}
 			}
 		}
 	}
@@ -9316,15 +9338,12 @@ impl<'ast> Builder<'ast, '_> {
 			ast::Expression::Label { label, block } => (label.clone(), block),
 			_ => unreachable!(),
 		};
+		let label = ctx.stack.push_label(label);
 
 		match block.inner {
 			ast::Expression::Block { .. } => ctx.enter_block(
 				BlockScope {
-					label: Some(BlockLabel {
-						name: label.inner,
-						span: label.span,
-						accesses: Vec::new(),
-					}),
+					label: Some(label),
 					kind: BlockKind::Block,
 					parent: Some(ctx.scope_index),
 					span: block.span,
@@ -9361,7 +9380,7 @@ impl<'ast> Builder<'ast, '_> {
 		func_ctx: &mut FunctionContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
-		label: Option<Spanned<SymbolU32>>,
+		label: Option<LabelIndex>,
 	) -> Result<Expression, ()> {
 		let block = match &expr.inner {
 			ast::Expression::Loop { block } => block,
@@ -9371,11 +9390,7 @@ impl<'ast> Builder<'ast, '_> {
 		let file_id = func_ctx.resolve_context.file_id;
 		func_ctx.enter_block(
 			BlockScope {
-				label: label.map(|l| BlockLabel {
-					name: l.inner,
-					span: l.span,
-					accesses: Vec::new(),
-				}),
+				label,
 				kind: BlockKind::Loop,
 				parent: Some(func_ctx.scope_index),
 				span: expr.span,
@@ -9430,27 +9445,54 @@ impl<'ast> Builder<'ast, '_> {
 
 		let scope_index = match label {
 			Some(label) => match ctx.resolve_label(label.inner) {
-				Some(scope_index) => {
-					if let Some(block_label) =
-						ctx.stack.scopes[scope_index as usize].label.as_mut()
-					{
-						block_label.accesses.push(label.span);
-					}
+				Some((scope_index, label_index)) => {
+					ctx.stack.labels[label_index as usize]
+						.accesses
+						.push(label.span);
 					scope_index
 				}
 				None => {
 					self.tir.diagnostics.push(report_undeclared_label(
+						self.interner.resolve(label.inner).unwrap(),
 						SourceSpan::new(
 							ctx.resolve_context.file_id,
 							label.span,
 						),
 					));
-					return Err(());
+					return Ok(Expression {
+						kind: ExprKind::Error,
+						ty: TypeIndex::NEVER,
+						span: expr.span,
+					});
 				}
 			},
-			None => ctx.get_closest_loop_block().expect(
-				"continue expression must be inside a loop or a block with a label",
-			),
+			None => match ctx.get_closest_loop_block() {
+				Some(scope_index) => scope_index,
+				None => {
+					self.tir.diagnostics.push(
+						Diagnostic::error()
+							.with_code(
+								DiagnosticCode::ContinueOutsideOfLoop.code(),
+							)
+							.with_message("`continue` outside of a loop")
+							.with_label(
+								SourceSpan::new(
+									ctx.resolve_context.file_id,
+									expr.span,
+								)
+								.primary_label()
+								.with_message(
+									"cannot `continue` outside of a loop",
+								),
+							),
+					);
+					return Ok(Expression {
+						kind: ExprKind::Error,
+						ty: TypeIndex::NEVER,
+						span: expr.span,
+					});
+				}
+			},
 		};
 
 		Ok(Expression {
@@ -9465,7 +9507,7 @@ impl<'ast> Builder<'ast, '_> {
 		ctx: &mut FunctionContext,
 		access_ctx: AccessContext,
 		expr: &Spanned<ast::Expression>,
-		label: Option<Spanned<SymbolU32>>,
+		label: Option<LabelIndex>,
 	) -> Result<Expression, ()> {
 		let (condition, then_block, maybe_else_block) = match &expr.inner {
 			ast::Expression::IfElse {
@@ -9488,11 +9530,7 @@ impl<'ast> Builder<'ast, '_> {
 		let mut then_block = match then_block.inner {
 			ast::Expression::Block { .. } => ctx.enter_block(
 				BlockScope {
-					label: label.map(|l| BlockLabel {
-						name: l.inner,
-						span: l.span,
-						accesses: Vec::new(),
-					}),
+					label,
 					kind: BlockKind::Block,
 					parent: Some(ctx.scope_index),
 					span: then_block.span,
@@ -9512,11 +9550,7 @@ impl<'ast> Builder<'ast, '_> {
 				let mut else_block = match ast_else_block.inner {
 					ast::Expression::Block { .. } => ctx.enter_block(
 						BlockScope {
-							label: label.map(|l| BlockLabel {
-								name: l.inner,
-								span: l.span,
-								accesses: Vec::new(),
-							}),
+							label,
 							kind: BlockKind::Block,
 							parent: Some(ctx.scope_index),
 							span: ast_else_block.span,
@@ -9754,16 +9788,15 @@ impl<'ast> Builder<'ast, '_> {
 
 		let scope_index = match label {
 			Some(label) => match ctx.resolve_label(label.inner) {
-				Some(scope_index) => {
-					if let Some(block_label) =
-						ctx.stack.scopes[scope_index as usize].label.as_mut()
-					{
-						block_label.accesses.push(label.span);
-					}
+				Some((scope_index, label_index)) => {
+					ctx.stack.labels[label_index as usize]
+						.accesses
+						.push(label.span);
 					scope_index
 				}
 				None => {
 					self.tir.diagnostics.push(report_undeclared_label(
+						self.interner.resolve(label.inner).unwrap(),
 						SourceSpan::new(
 							ctx.resolve_context.file_id,
 							label.span,
@@ -9816,7 +9849,7 @@ impl<'ast> Builder<'ast, '_> {
 					Ok(v) => v,
 					Err(()) => {
 						return Ok(Expression {
-							kind: ExprKind::Unreachable,
+							kind: ExprKind::Error,
 							ty: TypeIndex::NEVER,
 							span: expr.span,
 						});
@@ -10550,21 +10583,8 @@ impl<'ast> Builder<'ast, '_> {
 				scope_index,
 				local_index,
 			} => {
-				let local =
-					match ctx.stack.get_mut_local(scope_index, local_index) {
-						Some(local) => local,
-						None => {
-							self.tir.diagnostics.push(
-								report_undeclared_identifier(SourceSpan::new(
-									ctx.resolve_context.file_id,
-									left.span,
-								)),
-							);
-							return Err(());
-						}
-					};
-				let local_type = local.ty;
-
+				let local_type =
+					ctx.stack.get_local(scope_index, local_index).ty;
 				let mut right = self.build_expression(
 					ctx,
 					AccessContext {
@@ -10585,7 +10605,7 @@ impl<'ast> Builder<'ast, '_> {
 									inner: local_type,
 									span: left.span,
 								},
-								operator: operator.clone(),
+								operator,
 								right_type: Spanned {
 									inner: right.ty,
 									span: right.span,
@@ -10848,40 +10868,9 @@ impl<'ast> Builder<'ast, '_> {
 				scope_index,
 				local_index,
 			} => {
-				let local =
-					match ctx.stack.get_mut_local(scope_index, local_index) {
-						Some(local) => local,
-						None => {
-							self.tir.diagnostics.push(
-								report_undeclared_identifier(SourceSpan::new(
-									ctx.resolve_context.file_id,
-									left.span,
-								)),
-							);
-							return Err(());
-						}
-					};
-				// Allow operations with Error type (error already reported elsewhere)
-				if local.ty == TypeIndex::ERROR {
-					let right = self.build_expression(
-						ctx,
-						AccessContext {
-							expected_type: TypeIndex::ERROR,
-							access_kind: AccessKind::Read,
-						},
-						right,
-					)?;
-					return Ok(Expression {
-						kind: ExprKind::Binary {
-							operator,
-							left: Box::new(left),
-							right: Box::new(right),
-						},
-						ty: TypeIndex::UNIT,
-						span: expr.span,
-					});
-				}
-				if !local.ty.is_primitive() {
+				let local_type =
+					ctx.stack.get_local(scope_index, local_index).ty;
+				if !local_type.is_primitive() {
 					self.tir.diagnostics.push(
 						report_binary_operator_cannot_be_applied(
 							TypeFormatter::new(&self.tir, &self.interner),
@@ -10889,7 +10878,7 @@ impl<'ast> Builder<'ast, '_> {
 								file_id: ctx.resolve_context.file_id,
 								operator,
 								operand: Spanned {
-									inner: local.ty,
+									inner: local_type,
 									span: left.span,
 								},
 							},
@@ -10898,7 +10887,6 @@ impl<'ast> Builder<'ast, '_> {
 
 					return Err(());
 				}
-				let local_type = local.ty;
 				let mut right = self.build_expression(
 					ctx,
 					AccessContext {
@@ -10919,7 +10907,7 @@ impl<'ast> Builder<'ast, '_> {
 									inner: local_type,
 									span: left.span,
 								},
-								operator: operator.clone(),
+								operator,
 								right_type: Spanned {
 									inner: right.ty,
 									span: right.span,

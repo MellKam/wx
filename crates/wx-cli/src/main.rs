@@ -8,19 +8,14 @@ use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use wx_compiler::*;
 
 fn main() {
-	let diag_style_arg = clap::Arg::new("diagnostics")
-		.long("diagnostics")
-		.value_name("STYLE")
+	let message_format = clap::Arg::new("message-format")
+		.long("message-format")
+		.value_name("FMT")
 		.value_parser(clap::builder::PossibleValuesParser::new([
-			clap::builder::PossibleValue::new("rich")
-				.help("Full source preview with context (default)"),
-			clap::builder::PossibleValue::new("medium")
-				.help("Line number and notes"),
-			clap::builder::PossibleValue::new("short")
-				.help("One line per diagnostic"),
+			clap::builder::PossibleValue::new("human"),
+			clap::builder::PossibleValue::new("short"),
 		]))
-		.default_value("rich")
-		.help("Diagnostic display style");
+		.default_value("human");
 
 	let matches = clap::Command::new("wx")
 		.name("wx")
@@ -32,13 +27,13 @@ fn main() {
 			clap::Command::new("compile")
 				.about("Compile a WX source file to WebAssembly")
 				.arg(clap::Arg::new("path").required(true).index(1))
-				.arg(diag_style_arg.clone()),
+				.arg(message_format.clone()),
 		)
 		.subcommand(
 			clap::Command::new("check")
 				.about("Type-check a WX source file without emitting output")
 				.arg(clap::Arg::new("path").required(true).index(1))
-				.arg(diag_style_arg),
+				.arg(message_format),
 		)
 		.subcommand(
 			clap::Command::new("format")
@@ -51,14 +46,14 @@ fn main() {
 		Some(("compile", sub)) => {
 			let path = sub.get_one::<String>("path").unwrap();
 			let style = parse_display_style(
-				sub.get_one::<String>("diagnostics").unwrap(),
+				sub.get_one::<String>("message-format").unwrap(),
 			);
 			cmd_compile(path, style);
 		}
 		Some(("check", sub)) => {
 			let path = sub.get_one::<String>("path").unwrap();
 			let style = parse_display_style(
-				sub.get_one::<String>("diagnostics").unwrap(),
+				sub.get_one::<String>("message-format").unwrap(),
 			);
 			cmd_check(path, style);
 		}

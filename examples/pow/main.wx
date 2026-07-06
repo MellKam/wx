@@ -2,8 +2,8 @@ fn pow(base: i32, mut exp: i32) -> i32 {
   if exp < 0 { return 0 };
   
   local mut result: i32 = 1;
-  loop {
-    if exp == 0 { break result };
+  b: loop {
+    if exp == 0 { break :b result };
     result *= base;
     exp -= 1;
   }

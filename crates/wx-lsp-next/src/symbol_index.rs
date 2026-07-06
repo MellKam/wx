@@ -207,16 +207,17 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 
 		if let Some(body) = &function.body {
 			for (scope_idx, scope) in body.stack.scopes.iter().enumerate() {
-				if let Some(label) = &scope.label {
+				if let Some(label_index) = scope.label {
+					let label = &body.stack.labels[label_index as usize];
 					let kind = SymbolKind::Label {
 						func_id,
 						scope_idx: scope_idx as ScopeIndex,
 					};
 					index.definitions.push(SpanInfo {
-						source: SourceSpan::new(file_id, label.span),
+						source: SourceSpan::new(file_id, label.name.span),
 						kind: kind.clone(),
 					});
-					for &access_span in &label.accesses {
+					for access_span in label.accesses.iter().copied() {
 						index.references.push(SpanInfo {
 							source: SourceSpan::new(file_id, access_span),
 							kind: kind.clone(),
@@ -243,7 +244,7 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 							kind: kind.clone(),
 						});
 					}
-					for access in &local.accesses {
+					for access in local.accesses.iter().copied() {
 						index.references.push(SpanInfo {
 							source: SourceSpan::new(file_id, access.span),
 							kind: kind.clone(),

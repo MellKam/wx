@@ -303,6 +303,7 @@ impl TryFrom<&str> for Type {
 
 pub type LocalIndex = u32;
 pub type ScopeIndex = u32;
+pub type LabelIndex = u32;
 pub type FunctionIndex = u32;
 pub type GlobalIndex = u32;
 pub type ConstIndex = u32;
@@ -316,13 +317,13 @@ pub type TypesetIndex = u32;
 
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Constant {
-	pub id: ast::DefId,
+	pub id: DefId,
 	pub file_id: FileId,
 	pub namespace: Option<NamespaceIndex>,
 	/// `Some` for associated consts (`impl Target { const FOO }` / trait
 	/// consts) — `None` for free top-level consts. See `ItemParent`.
 	pub parent: Option<ItemParent>,
-	pub pub_span: Option<ast::TextSpan>,
+	pub pub_span: Option<TextSpan>,
 	pub name: ast::Spanned<SymbolU32>,
 	pub ty: ast::Spanned<TypeIndex>,
 	pub value: Option<Box<Expression>>,
@@ -711,19 +712,20 @@ struct AccessContext {
 	access_kind: AccessKind,
 }
 
+#[derive(Clone, Copy)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct LocalAccess {
-	pub span: ast::TextSpan,
+	pub span: TextSpan,
 	pub kind: AccessKind,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Local {
-	pub name: ast::Spanned<SymbolU32>,
+	pub name: Spanned<SymbolU32>,
 	pub ty: TypeIndex,
-	pub mut_span: Option<ast::TextSpan>,
+	pub mut_span: Option<TextSpan>,
 	pub accesses: Vec<LocalAccess>,
 }
 
@@ -739,21 +741,17 @@ pub enum BlockKind {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct BlockLabel {
-	pub name: SymbolU32,
-	pub span: ast::TextSpan,
-	pub accesses: Vec<ast::TextSpan>,
+	pub name: Spanned<SymbolU32>,
+	pub accesses: Vec<TextSpan>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct BlockScope {
 	pub kind: BlockKind,
-	pub label: Option<BlockLabel>,
+	pub label: Option<LabelIndex>,
 	pub parent: Option<ScopeIndex>,
-	/// Byte range of the `{ … }` block this scope corresponds to.
-	/// Used by the LSP to determine which scopes contain a given cursor position.
-	#[cfg_attr(test, serde(skip))]
-	pub span: ast::TextSpan,
+	pub span: TextSpan,
 	pub locals: Vec<Local>,
 	/// Type accumulated from `break` arms; `INFER` means nothing seen yet.
 	pub inferred_type: TypeIndex,
@@ -764,37 +762,48 @@ pub struct BlockScope {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct StackFrame {
+	pub labels: Vec<BlockLabel>,
 	pub scopes: Vec<BlockScope>,
 }
 
 impl StackFrame {
-	pub fn push_local(&mut self, scope_index: u32, local: Local) -> LocalIndex {
+	#[inline]
+	fn push_local(&mut self, scope_index: u32, local: Local) -> LocalIndex {
 		let scope = &mut self.scopes[scope_index as usize];
 		let local_index = scope.locals.len() as LocalIndex;
 		scope.locals.push(local);
 		local_index
 	}
 
-	pub fn get_local(
+	#[inline]
+	fn push_label(&mut self, label: Spanned<SymbolU32>) -> LabelIndex {
+		let label_index = self.labels.len() as LabelIndex;
+		self.labels.push(BlockLabel {
+			name: label,
+			accesses: Vec::new(),
+		});
+		label_index
+	}
+
+	#[inline]
+	fn get_local(
 		&self,
 		scope_index: ScopeIndex,
 		local_index: LocalIndex,
-	) -> Option<&Local> {
-		self.scopes
-			.get(scope_index as usize)?
-			.locals
-			.get(local_index as usize)
+	) -> &Local {
+		&self.scopes[scope_index as usize].locals[local_index as usize]
 	}
 
-	pub fn get_mut_local(
+	#[inline]
+	fn record_local_access(
 		&mut self,
 		scope_index: ScopeIndex,
 		local_index: LocalIndex,
-	) -> Option<&mut Local> {
-		self.scopes
-			.get_mut(scope_index as usize)?
-			.locals
-			.get_mut(local_index as usize)
+		access: LocalAccess,
+	) {
+		self.scopes[scope_index as usize].locals[local_index as usize]
+			.accesses
+			.push(access);
 	}
 }
 
@@ -1275,6 +1284,7 @@ define_diagnostic_codes! {
 		MissingImportParamName => "W1005",
 		UnusedTypeParam => "W1006",
 		UnusedStructField => "W1007",
+		UnusedLabel => "W1008",
 		MissingFunctionBody => "E1028",
 		InvalidMemoryKind => "E1029",
 		NamespaceUsedAsValue => "E1030",
@@ -1301,6 +1311,7 @@ define_diagnostic_codes! {
 		InferInSignature => "E1051",
 		MissingElseBlock => "E1052",
 		InvalidSelfType => "E1053",
+		ContinueOutsideOfLoop => "E1054",
 	}
 }
 
@@ -1310,10 +1321,10 @@ pub struct Global {
 	pub file_id: FileId,
 	pub namespace: Option<NamespaceIndex>,
 	pub accesses: Vec<SourceSpan>,
-	pub name: ast::Spanned<SymbolU32>,
-	pub ty: ast::Spanned<TypeIndex>,
-	pub pub_span: Option<ast::TextSpan>,
-	pub mut_span: Option<ast::TextSpan>,
+	pub name: Spanned<SymbolU32>,
+	pub ty: Spanned<TypeIndex>,
+	pub pub_span: Option<TextSpan>,
+	pub mut_span: Option<TextSpan>,
 	pub value: Option<FunctionBody>,
 }
 
@@ -1329,26 +1340,26 @@ pub enum FieldAccessKind {
 pub struct FieldAccess {
 	pub kind: FieldAccessKind,
 	pub file_id: FileId,
-	pub span: ast::TextSpan,
+	pub span: TextSpan,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct StructField {
-	pub name: ast::Spanned<SymbolU32>,
-	pub ty: ast::Spanned<TypeIndex>,
-	pub pub_span: Option<ast::TextSpan>,
+	pub name: Spanned<SymbolU32>,
+	pub ty: Spanned<TypeIndex>,
+	pub pub_span: Option<TextSpan>,
 	pub accesses: Vec<FieldAccess>,
 }
 
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct Struct {
-	pub id: ast::DefId,
+	pub id: DefId,
 	pub file_id: FileId,
 	pub namespace: Option<NamespaceIndex>,
-	pub pub_span: Option<ast::TextSpan>,
-	pub name: ast::Spanned<SymbolU32>,
+	pub pub_span: Option<TextSpan>,
+	pub name: Spanned<SymbolU32>,
 	/// Empty for non-generic structs.
 	pub type_params: Box<[TypeParamInfo]>,
 	/// `Type::Struct { struct_index, args: [] }` for this struct.
@@ -1366,11 +1377,11 @@ pub struct Struct {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TypeAlias {
-	pub id: ast::DefId,
+	pub id: DefId,
 	pub file_id: FileId,
 	pub namespace: Option<NamespaceIndex>,
-	pub pub_span: Option<ast::TextSpan>,
-	pub name: ast::Spanned<SymbolU32>,
+	pub pub_span: Option<TextSpan>,
+	pub name: Spanned<SymbolU32>,
 	/// Empty for non-generic aliases.
 	pub type_params: Box<[TypeParamInfo]>,
 	/// The alias's target type, fully resolved. For a generic alias this may
@@ -1815,13 +1826,13 @@ pub struct TIR {
 	pub type_trait_impls: HashMap<TypeIndex, Vec<TraitImplIndex>>,
 	pub constants: Vec<Constant>,
 	#[cfg_attr(test, serde(skip))]
-	pub lang_items: HashMap<SymbolU32, ast::DefId>,
+	pub lang_items: HashMap<SymbolU32, DefId>,
 	pub typesets: Vec<TypeSet>,
 	pub type_aliases: Vec<TypeAlias>,
 	/// Unified lookup: maps every named item's `DefId` to its kind and dense Vec index.
 	/// Replaces the previous per-kind hashmaps (`function_index_lookup`, etc.).
 	#[cfg_attr(test, serde(skip))]
-	pub item_lookup: HashMap<ast::DefId, ItemIndex>,
+	pub item_lookup: HashMap<DefId, ItemIndex>,
 }
 
 impl TIR {
@@ -1834,7 +1845,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_function_index(&self, id: ast::DefId) -> FunctionIndex {
+	pub fn expect_function_index(&self, id: DefId) -> FunctionIndex {
 		match self.item_lookup[&id] {
 			ItemIndex::Function(i) => i,
 			#[cfg(debug_assertions)]
@@ -1847,7 +1858,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn struct_index(&self, id: ast::DefId) -> Option<u32> {
+	pub fn struct_index(&self, id: DefId) -> Option<u32> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::Struct(i) => Some(*i),
 			_ => None,
@@ -1855,7 +1866,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_struct_index(&self, id: ast::DefId) -> u32 {
+	pub fn expect_struct_index(&self, id: DefId) -> u32 {
 		match self.item_lookup[&id] {
 			ItemIndex::Struct(i) => i,
 			#[cfg(debug_assertions)]
@@ -1868,7 +1879,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn type_alias_index(&self, id: ast::DefId) -> Option<u32> {
+	pub fn type_alias_index(&self, id: DefId) -> Option<u32> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::TypeAlias(i) => Some(*i),
 			_ => None,
@@ -1876,7 +1887,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_type_alias_index(&self, id: ast::DefId) -> u32 {
+	pub fn expect_type_alias_index(&self, id: DefId) -> u32 {
 		match self.item_lookup[&id] {
 			ItemIndex::TypeAlias(i) => i,
 			#[cfg(debug_assertions)]
@@ -1889,7 +1900,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn const_index(&self, id: ast::DefId) -> Option<ConstIndex> {
+	pub fn const_index(&self, id: DefId) -> Option<ConstIndex> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::Const(i) => Some(*i),
 			_ => None,
@@ -1897,7 +1908,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_const_index(&self, id: ast::DefId) -> ConstIndex {
+	pub fn expect_const_index(&self, id: DefId) -> ConstIndex {
 		match self.item_lookup[&id] {
 			ItemIndex::Const(i) => i,
 			#[cfg(debug_assertions)]
@@ -1908,7 +1919,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn global_index(&self, id: ast::DefId) -> Option<GlobalIndex> {
+	pub fn global_index(&self, id: DefId) -> Option<GlobalIndex> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::Global(i) => Some(*i),
 			_ => None,
@@ -1916,7 +1927,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_global_index(&self, id: ast::DefId) -> GlobalIndex {
+	pub fn expect_global_index(&self, id: DefId) -> GlobalIndex {
 		match self.item_lookup[&id] {
 			ItemIndex::Global(i) => i,
 			#[cfg(debug_assertions)]
@@ -1929,7 +1940,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn memory_index(&self, id: ast::DefId) -> Option<MemoryIndex> {
+	pub fn memory_index(&self, id: DefId) -> Option<MemoryIndex> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::Memory(i) => Some(*i),
 			_ => None,
@@ -1937,7 +1948,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_memory_index(&self, id: ast::DefId) -> MemoryIndex {
+	pub fn expect_memory_index(&self, id: DefId) -> MemoryIndex {
 		match self.item_lookup[&id] {
 			ItemIndex::Memory(i) => i,
 			#[cfg(debug_assertions)]
@@ -1950,7 +1961,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn typeset_index(&self, id: ast::DefId) -> Option<TypesetIndex> {
+	pub fn typeset_index(&self, id: DefId) -> Option<TypesetIndex> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::TypeSet(i) => Some(*i),
 			_ => None,
@@ -1958,7 +1969,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_typeset_index(&self, id: ast::DefId) -> TypesetIndex {
+	pub fn expect_typeset_index(&self, id: DefId) -> TypesetIndex {
 		match self.item_lookup[&id] {
 			ItemIndex::TypeSet(i) => i,
 			#[cfg(debug_assertions)]
@@ -1971,7 +1982,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn trait_index(&self, id: ast::DefId) -> Option<TraitIndex> {
+	pub fn trait_index(&self, id: DefId) -> Option<TraitIndex> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::Trait(i) => Some(*i),
 			_ => None,
@@ -1979,7 +1990,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_trait_index(&self, id: ast::DefId) -> TraitIndex {
+	pub fn expect_trait_index(&self, id: DefId) -> TraitIndex {
 		match self.item_lookup[&id] {
 			ItemIndex::Trait(i) => i,
 			#[cfg(debug_assertions)]
@@ -1990,7 +2001,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn trait_impl_index(&self, id: ast::DefId) -> Option<TraitImplIndex> {
+	pub fn trait_impl_index(&self, id: DefId) -> Option<TraitImplIndex> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::TraitImpl(i) => Some(*i),
 			_ => None,
@@ -1998,7 +2009,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_trait_impl_index(&self, id: ast::DefId) -> TraitImplIndex {
+	pub fn expect_trait_impl_index(&self, id: DefId) -> TraitImplIndex {
 		match self.item_lookup[&id] {
 			ItemIndex::TraitImpl(i) => i,
 			#[cfg(debug_assertions)]
@@ -2011,7 +2022,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn enum_index(&self, id: ast::DefId) -> Option<EnumIndex> {
+	pub fn enum_index(&self, id: DefId) -> Option<EnumIndex> {
 		match self.item_lookup.get(&id)? {
 			ItemIndex::Enum(i) => Some(*i),
 			_ => None,
@@ -2019,7 +2030,7 @@ impl TIR {
 	}
 
 	#[inline]
-	pub fn expect_enum_index(&self, id: ast::DefId) -> EnumIndex {
+	pub fn expect_enum_index(&self, id: DefId) -> EnumIndex {
 		match self.item_lookup[&id] {
 			ItemIndex::Enum(index) => index,
 			#[cfg(debug_assertions)]

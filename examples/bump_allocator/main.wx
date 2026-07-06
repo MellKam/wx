@@ -1,3 +1,5 @@
+use std::*;
+
 // Bump allocator — the simplest possible dynamic memory allocator.
 //
 // Strategy: maintain a `bump` pointer that starts right after static data

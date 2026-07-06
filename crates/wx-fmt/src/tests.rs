@@ -1123,3 +1123,35 @@ fn test_format_impl_trait_multi_segment() {
         "}
 	);
 }
+
+#[test]
+fn test_format_deep_indent_past_max_width_does_not_panic() {
+	// Regression test: once accumulated indentation alone exceeds
+	// max_line_width, Renderer::render_node's Group arm computed
+	// `max_line_width - position`, underflowing (panicking in debug builds).
+	// It must saturate to 0 (always break) instead.
+	let case = TestCase::new(indoc! {"
+        fn f() {
+          if true {
+            if true {
+              if true {
+                if true {
+                  local x = 1 + 2;
+                }
+              }
+            }
+          }
+        }
+    "});
+	let output = format(
+		&case.ast,
+		&case.interner,
+		&case.files.get(case.ast.file_id).unwrap().source,
+		RendererConfig {
+			max_line_width: 10,
+			indent_width: 4,
+			trailing_comma: true,
+		},
+	);
+	assert!(!output.is_empty());
+}

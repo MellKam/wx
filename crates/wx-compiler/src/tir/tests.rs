@@ -5672,6 +5672,135 @@ fn test_loop_with_continue_only_has_never_type() {
 	no_errors(&case);
 }
 
+#[test]
+fn test_break_outside_of_loop_reports_diagnostic() {
+	let case = TestCase::new(indoc! {"
+        pub fn f() { break; }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::BreakOutsideOfLoop),
+		"expected E1012 (BreakOutsideOfLoop), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_continue_outside_of_loop_reports_diagnostic() {
+	let case = TestCase::new(indoc! {"
+        pub fn f() { continue; }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::ContinueOutsideOfLoop),
+		"expected E1054 (ContinueOutsideOfLoop), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_break_with_undeclared_label_reports_only_that_diagnostic() {
+	// No loop anywhere in `f`, so the label-less "outside of loop" check
+	// must not also fire alongside the undeclared-label error.
+	let case = TestCase::new(indoc! {"
+        pub fn f() { break :outer; }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UndeclaredLabel),
+		"expected E1011 (UndeclaredLabel), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+	assert_eq!(
+		case.tir.diagnostics.len(),
+		1,
+		"expected only UndeclaredLabel, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_continue_with_undeclared_label_reports_only_that_diagnostic() {
+	// Same as above but for `continue`.
+	let case = TestCase::new(indoc! {"
+        pub fn f() { continue :outer; }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UndeclaredLabel),
+		"expected E1011 (UndeclaredLabel), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+	assert_eq!(
+		case.tir.diagnostics.len(),
+		1,
+		"expected only UndeclaredLabel, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_unused_label_reports_diagnostic() {
+	// `outer` is declared but never referenced by a `break`/`continue`.
+	let case = TestCase::new(indoc! {"
+        pub fn f() {
+            outer: loop {
+                break;
+            }
+        }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UnusedLabel),
+		"expected W1008 (UnusedLabel), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_used_label_reports_no_unused_label_diagnostic() {
+	// `outer` is referenced by `break :outer;`, so it must not be flagged.
+	let case = TestCase::new(indoc! {"
+        pub fn f() {
+            outer: loop {
+                break :outer;
+            }
+        }
+    "});
+	assert!(
+		!has_error_code(&case.tir, DiagnosticCode::UnusedLabel),
+		"did not expect W1008 (UnusedLabel), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
 // ── supertrait constraint tests ───────────────────────────────────────────────
 
 #[test]
