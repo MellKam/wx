@@ -32,7 +32,7 @@ const resolveServerBinary = (context: ExtensionContext): string => {
 			"..",
 			"target",
 			"debug",
-			process.platform === "win32" ? "wx-lsp-next.exe" : "wx-lsp-next",
+			process.platform === "win32" ? "wx-lsp.exe" : "wx-lsp",
 		);
 	}
 
@@ -142,9 +142,11 @@ async function startServer(serverModule: string) {
 }
 
 export function activate(context: ExtensionContext) {
-	console.log("WX Language Server extension is activating...");
+	console.log("[wx-vscode] activate() called");
+	window.showInformationMessage("[wx-vscode] activate() called");
 
 	const serverModule = resolveServerBinary(context);
+	console.log(`[wx-vscode] resolved server binary: ${serverModule}`);
 	const restartCommand = commands.registerCommand(
 		"wx-vscode.restartServer",
 		async () => {

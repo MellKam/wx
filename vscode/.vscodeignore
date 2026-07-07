@@ -4,4 +4,6 @@ src/**
 .gitignore
 **/*.map
 **/*.ts
+**/*.mts
 **/.vscode-test.*
+tsconfig.json

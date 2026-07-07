@@ -5,7 +5,20 @@
 			"type": "npm",
 			"script": "watch",
 			"path": "vscode/",
-			"problemMatcher": "$tsc-watch",
+			"problemMatcher": {
+				"owner": "tsdown",
+				"source": "tsdown",
+				"fileLocation": "absolute",
+				"pattern": {
+					"regexp": "^\\s*ERROR\\s+(.*)$",
+					"message": 1
+				},
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": "^ℹ (Build start|Found .* changed, rebuilding\\.\\.\\.)",
+					"endsPattern": "^(✔ (Rebuilt|Built) in|ERROR\\b)"
+				}
+			},
 			"isBackground": true,
 			"presentation": {
 				"reveal": "never"

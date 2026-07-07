@@ -4,14 +4,15 @@
 	"description": "WX language support: syntax highlighting, LSP diagnostics, completions, and formatting",
 	"version": "0.0.1",
 	"engines": {
-		"vscode": "^1.105.0"
+		"vscode": "^1.125.0"
 	},
 	"categories": [
 		"Programming Languages"
 	],
 	"activationEvents": [],
-	"main": "./out/extension.js",
+	"main": "./out/extension.cjs",
 	"publisher": "mellkam",
+	"license": "MIT",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/MellKam/wx.git"
@@ -70,9 +71,12 @@
 		}
 	},
 	"scripts": {
-		"vscode:prepublish": "npm run build",
-		"build": "tsc -p ./",
-		"watch": "tsc -watch -p ./"
+		"vscode:prepublish": "npm run typecheck && tsdown --minify",
+		"package": "vsce package --no-dependencies",
+		"publish": "vsce publish --no-dependencies",
+		"typecheck": "tsc --noEmit -p ./",
+		"build": "tsdown",
+		"watch": "tsdown --watch"
 	},
 	"dependencies": {
 		"ansi-sequence-parser": "^1.1.3",
@@ -81,6 +85,8 @@
 	"devDependencies": {
 		"@types/node": "^26.1.0",
 		"@types/vscode": "^1.125.0",
+		"@vscode/vsce": "^3.6.2",
+		"tsdown": "^0.22.3",
 		"typescript": "^6.0.3"
 	},
 	"packageManager": "pnpm@11.9.0+sha512.bd682d5d03fe525ef7c9fd6780c6884d1e756ac4c9c9fe00c538782824310dcf90e3ddc4f53835f06dfaebd5085e41855e0bcbb3b60de2ac5bbab89e5036f03b"

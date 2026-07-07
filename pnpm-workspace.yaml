@@ -4,5 +4,11 @@ packages:
   - 'cli/npm/*'
   - 'web-next'
 
+allowBuilds:
+  # Native helpers `@vscode/vsce` uses for `vsce login`/`publish` (extension
+  # signing, OS keychain credential storage). Not needed for `vsce package`.
+  '@vscode/vsce-sign': false
+  keytar: false
+
 minimumReleaseAgeExclude:
   - '@types/node@26.1.0'

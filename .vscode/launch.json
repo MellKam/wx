@@ -9,7 +9,7 @@
 				"--extensionDevelopmentPath=${workspaceFolder}/vscode",
 				"${workspaceFolder}"
 			],
-			"outFiles": ["${workspaceFolder}/vscode/out/**/*.js"],
+			"outFiles": ["${workspaceFolder}/vscode/out/**/*.cjs"],
 			"preLaunchTask": "npm: watch extension"
 		}
 	]
