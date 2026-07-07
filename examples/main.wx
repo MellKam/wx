@@ -1,33 +1,17 @@
-module test {
-  pub struct X {
-    foo: i32,
-  }
+enum Status: u8 {
+  Ok = 200,
 }
 
-pub fn memory_fill<M: Memory>(dst: M::*u8, value: u8, len: M::Size) {}
-
-pub fn memory_copy<
-  Size: PointerSize,
-  SrcMem: Memory where { Size = Size },
-  DstMem: Memory where { Size = Size },
->(dst: DstMem::*u8, src: SrcMem::*u8, len: Size) {}
-
-struct Y<T> {
-  foo: T,
+fn test() -> Status {
+  Status::Ok
 }
 
-impl<T> Y<T> {
-  fn test() -> T {
-    a: {}
-  }
+fn identity<T>(value: T) -> T {
+  value
 }
 
-use std::*;
-
-memory heap: Memory where { Size = u32 };
-
-fn main(f: test::X) -> i32 {
-  memory_copy(0, 0, 5);
-  
-  0
+export {
+  Status,
+  test,
+  identity,
 }

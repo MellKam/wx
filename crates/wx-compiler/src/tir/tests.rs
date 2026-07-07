@@ -190,6 +190,134 @@ fn test_duplicate_export() {
 }
 
 #[test]
+fn test_export_enum_reports_cannot_export_not_undeclared() {
+	// Regression test: `Status` is a real, declared item — exporting it
+	// used to fall through to "undeclared identifier" (E1007) because the
+	// export lookup only checked the value namespace, where enum names
+	// never live. It should report E1019 (CannotExportItem) instead.
+	let case = TestCase::new(indoc! {"
+        enum Status: u8 {
+            Ok = 200,
+        }
+
+        export {
+            Status,
+        }
+    "});
+
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotExportItem),
+		"expected E1019 (CannotExportItem), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
+	assert!(
+		!has_error_code(&case.tir, DiagnosticCode::UndeclaredIdentifier),
+		"should not report E1007 (UndeclaredIdentifier) for a real, non-exportable item: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
+	assert_eq!(
+		case.tir.enums[0].accesses.len(),
+		1,
+		"the `Status` mention in `export {{ Status }}` must still be recorded as an \
+		 access so the LSP can resolve hover/go-to-definition on it despite the error"
+	);
+}
+
+#[test]
+fn test_export_generic_function_reports_cannot_export() {
+	// Regression test: exporting a generic function used to pass TIR
+	// silently and only fail later, in the MIR phase, with a much less
+	// helpful error. It should be rejected at export time instead.
+	let case = TestCase::new(indoc! {"
+        fn identity<T>(value: T) -> T {
+            value
+        }
+
+        export {
+            identity,
+        }
+    "});
+
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotExportItem),
+		"expected E1019 (CannotExportItem), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
+	let func = case
+		.tir
+		.functions
+		.iter()
+		.find(|f| {
+			case.graph
+				.interner
+				.resolve(f.name.inner)
+				.map(|n| n == "identity")
+				.unwrap_or(false)
+		})
+		.expect("function 'identity' not found in TIR");
+	assert_eq!(
+		func.accesses.len(),
+		1,
+		"the `identity` mention in `export {{ identity }}` must still be recorded as \
+		 an access so the LSP can resolve hover/go-to-definition on it despite the error"
+	);
+}
+
+#[test]
+fn test_export_const_reports_cannot_export_and_records_access() {
+	// `const` is never emitted as a WASM global (it's inlined at every use
+	// site), so it can't be exported either — but the mention should still
+	// be recorded as an access for the LSP.
+	let case = TestCase::new(indoc! {"
+        const LIMIT: i32 = 10;
+
+        export {
+            LIMIT,
+        }
+    "});
+
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::CannotExportItem),
+		"expected E1019 (CannotExportItem), got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>(),
+	);
+	let constant = case
+		.tir
+		.constants
+		.iter()
+		.find(|c| {
+			case.graph
+				.interner
+				.resolve(c.name.inner)
+				.map(|n| n == "LIMIT")
+				.unwrap_or(false)
+		})
+		.expect("const 'LIMIT' not found in TIR");
+	assert_eq!(
+		constant.accesses.len(),
+		1,
+		"the `LIMIT` mention in `export {{ LIMIT }}` must still be recorded as an \
+		 access so the LSP can resolve hover/go-to-definition on it despite the error"
+	);
+}
+
+#[test]
 fn test_duplicate_export_with_alias() {
 	let case = TestCase::new(indoc! {"
         fn foo() -> i32 { 42 }

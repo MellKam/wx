@@ -1,509 +1,550 @@
-#![allow(dead_code)]
-
-use wx_compiler::ast::TextSpan;
+use string_interner::symbol::SymbolU32;
+use wx_compiler::ast::{DefId, StringInterner, TextSpan};
 use wx_compiler::tir::{
-    EnumVariantIndex, ExprKind, Expression, FunctionIndex, GlobalIndex, LocalIndex, ScopeIndex,
-    TIR, Type,
+	EnumVariantIndex, ExportItem, FieldAccessKind, LocalIndex,
+	ModuleDeclarationKind, NamespaceIndex, ScopeIndex, SourceSpan, TIR,
+	TypeParamOwner,
 };
+use wx_compiler::vfs::FileId;
 
-/// The kind of symbol being referenced or defined
 #[cfg_attr(debug_assertions, derive(Debug))]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum SymbolKind {
-    LocalVariable {
-        func_idx: FunctionIndex,
-        scope_idx: ScopeIndex,
-        local_idx: LocalIndex,
-    },
-    GlobalVariable {
-        global_idx: GlobalIndex,
-    },
-    Function {
-        func_idx: FunctionIndex,
-    },
-    EnumVariant {
-        enum_index: u32,
-        variant_idx: EnumVariantIndex,
-    },
-    FunctionParam {
-        func_idx: FunctionIndex,
-        param_idx: u32,
-    },
-    Type {
-        ty: TypeIndex,
-    },
+	Function(DefId),
+	Global(DefId),
+	Const(DefId),
+	Enum(DefId),
+	Struct(DefId),
+	Namespace(NamespaceIndex),
+	Local {
+		func_id: DefId,
+		scope_idx: ScopeIndex,
+		local_idx: LocalIndex,
+	},
+	Param {
+		func_id: DefId,
+		param_idx: u32,
+	},
+	EnumVariant {
+		enum_id: DefId,
+		variant_idx: EnumVariantIndex,
+	},
+	Label {
+		func_id: DefId,
+		scope_idx: ScopeIndex,
+	},
+	Trait(DefId),
+	TypeSet(DefId),
+	TypeParam {
+		owner: TypeParamOwner,
+		param_index: u32,
+	},
+	AssocType {
+		trait_id: DefId,
+		assoc_name: SymbolU32,
+	},
+	StructField {
+		struct_id: DefId,
+		field_idx: u32,
+	},
 }
 
-/// How the symbol is being used at this location
-#[cfg_attr(debug_assertions, derive(Debug))]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SymbolUsage {
-    /// Where the symbol is defined
-    Definition,
-    /// Where the symbol is used/referenced
-    Reference,
-    /// Type annotation usage
-    TypeUsage,
-}
-
-/// Information about a symbol at a specific text span
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[derive(Clone)]
 pub struct SpanInfo {
-    pub span: TextSpan,
-    pub kind: SymbolKind,
-    pub usage: SymbolUsage,
+	pub source: SourceSpan,
+	pub kind: SymbolKind,
 }
 
-/// Index for efficiently looking up symbols by text position
+/// A named module-level definition, tagged with the namespace it's declared
+/// in so completion can filter to what's actually visible from a given
+/// cursor position instead of every item in the compilation graph.
+#[cfg_attr(debug_assertions, derive(Debug))]
+#[derive(Clone)]
+pub struct GlobalDefinition {
+	pub name: SymbolU32,
+	/// `None` means the implicit root namespace.
+	pub namespace: Option<NamespaceIndex>,
+	pub info: SpanInfo,
+}
+
 pub struct SymbolIndex {
-    /// Sorted by span.start for binary search
-    entries: Vec<SpanInfo>,
+	pub definitions: Vec<SpanInfo>,
+	pub references: Vec<SpanInfo>,
+	/// Named module-level definitions sorted by string value for prefix search.
+	/// Excludes scope-sensitive items (locals, params, type params, labels).
+	pub global_definitions: Vec<GlobalDefinition>,
 }
 
 impl SymbolIndex {
-    pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
+	fn new() -> Self {
+		Self {
+			definitions: Vec::new(),
+			references: Vec::new(),
+			global_definitions: Vec::new(),
+		}
+	}
 
-    /// Add a new span entry to the index
-    pub fn add(&mut self, info: SpanInfo) {
-        self.entries.push(info);
-    }
+	fn build(&mut self, interner: &StringInterner) {
+		self.definitions.sort_by_key(|e| e.source.span.start);
+		self.references.sort_by_key(|e| e.source.span.start);
+		self.global_definitions.sort_by(|a, b| {
+			interner
+				.resolve(a.name)
+				.unwrap_or("")
+				.cmp(interner.resolve(b.name).unwrap_or(""))
+		});
+	}
 
-    /// Build/finalize the index by sorting entries
-    /// Call this after all entries have been added
-    pub fn build(&mut self) {
-        self.entries.sort_by_key(|e| e.span.start);
-    }
-
-    /// Find the symbol at the given text position
-    /// Returns the innermost/smallest span containing the position
-    pub fn find_at_position(&self, pos: u32) -> Option<&SpanInfo> {
-        // Binary search for the last entry where span.start <= pos
-        let upper = self.entries.partition_point(|e| e.span.start <= pos);
-
-        // Only look at entries up to that point, since anything after
-        // has span.start > pos and can't contain pos
-        self.entries[..upper]
-            .iter()
-            .rev() // scan backwards — most specific spans tend to be last
-            .filter(|e| e.span.end >= pos)
-            .min_by_key(|e| e.span.end - e.span.start)
-    }
-
-    /// Find all references to the same symbol
-    pub fn find_all_references(&self, kind: &SymbolKind) -> Vec<TextSpan> {
-        self.entries
-            .iter()
-            .filter(|entry| Self::same_symbol(&entry.kind, kind))
-            .map(|entry| entry.span)
-            .collect()
-    }
-
-    /// Find the definition of a symbol
-    pub fn find_definition(&self, kind: &SymbolKind) -> Option<TextSpan> {
-        self.entries
-            .iter()
-            .find(|entry| {
-                Self::same_symbol(&entry.kind, kind) && entry.usage == SymbolUsage::Definition
-            })
-            .map(|entry| entry.span)
-    }
-
-    /// Check if two symbol kinds refer to the same symbol
-    fn same_symbol(a: &SymbolKind, b: &SymbolKind) -> bool {
-        match (a, b) {
-            (
-                SymbolKind::LocalVariable {
-                    func_idx: f1,
-                    scope_idx: s1,
-                    local_idx: l1,
-                },
-                SymbolKind::LocalVariable {
-                    func_idx: f2,
-                    scope_idx: s2,
-                    local_idx: l2,
-                },
-            ) => f1 == f2 && s1 == s2 && l1 == l2,
-            (
-                SymbolKind::GlobalVariable { global_idx: g1 },
-                SymbolKind::GlobalVariable { global_idx: g2 },
-            ) => g1 == g2,
-            (SymbolKind::Function { func_idx: f1 }, SymbolKind::Function { func_idx: f2 }) => {
-                f1 == f2
-            }
-            // (SymbolKind::EnumType { enum_idx: e1 }, SymbolKind::EnumType { enum_idx: e2 }) => {
-            //     e1 == e2
-            // }
-            // (
-            //     SymbolKind::EnumVariant {
-            //         enum_idx: e1,
-            //         variant_idx: v1,
-            //     },
-            //     SymbolKind::EnumVariant {
-            //         enum_idx: e2,
-            //         variant_idx: v2,
-            //     },
-            // ) => e1 == e2 && v1 == v2,
-            (
-                SymbolKind::FunctionParam {
-                    func_idx: f1,
-                    param_idx: p1,
-                },
-                SymbolKind::FunctionParam {
-                    func_idx: f2,
-                    param_idx: p2,
-                },
-            ) => f1 == f2 && p1 == p2,
-            // Function parameters are also local variables in scope 0
-            // FunctionParam at index N corresponds to LocalVariable at scope 0, index N
-            (
-                SymbolKind::FunctionParam {
-                    func_idx: f1,
-                    param_idx: p1,
-                },
-                SymbolKind::LocalVariable {
-                    func_idx: f2,
-                    scope_idx: 0,
-                    local_idx: l2,
-                },
-            ) => f1 == f2 && *p1 == *l2,
-            (
-                SymbolKind::LocalVariable {
-                    func_idx: f1,
-                    scope_idx: 0,
-                    local_idx: l1,
-                },
-                SymbolKind::FunctionParam {
-                    func_idx: f2,
-                    param_idx: p2,
-                },
-            ) => f1 == f2 && *l1 == *p2,
-            (
-                SymbolKind::Type {
-                    ty: Type::ImportModule { module_index: m1 },
-                },
-                SymbolKind::Type {
-                    ty: Type::ImportModule { module_index: m2 },
-                },
-            ) => m1 == m2,
-            (
-                SymbolKind::Type {
-                    ty: Type::Enum { enum_index: e1 },
-                },
-                SymbolKind::Type {
-                    ty: Type::Enum { enum_index: e2 },
-                },
-            ) => e1 == e2,
-            _ => false,
-        }
-    }
-
-    /// Get all entries (for debugging)
-    pub fn entries(&self) -> &[SpanInfo] {
-        &self.entries
-    }
+	pub fn find_at_position(
+		&self,
+		file_id: FileId,
+		pos: u32,
+	) -> Option<&SpanInfo> {
+		let in_defs = find_narrowest(&self.definitions, file_id, pos);
+		let in_refs = find_narrowest(&self.references, file_id, pos);
+		match (in_defs, in_refs) {
+			(Some(d), Some(r)) => {
+				let d_len = d.source.span.end - d.source.span.start;
+				let r_len = r.source.span.end - r.source.span.start;
+				Some(if d_len <= r_len { d } else { r })
+			}
+			(Some(d), None) => Some(d),
+			(None, Some(r)) => Some(r),
+			(None, None) => None,
+		}
+	}
 }
 
-/// Build a SpanIndex from a TIR
-pub fn build_span_index(tir: &TIR) -> SymbolIndex {
-    let mut index = SymbolIndex::new();
-
-    // Index global variables
-    for (global_idx, global) in tir.defined_globals.iter() {
-        index.add(SpanInfo {
-            span: global.name.span,
-            kind: SymbolKind::GlobalVariable {
-                global_idx: *global_idx,
-            },
-            usage: SymbolUsage::Definition,
-        });
-
-        // Index expressions in global initializer
-        index_expression(&mut index, None, &global.value.inner);
-    }
-
-    // Index functions
-    for (func_idx, func) in tir.defined_functions.iter() {
-        // Index function name
-        index.add(SpanInfo {
-            span: func.name.span,
-            kind: SymbolKind::Function {
-                func_idx: *func_idx,
-            },
-            usage: SymbolUsage::Definition,
-        });
-
-        // Index function parameters
-        for (param_idx, param) in func.params.iter().enumerate() {
-            index.add(SpanInfo {
-                span: param.name.span,
-                kind: SymbolKind::FunctionParam {
-                    func_idx: *func_idx,
-                    param_idx: param_idx as u32,
-                },
-                usage: SymbolUsage::Definition,
-            });
-        }
-
-        // Index local variables in all scopes
-        for (scope_idx, scope) in func.stack.scopes.iter().enumerate() {
-            for (local_idx, local) in scope.locals.iter().enumerate() {
-                // Skip the first N locals in scope 0, where N = number of parameters
-                // These are the parameters, already indexed above
-                if scope_idx == 0 && local_idx < func.params.len() {
-                    continue;
-                }
-
-                index.add(SpanInfo {
-                    span: local.name.span,
-                    kind: SymbolKind::LocalVariable {
-                        func_idx: *func_idx,
-                        scope_idx: scope_idx as u32,
-                        local_idx: local_idx as u32,
-                    },
-                    usage: SymbolUsage::Definition,
-                });
-            }
-        }
-
-        // Index expressions in function body
-        index_expression(&mut index, Some(*func_idx), &func.block);
-    }
-
-    // Index exports
-    for export in tir.exports.iter() {
-        index.add(match export {
-            wx_compiler::tir::ExportItem::Function {
-                internal_name,
-                func_index,
-                ..
-            } => SpanInfo {
-                span: internal_name.span,
-                kind: SymbolKind::Function {
-                    func_idx: *func_index,
-                },
-                usage: SymbolUsage::Reference,
-            },
-            wx_compiler::tir::ExportItem::Global {
-                internal_name,
-                global_index,
-                ..
-            } => SpanInfo {
-                span: internal_name.span,
-                kind: SymbolKind::GlobalVariable {
-                    global_idx: *global_index,
-                },
-                usage: SymbolUsage::Reference,
-            },
-        });
-    }
-
-    for (module_index, module) in tir.import_modules.iter().enumerate() {
-        for import_value in module.lookup.values() {
-            match import_value {
-                wx_compiler::tir::ImportValue::Function { func_index } => {
-                    index.add(SpanInfo {
-                        span: tir.declared_functions[*func_index as usize].name.span,
-                        kind: SymbolKind::Function {
-                            func_idx: *func_index,
-                        },
-                        usage: SymbolUsage::Definition,
-                    });
-                }
-                wx_compiler::tir::ImportValue::Global { global_index } => {
-                    index.add(SpanInfo {
-                        span: tir.declared_globals[*global_index as usize].name.span,
-                        kind: SymbolKind::GlobalVariable {
-                            global_idx: *global_index,
-                        },
-                        usage: SymbolUsage::Definition,
-                    });
-                }
-            }
-        }
-        index.add(SpanInfo {
-            span: module
-                .internal_name
-                .clone()
-                .map(|n| n.span)
-                .unwrap_or(module.external_name.span),
-            kind: SymbolKind::Type {
-                ty: Type::ImportModule {
-                    module_index: module_index as u32,
-                },
-            },
-            usage: SymbolUsage::Definition,
-        });
-    }
-
-    for (enum_index, enum_) in tir.enums.iter().enumerate() {
-        for (variant_index, variant) in enum_.variants.iter().enumerate() {
-            index.add(SpanInfo {
-                span: variant.name.span,
-                kind: SymbolKind::EnumVariant {
-                    enum_index: enum_index as u32,
-                    variant_idx: variant_index as u32,
-                },
-                usage: SymbolUsage::Definition,
-            });
-        }
-        index.add(SpanInfo {
-            span: enum_.name.span,
-            kind: SymbolKind::Type {
-                ty: Type::Enum {
-                    enum_index: enum_index as u32,
-                },
-            },
-            usage: SymbolUsage::Definition,
-        });
-    }
-
-    // Sort entries for efficient lookup
-    index.build();
-
-    index
+fn find_narrowest(
+	entries: &[SpanInfo],
+	file_id: FileId,
+	pos: u32,
+) -> Option<&SpanInfo> {
+	let upper = entries.partition_point(|e| e.source.span.start <= pos);
+	entries[..upper]
+		.iter()
+		.rev()
+		.filter(|e| e.source.file_id == file_id && e.source.span.end >= pos)
+		.min_by_key(|e| e.source.span.end - e.source.span.start)
 }
 
-fn index_expression(index: &mut SymbolIndex, func_idx: Option<FunctionIndex>, expr: &Expression) {
-    match &expr.kind {
-        ExprKind::Local {
-            scope_index,
-            local_index,
-        } => {
-            if let Some(func_idx) = func_idx {
-                index.add(SpanInfo {
-                    span: expr.span,
-                    kind: SymbolKind::LocalVariable {
-                        func_idx,
-                        scope_idx: *scope_index,
-                        local_idx: *local_index,
-                    },
-                    usage: SymbolUsage::Reference,
-                });
-            }
-        }
-        ExprKind::String { .. } => {
-            index.add(SpanInfo {
-                span: expr.span,
-                kind: SymbolKind::Type { ty: Type::String },
-                usage: SymbolUsage::Reference,
-            });
-        }
-        ExprKind::ObjectAccess { object, .. } => {
-            index_expression(index, func_idx, object);
-            index.add(SpanInfo {
-                span: expr.span,
-                kind: SymbolKind::Type { ty: expr.ty },
-                usage: SymbolUsage::Reference,
-            });
-        }
-        ExprKind::Global { id: global_index } => {
-            index.add(SpanInfo {
-                span: expr.span,
-                kind: SymbolKind::GlobalVariable {
-                    global_idx: *global_index,
-                },
-                usage: SymbolUsage::Reference,
-            });
-        }
-        ExprKind::Function { id: func_index } => {
-            index.add(SpanInfo {
-                span: expr.span,
-                kind: SymbolKind::Function {
-                    func_idx: *func_index,
-                },
-                usage: SymbolUsage::Reference,
-            });
-        }
-        ExprKind::EnumVariant {
-            enum_index,
-            variant_index,
-        } => {
-            index.add(SpanInfo {
-                span: expr.span,
-                kind: SymbolKind::EnumVariant {
-                    enum_index: *enum_index,
-                    variant_idx: *variant_index,
-                },
-                usage: SymbolUsage::Reference,
-            });
-        }
-        ExprKind::LocalDeclaration { value, .. } => {
-            // The definition is already indexed when we process scopes
-            // Just index the initializer expression
-            index_expression(index, func_idx, value);
-        }
-        ExprKind::Unary { operand, .. } => {
-            index_expression(index, func_idx, operand);
-        }
-        ExprKind::Binary { left, right, .. } => {
-            index_expression(index, func_idx, left);
-            index_expression(index, func_idx, right);
-        }
-        ExprKind::Call { callee, arguments } => {
-            index_expression(index, func_idx, callee);
-            for arg in arguments.iter() {
-                index_expression(index, func_idx, arg);
-            }
-        }
-        ExprKind::Block {
-            expressions,
-            result,
-            ..
-        } => {
-            for expr in expressions.iter() {
-                index_expression(index, func_idx, expr);
-            }
-            if let Some(result) = result {
-                index_expression(index, func_idx, result);
-            }
-        }
-        ExprKind::IfElse {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            index_expression(index, func_idx, condition);
-            index_expression(index, func_idx, then_block);
-            if let Some(else_block) = else_block {
-                index_expression(index, func_idx, else_block);
-            }
-        }
-        ExprKind::Loop { block, .. } => {
-            index_expression(index, func_idx, block);
-        }
-        ExprKind::Break { value, .. } => {
-            if let Some(value) = value {
-                index_expression(index, func_idx, value);
-            }
-        }
-        ExprKind::Return { value } => {
-            if let Some(value) = value {
-                index_expression(index, func_idx, value);
-            }
-        }
-        ExprKind::NamespaceAccess { ty, member } => {
-            index.add(SpanInfo {
-                span: ty.span,
-                kind: SymbolKind::Type { ty: *ty.inner },
-                usage: SymbolUsage::Reference,
-            });
+pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
+	let mut index = SymbolIndex::new();
 
-            index_expression(index, func_idx, member);
-        }
-        ExprKind::Error
-        | ExprKind::Placeholder
-        | ExprKind::Unreachable
-        | ExprKind::Int { .. }
-        | ExprKind::Float { .. }
-        | ExprKind::Bool { .. }
-        | ExprKind::Char { .. }
-        | ExprKind::Continue { .. } => {
-            // No symbols to index
-        }
-    }
+	for global in &tir.globals {
+		let info = SpanInfo {
+			source: SourceSpan::new(global.file_id, global.name.span),
+			kind: SymbolKind::Global(global.id),
+		};
+		index.global_definitions.push(GlobalDefinition {
+			name: global.name.inner,
+			namespace: global.namespace,
+			info: info.clone(),
+		});
+		index.definitions.push(info);
+		for access in &global.accesses {
+			index.references.push(SpanInfo {
+				source: *access,
+				kind: SymbolKind::Global(global.id),
+			});
+		}
+	}
+
+	for function in &tir.functions {
+		let func_id = function.id;
+		let file_id = function.file_id;
+
+		let info = SpanInfo {
+			source: SourceSpan::new(file_id, function.name.span),
+			kind: SymbolKind::Function(func_id),
+		};
+		// Methods/associated functions (`function.parent.is_some()`) are only
+		// reachable via `Type::name()` or `value.name()` — never bare `name()`.
+		if function.parent.is_none() {
+			index.global_definitions.push(GlobalDefinition {
+				name: function.name.inner,
+				namespace: function.namespace,
+				info: info.clone(),
+			});
+		}
+		index.definitions.push(info);
+
+		for access in &function.accesses {
+			index.references.push(SpanInfo {
+				source: SourceSpan::new(access.file_id, access.span),
+				kind: SymbolKind::Function(func_id),
+			});
+		}
+
+		for (param_index, tp) in function.type_params.iter().enumerate() {
+			let kind = SymbolKind::TypeParam {
+				owner: TypeParamOwner::Function(func_id),
+				param_index: param_index as u32,
+			};
+			index.definitions.push(SpanInfo {
+				source: SourceSpan::new(file_id, tp.name_span),
+				kind: kind.clone(),
+			});
+			for access in &tp.accesses {
+				index.references.push(SpanInfo {
+					source: SourceSpan::new(access.file_id, access.span),
+					kind: kind.clone(),
+				});
+			}
+		}
+
+		let num_params = function.params.len();
+		for (param_idx, param) in function.params.iter().enumerate() {
+			index.definitions.push(SpanInfo {
+				source: SourceSpan::new(file_id, param.name.span),
+				kind: SymbolKind::Param {
+					func_id,
+					param_idx: param_idx as u32,
+				},
+			});
+		}
+
+		if let Some(body) = &function.body {
+			for (scope_idx, scope) in body.stack.scopes.iter().enumerate() {
+				if let Some(label_index) = scope.label {
+					let label = &body.stack.labels[label_index as usize];
+					let kind = SymbolKind::Label {
+						func_id,
+						scope_idx: scope_idx as ScopeIndex,
+					};
+					index.definitions.push(SpanInfo {
+						source: SourceSpan::new(file_id, label.name.span),
+						kind: kind.clone(),
+					});
+					for access_span in label.accesses.iter().copied() {
+						index.references.push(SpanInfo {
+							source: SourceSpan::new(file_id, access_span),
+							kind: kind.clone(),
+						});
+					}
+				}
+				for (local_idx, local) in scope.locals.iter().enumerate() {
+					let is_param = scope_idx == 0 && local_idx < num_params;
+					let kind = if is_param {
+						SymbolKind::Param {
+							func_id,
+							param_idx: local_idx as u32,
+						}
+					} else {
+						SymbolKind::Local {
+							func_id,
+							scope_idx: scope_idx as ScopeIndex,
+							local_idx: local_idx as LocalIndex,
+						}
+					};
+					if !is_param {
+						index.definitions.push(SpanInfo {
+							source: SourceSpan::new(file_id, local.name.span),
+							kind: kind.clone(),
+						});
+					}
+					for access in local.accesses.iter().copied() {
+						index.references.push(SpanInfo {
+							source: SourceSpan::new(file_id, access.span),
+							kind: kind.clone(),
+						});
+					}
+				}
+			}
+		}
+	}
+
+	for struct_ in tir.structs.iter() {
+		let info = SpanInfo {
+			source: SourceSpan::new(struct_.file_id, struct_.name.span),
+			kind: SymbolKind::Struct(struct_.id),
+		};
+		index.global_definitions.push(GlobalDefinition {
+			name: struct_.name.inner,
+			namespace: struct_.namespace,
+			info: info.clone(),
+		});
+		index.definitions.push(info);
+		for access in &struct_.accesses {
+			index.references.push(SpanInfo {
+				source: *access,
+				kind: SymbolKind::Struct(struct_.id),
+			});
+		}
+		for (param_index, tp) in struct_.type_params.iter().enumerate() {
+			let kind = SymbolKind::TypeParam {
+				owner: TypeParamOwner::Struct(struct_.id),
+				param_index: param_index as u32,
+			};
+			index.definitions.push(SpanInfo {
+				source: SourceSpan::new(struct_.file_id, tp.name_span),
+				kind: kind.clone(),
+			});
+			for access in &tp.accesses {
+				index.references.push(SpanInfo {
+					source: SourceSpan::new(access.file_id, access.span),
+					kind: kind.clone(),
+				});
+			}
+		}
+
+		for (field_idx, field) in struct_.fields.iter().enumerate() {
+			let kind = SymbolKind::StructField {
+				struct_id: struct_.id,
+				field_idx: field_idx as u32,
+			};
+			index.definitions.push(SpanInfo {
+				source: SourceSpan::new(struct_.file_id, field.name.span),
+				kind: kind.clone(),
+			});
+			for access in &field.accesses {
+				if matches!(
+					access.kind,
+					FieldAccessKind::Read | FieldAccessKind::Init
+				) {
+					index.references.push(SpanInfo {
+						source: SourceSpan::new(access.file_id, access.span),
+						kind: kind.clone(),
+					});
+				}
+			}
+		}
+	}
+
+	for enum_ in tir.enums.iter() {
+		let info = SpanInfo {
+			source: SourceSpan::new(enum_.file_id, enum_.name.span),
+			kind: SymbolKind::Enum(enum_.id),
+		};
+		index.global_definitions.push(GlobalDefinition {
+			name: enum_.name.inner,
+			namespace: enum_.namespace,
+			info: info.clone(),
+		});
+		index.definitions.push(info);
+		for access in &enum_.accesses {
+			index.references.push(SpanInfo {
+				source: *access,
+				kind: SymbolKind::Enum(enum_.id),
+			});
+		}
+		for (variant_idx, variant) in enum_.variants.iter().enumerate() {
+			let variant_kind = SymbolKind::EnumVariant {
+				enum_id: enum_.id,
+				variant_idx: variant_idx as EnumVariantIndex,
+			};
+			let variant_info = SpanInfo {
+				source: SourceSpan::new(enum_.file_id, variant.name.span),
+				kind: variant_kind.clone(),
+			};
+			index.global_definitions.push(GlobalDefinition {
+				name: variant.name.inner,
+				namespace: enum_.namespace,
+				info: variant_info.clone(),
+			});
+			index.definitions.push(variant_info);
+			for access in &variant.accesses {
+				index.references.push(SpanInfo {
+					source: *access,
+					kind: variant_kind.clone(),
+				});
+			}
+		}
+	}
+
+	for constant in &tir.constants {
+		if constant.value.is_some() {
+			let info = SpanInfo {
+				source: SourceSpan::new(constant.file_id, constant.name.span),
+				kind: SymbolKind::Const(constant.id),
+			};
+			// Associated consts (`constant.parent.is_some()`) are only
+			// reachable via `Type::NAME` — never bare `NAME`.
+			if constant.parent.is_none() {
+				index.global_definitions.push(GlobalDefinition {
+					name: constant.name.inner,
+					namespace: constant.namespace,
+					info: info.clone(),
+				});
+			}
+			index.definitions.push(info);
+			for access in &constant.accesses {
+				index.references.push(SpanInfo {
+					source: *access,
+					kind: SymbolKind::Const(constant.id),
+				});
+			}
+		}
+	}
+
+	for (ns_idx, ns) in tir.namespaces.iter().enumerate() {
+		let kind = SymbolKind::Namespace(ns_idx as NamespaceIndex);
+		let (def_source, name_sym) = match ns.declaration {
+			ModuleDeclarationKind::Module(decl_idx) => {
+				let decl = &tir.module_decls[decl_idx as usize];
+				let source = match decl.own_file_id {
+					Some(fid) => SourceSpan::new(fid, TextSpan::new(0, 0)),
+					None => {
+						SourceSpan::new(decl.declaring_file_id, decl.name.span)
+					}
+				};
+				// The `module foo;` name in the declaring file is itself a reference.
+				if decl.own_file_id.is_some() {
+					index.references.push(SpanInfo {
+						source: SourceSpan::new(
+							decl.declaring_file_id,
+							decl.name.span,
+						),
+						kind: kind.clone(),
+					});
+				}
+				(source, decl.name.inner)
+			}
+			ModuleDeclarationKind::Import(import_idx) => {
+				let decl = &tir.import_decls[import_idx as usize];
+				let (name_sym, span) = match &decl.internal_name {
+					Some(n) => (n.inner, n.span),
+					None => (decl.external_name.inner, decl.external_name.span),
+				};
+				(SourceSpan::new(decl.file_id, span), name_sym)
+			}
+			ModuleDeclarationKind::Crate(_, file_id) => {
+				(SourceSpan::new(file_id, TextSpan::new(0, 0)), ns.name)
+			}
+		};
+		let info = SpanInfo {
+			source: def_source,
+			kind: kind.clone(),
+		};
+		index.global_definitions.push(GlobalDefinition {
+			name: name_sym,
+			namespace: ns.parent,
+			info: info.clone(),
+		});
+		index.definitions.push(info);
+		for access in &ns.accesses {
+			index.references.push(SpanInfo {
+				source: *access,
+				kind: kind.clone(),
+			});
+		}
+	}
+
+	for trait_ in tir.traits.iter() {
+		let kind = SymbolKind::Trait(trait_.id);
+		let info = SpanInfo {
+			source: SourceSpan::new(trait_.file_id, trait_.name.span),
+			kind: kind.clone(),
+		};
+		index.global_definitions.push(GlobalDefinition {
+			name: trait_.name.inner,
+			namespace: trait_.namespace,
+			info: info.clone(),
+		});
+		index.definitions.push(info);
+		for access in &trait_.accesses {
+			index.references.push(SpanInfo {
+				source: *access,
+				kind: kind.clone(),
+			});
+		}
+
+		for (assoc_name, at) in &trait_.assoc_types {
+			let at_kind = SymbolKind::AssocType {
+				trait_id: trait_.id,
+				assoc_name: *assoc_name,
+			};
+			let at_info = SpanInfo {
+				source: SourceSpan::new(trait_.file_id, at.name_span),
+				kind: at_kind.clone(),
+			};
+			index.global_definitions.push(GlobalDefinition {
+				name: *assoc_name,
+				namespace: trait_.namespace,
+				info: at_info.clone(),
+			});
+			index.definitions.push(at_info);
+			for access in &at.accesses {
+				index.references.push(SpanInfo {
+					source: *access,
+					kind: at_kind.clone(),
+				});
+			}
+		}
+	}
+
+	for typeset in tir.typesets.iter() {
+		let kind = SymbolKind::TypeSet(typeset.id);
+		let info = SpanInfo {
+			source: SourceSpan::new(typeset.file_id, typeset.name.span),
+			kind: kind.clone(),
+		};
+		index.global_definitions.push(GlobalDefinition {
+			name: typeset.name.inner,
+			namespace: typeset.namespace,
+			info: info.clone(),
+		});
+		index.definitions.push(info);
+		for access in &typeset.accesses {
+			index.references.push(SpanInfo {
+				source: *access,
+				kind: kind.clone(),
+			});
+		}
+	}
+
+	for (block_idx, block) in tir.generic_impl_list.iter().enumerate() {
+		for (param_index, tp) in block.type_params.iter().enumerate() {
+			let kind = SymbolKind::TypeParam {
+				owner: TypeParamOwner::ImplBlock(block_idx as u32),
+				param_index: param_index as u32,
+			};
+			index.definitions.push(SpanInfo {
+				source: SourceSpan::new(block.file_id, tp.name_span),
+				kind: kind.clone(),
+			});
+			for access in &tp.accesses {
+				index.references.push(SpanInfo {
+					source: SourceSpan::new(access.file_id, access.span),
+					kind: kind.clone(),
+				});
+			}
+		}
+	}
+
+	for export in tir.exports.values() {
+		match export {
+			ExportItem::Function {
+				internal_name, id, ..
+			} => {
+				if let Some(fi) = tir.function_index(*id) {
+					index.references.push(SpanInfo {
+						source: SourceSpan::new(
+							tir.functions[fi as usize].file_id,
+							internal_name.span,
+						),
+						kind: SymbolKind::Function(*id),
+					});
+				}
+			}
+			ExportItem::Global {
+				internal_name, id, ..
+			} => {
+				if let Some(gi) = tir.global_index(*id) {
+					index.references.push(SpanInfo {
+						source: SourceSpan::new(
+							tir.globals[gi as usize].file_id,
+							internal_name.span,
+						),
+						kind: SymbolKind::Global(*id),
+					});
+				}
+			}
+			ExportItem::Memory { .. } => {}
+		}
+	}
+
+	index.build(interner);
+	index
 }

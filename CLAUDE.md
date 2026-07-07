@@ -30,12 +30,6 @@ cargo fmt
 
 # Build the WASM playground package
 deno task build:wasm
-```
-
-`wx-lsp` is excluded from the workspace and must be built separately:
-```bash
-cargo build --manifest-path crates/wx-lsp/Cargo.toml
-```
 
 ## Compilation pipeline
 

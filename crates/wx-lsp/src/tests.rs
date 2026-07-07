@@ -8,6 +8,7 @@ use tower_lsp_server::ls_types::{
 use wx_compiler::vfs::FileId;
 
 use crate::completion::{completion_items, find_enclosing_function};
+use crate::symbol_index::SymbolKind;
 use crate::{
 	CompiledRoot, OpenDocument, ServerState, analyze_root, compute_refresh,
 	diagnostic_publish_paths, discover_crate_root, find_active_call,
@@ -690,6 +691,52 @@ fn unused_enum_variants_get_one_squiggle_each() {
 	assert_ne!(
 		unused[0].range, unused[1].range,
 		"each unused variant should get its own distinct squiggle range"
+	);
+}
+
+#[test]
+fn enum_type_used_as_return_type_resolves_to_its_definition() {
+	// Regression test: `build_symbol_index` recorded accesses for enum
+	// *variants* but never read `enum_.accesses`, so a bare enum type name
+	// used in a type position (like a return type) had no reference entry —
+	// hover/go-to-definition on it silently failed.
+	let root = PathBuf::from("/test/main.wx");
+	let source = indoc::indoc! {"
+		enum Status: u8 {
+		    Ok = 200,
+		}
+
+		fn test() -> Status {
+		    Status::Ok
+		}
+	"};
+	let (_, compiled) = compile_source(&root, source);
+	let file_id = file_id_for(&compiled, &root);
+
+	// Offset of `Status` in `-> Status`, not the `Status::Ok` namespace access.
+	let return_type_offset =
+		source.find("-> Status").unwrap() + "-> ".len();
+
+	let found = compiled
+		.symbol_index
+		.find_at_position(file_id, return_type_offset as u32)
+		.unwrap_or_else(|| panic!("expected a symbol at the return type position"));
+
+	assert!(
+		matches!(found.kind, SymbolKind::Enum(_)),
+		"expected the return type reference to resolve to the enum; got: {found:?}"
+	);
+
+	let definition = compiled
+		.symbol_index
+		.definitions
+		.iter()
+		.find(|d| d.kind == found.kind)
+		.expect("expected a matching enum definition entry");
+	assert_eq!(
+		&source[definition.source.span.start as usize..definition.source.span.end as usize],
+		"Status",
+		"go-to-definition should land on the `enum Status` name"
 	);
 }
 

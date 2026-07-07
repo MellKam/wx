@@ -1,15 +1,20 @@
 [package]
 name = "wx-lsp"
 version = "0.0.1"
-authors = ["Artem Melnyk <melkam464@gmail.com>"]
-edition = "2024"
-license = "MIT"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-lsp-server = "0.8.0"
-lsp-types = { version = "0.97.0", features = ["proposed"] }
-serde_json = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+tower-lsp-server = "0.23.0"
+tokio = { version = "1", features = ["full"] }
 wx-compiler = { path = "../wx-compiler" }
+wx-fmt = { path = "../wx-fmt" }
 string-interner = { workspace = true }
 codespan-reporting = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+indoc = "2"

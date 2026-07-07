@@ -1081,7 +1081,20 @@ fn report_cannot_export_item(
 		.with_code(DiagnosticCode::CannotExportItem.code())
 		.with_message(format!("cannot export `{}`", name))
 		.with_label(span.primary_label())
-		.with_note("only functions and global variables can be exported")
+		.with_note("only functions, global variables, and memories can be exported")
+}
+
+fn report_cannot_export_generic_function(
+	name: &str,
+	span: SourceSpan,
+) -> Diagnostic<FileId> {
+	Diagnostic::error()
+		.with_code(DiagnosticCode::CannotExportItem.code())
+		.with_message(format!("cannot export generic function `{}`", name))
+		.with_label(span.primary_label())
+		.with_note(
+			"exported functions must be non-generic; call the generic function from a concrete wrapper instead",
+		)
 }
 
 fn report_cyclic_type_dependency(span: SourceSpan) -> Diagnostic<FileId> {
@@ -6991,9 +7004,30 @@ impl<'ast> Builder<'ast, '_> {
 			{
 				Some(value) => value.clone(),
 				None => {
-					self.tir.diagnostics.push(report_undeclared_identifier(
-						SourceSpan::new(file_id, internal_name.span),
-					));
+					// Not a value, but it might still name a real item that
+					// simply isn't exportable (an enum, struct, trait, ...) —
+					// report the more precise diagnostic instead of treating
+					// it as an unresolved name. Still record the access so
+					// the LSP can resolve hover/go-to-definition on it.
+					if let Some(type_value) = self
+						.symbol_lookup
+						.get(&(SymbolNamespace::Type, internal_name.inner))
+						.copied()
+					{
+						self.record_type_kind_access(
+							file_id,
+							type_value,
+							internal_name.span,
+						);
+						self.tir.diagnostics.push(report_cannot_export_item(
+							self.interner.resolve(internal_name.inner).unwrap(),
+							SourceSpan::new(file_id, internal_name.span),
+						));
+					} else {
+						self.tir.diagnostics.push(report_undeclared_identifier(
+							SourceSpan::new(file_id, internal_name.span),
+						));
+					}
 					continue;
 				}
 			};
@@ -7012,6 +7046,23 @@ impl<'ast> Builder<'ast, '_> {
 
 			let export_item = match global_value {
 				SymbolKind::Function { func_index } => {
+					if self.tir.functions[func_index as usize]
+						.total_type_param_count() > 0
+					{
+						self.tir.functions[func_index as usize]
+							.accesses
+							.push(SourceSpan::new(file_id, internal_name.span));
+						self.tir.diagnostics.push(
+							report_cannot_export_generic_function(
+								self.interner
+									.resolve(internal_name.inner)
+									.unwrap(),
+								SourceSpan::new(file_id, internal_name.span),
+							),
+						);
+						continue;
+					}
+
 					self.tir.functions[func_index as usize]
 						.accesses
 						.push(SourceSpan::new(file_id, internal_name.span));
@@ -7039,6 +7090,11 @@ impl<'ast> Builder<'ast, '_> {
 					external_name,
 				},
 				_ => {
+					self.record_type_kind_access(
+						file_id,
+						global_value,
+						internal_name.span,
+					);
 					self.tir.diagnostics.push(report_cannot_export_item(
 						self.interner.resolve(internal_name.inner).unwrap(),
 						SourceSpan::new(file_id, internal_name.span),
@@ -9114,6 +9170,11 @@ impl<'ast> Builder<'ast, '_> {
 			}
 			SymbolKind::TypeAlias { type_alias_index } => {
 				self.tir.type_aliases[type_alias_index as usize]
+					.accesses
+					.push(SourceSpan::new(file_id, span));
+			}
+			SymbolKind::Const { const_index } => {
+				self.tir.constants[const_index as usize]
 					.accesses
 					.push(SourceSpan::new(file_id, span));
 			}
