@@ -1,4 +1,4 @@
-import type * as monaco from "@codingame/monaco-vscode-editor-api";
+import type * as monaco from "./monaco-lite";
 
 export const WX_LANGUAGE_ID = "wx";
 
@@ -74,10 +74,14 @@ export const wxMonarchLanguage: monaco.languages.IMonarchLanguage = {
 	},
 };
 
-/** `EditorAppConfig.languageDef` has no slot for bracket/comment config
- * (only the extension point + Monarch tokenizer), so this still has to be
- * called imperatively once the vscode API services are up. */
+/** Registers the wx language, its Monarch tokenizer, and its bracket/comment
+ * configuration directly against plain `monaco-editor` — previously this was
+ * split between `EditorAppConfig.languageDef` (extension point + tokenizer)
+ * and this function (everything `languageDef` had no slot for); without that
+ * wrapper, it's simplest to just do all of it here in one place. */
 export function configureWxLanguage(monacoApi: typeof monaco) {
+	monacoApi.languages.register(wxLanguageExtensionConfig);
+	monacoApi.languages.setMonarchTokensProvider(WX_LANGUAGE_ID, wxMonarchLanguage);
 	monacoApi.languages.setLanguageConfiguration(WX_LANGUAGE_ID, {
 		comments: { lineComment: "//" },
 		brackets: [

@@ -1,4 +1,4 @@
-import type * as monaco from "@codingame/monaco-vscode-editor-api";
+import type * as monaco from "./monaco-lite";
 import darkVs from "@codingame/monaco-vscode-theme-defaults-default-extension/resources/dark_vs.json";
 import darkPlus from "@codingame/monaco-vscode-theme-defaults-default-extension/resources/dark_plus.json";
 import darkModern from "@codingame/monaco-vscode-theme-defaults-default-extension/resources/dark_modern.json";
@@ -64,9 +64,9 @@ const SEMANTIC_TOKEN_RULES: monaco.editor.ITokenThemeRule[] = [
  * `include`s `dark_vs.json`. VS Code's include resolution concatenates
  * `tokenColors` base-first (so the child's entries, being later, win on
  * conflicting scopes) and lets each theme's own `colors` win outright — so
- * that's reproduced manually here since "classic" mode's monarch-only
- * service (see `monaco-languageclient/apiWrapper.js`) never loads the
- * theme/textmate services that would otherwise do this resolution.
+ * that's reproduced manually here since plain `monaco-editor` has no VS
+ * Code theme/textmate service to do this resolution for us; only
+ * `monaco.editor.defineTheme`'s own flat `rules`/`colors` shape exists.
  *
  * `SEMANTIC_TOKEN_RULES` is appended last so it wins over the inherited
  * dark_plus/dark_vs entries for the same scopes.

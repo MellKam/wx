@@ -2,13 +2,16 @@
 //! implementation used natively (via [`wx_lsp::build_service`]), but through a
 //! message-oriented bridge instead of stdio.
 //!
-//! `vscode-jsonrpc`'s browser transport (`BrowserMessageReader`/
-//! `BrowserMessageWriter`, what `monaco-languageclient` expects on the other
-//! end of a Worker) posts whole JSON-RPC message objects via `postMessage` —
-//! structured-clone, no `Content-Length` byte framing like stdio has — so
-//! this drives `LspService`/`ClientSocket` directly instead of going through
-//! `tower_lsp_server::Server`, which only speaks the byte-stream framing and
-//! would otherwise force a custom framed-text protocol onto the JS side.
+//! `@codemirror/lsp-client`'s `Transport` type is `{ send(message: string),
+//! subscribe(handler: (value: string) => void), unsubscribe(handler) }` —
+//! plain JSON strings, no LSP `Content-Length` byte framing and no JS object
+//! marshaling — so this drives `LspService`/`ClientSocket` directly instead
+//! of going through `tower_lsp_server::Server`, which only speaks the
+//! byte-stream framing. Every message crossing the wasm boundary here is
+//! just a `String` produced by `serde_json`, so there's no need for
+//! `serde_wasm_bindgen` at all (and none of the JS `Map`-vs-object or
+//! `undefined`-vs-`null` pitfalls that come with marshaling to real JS
+//! objects, since JSON has no `undefined` in the first place).
 
 use std::cell::RefCell;
 use std::pin::Pin;
@@ -16,41 +19,11 @@ use std::rc::Rc;
 
 use futures::sink::{Sink, SinkExt};
 use futures::stream::{Stream, StreamExt};
-use serde::Serialize;
-use serde_wasm_bindgen::Serializer;
 use tower::Service;
 use tower_lsp_server::ExitedError;
 use tower_lsp_server::jsonrpc::{Request, Response};
 use wasm_bindgen::prelude::*;
 use wx_lsp::{Backend, build_service, task};
-
-/// `serde_wasm_bindgen`'s default serializer turns Rust maps — including
-/// any struct using `#[serde(flatten)]`, like `tower_lsp_server::jsonrpc::
-/// Response` — into JS `Map` instances rather than plain objects.
-/// `vscode-jsonrpc`'s message handling does plain property access
-/// (`message.id`, `message.result`, ...) to tell requests/responses/
-/// notifications apart, which silently fails against a `Map` (no thrown
-/// error — it just falls through as an unrecognized message). Every
-/// Rust-to-JS message in this crate must go through this to actually be
-/// readable on the other end.
-///
-/// Also needs `serialize_missing_as_null`: a `null` JSON-RPC result (e.g.
-/// "no hover info here", the very first thing hover hits on an empty
-/// position) is a Rust `()`/`None`, which without this flag serializes to
-/// JS `undefined` — and `undefined`-valued properties vanish under
-/// `JSON.stringify`/structured clone, so the response arrives with no
-/// `result` key at all. `vscode-jsonrpc` then rejects it as "neither a
-/// response nor a notification message", even though `id` came through
-/// fine — the exact symptom this fixes.
-fn to_js_value(value: &impl Serialize) -> Result<JsValue, JsValue> {
-	value
-		.serialize(
-			&Serializer::new()
-				.serialize_maps_as_objects(true)
-				.serialize_missing_as_null(true),
-		)
-		.map_err(|err| JsValue::from_str(&err.to_string()))
-}
 
 /// Mirrors `tower_lsp_server::jsonrpc::Message` (kept crate-private
 /// upstream) so we can tell incoming client responses (to server-initiated
@@ -88,8 +61,8 @@ pub struct WxLanguageServer {
 impl WxLanguageServer {
 	/// `on_message` is called with every message the server sends toward the
 	/// client (requests like `client/registerCapability`, notifications like
-	/// `textDocument/publishDiagnostics`). The caller is expected to
-	/// `postMessage` it to the main thread unchanged.
+	/// `textDocument/publishDiagnostics`), JSON-encoded. The caller is
+	/// expected to `postMessage` it to the main thread unchanged.
 	#[wasm_bindgen(constructor)]
 	pub fn new(on_message: js_sys::Function) -> WxLanguageServer {
 		let (service, socket) = build_service();
@@ -103,8 +76,8 @@ impl WxLanguageServer {
 
 		task::spawn(async move {
 			while let Some(req) = request_stream.next().await {
-				let value = to_js_value(&req).expect("`Request` always serializes");
-				let _ = on_message.call1(&JsValue::NULL, &value);
+				let json = serde_json::to_string(&req).expect("`Request` always serializes");
+				let _ = on_message.call1(&JsValue::NULL, &JsValue::from_str(&json));
 			}
 		});
 
@@ -114,18 +87,15 @@ impl WxLanguageServer {
 		}
 	}
 
-	/// Feeds one incoming JSON-RPC message (from the client, i.e. Monaco's
-	/// language client) into the server. Requests/notifications are routed
+	/// Feeds one incoming JSON-RPC message (JSON-encoded, from the client's
+	/// `Transport.send`) into the server. Requests/notifications are routed
 	/// through `Backend`; responses are routed back to whichever
 	/// server-initiated request they answer.
 	///
-	/// Returns the JSON-RPC response for a request, or `null` for
-	/// notifications and client responses.
-	pub async fn handle_message(
-		&self,
-		message: JsValue,
-	) -> Result<JsValue, JsValue> {
-		let incoming: IncomingMessage = serde_wasm_bindgen::from_value(message)
+	/// Returns the JSON-encoded JSON-RPC response for a request, or `null`
+	/// for notifications and client responses.
+	pub async fn handle_message(&self, message: String) -> Result<JsValue, JsValue> {
+		let incoming: IncomingMessage = serde_json::from_str(&message)
 			.map_err(|err| JsValue::from_str(&err.to_string()))?;
 
 		match incoming {
@@ -140,7 +110,11 @@ impl WxLanguageServer {
 					.await
 					.map_err(|err| JsValue::from_str(&err.to_string()))?;
 				match response {
-					Some(response) => to_js_value(&response),
+					Some(response) => {
+						let json = serde_json::to_string(&response)
+							.map_err(|err| JsValue::from_str(&err.to_string()))?;
+						Ok(JsValue::from_str(&json))
+					}
 					None => Ok(JsValue::NULL),
 				}
 			}

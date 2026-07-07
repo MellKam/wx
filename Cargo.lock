@@ -2303,7 +2303,7 @@ dependencies = [
  "futures",
  "js-sys",
  "serde",
- "serde-wasm-bindgen",
+ "serde_json",
  "tower",
  "tower-lsp-server",
  "wasm-bindgen",

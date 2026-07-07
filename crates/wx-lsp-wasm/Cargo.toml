@@ -17,7 +17,7 @@ tower-lsp-server = { version = "0.23.0", default-features = false, features = ["
 tower = { version = "0.5", default-features = false }
 futures = { version = "0.3", default-features = false, features = ["std"] }
 serde = { workspace = true }
-serde-wasm-bindgen = "0.6"
+serde_json = { workspace = true }
 wasm-bindgen = "0.2.84"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

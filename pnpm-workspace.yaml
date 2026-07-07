@@ -2,6 +2,7 @@ packages:
   - 'vscode'
   - 'cli'
   - 'cli/npm/*'
+  - 'web-next'
 
 minimumReleaseAgeExclude:
   - '@types/node@26.1.0'
