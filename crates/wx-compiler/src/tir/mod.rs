@@ -914,10 +914,6 @@ pub enum SymbolKind {
 	Const {
 		const_index: ConstIndex,
 	},
-	True,
-	False,
-	Unreachable,
-	Placeholder,
 	/// Resolved form of a trait associated type (`type Size`). Replaces
 	/// `Pending` in the symbol lookup after `ensure_signature` processes the
 	/// declaration, so bare uses of `Size` as a type identifier don't stall.
@@ -1127,7 +1123,7 @@ impl GenericImplTargetKind {
 pub enum ItemAttribute {
 	Inline,
 	Intrinsic,
-	Lang(SymbolU32),
+	Tag(SymbolU32),
 }
 
 #[derive(PartialEq, Eq)]
@@ -1847,7 +1843,7 @@ pub struct TIR {
 	pub type_trait_impls: HashMap<TypeIndex, Vec<TraitImplIndex>>,
 	pub constants: Vec<Constant>,
 	#[cfg_attr(test, serde(skip))]
-	pub lang_items: HashMap<SymbolU32, DefId>,
+	pub tagged_items: HashMap<SymbolU32, DefId>,
 	pub typesets: Vec<TypeSet>,
 	pub type_aliases: Vec<TypeAlias>,
 	/// Unified lookup: maps every named item's `DefId` to its kind and dense Vec index.

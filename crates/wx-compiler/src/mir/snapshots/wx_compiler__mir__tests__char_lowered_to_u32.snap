@@ -37,7 +37,7 @@ globals: []
 exports:
   - Function:
       id: 45
-      name: 72
+      name: 74
 imports: []
 memories: []
 aggregates: []

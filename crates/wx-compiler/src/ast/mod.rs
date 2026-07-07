@@ -231,8 +231,8 @@ define_diagnostic_codes! {
 		MissingInitializer => "E0010",
 		InvalidAttribute => "E0012",
 		InvalidNamespace => "E0013",
-		VisibilityNotPermitted => "E0014",
 		CrlfLineEndings => "W0001",
+		VisibilityNotPermitted => "W0002",
 	}
 }
 
@@ -1119,6 +1119,12 @@ pub enum Expression {
 	},
 	/// `unreachable`
 	Unreachable,
+	/// `true`
+	True,
+	/// `false`
+	False,
+	/// `_` — discard in value position (e.g. `_ = expr;`)
+	Placeholder,
 	/// "hello world" — raw source text (including quotes) is recovered from span
 	String,
 	/// 'a' — raw source text (including quotes) is recovered from span
@@ -1353,11 +1359,11 @@ pub struct FunctionParam {
 pub enum AttributeValue {
 	/// `#[inline]` — name only, no payload.
 	Word,
-	/// `#[lang = "memory"]` — name plus a string literal (stored raw, including quotes).
+	/// `#[tag = "memory"]` — name plus a string literal (stored raw, including quotes).
 	NameValue(Spanned<SymbolU32>),
 }
 
-/// A single attribute on an item, e.g. `#[inline]` or `#[lang = "memory"]`.
+/// A single attribute on an item, e.g. `#[inline]` or `#[tag = "memory"]`.
 #[cfg_attr(test, derive(serde::Serialize))]
 #[cfg_attr(debug_assertions, derive(Debug))]
 pub struct Attribute {
@@ -1630,6 +1636,7 @@ pub enum Item {
 	TypeSet {
 		id: DefId,
 		pub_span: Option<TextSpan>,
+		attributes: Box<[Attribute]>,
 		name: Spanned<SymbolU32>,
 		members: Box<[Separated<Spanned<TypeExpression>>]>,
 	},
@@ -1676,6 +1683,32 @@ impl Item {
 			| Item::ModuleDeclaration { .. }
 			| Item::TypeAlias { .. }
 			| Item::Use { .. } => false,
+		}
+	}
+
+	/// Backfills the attributes parsed ahead of an item onto whichever item
+	/// kinds carry an `attributes` field. No-op for kinds that don't.
+	pub fn set_attributes(&mut self, attrs: Box<[Attribute]>) {
+		match self {
+			Item::Function { attributes, .. }
+			| Item::FunctionDeclaration { attributes, .. }
+			| Item::Trait { attributes, .. }
+			| Item::TypeSet { attributes, .. } => {
+				*attributes = attrs;
+			}
+			Item::Global { .. }
+			| Item::Export { .. }
+			| Item::Import { .. }
+			| Item::Enum { .. }
+			| Item::Impl { .. }
+			| Item::ImplTrait { .. }
+			| Item::Struct { .. }
+			| Item::Memory { .. }
+			| Item::Const { .. }
+			| Item::Module { .. }
+			| Item::ModuleDeclaration { .. }
+			| Item::Use { .. }
+			| Item::TypeAlias { .. } => {}
 		}
 	}
 }
@@ -1763,6 +1796,8 @@ pub enum Keyword {
 	Else,
 	As,
 	Unreachable,
+	True,
+	False,
 	Impl,
 	SelfKw,
 	Struct,
@@ -1802,6 +1837,8 @@ impl TryFrom<&str> for Keyword {
 			"continue" => Ok(Keyword::Continue),
 			"as" => Ok(Keyword::As),
 			"unreachable" => Ok(Keyword::Unreachable),
+			"true" => Ok(Keyword::True),
+			"false" => Ok(Keyword::False),
 			"impl" => Ok(Keyword::Impl),
 			"self" => Ok(Keyword::SelfKw),
 			"struct" => Ok(Keyword::Struct),
@@ -2013,19 +2050,7 @@ impl<'ctx> Parser<'ctx> {
 
 			match item_handler(&mut parser) {
 				Ok(mut item) => {
-					if let Item::Function {
-						ref mut attributes, ..
-					}
-					| Item::FunctionDeclaration {
-						ref mut attributes,
-						..
-					}
-					| Item::Trait {
-						ref mut attributes, ..
-					} = item.inner
-					{
-						*attributes = item_attrs;
-					}
+					item.inner.set_attributes(item_attrs);
 					let separator_span = if !item.inner.is_block_like() {
 						let token = parser.lexer.peek();
 						match token.inner {
@@ -3011,6 +3036,18 @@ impl<'ctx> Parser<'ctx> {
 					)),
 					Ok(Keyword::Unreachable) => Some((
 						Parser::parse_unreachable_expression,
+						BindingPower::Primary,
+					)),
+					Ok(Keyword::True) => Some((
+						Parser::parse_true_expression,
+						BindingPower::Primary,
+					)),
+					Ok(Keyword::False) => Some((
+						Parser::parse_false_expression,
+						BindingPower::Primary,
+					)),
+					Ok(Keyword::Underscore) => Some((
+						Parser::parse_placeholder_expression,
 						BindingPower::Primary,
 					)),
 					_ => Some((
@@ -4279,6 +4316,36 @@ impl<'ctx> Parser<'ctx> {
 		})
 	}
 
+	fn parse_true_expression(
+		parser: &mut Parser,
+	) -> Result<Spanned<Expression>, ()> {
+		let true_keyword = parser.lexer.next();
+		Ok(Spanned {
+			inner: Expression::True,
+			span: true_keyword.span,
+		})
+	}
+
+	fn parse_false_expression(
+		parser: &mut Parser,
+	) -> Result<Spanned<Expression>, ()> {
+		let false_keyword = parser.lexer.next();
+		Ok(Spanned {
+			inner: Expression::False,
+			span: false_keyword.span,
+		})
+	}
+
+	fn parse_placeholder_expression(
+		parser: &mut Parser,
+	) -> Result<Spanned<Expression>, ()> {
+		let underscore = parser.lexer.next();
+		Ok(Spanned {
+			inner: Expression::Placeholder,
+			span: underscore.span,
+		})
+	}
+
 	fn parse_export_block(parser: &mut Parser) -> Result<Spanned<Item>, ()> {
 		let export_keyword = parser.lexer.next();
 
@@ -4638,7 +4705,7 @@ impl<'ctx> Parser<'ctx> {
 					if let Some(Keyword::Pub) = parser.peek_keyword() {
 						let pub_span = parser.lexer.next().span;
 						parser.ast.diagnostics.push(
-							Diagnostic::error()
+							Diagnostic::warning()
 								.with_code(
 									DiagnosticCode::VisibilityNotPermitted
 										.code(),
@@ -4804,6 +4871,7 @@ impl<'ctx> Parser<'ctx> {
 			inner: Item::TypeSet {
 				id: parser.id_generator.generate(),
 				pub_span: None,
+				attributes: Box::new([]),
 				name,
 				members: members.inner,
 			},
@@ -4946,7 +5014,7 @@ impl<'ctx> Parser<'ctx> {
 			| Item::ImplTrait { .. }
 			| Item::Memory { .. } => {
 				parser.ast.diagnostics.push(
-					Diagnostic::error()
+					Diagnostic::warning()
 						.with_code(
 							DiagnosticCode::VisibilityNotPermitted.code(),
 						)
@@ -5248,15 +5316,7 @@ impl<'ctx> Parser<'ctx> {
 		match parser.get_item_handler(token.clone()) {
 			Ok(handler) => {
 				let mut item = handler(parser)?;
-				if let Item::Function {
-					ref mut attributes, ..
-				}
-				| Item::FunctionDeclaration {
-					ref mut attributes, ..
-				} = item.inner
-				{
-					*attributes = item_attrs;
-				}
+				item.inner.set_attributes(item_attrs);
 				Ok(item)
 			}
 			Err(()) => {

@@ -289,7 +289,14 @@ fn test_pub_not_permitted_in_trait_items() {
         }
     "});
 
-	assert_eq!(diagnostic_codes(&case.ast), vec!["E0014", "E0014", "E0014"]);
+	assert_eq!(
+		diagnostic_codes(&case.ast),
+		vec![
+			DiagnosticCode::VisibilityNotPermitted.code(),
+			DiagnosticCode::VisibilityNotPermitted.code(),
+			DiagnosticCode::VisibilityNotPermitted.code()
+		]
+	);
 	let Item::Trait { items, .. } = item(&case.ast, 0) else {
 		panic!("expected trait item")
 	};
@@ -303,7 +310,10 @@ fn test_pub_not_applicable_to_memory_item_recovers() {
         fn add(a: i32, b: i32) -> i32 { a + b }
     "});
 
-	assert_eq!(diagnostic_codes(&case.ast), vec!["E0014"]);
+	assert_eq!(
+		diagnostic_codes(&case.ast),
+		vec![DiagnosticCode::VisibilityNotPermitted.code()]
+	);
 	assert!(matches!(item(&case.ast, 0), Item::Memory { .. }));
 	assert!(matches!(item(&case.ast, 1), Item::Function { .. }));
 }
@@ -1220,4 +1230,21 @@ fn test_impl_trait_multi_segment_trait_name() {
 		2,
 		"expected two path segments: gfx, Drawable"
 	);
+}
+
+#[test]
+fn test_typeset_attributes_parsed() {
+	let case = TestCase::new(indoc! {"
+        #[tag = \"my_typeset\"]
+        typeset Foo { u32, u64 }
+    "});
+	assert!(
+		case.ast.diagnostics.is_empty(),
+		"{:?}",
+		case.ast.diagnostics
+	);
+	let Item::TypeSet { attributes, .. } = item(&case.ast, 0) else {
+		panic!("expected TypeSet")
+	};
+	assert_eq!(attributes.len(), 1, "expected one attribute on the typeset");
 }

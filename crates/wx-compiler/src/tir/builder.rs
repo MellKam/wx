@@ -181,8 +181,6 @@ struct Builder<'ast, 'graph> {
 	symbol_lookup: HashMap<(SymbolNamespace, SymbolU32), SymbolKind>,
 	type_index_lookup: HashMap<Type, TypeIndex>,
 	tir: TIR,
-
-	// ── demand-driven resolution ──────────────────────────────────────────────
 	/// Namespaces brought into the root scope via `use path::*;` at the binary
 	/// crate root (where `namespace = None`).  Parallel to `ModuleNamespace::wildcard_imports`.
 	root_wildcard_imports: Vec<NamespaceIndex>,
@@ -1362,7 +1360,7 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 		trait_impl_lookup: HashMap::new(),
 		type_trait_impls: HashMap::new(),
 		constants: Vec::new(),
-		lang_items: HashMap::new(),
+		tagged_items: HashMap::new(),
 		typesets: Vec::new(),
 		type_aliases: Vec::new(),
 		item_lookup: HashMap::new(),
@@ -1373,29 +1371,7 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 			.enumerate()
 			.map(|(idx, ty)| (ty.clone(), TypeIndex(idx as u32))),
 	);
-	let mut symbol_lookup = HashMap::new();
-	symbol_lookup.insert(
-		(SymbolNamespace::Value, graph.interner.get_or_intern("_")),
-		SymbolKind::Placeholder,
-	);
-	symbol_lookup.insert(
-		(SymbolNamespace::Value, graph.interner.get_or_intern("true")),
-		SymbolKind::True,
-	);
-	symbol_lookup.insert(
-		(
-			SymbolNamespace::Value,
-			graph.interner.get_or_intern("false"),
-		),
-		SymbolKind::False,
-	);
-	symbol_lookup.insert(
-		(
-			SymbolNamespace::Value,
-			graph.interner.get_or_intern("unreachable"),
-		),
-		SymbolKind::Unreachable,
-	);
+	let symbol_lookup = HashMap::new();
 	let mut builder = Builder {
 		symbol_lookup,
 		interner: &mut graph.interner,
@@ -2097,21 +2073,6 @@ impl<'ast> Builder<'ast, '_> {
 		expr_span: TextSpan,
 	) -> Result<Expression, ()> {
 		match kind {
-			SymbolKind::True => Ok(Expression {
-				kind: ExprKind::Bool { value: true },
-				ty: TypeIndex::BOOL,
-				span: expr_span,
-			}),
-			SymbolKind::False => Ok(Expression {
-				kind: ExprKind::Bool { value: false },
-				ty: TypeIndex::BOOL,
-				span: expr_span,
-			}),
-			SymbolKind::Placeholder => Ok(Expression {
-				kind: ExprKind::Placeholder,
-				ty: access_ctx.expected_type.infer_or(TypeIndex::ERROR),
-				span: expr_span,
-			}),
 			SymbolKind::Function { func_index } => {
 				let func_id = self.tir.functions[func_index as usize].id;
 				let type_params_len =
@@ -2190,8 +2151,7 @@ impl<'ast> Builder<'ast, '_> {
 				})
 			}
 			#[cfg(debug_assertions)]
-			symbol @ (SymbolKind::Unreachable
-			| SymbolKind::TraitAssocType { .. }
+			symbol @ (SymbolKind::TraitAssocType { .. }
 			| SymbolKind::Pending(_)) => match symbol {
 				SymbolKind::Pending(def_id) => {
 					let item = self
@@ -2241,9 +2201,6 @@ impl<'ast> Builder<'ast, '_> {
 			| SymbolKind::TypeSet { .. }
 			| SymbolKind::TraitAssocType { .. }
 			| SymbolKind::Pending(_) => None,
-			SymbolKind::False | SymbolKind::True => Some(TypeIndex::BOOL),
-			SymbolKind::Unreachable => Some(TypeIndex::NEVER),
-			SymbolKind::Placeholder => unreachable!(),
 			SymbolKind::TypeAlias { type_alias_index } => {
 				Some(self.tir.type_aliases[type_alias_index as usize].template)
 			}
@@ -2935,14 +2892,14 @@ impl<'ast> Builder<'ast, '_> {
 		)
 	}
 
-	fn register_lang_items(
+	fn register_tagged_items(
 		&mut self,
 		def_id: ast::DefId,
 		attrs: &[ItemAttribute],
 	) {
 		for attr in attrs {
-			if let ItemAttribute::Lang(key) = attr {
-				self.tir.lang_items.insert(*key, def_id);
+			if let ItemAttribute::Tag(key) = attr {
+				self.tir.tagged_items.insert(*key, def_id);
 			}
 		}
 	}
@@ -2961,12 +2918,12 @@ impl<'ast> Builder<'ast, '_> {
 					(ast::AttributeValue::Word, Some("intrinsic")) => {
 						Some(ItemAttribute::Intrinsic)
 					}
-					(ast::AttributeValue::NameValue(value), Some("lang")) => {
+					(ast::AttributeValue::NameValue(value), Some("tag")) => {
 						let raw =
 							self.interner.resolve(value.inner).unwrap_or("");
 						let key =
 							self.interner.get_or_intern(&unescape_string(raw));
-						Some(ItemAttribute::Lang(key))
+						Some(ItemAttribute::Tag(key))
 					}
 					_ => None,
 				}
@@ -3134,15 +3091,8 @@ impl<'ast> Builder<'ast, '_> {
 					),
 				}
 			}
-			// these are keywords and will be handled at the parser level
-			SymbolKind::False
-			| SymbolKind::True
-			| SymbolKind::Unreachable
-			| SymbolKind::Placeholder => unreachable!(),
 		}
 	}
-
-	// ── pre-scan ──────────────────────────────────────────────────────────────
 
 	/// Phase 1: registers every named item into `ast_nodes` without resolving
 	/// types.
@@ -3173,8 +3123,8 @@ impl<'ast> Builder<'ast, '_> {
 					*id,
 					SourceSpan::new(file_id, signature.name.span),
 				);
-				let resolved_attributes = self.resolve_attributes(attributes);
-				self.register_lang_items(*id, &resolved_attributes);
+				let attributes = self.resolve_attributes(attributes);
+				self.register_tagged_items(*id, &attributes);
 				let func_index = self.tir.functions.len() as u32;
 				self.tir
 					.item_lookup
@@ -3200,7 +3150,7 @@ impl<'ast> Builder<'ast, '_> {
 					accesses: Vec::new(),
 					params: Box::new([]),
 					result: None,
-					attributes: resolved_attributes,
+					attributes,
 				});
 				self.ast_nodes.push(AstEntry {
 					def_id: *id,
@@ -3799,8 +3749,14 @@ impl<'ast> Builder<'ast, '_> {
 			}
 			ast::Item::Export { .. } => {} // handled during build pass
 			ast::Item::TypeSet {
-				id, name, pub_span, ..
+				id,
+				name,
+				pub_span,
+				attributes,
+				..
 			} => {
+				let resolved_attrs = self.resolve_attributes(attributes);
+				self.register_tagged_items(*id, &resolved_attrs);
 				let typeset_index = self.tir.typesets.len() as TypesetIndex;
 				self.tir.typesets.push(TypeSet {
 					id: *id,
@@ -3880,8 +3836,6 @@ impl<'ast> Builder<'ast, '_> {
 		}
 	}
 
-	// ── query: ensure_signature ───────────────────────────────────────────────
-
 	/// Resolves the signature of `def_id`. Idempotent; detects cycles via
 	/// `sig_state`.
 	fn ensure_signature(&mut self, def_id: ast::DefId) {
@@ -3903,7 +3857,6 @@ impl<'ast> Builder<'ast, '_> {
 		let resolve_context = ResolveContext::new(file_id, namespace);
 
 		match node {
-			// ── struct ────────────────────────────────────────────────────────
 			AstNodeRef::Struct { item } => {
 				let (id, name, ast_type_params, fields) = match item {
 					ast::Item::Struct {
@@ -4015,8 +3968,6 @@ impl<'ast> Builder<'ast, '_> {
 					SourceSpan::new(resolve_context.file_id, name.span),
 				);
 			}
-
-			// ── type alias ───────────────────────────────────────────────────
 			AstNodeRef::TypeAlias { item } => {
 				let (id, name, ast_type_params, ty_expr) = match item {
 					ast::Item::TypeAlias {
@@ -4073,8 +4024,6 @@ impl<'ast> Builder<'ast, '_> {
 					);
 				}
 			}
-
-			// ── enum ──────────────────────────────────────────────────────────
 			AstNodeRef::Enum { item } => {
 				if let ast::Item::Enum {
 					id,
@@ -4109,8 +4058,6 @@ impl<'ast> Builder<'ast, '_> {
 					}
 				}
 			}
-
-			// ── free function / function declaration ──────────────────────────
 			AstNodeRef::Function { item } => match item {
 				ast::Item::Function { id, signature, .. }
 				| ast::Item::FunctionDeclaration { id, signature, .. } => {
@@ -4154,9 +4101,6 @@ impl<'ast> Builder<'ast, '_> {
 				}
 				_ => {}
 			},
-
-			// ── impl method ───────────────────────────────────────────────────
-			// ── impl const ────────────────────────────────────────────────────
 			AstNodeRef::ImplConst {
 				impl_target, item, ..
 			} => {
@@ -4236,8 +4180,6 @@ impl<'ast> Builder<'ast, '_> {
 					}
 				}
 			}
-
-			// ── impl method ───────────────────────────────────────────────────
 			AstNodeRef::ImplMethod {
 				impl_target, item, ..
 			} => {
@@ -4320,7 +4262,7 @@ impl<'ast> Builder<'ast, '_> {
 					let signature_index =
 						self.intern_function(&params, result.clone());
 					let func_attrs = self.resolve_attributes(attributes);
-					self.register_lang_items(*id, &func_attrs);
+					self.register_tagged_items(*id, &func_attrs);
 					let func_index = self.tir.functions.len() as u32;
 					let is_method = signature
 						.params
@@ -4390,8 +4332,6 @@ impl<'ast> Builder<'ast, '_> {
 					);
 				}
 			}
-
-			// ── generic impl block (bounds + target) ─────────────────────────
 			AstNodeRef::GenericImplBlock {
 				impl_type_params,
 				impl_target,
@@ -4453,8 +4393,6 @@ impl<'ast> Builder<'ast, '_> {
 				self.tir.generic_impl_list[block_index as usize].target =
 					target;
 			}
-
-			// ── generic impl method ───────────────────────────────────────────
 			AstNodeRef::GenericImplMethod {
 				block_id,
 				item,
@@ -4483,7 +4421,7 @@ impl<'ast> Builder<'ast, '_> {
 					.len();
 
 				let func_attrs = self.resolve_attributes(attributes);
-				self.register_lang_items(*id, &func_attrs);
+				self.register_tagged_items(*id, &func_attrs);
 				let func_index = self.tir.functions.len() as u32;
 
 				// Register the function with only its own (method-level) type params.
@@ -4649,8 +4587,6 @@ impl<'ast> Builder<'ast, '_> {
 					);
 				}
 			}
-
-			// ── trait block (supertrait resolution) ───────────────────────────
 			AstNodeRef::Trait {
 				trait_index, item, ..
 			} => {
@@ -4664,7 +4600,7 @@ impl<'ast> Builder<'ast, '_> {
 					_ => unreachable!(),
 				};
 				let resolved_attrs = self.resolve_attributes(attributes);
-				self.register_lang_items(*trait_id, &resolved_attrs);
+				self.register_tagged_items(*trait_id, &resolved_attrs);
 
 				let supertrait_bounds = if let Some(spanned) = supertraits {
 					self.resolve_bounds(resolve_context, None, spanned)
@@ -4714,8 +4650,6 @@ impl<'ast> Builder<'ast, '_> {
 				self.tir.traits[trait_index as usize].supertrait_bindings =
 					bindings;
 			}
-
-			// ── typeset ───────────────────────────────────────────────────────
 			AstNodeRef::TypeSet {
 				typeset_index,
 				item,
@@ -4773,8 +4707,6 @@ impl<'ast> Builder<'ast, '_> {
 				self.tir.typesets[typeset_index as usize].intersection_range =
 					intersection_range;
 			}
-
-			// ── trait function ────────────────────────────────────────────────
 			AstNodeRef::TraitFunction {
 				trait_index, item, ..
 			} => {
@@ -4796,7 +4728,7 @@ impl<'ast> Builder<'ast, '_> {
 							param_index: 0,
 						});
 					let attributes = self.resolve_attributes(attributes);
-					self.register_lang_items(*id, &attributes);
+					self.register_tagged_items(*id, &attributes);
 
 					let func_index = self.tir.functions.len() as u32;
 					self.tir.functions.push(Function {
@@ -4886,8 +4818,6 @@ impl<'ast> Builder<'ast, '_> {
 					);
 				}
 			}
-
-			// ── trait const ───────────────────────────────────────────────────
 			AstNodeRef::TraitConst {
 				trait_index, item, ..
 			} => {
@@ -4900,12 +4830,20 @@ impl<'ast> Builder<'ast, '_> {
 					owner: TypeParamOwner::Trait(trait_index),
 					self_type: Some(self_type_param),
 				};
-				if let ast::TraitItem::Const { id, name, ty, .. } = item {
+				if let ast::TraitItem::Const {
+					id,
+					name,
+					ty,
+					attributes,
+				} = item
+				{
 					let ty_idx = self.resolve_type(
 						resolve_context,
 						Some(self_scope),
 						ty,
 					);
+					let attributes = self.resolve_attributes(attributes);
+					self.register_tagged_items(*id, &attributes);
 					let const_index = self.tir.constants.len() as ConstIndex;
 					self.tir.constants.push(Constant {
 						id: *id,
@@ -4934,8 +4872,6 @@ impl<'ast> Builder<'ast, '_> {
 					);
 				}
 			}
-
-			// ── global ────────────────────────────────────────────────────────
 			AstNodeRef::Global { item } => {
 				if let ast::Item::Global { name, ty, id, .. } = item {
 					let global_index = self.tir.expect_global_index(*id);
@@ -4981,8 +4917,6 @@ impl<'ast> Builder<'ast, '_> {
 					}
 				}
 			}
-
-			// ── memory ────────────────────────────────────────────────────────
 			AstNodeRef::Memory { item } => {
 				if let ast::Item::Memory {
 					name,
@@ -5176,8 +5110,6 @@ impl<'ast> Builder<'ast, '_> {
 					}
 				}
 			}
-
-			// ── const ─────────────────────────────────────────────────────────
 			AstNodeRef::Const { item } => {
 				if let ast::Item::Const {
 					id,
@@ -5304,7 +5236,6 @@ impl<'ast> Builder<'ast, '_> {
 					);
 				}
 			}
-
 			AstNodeRef::ImportedGlobal {
 				import_module_index,
 				decl,
@@ -5352,11 +5283,6 @@ impl<'ast> Builder<'ast, '_> {
 					);
 				}
 			}
-
-			// ── impl trait block ─────────────────────────────────────────────
-			// Resolves the trait and target types, creates the `TraitImpl`
-			// entry, and populates the lookup tables. Methods and consts
-			// demand-drive this arm before inserting into `TraitImpl.members`.
 			AstNodeRef::ImplTraitBlock { item } => {
 				let (block_id, trait_name, target) = match item {
 					ast::Item::ImplTrait {
@@ -5467,8 +5393,6 @@ impl<'ast> Builder<'ast, '_> {
 					slot.entry(sym).or_insert(entry);
 				}
 			}
-
-			// ── impl trait method ─────────────────────────────────────────────
 			AstNodeRef::ImplTraitMethod {
 				parent_id, item, ..
 			} => {
@@ -5546,7 +5470,7 @@ impl<'ast> Builder<'ast, '_> {
 						ImplEntry::AssociatedFn(func_index)
 					};
 					let func_attrs = self.resolve_attributes(attributes);
-					self.register_lang_items(*id, &func_attrs);
+					self.register_tagged_items(*id, &func_attrs);
 					self.tir.functions.push(Function {
 						id: *id,
 						file_id: resolve_context.file_id,
@@ -5577,8 +5501,6 @@ impl<'ast> Builder<'ast, '_> {
 						.insert(signature.name.inner, entry);
 				}
 			}
-
-			// ── impl trait const ──────────────────────────────────────────────
 			AstNodeRef::ImplTraitConst {
 				parent_id, item, ..
 			} => {
@@ -5666,19 +5588,24 @@ impl<'ast> Builder<'ast, '_> {
 					}
 				}
 			}
-
-			// ── trait associated type ─────────────────────────────────────────
 			AstNodeRef::TraitAssociatedType {
 				trait_index, item, ..
 			} => {
 				if let ast::TraitItem::AssociatedType {
-					id, name, bounds, ..
+					id,
+					name,
+					bounds,
+					attributes,
 				} = item
 				{
-					let resolved_bounds = bounds
+					let bounds = bounds
 						.as_ref()
-						.map(|b| self.resolve_bounds(resolve_context, None, b))
+						.map(|bound| {
+							self.resolve_bounds(resolve_context, None, bound)
+						})
 						.unwrap_or_default();
+					let attributes = self.resolve_attributes(attributes);
+					self.register_tagged_items(*id, &attributes);
 
 					let placeholder = self.intern_type(Type::AssociatedType {
 						assoc_name: name.inner,
@@ -5690,7 +5617,7 @@ impl<'ast> Builder<'ast, '_> {
 						TraitAssocType {
 							id: *id,
 							name_span: name.span,
-							bounds: resolved_bounds,
+							bounds,
 							accesses: Vec::new(),
 						},
 					);
@@ -5716,8 +5643,6 @@ impl<'ast> Builder<'ast, '_> {
 					}
 				}
 			}
-
-			// ── impl trait associated type ────────────────────────────────────
 			AstNodeRef::ImplTraitAssociatedType {
 				parent_id, item, ..
 			} => {
@@ -5790,8 +5715,6 @@ impl<'ast> Builder<'ast, '_> {
 
 		self.sig_state.get_mut(&def_id).unwrap().state = ComputeState::Done;
 	}
-
-	// ── query: ensure_body ────────────────────────────────────────────────────
 
 	/// Resolves the body of `def_id`. Not idempotent — calling twice
 	/// double-counts accesses.
@@ -8378,6 +8301,21 @@ impl<'ast> Builder<'ast, '_> {
 			ast::Expression::Unreachable => Ok(Expression {
 				kind: ExprKind::Unreachable,
 				ty: TypeIndex::NEVER,
+				span: expr.span,
+			}),
+			ast::Expression::True => Ok(Expression {
+				kind: ExprKind::Bool { value: true },
+				ty: TypeIndex::BOOL,
+				span: expr.span,
+			}),
+			ast::Expression::False => Ok(Expression {
+				kind: ExprKind::Bool { value: false },
+				ty: TypeIndex::BOOL,
+				span: expr.span,
+			}),
+			ast::Expression::Placeholder => Ok(Expression {
+				kind: ExprKind::Placeholder,
+				ty: access_ctx.expected_type.infer_or(TypeIndex::ERROR),
 				span: expr.span,
 			}),
 			ast::Expression::Error => Ok(Expression {
@@ -12749,11 +12687,17 @@ impl<'ast> Builder<'ast, '_> {
 					}
 				}
 				_ => {
-					// Generic pointer (TypeParam memory) — validate against PointerSize bounds
-					if let Some(ts) = self.tir.typesets.iter().find(|ts| {
-						self.interner.resolve(ts.name.inner)
-							== Some("PointerSize")
-					}) {
+					// Generic pointer (TypeParam memory) — validate against the
+					// `#[tag = "pointer_size"]` typeset (`PointerSize` in std.wx).
+					if let Some(ts) = self
+						.interner
+						.get("pointer_size")
+						.and_then(|key| self.tir.tagged_items.get(&key))
+						.and_then(|tagged_id| {
+							self.tir.typeset_index(*tagged_id)
+						})
+						.map(|idx| &self.tir.typesets[idx as usize])
+					{
 						if !ts.intersection_range.contains(value) {
 							let ts_name = self
 								.interner
@@ -12928,7 +12872,6 @@ impl<'ast> Builder<'ast, '_> {
 		let struct_seg = path.last().expect("path has at least one segment");
 		let file_id = func_ctx.resolve_context.file_id;
 
-		// ── resolve the struct TypeIndex from the path ───────────────────────
 		// Shared with type-position resolution: handles namespace walking,
 		// turbofish (with alias support and INFER-padding for short arg
 		// lists), and plain identifiers uniformly.
@@ -12959,7 +12902,6 @@ impl<'ast> Builder<'ast, '_> {
 			}
 		};
 
-		// ── resolve type arguments ───────────────────────────────────────────
 		// Priority: explicit turbofish (already resolved, alias-substituted,
 		// and INFER-padded into struct_ty's args by resolve_path_type) >
 		// args concretely embedded in path type (e.g. `Self` inside

@@ -5502,12 +5502,12 @@ fn test_enum_six_unused_variants_collapses_to_generic_message() {
 }
 
 #[test]
-fn test_lang_items_registered() {
+fn test_tagged_items_registered() {
 	let case = TestCase::new(indoc! {"
-        #[lang = \"my_trait\"]
+        #[tag = \"my_trait\"]
         pub trait MyTrait {}
 
-        #[lang = \"my_fn\"]
+        #[tag = \"my_fn\"]
         pub fn my_function() {}
     "});
 	assert!(case.tir.diagnostics.is_empty());
@@ -5515,22 +5515,53 @@ fn test_lang_items_registered() {
 		.graph
 		.interner
 		.get("my_trait")
-		.expect("lang key not interned");
+		.expect("tag key not interned");
 	let fn_key = case
 		.graph
 		.interner
 		.get("my_fn")
-		.expect("lang key not interned");
+		.expect("tag key not interned");
 	let fn_def_id = *case
 		.tir
-		.lang_items
+		.tagged_items
 		.get(&fn_key)
-		.expect("fn lang item not registered");
+		.expect("fn tagged item not registered");
 	assert!(
-		case.tir.lang_items.contains_key(&trait_key),
-		"trait lang item not registered"
+		case.tir.tagged_items.contains_key(&trait_key),
+		"trait tagged item not registered"
 	);
 	assert!(case.tir.function_index(fn_def_id).is_some());
+}
+
+#[test]
+fn test_tagged_items_registered_for_trait_members() {
+	let case = TestCase::new(indoc! {"
+        pub trait MyTrait {
+            #[tag = \"my_assoc_const\"]
+            const FOO: i32;
+            #[tag = \"my_assoc_type\"]
+            type Bar;
+        }
+    "});
+	assert!(case.tir.diagnostics.is_empty());
+	let const_key = case
+		.graph
+		.interner
+		.get("my_assoc_const")
+		.expect("tag key not interned");
+	let type_key = case
+		.graph
+		.interner
+		.get("my_assoc_type")
+		.expect("tag key not interned");
+	assert!(
+		case.tir.tagged_items.contains_key(&const_key),
+		"assoc const tagged item not registered"
+	);
+	assert!(
+		case.tir.tagged_items.contains_key(&type_key),
+		"assoc type tagged item not registered"
+	);
 }
 
 #[test]
@@ -7289,6 +7320,31 @@ fn test_duplicate_memory_definition_is_error() {
 	assert!(
 		has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
 		"expected duplicate definition error for two memories with same name, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_true_false_are_keywords_not_shadowable() {
+	// Regression test: `true`/`false` used to be resolved through the
+	// ordinary identifier/symbol-table path, so a local named `true` or
+	// `false` would silently shadow the boolean literal. They are now
+	// keywords parsed directly into dedicated `Bool` expressions, so a
+	// same-named local can never be referenced and is flagged as unused.
+	let case = TestCase::new(indoc! {"
+        fn f() -> i32 {
+            local true = false;
+            if true { 1 } else { 2 }
+        }
+        export { f }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::UnusedVariable),
+		"expected the shadowed `local true` to be reported as unused, got: {:?}",
 		case.tir
 			.diagnostics
 			.iter()

@@ -65,7 +65,7 @@ globals: []
 exports:
   - Function:
       id: 46
-      name: 73
+      name: 75
 imports: []
 memories:
   - id: 45

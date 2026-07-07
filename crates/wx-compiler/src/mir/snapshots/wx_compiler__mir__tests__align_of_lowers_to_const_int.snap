@@ -73,13 +73,13 @@ globals: []
 exports:
   - Function:
       id: 46
-      name: 73
+      name: 75
   - Function:
       id: 47
-      name: 74
+      name: 76
   - Function:
       id: 48
-      name: 75
+      name: 77
 imports: []
 memories:
   - id: 45

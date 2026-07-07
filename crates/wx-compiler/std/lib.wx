@@ -29,6 +29,7 @@ fn u64_extend_u32(value: u32) -> u64;
 fn i32_wrap_i64(value: i64) -> i32;
 
 pub typeset Integer { u8, i8, u16, i16, u32, i32, u64, i64 }
+#[tag = "pointer_size"]
 pub typeset PointerSize { u32, u64 }
 
 pub trait Memory {

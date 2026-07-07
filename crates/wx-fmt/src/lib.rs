@@ -55,6 +55,8 @@ define_text! {
 		Continue    => "continue",
 		Return      => "return",
 		Unreachable => "unreachable",
+		True        => "true",
+		False       => "false",
 		// punctuation
 		Semi             => ";",
 		Comma            => ",",
@@ -1459,6 +1461,9 @@ impl<'a> Builder<'a> {
 				self.build_block(expression.span, statements, false)
 			}
 			ast::Expression::Unreachable => self.text(Text::Unreachable),
+			ast::Expression::True => self.text(Text::True),
+			ast::Expression::False => self.text(Text::False),
+			ast::Expression::Placeholder => self.text(Text::Underscore),
 			ast::Expression::IfElse {
 				condition,
 				then_block,
@@ -2107,7 +2112,8 @@ impl<'a> Renderer<'a> {
 			}
 			Node::Group(inner_id) => {
 				let mode = if self.measure_flat(id)
-					<= (self.config.max_line_width as usize).saturating_sub(self.position)
+					<= (self.config.max_line_width as usize)
+						.saturating_sub(self.position)
 				{
 					RenderMode::Flat
 				} else {
