@@ -37,7 +37,7 @@ export interface Diagnostic {
 
 export interface CompilationResult {
 	diagnostics: Diagnostic[];
-	bytecode: Uint8Array | null;
+	bytecode: Uint8Array<ArrayBuffer> | null;
 }
 "#;
 

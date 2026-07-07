@@ -8,13 +8,45 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-tower-lsp-server = "0.23.0"
-tokio = { version = "1", features = ["full"] }
+tower-lsp-server = { version = "0.23.0", default-features = false }
+tokio = { version = "1", default-features = false, features = ["sync"] }
 wx-compiler = { path = "../wx-compiler" }
 wx-fmt = { path = "../wx-fmt" }
 string-interner = { workspace = true }
 codespan-reporting = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+# `std::time::Instant::now()` panics ("time not implemented on this
+# platform") on `wasm32-unknown-unknown` — this is a drop-in replacement
+# that's `std::time::Instant` on native and `Performance.now()`-backed on
+# wasm, so call sites don't need their own native/wasm split.
+web-time = "1.1.0"
+
+wasm-bindgen-futures = { version = "0.4", optional = true }
+gloo-timers = { version = "0.3", features = ["futures"], optional = true }
+
+# `tower-lsp-server`'s `runtime-tokio`/`runtime-agnostic` features are
+# mutually exclusive (see `src/codec.rs`'s `#[cfg(feature = ...)]`-gated
+# `LanguageServerCodec` impls). Selecting between them via
+# `[target.'cfg(...)'.dependencies]` doesn't work: Cargo resolves one
+# lockfile-wide feature set per dependency, unioned across *every*
+# target-conditional table regardless of the platform actually being built,
+# so both ended up enabled at once on a `wasm32-unknown-unknown` build and
+# collided. Real `[features]`, selected explicitly via `--features`, don't
+# have this problem — only the requested feature is ever active.
+[features]
+default = ["native"]
+native = [
+	"tower-lsp-server/runtime-tokio",
+	"tokio/rt-multi-thread",
+	"tokio/macros",
+	"tokio/io-std",
+	"tokio/time",
+]
+wasm = [
+	"tower-lsp-server/runtime-agnostic",
+	"dep:wasm-bindgen-futures",
+	"dep:gloo-timers",
+]
 
 [dev-dependencies]
 indoc = "2"
