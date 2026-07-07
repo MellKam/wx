@@ -1,0 +1,25 @@
+{
+	"name": "web-next",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc -b && vite build",
+		"preview": "vite preview"
+	},
+	"dependencies": {
+		"@codingame/monaco-vscode-api": "^25.1.2",
+		"@codingame/monaco-vscode-editor-api": "^25.1.2",
+		"@codingame/monaco-vscode-theme-defaults-default-extension": "^25.1.2",
+		"monaco-languageclient": "10.7.0",
+		"vscode-languageclient": "9.0.1",
+		"wx-compiler-wasm": "file:../crates/wx-compiler-wasm/pkg",
+		"wx-lsp-wasm": "file:../crates/wx-lsp-wasm/pkg"
+	},
+	"devDependencies": {
+		"typescript": "5.8.3",
+		"vite": "6.3.5",
+		"vite-plugin-wasm": "3.4.1"
+	}
+}
