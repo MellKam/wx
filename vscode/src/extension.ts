@@ -142,11 +142,7 @@ async function startServer(serverModule: string) {
 }
 
 export function activate(context: ExtensionContext) {
-	console.log("[wx-vscode] activate() called");
-	window.showInformationMessage("[wx-vscode] activate() called");
-
 	const serverModule = resolveServerBinary(context);
-	console.log(`[wx-vscode] resolved server binary: ${serverModule}`);
 	const restartCommand = commands.registerCommand(
 		"wx-vscode.restartServer",
 		async () => {

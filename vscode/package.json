@@ -7,8 +7,10 @@
 		"vscode": "^1.125.0"
 	},
 	"categories": [
-		"Programming Languages"
+		"Programming Languages",
+		"Formatters"
 	],
+	"icon": "icon.png",
 	"activationEvents": [],
 	"main": "./out/extension.cjs",
 	"publisher": "mellkam",
