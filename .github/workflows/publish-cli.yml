@@ -112,7 +112,10 @@ jobs:
           cache: "pnpm"
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        # Scoped to just this package: a full workspace install would also
+        # try to install web-next, which depends on locally wasm-pack-built
+        # packages (crates/wx-*-wasm/pkg) that don't exist in this workflow.
+        run: pnpm install --frozen-lockfile --filter @wx-lang/cli
 
       # cli/package.json references the platform packages via "workspace:*";
       # `pnpm publish` rewrites those to real version numbers, which plain
