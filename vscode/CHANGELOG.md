@@ -1,8 +1,8 @@
 # Changelog
 
-All notable changes to the WX Language Support VS Code extension will be
-documented in this file. For changes to the WX language and compiler
-itself, see the [root changelog](../CHANGELOG.md).
+All notable changes to the "WX - WebAssembly Expressive Language" VS Code
+extension will be documented in this file. For changes to the WX language
+and compiler itself, see the [root changelog](../CHANGELOG.md).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 

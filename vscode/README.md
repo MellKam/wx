@@ -1,1 +1,1 @@
-# WX Language Support
+# WX - WebAssembly Expressive Language

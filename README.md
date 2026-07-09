@@ -43,7 +43,7 @@ cargo build --release -p wx-cli
 
 **Editor support**
 
-Search for "WX Language Support" in the VS Code Extensions view for syntax highlighting, diagnostics, completions, and formatting. Other editors aren't supported yet.
+Search for "WX" in the VS Code Extensions view for syntax highlighting, diagnostics, completions, and formatting. Other editors aren't supported yet.
 
 ## Examples
 

@@ -1,6 +1,6 @@
 {
 	"name": "wx-vscode",
-	"displayName": "WX Language Support",
+	"displayName": "WX - WebAssembly Expressive Language",
 	"description": "WX language support: syntax highlighting, LSP diagnostics, completions, and formatting",
 	"version": "0.1.0",
 	"engines": {
