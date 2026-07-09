@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="banner.svg" alt="WX banner" width="600" />
+</p>
+
 # Web Assembly Expressive Language (WX)
 
 This project is part of my bachelor’s thesis and aims to explore the possibilities of WASM while diving into building a full-blown compiler. It is still in very early stage, so I don't guarantee anything will work at all.
