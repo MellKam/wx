@@ -1978,25 +1978,23 @@ impl<T> SeparatedGroup<T> {
 	}
 
 	fn parse_with_recovery(&self, parser: &mut Parser) -> Option<Spanned<T>> {
-		loop {
-			match (self.item_handler)(parser) {
-				Ok(item) => return Some(item),
-				Err(_) => loop {
-					let token = parser.lexer.peek();
-					match token.inner {
-						t if t == self.separator_token => {
-							parser.lexer.next();
-							return None;
-						}
-						t if t == self.close_token || t == Token::Eof => {
-							return None;
-						}
-						_ => {
-							parser.lexer.next();
-						}
+		match (self.item_handler)(parser) {
+			Ok(item) => Some(item),
+			Err(_) => loop {
+				let token = parser.lexer.peek();
+				match token.inner {
+					t if t == self.separator_token => {
+						parser.lexer.next();
+						return None;
 					}
-				},
-			}
+					t if t == self.close_token || t == Token::Eof => {
+						return None;
+					}
+					_ => {
+						parser.lexer.next();
+					}
+				}
+			},
 		}
 	}
 }

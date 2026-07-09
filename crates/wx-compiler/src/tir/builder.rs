@@ -12586,18 +12586,9 @@ impl<'ast> Builder<'ast, '_> {
 			expr.ty = TypeIndex::I32;
 			Ok(())
 		} else if target_idx == TypeIndex::I64 {
-			if value > i64::MAX || value < i64::MIN {
-				self.tir
-					.diagnostics
-					.push(report_integer_literal_out_of_range(
-						formatter,
-						IntegerLiteralOutOfRangeDiagnostic {
-							ty: TypeIndex::I64,
-							value,
-							span: SourceSpan::new(file_id, expr.span),
-						},
-					));
-			}
+			// `value` is already an `i64`, so it can never fall outside
+			// `i64::MIN..=i64::MAX` — literals too large to parse as `i64`
+			// are rejected earlier, in `parse_integer_literal`.
 			expr.ty = TypeIndex::I64;
 			Ok(())
 		} else if target_idx == TypeIndex::U32 {
