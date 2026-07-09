@@ -8,6 +8,9 @@ authors.workspace = true
 license.workspace = true
 repository = "https://github.com/MellKam/wx/tree/main/crates/wx-fmt"
 
+[lints]
+workspace = true
+
 [dependencies]
 string-interner = { workspace = true }
 wx-compiler = { path = "../wx-compiler" }

@@ -1804,7 +1804,6 @@ fn symbol_hover_text(
 
 struct ActiveCall {
 	func_name_start: usize,
-	paren_pos: usize,
 	active_param: usize,
 }
 
@@ -1857,7 +1856,6 @@ fn find_active_call(source: &str, offset: usize) -> Option<ActiveCall> {
 
 	Some(ActiveCall {
 		func_name_start: name_start,
-		paren_pos,
 		active_param,
 	})
 }

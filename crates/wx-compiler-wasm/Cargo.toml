@@ -8,6 +8,9 @@ authors.workspace = true
 license.workspace = true
 repository = "https://github.com/MellKam/wx/tree/main/crates/wx-compiler-wasm"
 
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

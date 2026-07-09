@@ -7,6 +7,9 @@ authors.workspace = true
 license.workspace = true
 repository = "https://github.com/MellKam/wx/tree/main/crates/wx-lsp"
 
+[lints]
+workspace = true
+
 [dependencies]
 # Runtime feature (`runtime-tokio` vs `runtime-agnostic`) selected per-target
 # below, not here — see the target tables.

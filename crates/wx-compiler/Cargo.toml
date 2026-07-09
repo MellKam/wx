@@ -7,6 +7,9 @@ authors.workspace = true
 license.workspace = true
 repository = "https://github.com/MellKam/wx/tree/main/crates/wx-compiler"
 
+[lints]
+workspace = true
+
 [lib]
 
 [dependencies]
