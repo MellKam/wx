@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="banner.svg" alt="WX banner" width="600" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="banner.svg">
+    <source media="(prefers-color-scheme: light)" srcset="banner-light.svg">
+    <img src="banner.svg" alt="WX banner" width="600">
+  </picture>
 </p>
 
 # Web Assembly Expressive Language (WX)
