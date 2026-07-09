@@ -63,7 +63,10 @@ jobs:
           fi
 
       - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+        # Scoped to just this package: a full workspace install would also
+        # try to install web-next, which depends on locally wasm-pack-built
+        # packages (crates/wx-*-wasm/pkg) that don't exist in this workflow.
+        run: pnpm install --frozen-lockfile --filter wx-vscode
 
       - name: Package VS Code Extension
         working-directory: ./vscode
