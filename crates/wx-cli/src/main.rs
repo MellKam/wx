@@ -1,7 +1,8 @@
 use std::fs;
 use std::io::Write;
 
-use codespan_reporting::diagnostic::Severity;
+use codespan_reporting::diagnostic::{Diagnostic, Severity};
+use codespan_reporting::files::Files as _;
 use codespan_reporting::term;
 use codespan_reporting::term::DisplayStyle;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
@@ -14,6 +15,7 @@ fn main() {
 		.value_parser(clap::builder::PossibleValuesParser::new([
 			clap::builder::PossibleValue::new("human"),
 			clap::builder::PossibleValue::new("short"),
+			clap::builder::PossibleValue::new("json"),
 		]))
 		.default_value("human");
 
@@ -27,6 +29,16 @@ fn main() {
 			clap::Command::new("compile")
 				.about("Compile a WX source file to WebAssembly")
 				.arg(clap::Arg::new("path").required(true).index(1))
+				.arg(
+					clap::Arg::new("output")
+						.short('o')
+						.long("output")
+						.value_name("PATH")
+						.help(
+							"Output path for the compiled .wasm; use `-` \
+							 for stdout (default: <input>.wasm)",
+						),
+				)
 				.arg(message_format.clone()),
 		)
 		.subcommand(
@@ -45,17 +57,18 @@ fn main() {
 	match matches.subcommand() {
 		Some(("compile", sub)) => {
 			let path = sub.get_one::<String>("path").unwrap();
-			let style = parse_display_style(
+			let output = sub.get_one::<String>("output").map(String::as_str);
+			let format = parse_message_format(
 				sub.get_one::<String>("message-format").unwrap(),
 			);
-			cmd_compile(path, style);
+			cmd_compile(path, output, format);
 		}
 		Some(("check", sub)) => {
 			let path = sub.get_one::<String>("path").unwrap();
-			let style = parse_display_style(
+			let format = parse_message_format(
 				sub.get_one::<String>("message-format").unwrap(),
 			);
-			cmd_check(path, style);
+			cmd_check(path, format);
 		}
 		Some(("format", sub)) => {
 			cmd_format(sub.get_one::<String>("path").unwrap())
@@ -64,11 +77,92 @@ fn main() {
 	}
 }
 
-fn parse_display_style(s: &str) -> DisplayStyle {
+enum MessageFormat {
+	Text(DisplayStyle),
+	Json,
+}
+
+fn parse_message_format(s: &str) -> MessageFormat {
 	match s {
-		"medium" => DisplayStyle::Medium,
-		"short" => DisplayStyle::Short,
-		_ => DisplayStyle::Rich,
+		"json" => MessageFormat::Json,
+		"medium" => MessageFormat::Text(DisplayStyle::Medium),
+		"short" => MessageFormat::Text(DisplayStyle::Short),
+		_ => MessageFormat::Text(DisplayStyle::Rich),
+	}
+}
+
+/// One diagnostic label resolved to a human-facing line/column, for JSON output.
+#[derive(serde::Serialize)]
+struct JsonLabel {
+	style: &'static str,
+	file: String,
+	line: usize,
+	column: usize,
+	message: String,
+}
+
+/// A single diagnostic in `--message-format=json` output. One JSON object
+/// per line (NDJSON), matching `rustc --error-format=json`'s convention.
+#[derive(serde::Serialize)]
+struct JsonDiagnostic {
+	severity: &'static str,
+	code: Option<String>,
+	message: String,
+	labels: Vec<JsonLabel>,
+	notes: Vec<String>,
+}
+
+fn severity_str(severity: Severity) -> &'static str {
+	match severity {
+		Severity::Bug => "bug",
+		Severity::Error => "error",
+		Severity::Warning => "warning",
+		Severity::Note => "note",
+		Severity::Help => "help",
+	}
+}
+
+fn diagnostic_to_json(
+	files: &vfs::Files,
+	d: &Diagnostic<vfs::FileId>,
+) -> JsonDiagnostic {
+	let labels = d
+		.labels
+		.iter()
+		.map(|label| {
+			let file = files
+				.name(label.file_id)
+				.map(str::to_string)
+				.unwrap_or_default();
+			let location = files
+				.location(label.file_id, label.range.start)
+				.unwrap_or(codespan_reporting::files::Location {
+					line_number: 0,
+					column_number: 0,
+				});
+			JsonLabel {
+				style: match label.style {
+					codespan_reporting::diagnostic::LabelStyle::Primary => {
+						"primary"
+					}
+					codespan_reporting::diagnostic::LabelStyle::Secondary => {
+						"secondary"
+					}
+				},
+				file,
+				line: location.line_number,
+				column: location.column_number,
+				message: label.message.clone(),
+			}
+		})
+		.collect();
+
+	JsonDiagnostic {
+		severity: severity_str(d.severity),
+		code: d.code.clone(),
+		message: d.message.clone(),
+		labels,
+		notes: d.notes.clone(),
 	}
 }
 
@@ -84,80 +178,120 @@ fn load_compilation(file_path: &str) -> vfs::CompilationGraph {
 	}
 }
 
-/// Emits diagnostics to stderr. Returns `true` if any errors were reported.
+//// Emits every diagnostic in `diagnostics` to stderr in the given format.
+/// Does not inspect severity — call `abort_if_errors` separately, after all
+/// diagnostics across every stage have been emitted.
 fn emit_diagnostics(
 	compilation: &vfs::CompilationGraph,
-	diagnostics: &[codespan_reporting::diagnostic::Diagnostic<vfs::FileId>],
-	style: DisplayStyle,
-) -> bool {
-	let writer = StandardStream::stderr(ColorChoice::Always);
-	let config = term::Config {
-		display_style: style,
-		..term::Config::default()
-	};
-	let mut has_errors = false;
-	for d in diagnostics {
-		if matches!(d.severity, Severity::Error | Severity::Bug) {
-			has_errors = true;
+	diagnostics: &[Diagnostic<vfs::FileId>],
+	format: &MessageFormat,
+) {
+	match format {
+		MessageFormat::Json => {
+			let stderr = std::io::stderr();
+			let mut lock = stderr.lock();
+			for d in diagnostics {
+				let json = diagnostic_to_json(&compilation.files, d);
+				writeln!(lock, "{}", serde_json::to_string(&json).unwrap())
+					.unwrap();
+			}
 		}
-		term::emit_to_write_style(
-			&mut writer.lock(),
-			&config,
-			&compilation.files,
-			d,
-		)
-		.unwrap();
+		MessageFormat::Text(style) => {
+			let writer = StandardStream::stderr(ColorChoice::Always);
+			let config = term::Config {
+				display_style: style.clone(),
+				..term::Config::default()
+			};
+			for d in diagnostics {
+				term::emit_to_write_style(
+					&mut writer.lock(),
+					&config,
+					&compilation.files,
+					d,
+				)
+				.unwrap();
+			}
+		}
 	}
-	has_errors
 }
 
-fn cmd_compile(file_path: &str, style: DisplayStyle) {
+/// Prints a rustc-style summary and exits the process if `count` is nonzero.
+#[inline]
+fn abort_if_errors(count: usize) {
+	if count == 0 {
+		return;
+	}
+	let noun = if count == 1 { "error" } else { "errors" };
+	eprintln!("error: aborting due to {count} previous {noun}");
+	std::process::exit(1);
+}
+
+fn cmd_compile(file_path: &str, output: Option<&str>, format: MessageFormat) {
 	let mut compilation = load_compilation(file_path);
 
 	for crate_graph in &compilation.crates {
-		if emit_diagnostics(
-			&compilation,
-			&crate_graph.diagnostics,
-			style.clone(),
-		) {
-			std::process::exit(1);
-		}
+		emit_diagnostics(&compilation, &crate_graph.diagnostics, &format);
 	}
+	abort_if_errors(
+		compilation
+			.crates
+			.iter()
+			.flat_map(|crate_graph| crate_graph.diagnostics.iter())
+			.filter(|d| matches!(d.severity, Severity::Error | Severity::Bug))
+			.count(),
+	);
 
 	let tir = tir::TIR::build(&mut compilation);
-	if emit_diagnostics(&compilation, &tir.diagnostics, style) {
-		std::process::exit(1);
-	}
+	emit_diagnostics(&compilation, &tir.diagnostics, &format);
+	abort_if_errors(
+		tir.diagnostics
+			.iter()
+			.filter(|d| matches!(d.severity, Severity::Error | Severity::Bug))
+			.count(),
+	);
 
 	let mir =
 		mir::MIR::build(&tir, &compilation.interner, compilation.id_generator);
 	let module = codegen::Builder::build(&mir, &compilation.interner).unwrap();
 	let bytecode = module.encode();
 
-	let stem = output_stem(file_path);
-	let out_path = format!("{stem}.wasm");
+	if output == Some("-") {
+		std::io::stdout().write_all(&bytecode).unwrap();
+		return;
+	}
+
+	let out_path = match output {
+		Some(path) => path.to_string(),
+		None => format!("{}.wasm", output_stem(file_path)),
+	};
 	let mut file = fs::File::create(&out_path).unwrap();
 	file.write_all(&bytecode).unwrap();
-	println!("Wrote {} bytes to {out_path}", bytecode.len());
+	eprintln!("Wrote {} bytes to {out_path}", bytecode.len());
 }
 
-fn cmd_check(file_path: &str, style: DisplayStyle) {
+fn cmd_check(file_path: &str, format: MessageFormat) {
 	let mut compilation = load_compilation(file_path);
 
 	for crate_graph in &compilation.crates {
-		if emit_diagnostics(
-			&compilation,
-			&crate_graph.diagnostics,
-			style.clone(),
-		) {
-			std::process::exit(1);
-		}
+		emit_diagnostics(&compilation, &crate_graph.diagnostics, &format);
 	}
+	abort_if_errors(
+		compilation
+			.crates
+			.iter()
+			.flat_map(|crate_graph| crate_graph.diagnostics.iter())
+			.filter(|d| matches!(d.severity, Severity::Error | Severity::Bug))
+			.count(),
+	);
 
 	let tir = tir::TIR::build(&mut compilation);
-	if emit_diagnostics(&compilation, &tir.diagnostics, style) {
-		std::process::exit(1);
-	}
+	emit_diagnostics(&compilation, &tir.diagnostics, &format);
+	abort_if_errors(
+		tir.diagnostics
+			.iter()
+			.filter(|d| matches!(d.severity, Severity::Error | Severity::Bug))
+			.count(),
+	);
 
 	println!("No errors found.");
 }

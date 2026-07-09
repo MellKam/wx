@@ -483,7 +483,7 @@ impl<'a> Builder<'a> {
 				module,
 				alias,
 				entries,
-			} => self.build_import_definition(module, alias, entries),
+			} => self.build_import_definition(module, alias.as_ref(), entries),
 			ast::Item::Memory {
 				name, kind, config, ..
 			} => {
@@ -567,11 +567,13 @@ impl<'a> Builder<'a> {
 			),
 			ast::Item::Struct {
 				id: _,
+				attributes,
 				name,
 				type_params,
 				fields,
 				pub_span,
 			} => self.build_struct_declaration(
+				attributes,
 				name,
 				type_params,
 				fields,
@@ -636,7 +638,7 @@ impl<'a> Builder<'a> {
 	fn build_import_definition(
 		&mut self,
 		module: &ast::Spanned<SymbolU32>,
-		alias: &Option<ast::Spanned<SymbolU32>>,
+		alias: Option<&ast::Spanned<SymbolU32>>,
 		entries: &[ast::Separated<ast::Spanned<ast::ImportEntry>>],
 	) -> NodeId {
 		let mut items: Vec<NodeId> =
@@ -1079,12 +1081,14 @@ impl<'a> Builder<'a> {
 
 	fn build_struct_declaration(
 		&mut self,
+		attributes: &[ast::Attribute],
 		name: &ast::Spanned<SymbolU32>,
 		type_params: &[ast::TypeParam],
 		fields: &[ast::Separated<ast::Spanned<ast::StructField>>],
 		pub_span: Option<ast::TextSpan>,
 	) -> NodeId {
 		let mut items: Vec<NodeId> = Vec::new();
+		self.build_attributes(&mut items, attributes);
 		if pub_span.is_some() {
 			items.push(self.text(Text::Pub));
 		}

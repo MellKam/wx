@@ -1190,6 +1190,16 @@ fn report_argument_count_mismatch(
 	diagnostic
 }
 
+fn report_missing_import_alias(span: SourceSpan) -> Diagnostic<FileId> {
+	Diagnostic::error()
+		.with_code(DiagnosticCode::MissingImportAlias.code())
+		.with_message("import requires an `as` alias")
+		.with_label(
+			span.primary_label()
+				.with_message("expected `as <name>` here"),
+		)
+}
+
 fn report_duplicate_struct_field(
 	name: &str,
 	first_span: SourceSpan,
@@ -1507,35 +1517,57 @@ impl<'ast> Builder<'ast, '_> {
 		{
 			return true;
 		}
-		// *mut T coerces to *T (dropping write permission is always safe).
-		if let (
-			Type::Pointer {
-				to: a_to,
-				memory: a_mem,
-				mutable: true,
-			},
-			Type::Pointer {
-				to: b_to,
-				memory: b_mem,
-				mutable: false,
-			},
-		) = (&self.tir.types[a.as_usize()], &self.tir.types[b.as_usize()])
-		{
-			if a_to == b_to && a_mem == b_mem {
-				return true;
+		match (&self.tir.types[a.as_usize()], &self.tir.types[b.as_usize()]) {
+			// *mut T coerces to *T (dropping write permission is always safe).
+			(
+				Type::Pointer {
+					to: a_to,
+					memory: a_mem,
+					mutable: true,
+				},
+				Type::Pointer {
+					to: b_to,
+					memory: b_mem,
+					mutable: false,
+				},
+			) => a_to == b_to && a_mem == b_mem,
+			// []mut T coerces to []T (dropping write permission is always safe).
+			(
+				Type::Slice {
+					of: a_of,
+					memory: a_mem,
+					mutable: true,
+				},
+				Type::Slice {
+					of: b_of,
+					memory: b_mem,
+					mutable: false,
+				},
+			) => a_of == b_of && a_mem == b_mem,
+			// [N]mut T coerces to [N]T (dropping write permission is always safe).
+			(
+				Type::Array {
+					of: a_of,
+					size: a_size,
+					memory: a_mem,
+					mutable: true,
+				},
+				Type::Array {
+					of: b_of,
+					size: b_size,
+					memory: b_mem,
+					mutable: false,
+				},
+			) => a_of == b_of && a_size == b_size && a_mem == b_mem,
+			// FunctionItem coerces implicitly to its matching Function type.
+			(Type::FunctionItem { id, type_args }, Type::Function { .. }) => {
+				let func_index = self.tir.expect_function_index(*id) as usize;
+				let generic_sig =
+					self.tir.functions[func_index].signature_index;
+				self.substitute_type(generic_sig, &type_args.clone()) == b
 			}
+			_ => false,
 		}
-		// FunctionItem coerces implicitly to its matching Function type.
-		let (id, type_args) = match &self.tir.types[a.as_usize()] {
-			Type::FunctionItem { id, type_args } => (*id, type_args.clone()),
-			_ => return false,
-		};
-		if !matches!(self.tir.types[b.as_usize()], Type::Function { .. }) {
-			return false;
-		}
-		let fi = self.tir.expect_function_index(id) as usize;
-		let generic_sig = self.tir.functions[fi].signature_index;
-		self.substitute_type(generic_sig, &type_args) == b
 	}
 
 	fn unify(&mut self, a: TypeIndex, b: TypeIndex) -> Result<TypeIndex, ()> {
@@ -2900,6 +2932,14 @@ impl<'ast> Builder<'ast, '_> {
 		}
 	}
 
+	// TODO: this silently drops unrecognized attribute names/values (the
+	// `_ => None` arm below) and never checks whether a resolved attribute
+	// is actually valid on the item kind it was attached to (e.g.
+	// `#[fixed_layout]` on a function, or `#[intrinsic]` on a struct) or
+	// whether the same attribute appears more than once on one item.
+	// Add validation + diagnostics for unknown attributes, attributes used
+	// on the wrong item kind, and duplicates once this needs to be correct
+	// rather than best-effort.
 	fn resolve_attributes(
 		&mut self,
 		attrs: &[ast::Attribute],
@@ -2913,6 +2953,9 @@ impl<'ast> Builder<'ast, '_> {
 					}
 					(ast::AttributeValue::Word, Some("intrinsic")) => {
 						Some(ItemAttribute::Intrinsic)
+					}
+					(ast::AttributeValue::Word, Some("fixed_layout")) => {
+						Some(ItemAttribute::FixedLayout)
 					}
 					(ast::AttributeValue::NameValue(value), Some("tag")) => {
 						let raw =
@@ -3196,6 +3239,7 @@ impl<'ast> Builder<'ast, '_> {
 			ast::Item::Struct {
 				id,
 				pub_span,
+				attributes,
 				name,
 				type_params,
 				..
@@ -3214,6 +3258,7 @@ impl<'ast> Builder<'ast, '_> {
 				self.tir
 					.item_lookup
 					.insert(*id, ItemIndex::Struct(struct_index));
+				let attributes = self.resolve_attributes(attributes);
 				self.tir.structs.push(Struct {
 					id: *id,
 					file_id,
@@ -3227,6 +3272,7 @@ impl<'ast> Builder<'ast, '_> {
 						})
 						.collect(),
 					self_type,
+					attributes,
 					fields: Box::new([]),
 					lookup: HashMap::new(),
 					accesses: Vec::new(),
@@ -3621,6 +3667,11 @@ impl<'ast> Builder<'ast, '_> {
 						span: import_module_name.span,
 					}
 				};
+				if alias.is_none() {
+					self.tir.diagnostics.push(report_missing_import_alias(
+						SourceSpan::new(file_id, import_module_name.span),
+					));
+				}
 				let module_sym = match alias {
 					Some(a) => a.inner,
 					None => external_name.inner,
@@ -9795,6 +9846,10 @@ impl<'ast> Builder<'ast, '_> {
 			(
 				Type::Array { memory: a_mem, .. },
 				Type::Array { memory: b_mem, .. },
+			) => a_mem == b_mem,
+			(
+				Type::Slice { memory: a_mem, .. },
+				Type::Slice { memory: b_mem, .. },
 			) => a_mem == b_mem,
 			// Allow M::Size ↔ M::*T (both directions): same memory base, assoc type is "Size"
 			(

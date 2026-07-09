@@ -369,7 +369,7 @@ fn test_parse_import_with_alias() {
 #[test]
 fn test_imported_global() {
 	let case = TestCase::new(indoc! {"
-        import \"env\" {
+        import \"env\" as env {
             global counter: i32;
             global mut flag: bool;
         }
@@ -406,9 +406,29 @@ fn test_imported_global() {
 }
 
 #[test]
+fn test_import_without_alias_reports_error_but_recovers() {
+	let case = TestCase::new(indoc! {"
+        import \"env\" {
+            fn log(message: i32);
+        }
+
+        fn main() {
+            env::log(42);
+        }
+
+        export { main }
+    "});
+	assert!(has_error_code(&case.tir, DiagnosticCode::MissingImportAlias));
+	// Recovery: the missing alias falls back to the module string as the
+	// namespace name, so the call site below still resolves instead of
+	// cascading into an unrelated "undeclared identifier" error.
+	assert!(!has_error_code(&case.tir, DiagnosticCode::UndeclaredIdentifier));
+}
+
+#[test]
 fn test_local_variable_used_in_import_call() {
 	let case = TestCase::new(indoc! {"
-        import \"console\" {
+        import \"console\" as console {
             fn log(ptr: u32, len: u32);
         }
 

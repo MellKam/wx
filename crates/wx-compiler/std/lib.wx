@@ -8,6 +8,8 @@ fn memory_size<M: Memory>(mem: M) -> M::Size;
 #[intrinsic]
 fn slice_len<M: Memory, T>(slice: M::[]T) -> M::Size;
 #[intrinsic]
+fn slice_ptr<M: Memory, T>(slice: M::[]T) -> M::*T;
+#[intrinsic]
 fn slice_from_parts<M: Memory, T>(data: M::*T, len: M::Size) -> M::[]T;
 #[intrinsic]
 fn size_of<T, M: Memory>() -> M::Size;
@@ -112,6 +114,11 @@ impl<M: Memory, T> M::[]T {
     #[inline]
     pub fn len(self) -> M::Size {
         slice_len(self)
+    }
+
+    #[inline]
+    pub fn ptr(self) -> M::*T {
+        slice_ptr(self)
     }
 }
 

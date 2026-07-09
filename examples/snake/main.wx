@@ -17,7 +17,7 @@ pub fn alloc<T>() -> heap::*mut T {
   ptr as _
 }
 
-import "host" {
+import "host" as host {
   fn draw_rect(x: i32, y: i32, w: i32, h: i32, color: u32);
   fn clear(color: u32);
   fn poll_key() -> i32;

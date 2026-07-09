@@ -2226,6 +2226,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "codespan-reporting",
+ "serde",
+ "serde_json",
  "string-interner",
  "wx-compiler",
  "wx-fmt",

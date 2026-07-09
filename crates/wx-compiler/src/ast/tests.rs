@@ -121,7 +121,7 @@ fn test_top_level_items() {
             y: i32,
         }
 
-        import \"env\" {
+        import \"env\" as env {
             fn log(message: string)
         }
 
@@ -1104,7 +1104,10 @@ fn test_import_alias_and_entry_kinds() {
 	let Item::Import { alias, entries, .. } = item(&case.ast, 0) else {
 		panic!("expected import block")
 	};
-	assert!(alias.is_some());
+	assert_eq!(
+		alias.as_ref().and_then(|a| case.interner.resolve(a.inner)),
+		Some("host")
+	);
 	assert!(matches!(
 		entries[0].inner.inner.declaration,
 		ImportDeclaration::Function { .. }

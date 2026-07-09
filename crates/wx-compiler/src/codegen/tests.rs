@@ -575,7 +575,7 @@ fn test_imports() {
 	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
-        import \"console\" {
+        import \"console\" as console {
             fn log(value: []u8) -> ();
         }
 
@@ -632,7 +632,7 @@ fn test_dead_function_strings_excluded_from_data_section() {
 	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
-        import \"env\" {
+        import \"env\" as env {
             fn log(message: []u8);
         }
 

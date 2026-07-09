@@ -2,7 +2,7 @@ use std::*;
 
 memory heap: Memory where { Size = u32 } { min_pages: 1 };
 
-import "console" {
+import "console" as console {
   fn log(message: heap::[]u8);
 }
 

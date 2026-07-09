@@ -481,6 +481,16 @@ impl Layout {
 	}
 }
 
+/// How an aggregate's fields are physically ordered in memory.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum FieldOrder {
+	/// Fields are sorted by alignment descending to minimize padding
+	/// (the default for tuples, slices, and plain structs).
+	Sorted,
+	/// Fields keep declaration order — set by `#[fixed_layout]`.
+	Fixed,
+}
+
 impl MIR {
 	pub fn build(
 		tir: &tir::TIR,
@@ -741,7 +751,7 @@ enum IndexAddress {
 struct Builder<'tir> {
 	tir: &'tir tir::TIR,
 	interner: &'tir ast::StringInterner,
-	aggregate_index_lookup: HashMap<Box<[Type]>, AggregateIndex>,
+	aggregate_index_lookup: HashMap<(FieldOrder, Box<[Type]>), AggregateIndex>,
 	aggregates: Vec<Aggregate>,
 	/// Concrete function signatures, interned on demand. The index into this
 	/// Vec is the MIR `SignatureIndex` used throughout the rest of the IR.
@@ -885,7 +895,8 @@ impl<'tir> Builder<'tir> {
 					.iter()
 					.map(|&e| self.lower_type_index(e))
 					.collect();
-				let aggregate_index = self.ensure_aggregate(mir_elems);
+				let aggregate_index =
+					self.ensure_aggregate(mir_elems, FieldOrder::Sorted);
 				self.aggregates[aggregate_index as usize].layout
 			}
 			tir::Type::Struct { struct_index, args } => {
@@ -898,18 +909,30 @@ impl<'tir> Builder<'tir> {
 		}
 	}
 
-	fn ensure_aggregate(&mut self, mir_fields: Box<[Type]>) -> AggregateIndex {
-		if let Some(&index) = self.aggregate_index_lookup.get(&mir_fields) {
+	fn ensure_aggregate(
+		&mut self,
+		mir_fields: Box<[Type]>,
+		order: FieldOrder,
+	) -> AggregateIndex {
+		let key = (order, mir_fields);
+		if let Some(&index) = self.aggregate_index_lookup.get(&key) {
 			return index;
 		}
+		let (_, mir_fields) = key;
 
+		// TODO: for `FieldOrder::Fixed` the decl-to-phys indirection below is
+		// unnecessary (physical order always equals declaration order) — skip
+		// the sort/lookup scaffolding entirely and build offsets directly for
+		// a leaner fast path once this shows up in profiling.
 		let mut sorted: Vec<(u32, Layout)> = mir_fields
 			.iter()
 			.copied()
 			.enumerate()
 			.map(|(decl, ty)| (decl as u32, self.mir_type_layout(ty)))
 			.collect();
-		sorted.sort_by_key(|(_, b)| std::cmp::Reverse(b.align));
+		if order == FieldOrder::Sorted {
+			sorted.sort_by_key(|(_, b)| std::cmp::Reverse(b.align));
+		}
 
 		// Single pass: total layout, per-field byte offsets, and ordering maps.
 		let mut layout = Layout { size: 0, align: 1 };
@@ -932,7 +955,7 @@ impl<'tir> Builder<'tir> {
 
 		let aggregate_index = self.aggregates.len() as AggregateIndex;
 		self.aggregate_index_lookup
-			.insert(mir_fields, aggregate_index);
+			.insert((order, mir_fields), aggregate_index);
 		self.aggregates.push(Aggregate {
 			decl_to_phys: decl_to_phys.into_boxed_slice(),
 			layout,
@@ -1003,12 +1026,21 @@ impl<'tir> Builder<'tir> {
 			None
 		};
 		// fields: &'tir [StructField] — lifetime tied to TIR, not to Builder
-		let fields = &self.tir.structs[struct_index as usize].fields;
-		let mir_fields: Box<[Type]> = fields
+		let tir_struct = &self.tir.structs[struct_index as usize];
+		let order = if tir_struct
+			.attributes
+			.contains(&tir::ItemAttribute::FixedLayout)
+		{
+			FieldOrder::Fixed
+		} else {
+			FieldOrder::Sorted
+		};
+		let mir_fields: Box<[Type]> = tir_struct
+			.fields
 			.iter()
 			.map(|f| self.lower_type_index(f.ty.inner))
 			.collect();
-		let aggregate_index = self.ensure_aggregate(mir_fields);
+		let aggregate_index = self.ensure_aggregate(mir_fields, order);
 		if let Some(saved) = saved {
 			self.current_substitutions = saved;
 		}
@@ -1089,10 +1121,12 @@ impl<'tir> Builder<'tir> {
 				let tir_idx = self.tir.expect_memory_index(memory) as usize;
 				let kind_ty = self.tir.memories[tir_idx].kind;
 				let len_ty = self.lower_type_index(kind_ty);
-				let aggregate_index = self.ensure_aggregate(Box::new([
-					Type::Pointer { memory },
-					len_ty,
-				]));
+				// Slice layout is a fixed `{ ptr, len }` ABI contract, not a
+				// sorting outcome — see the pipeline notes on slice lowering.
+				let aggregate_index = self.ensure_aggregate(
+					Box::new([Type::Pointer { memory }, len_ty]),
+					FieldOrder::Fixed,
+				);
 				Type::Aggregate { aggregate_index }
 			}
 			tir::Type::Memory { .. } => Type::Unit,
@@ -1106,7 +1140,8 @@ impl<'tir> Builder<'tir> {
 					.iter()
 					.map(|&e| self.lower_type_index(e))
 					.collect();
-				let aggregate_index = self.ensure_aggregate(mir_elems);
+				let aggregate_index =
+					self.ensure_aggregate(mir_elems, FieldOrder::Sorted);
 				Type::Aggregate { aggregate_index }
 			}
 			tir::Type::Enum { enum_index } => {
@@ -2068,7 +2103,8 @@ impl<'tir> Builder<'tir> {
 					.iter()
 					.map(|expr| self.lower_expression(func_ctx, expr, sink))
 					.collect();
-				let aggregate_index = self.ensure_aggregate(types);
+				let aggregate_index =
+					self.ensure_aggregate(types, FieldOrder::Sorted);
 				let decl_to_phys =
 					&self.aggregates[aggregate_index as usize].decl_to_phys;
 				let mut phys_slots: Vec<Option<Expression>> =
@@ -2827,6 +2863,49 @@ impl<'tir> Builder<'tir> {
 								scope_index: 0,
 								local_index: temp_idx,
 								value_index: 1,
+							},
+							ty: result_ty,
+						}
+					}
+				}
+			}
+			"slice_ptr" => {
+				let result_ty = self.lower_type_index(expr_ty);
+				let slice_arg = &arguments[0];
+				match &slice_arg.kind {
+					tir::ExprKind::Local {
+						scope_index,
+						local_index,
+					} => Expression {
+						kind: ExprKind::AggregateGet {
+							scope_index: *scope_index,
+							local_index: *local_index,
+							value_index: 0,
+						},
+						ty: result_ty,
+					},
+					_ => {
+						let slice_ty = self.lower_type_index(slice_arg.ty);
+						let lowered =
+							self.lower_expression(func_ctx, slice_arg, sink);
+						let temp_idx = func_ctx.frame[0].locals.len() as u32;
+						func_ctx.frame[0].locals.push(Local {
+							ty: slice_ty,
+							mutability: Mutability::Immutable,
+						});
+						sink.push(Expression {
+							kind: ExprKind::LocalSet {
+								scope_index: 0,
+								local_index: temp_idx,
+								value: Box::new(lowered),
+							},
+							ty: Type::Unit,
+						});
+						Expression {
+							kind: ExprKind::AggregateGet {
+								scope_index: 0,
+								local_index: temp_idx,
+								value_index: 0,
 							},
 							ty: result_ty,
 						}

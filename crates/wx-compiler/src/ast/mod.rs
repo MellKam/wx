@@ -1597,6 +1597,7 @@ pub enum Item {
 	Struct {
 		id: DefId,
 		pub_span: Option<TextSpan>,
+		attributes: Box<[Attribute]>,
 		name: Spanned<SymbolU32>,
 		type_params: Box<[TypeParam]>,
 		fields: Box<[Separated<Spanned<StructField>>]>,
@@ -1693,7 +1694,8 @@ impl Item {
 			Item::Function { attributes, .. }
 			| Item::FunctionDeclaration { attributes, .. }
 			| Item::Trait { attributes, .. }
-			| Item::TypeSet { attributes, .. } => {
+			| Item::TypeSet { attributes, .. }
+			| Item::Struct { attributes, .. } => {
 				*attributes = attrs;
 			}
 			Item::Global { .. }
@@ -1702,7 +1704,6 @@ impl Item {
 			| Item::Enum { .. }
 			| Item::Impl { .. }
 			| Item::ImplTrait { .. }
-			| Item::Struct { .. }
 			| Item::Memory { .. }
 			| Item::Const { .. }
 			| Item::Module { .. }
@@ -4929,6 +4930,7 @@ impl<'ctx> Parser<'ctx> {
 			inner: Item::Struct {
 				id: parser.id_generator.generate(),
 				pub_span: None,
+				attributes: Box::new([]),
 				name: Spanned {
 					inner: name_symbol,
 					span: name_span,
@@ -5414,23 +5416,16 @@ impl<'ctx> Parser<'ctx> {
 			span: module_token.span,
 		};
 
-		let alias = if let Token::Identifier = parser.lexer.peek().inner {
-			let potential_as = parser.lexer.peek();
-			if let Ok(Keyword::As) =
-				Keyword::try_from(potential_as.span.extract_str(parser.source))
-			{
-				_ = parser.lexer.next(); // consume "as"
+		let alias = if matches!(parser.peek_keyword(), Some(Keyword::As)) {
+			_ = parser.lexer.next(); // consume "as"
 
-				let alias_token = parser.next_expect(Token::Identifier)?;
-				let alias_symbol = parser.intern_identifier(alias_token.span);
+			let alias_token = parser.next_expect(Token::Identifier)?;
+			let alias_symbol = parser.intern_identifier(alias_token.span);
 
-				Some(Spanned {
-					inner: alias_symbol,
-					span: alias_token.span,
-				})
-			} else {
-				None
-			}
+			Some(Spanned {
+				inner: alias_symbol,
+				span: alias_token.span,
+			})
 		} else {
 			None
 		};

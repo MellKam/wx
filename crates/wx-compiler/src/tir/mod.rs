@@ -1124,6 +1124,9 @@ pub enum ItemAttribute {
 	Inline,
 	Intrinsic,
 	Tag(SymbolU32),
+	/// `#[fixed_layout]` — struct fields keep declaration order in memory
+	/// instead of being sorted by alignment descending.
+	FixedLayout,
 }
 
 #[derive(PartialEq, Eq)]
@@ -1329,6 +1332,7 @@ define_diagnostic_codes! {
 		EnumDuplicateValue => "E1056",
 		NotConstEvaluatable => "E1057",
 		UnusedEnumVariant => "W1009",
+		MissingImportAlias => "E1058",
 	}
 }
 
@@ -1382,6 +1386,7 @@ pub struct Struct {
 	/// `Type::Struct { struct_index, args: [] }` for this struct.
 	#[cfg_attr(test, serde(skip))]
 	pub self_type: TypeIndex,
+	pub attributes: Box<[ItemAttribute]>,
 	pub fields: Box<[StructField]>,
 	#[cfg_attr(
 		test,

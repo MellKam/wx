@@ -72,7 +72,7 @@ fn test_format_simple_function() {
 #[test]
 fn test_format_import_block() {
 	let case = TestCase::new(indoc! {"
-        import \"math\" {
+        import \"math\" as math {
             fn sqrt(f64) -> f64;
             fn pow(base: f64, exponent: f64) -> f64;
             fn log(x: string);
@@ -98,7 +98,7 @@ fn test_format_import_block() {
 	assert_eq!(
 		output,
 		indoc! {"
-            import \"math\" {
+            import \"math\" as math {
                 fn sqrt(f64) -> f64;
                 fn pow(base: f64, exponent: f64) -> f64;
                 fn log(x: string);
@@ -119,7 +119,7 @@ fn test_format_import_block() {
 #[test]
 fn test_format_single_import_function_stays_inline() {
 	let case = TestCase::new(indoc! {"
-        import \"console\" {
+        import \"console\" as console {
             fn log(message: string);
          }
     "});
@@ -136,7 +136,7 @@ fn test_format_single_import_function_stays_inline() {
 	assert_eq!(
 		output,
 		indoc! {"
-            import \"console\" {
+            import \"console\" as console {
                 fn log(message: string);
             }
         "}

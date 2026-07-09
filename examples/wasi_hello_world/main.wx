@@ -1,0 +1,72 @@
+use std::*;
+
+// WASI Preview 1 "hello world" — imports `fd_write` directly from the
+// `wasi_snapshot_preview1` module (the raw core-wasm ABI WASI hosts expose),
+// builds a WASI iovec in linear memory, and writes it to fd 1 (stdout).
+//
+// Run with `run.mjs` (Node's built-in WASI runtime) or any WASI Preview 1
+// host, e.g. `wasmtime run main.wasm`.
+memory heap: Memory where { Size = u32 } { min_pages: 1 };
+
+global mut bump: heap::*u8 = heap::DATA_END;
+
+// Bump allocator — see examples/bump_allocator for the annotated version.
+// Reserves `layout.size` bytes aligned to `layout.align` and returns the
+// start address. `alloc`/`alloc_array` below build `Layout` values for the
+// common single-element and contiguous-array cases.
+fn reserve(layout: Layout<heap>) -> heap::*u8 {
+    local ptr = (bump as u32 + layout.align - 1) / layout.align * layout.align;
+    local new_end = ptr + layout.size;
+    local cur_end = heap.size() * PAGE_SIZE;
+    if new_end > cur_end {
+        local needed = (new_end - cur_end + PAGE_SIZE - 1) / PAGE_SIZE;
+        _ = heap.grow(needed);
+    }
+    bump = new_end as heap::*u8;
+    ptr as heap::*u8
+}
+
+#[inline]
+fn alloc<T>() -> heap::*mut T {
+    reserve(Layout::<heap>::of::<T>()) as _
+}
+
+// Allocates `count` contiguous `T`s and returns a pointer to the first one
+// (the array's element count lives at the call site, not in the type, so
+// there's no `[N]T` reference/value distinction to trip over here).
+fn alloc_array<T>(count: u32) -> heap::*mut T {
+    reserve(Layout::<heap>::array::<T>(count)) as heap::*mut T
+}
+
+// Same as `alloc_array`, but bundles the pointer and count into a slice
+// directly, so callers don't need a separate `slice_from_parts` call.
+fn alloc_slice<T>(count: u32) -> heap::[]mut T {
+    slice_from_parts(alloc_array::<T>(count), count) as heap::[]mut T
+}
+
+enum FileDescriptor: u8 {
+    StdIn = 0,
+    StdOut = 1,
+    StdErr = 2,
+}
+
+import "wasi_snapshot_preview1" as wasi {
+    fn fd_write(
+        file_descriptor: FileDescriptor,
+        io_vecs: [][]u8,
+        bytes_written: *mut u32,
+    ) -> i32;
+}
+
+fn _start() {
+    local io_vecs = alloc_slice::<[]u8>(1);
+    io_vecs[0] = "Hello, world!\n";
+    local nwritten_ptr = alloc::<u32>();
+    
+    _ = wasi::fd_write(FileDescriptor::StdOut, io_vecs, nwritten_ptr);
+}
+
+export {
+    heap as "memory",
+    _start
+}

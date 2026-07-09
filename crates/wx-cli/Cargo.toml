@@ -13,6 +13,8 @@ workspace = true
 [dependencies]
 clap = { version = "4.5.40", features = ["cargo"] }
 codespan-reporting = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 string-interner = { workspace = true }
 wx-compiler = { path = "../wx-compiler" }
 wx-fmt = { path = "../wx-fmt" }

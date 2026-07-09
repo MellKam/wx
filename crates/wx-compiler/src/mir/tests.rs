@@ -603,6 +603,39 @@ fn test_struct_layout_is_alignment_sorted() {
 	assert_eq!(&*agg.values, &[Type::I64, Type::F64, Type::U32, Type::Bool]);
 }
 
+#[test]
+fn test_fixed_layout_struct_keeps_declaration_order() {
+	let case = TestCase::new(indoc! {"
+        #[fixed_layout]
+        struct Mixed {
+            a: bool,
+            b: i64,
+            c: u32,
+            d: f64,
+        }
+
+        fn dummy(m: Mixed) -> Mixed { m }
+        export { dummy }
+    "});
+	assert!(case.tir.diagnostics.is_empty());
+
+	let sig_index = case.mir.functions[0].signature_index as usize;
+	let param_ty = case.mir.signatures[sig_index].params()[0];
+	let aggregate_index = match param_ty {
+		Type::Aggregate { aggregate_index } => aggregate_index as usize,
+		_ => panic!("expected Mixed to lower to an aggregate"),
+	};
+
+	let agg = &case.mir.aggregates[aggregate_index];
+	// Declaration order preserved: a(bool)@0, b(i64)@8 (padded), c(u32)@16,
+	// d(f64)@24 (padded) — no alignment-descending reordering.
+	assert_eq!(agg.layout.size, 32);
+	assert_eq!(agg.layout.align, 8);
+	assert_eq!(&*agg.offsets, &[0, 8, 16, 24]);
+	assert_eq!(&*agg.values, &[Type::Bool, Type::I64, Type::U32, Type::F64]);
+	assert_eq!(&*agg.decl_to_phys, &[0, 1, 2, 3]);
+}
+
 // ── Generics / monomorphization
 // ───────────────────────────────────────────────
 

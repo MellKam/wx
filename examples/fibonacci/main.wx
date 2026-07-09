@@ -1,7 +1,7 @@
 use std::*;
 memory heap: Memory where { Size = u32 };
 
-import "console" {
+import "console" as console {
   fn log(message: heap::[]u8);
 }
 
