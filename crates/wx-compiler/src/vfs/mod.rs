@@ -137,6 +137,12 @@ pub struct Files {
 	files: Vec<File>,
 }
 
+impl Default for Files {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl Files {
 	pub fn new() -> Files {
 		Files { files: Vec::new() }
@@ -284,7 +290,13 @@ pub struct CompilationGraphBuilder {
 	pub crates: Vec<CrateGraph>,
 }
 
-pub const STDLIB_SOURCE: &'static str = include_str!("../../std/lib.wx");
+pub const STDLIB_SOURCE: &str = include_str!("../../std/lib.wx");
+
+impl Default for CompilationGraphBuilder {
+	fn default() -> Self {
+		Self::new()
+	}
+}
 
 impl CompilationGraphBuilder {
 	pub fn new() -> Self {
@@ -490,7 +502,7 @@ impl<'ctx, 'src, Source: FileSource> Loader<'ctx, 'src, Source> {
 			.items
 			.iter()
 			.filter_map(|item| match &item.inner.inner {
-				ast::Item::ModuleDeclaration { name, .. } => Some(name.clone()),
+				ast::Item::ModuleDeclaration { name, .. } => Some(*name),
 				_ => None,
 			})
 			.collect();

@@ -1251,7 +1251,7 @@ impl<'a> Builder<'a> {
 		mut_span: Option<ast::TextSpan>,
 		name: &ast::Spanned<SymbolU32>,
 		type_annotation: &Option<Box<ast::Spanned<ast::TypeExpression>>>,
-		value: &Box<ast::Spanned<ast::Expression>>,
+		value: &ast::Spanned<ast::Expression>,
 	) -> NodeId {
 		let mut items: Vec<NodeId> = Vec::new();
 		if pub_span.is_some() {
@@ -1311,7 +1311,7 @@ impl<'a> Builder<'a> {
 			let leading_comments = self
 				.comments
 				.between(block_span.start, statements[0].inner.span.start);
-			let last_end = statements.last().unwrap().inner.span.end as u32;
+			let last_end = statements.last().unwrap().inner.span.end;
 			let trailing_comments =
 				self.comments.between(last_end, block_span.end);
 			let has_comments =
@@ -1332,8 +1332,8 @@ impl<'a> Builder<'a> {
 
 			for (index, statement) in statements.iter().enumerate() {
 				if index > 0 {
-					let prev_end = statements[index - 1].inner.span.end as u32;
-					let curr_start = statement.inner.span.start as u32;
+					let prev_end = statements[index - 1].inner.span.end;
+					let curr_start = statement.inner.span.start;
 					let gap_comments =
 						self.comments.between(prev_end, curr_start);
 					let blank_end = gap_comments
@@ -1713,9 +1713,7 @@ impl<'a> Builder<'a> {
 					for (index, element) in elements.iter().enumerate() {
 						let el = self.build_expression(element);
 						let mut nodes: Vec<NodeId> = vec![el];
-						if index < last_idx {
-							nodes.push(self.text(Text::Comma));
-						} else if elements.len() == 1 {
+						if index < last_idx || elements.len() == 1 {
 							nodes.push(self.text(Text::Comma));
 						} else {
 							nodes.push(self.if_break_comma());
@@ -1958,9 +1956,7 @@ impl<'a> Builder<'a> {
 					for (index, element) in elements.iter().enumerate() {
 						let ty = self.build_type_expression(&element.inner);
 						let mut nodes: Vec<NodeId> = vec![ty];
-						if index < last_idx {
-							nodes.push(self.text(Text::Comma));
-						} else if elements.len() == 1 {
+						if index < last_idx || elements.len() == 1 {
 							nodes.push(self.text(Text::Comma));
 						} else {
 							nodes.push(self.if_break_comma());

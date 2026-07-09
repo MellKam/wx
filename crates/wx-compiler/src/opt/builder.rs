@@ -1806,10 +1806,10 @@ impl<'mir> Builder<'mir> {
 			}
 			DataNodeKind::Shl { left, right, .. }
 			| DataNodeKind::ShrS { left, right, .. }
-			| DataNodeKind::ShrU { left, right, .. } => {
-				if zero(right) {
-					return Some(left);
-				}
+			| DataNodeKind::ShrU { left, right, .. }
+				if zero(right) =>
+			{
+				return Some(left);
 			}
 			_ => {}
 		}

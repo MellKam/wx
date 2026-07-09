@@ -590,7 +590,7 @@ async fn handle_command(
 				// won't tab into it.
 				let is_method = func
 					.params
-					.get(0)
+					.first()
 					.map(|p| {
 						interner
 							.resolve(p.name.inner)
@@ -1435,9 +1435,8 @@ fn add_compiler_diagnostic(
 	let label_messages: Vec<String> = diagnostic
 		.labels
 		.iter()
-		.filter_map(|label| {
-			(!label.message.is_empty()).then(|| label.message.clone())
-		})
+		.filter(|&label| !label.message.is_empty())
+		.map(|label| label.message.clone())
 		.collect();
 	let message = if label_messages.is_empty() {
 		diagnostic.message.clone()

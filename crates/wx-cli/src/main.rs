@@ -191,7 +191,7 @@ fn cmd_format(file_path: &str) {
 }
 
 fn output_stem(file_path: &str) -> String {
-	let filename = file_path.split('/').last().unwrap();
+	let filename = file_path.split('/').next_back().unwrap();
 	let parts: Vec<&str> = filename.split('.').collect();
 	parts[..parts.len() - 1].join(".")
 }

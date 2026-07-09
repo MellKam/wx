@@ -26,9 +26,9 @@ impl TextSpan {
 	}
 }
 
-impl Into<core::ops::Range<usize>> for TextSpan {
-	fn into(self) -> core::ops::Range<usize> {
-		self.start as usize..self.end as usize
+impl From<TextSpan> for core::ops::Range<usize> {
+	fn from(val: TextSpan) -> Self {
+		val.start as usize..val.end as usize
 	}
 }
 
@@ -442,21 +442,21 @@ impl<'a> Lexer<'a> {
 
 	fn peek(&mut self) -> Spanned<Token> {
 		match &self.peeked {
-			Some(token) => return token.clone(),
+			Some(token) => *token,
 			None => {
 				let token = self.next();
-				self.peeked = Some(token.clone());
-				return token;
+				self.peeked = Some(token);
+				token
 			}
 		}
 	}
 
 	fn next_if(&mut self, expected: Token) -> Option<Spanned<Token>> {
 		let peeked = match &self.peeked {
-			Some(token) => token.clone(),
+			Some(token) => *token,
 			None => {
 				let token = self.next();
-				self.peeked = Some(token.clone());
+				self.peeked = Some(token);
 				token
 			}
 		};
@@ -503,7 +503,7 @@ impl<'a> Lexer<'a> {
 				}
 				_ => match unknown_span {
 					Some(span) => {
-						self.peeked = Some(token.clone());
+						self.peeked = Some(token);
 						return Spanned {
 							inner: Token::Unknown,
 							span,
@@ -583,9 +583,9 @@ impl<'a> Lexer<'a> {
 		match self.chars.clone().next().unwrap_or(EOF) {
 			ch if ch == expect => {
 				_ = self.chars.next();
-				return token;
+				token
 			}
-			_ => return fallback,
+			_ => fallback,
 		}
 	}
 
@@ -595,13 +595,13 @@ impl<'a> Lexer<'a> {
 		match lookahead.next().unwrap_or(EOF) {
 			'=' => {
 				_ = self.chars.next();
-				return Token::MinusEq;
+				Token::MinusEq
 			}
 			'>' => {
 				_ = self.chars.next();
-				return Token::MinusRightArrow;
+				Token::MinusRightArrow
 			}
-			_ => return Token::Minus,
+			_ => Token::Minus,
 		}
 	}
 
@@ -611,13 +611,13 @@ impl<'a> Lexer<'a> {
 		match lookahead.next().unwrap_or(EOF) {
 			'=' => {
 				_ = self.chars.next();
-				return Token::LeftArrowEq;
+				Token::LeftArrowEq
 			}
 			'<' => {
 				_ = self.chars.next();
-				return Token::DoubleLeftArrow;
+				Token::DoubleLeftArrow
 			}
-			_ => return Token::LeftArrow,
+			_ => Token::LeftArrow,
 		}
 	}
 
@@ -627,13 +627,13 @@ impl<'a> Lexer<'a> {
 		match lookahead.next().unwrap_or(EOF) {
 			'=' => {
 				_ = self.chars.next();
-				return Token::RightArrowEq;
+				Token::RightArrowEq
 			}
 			'>' => {
 				_ = self.chars.next();
-				return Token::DoubleRightArrow;
+				Token::DoubleRightArrow
 			}
-			_ => return Token::RightArrow,
+			_ => Token::RightArrow,
 		}
 	}
 
@@ -652,8 +652,8 @@ impl<'a> Lexer<'a> {
 	}
 
 	fn consume_identifier(&mut self) -> Token {
-		let mut lookahead = self.chars.clone();
-		while let Some(ch) = lookahead.next() {
+		let lookahead = self.chars.clone();
+		for ch in lookahead {
 			match ch {
 				'A'..='Z' | 'a'..='z' | '0'..='9' | '_' => {
 					_ = self.chars.next();
@@ -666,8 +666,8 @@ impl<'a> Lexer<'a> {
 	}
 
 	fn consume_whitespace(&mut self) -> Token {
-		let mut lookahead = self.chars.clone();
-		while let Some(ch) = lookahead.next() {
+		let lookahead = self.chars.clone();
+		for ch in lookahead {
 			match ch {
 				' ' | '\t' | '\n' => {
 					_ = self.chars.next();
@@ -687,8 +687,8 @@ impl<'a> Lexer<'a> {
 		match radix_marker {
 			Some('b' | 'B') => {
 				_ = self.chars.next();
-				let mut lookahead = self.chars.clone();
-				while let Some(ch) = lookahead.next() {
+				let lookahead = self.chars.clone();
+				for ch in lookahead {
 					match ch {
 						'0' | '1' | '_' => {
 							_ = self.chars.next();
@@ -700,8 +700,8 @@ impl<'a> Lexer<'a> {
 			}
 			Some('x' | 'X') => {
 				_ = self.chars.next();
-				let mut lookahead = self.chars.clone();
-				while let Some(ch) = lookahead.next() {
+				let lookahead = self.chars.clone();
+				for ch in lookahead {
 					match ch {
 						'0'..='9' | 'a'..='f' | 'A'..='F' | '_' => {
 							_ = self.chars.next();
@@ -773,7 +773,7 @@ impl<'a> Lexer<'a> {
 				// it here would put lookahead one step ahead of self.chars,
 				// causing the while loop below to drop the last comment char.
 				let is_doc = lookahead.clone().next().unwrap_or(EOF) == '/';
-				while let Some(ch) = lookahead.next() {
+				for ch in lookahead {
 					match ch {
 						'\n' | EOF => break,
 						_ => {
@@ -789,9 +789,9 @@ impl<'a> Lexer<'a> {
 			}
 			'=' => {
 				_ = self.chars.next();
-				return Token::SlashEq;
+				Token::SlashEq
 			}
-			_ => return Token::Slash,
+			_ => Token::Slash,
 		}
 	}
 }
@@ -2036,9 +2036,7 @@ impl<'ctx> Parser<'ctx> {
 				continue;
 			}
 
-			let item_handler = match parser
-				.get_item_handler(start_token.clone())
-			{
+			let item_handler = match parser.get_item_handler(start_token) {
 				Ok(handler) => handler,
 				Err(_) => match parser.recover_from_invalid_item(start_token) {
 					Some(handler) => handler,
@@ -2098,7 +2096,7 @@ impl<'ctx> Parser<'ctx> {
 				break None;
 			}
 
-			match self.get_item_handler(token.clone()) {
+			match self.get_item_handler(token) {
 				Ok(handler) => break Some(handler),
 				Err(_) => {
 					end_token = Some(self.lexer.next());
@@ -2146,7 +2144,7 @@ impl<'ctx> Parser<'ctx> {
 			Some(Keyword::Trait) => Ok(Parser::parse_trait_item),
 			Some(Keyword::Typeset) => Ok(Parser::parse_typeset_item),
 			Some(Keyword::Type) => Ok(Parser::parse_type_alias_item),
-			_ => return Err(()),
+			_ => Err(()),
 		}
 	}
 
@@ -2199,13 +2197,10 @@ impl<'ctx> Parser<'ctx> {
 
 	fn intern_identifier(&mut self, span: TextSpan) -> SymbolU32 {
 		let text = span.extract_str(self.source);
-		match Keyword::try_from(text) {
-			Ok(_) => {
-				self.ast
-					.diagnostics
-					.push(report_reserved_identifier(self.ast.file_id, span));
-			}
-			Err(_) => {}
+		if Keyword::try_from(text).is_ok() {
+			self.ast
+				.diagnostics
+				.push(report_reserved_identifier(self.ast.file_id, span));
 		}
 
 		self.interner.get_or_intern(text)
@@ -2319,13 +2314,14 @@ impl<'ctx> Parser<'ctx> {
 		let name_span = match name_token.inner {
 			Token::Identifier => self.lexer.next().span,
 			_ => {
-				return Err(self.ast.diagnostics.push(
-					report_unexpected_token(
+				return {
+					self.ast.diagnostics.push(report_unexpected_token(
 						self.ast.file_id,
 						name_token,
 						Token::Identifier,
-					),
-				));
+					));
+					Err(())
+				};
 			}
 		};
 		let name_symbol = self
@@ -2358,7 +2354,7 @@ impl<'ctx> Parser<'ctx> {
 			.and_then(|_| {
 				Ok(Some(Box::new(Parser::parse_type_expression(self)?)))
 			})
-			.unwrap_or_else(|_| None);
+			.unwrap_or(None);
 
 		let span = TextSpan::new(
 			fn_span.span.start,
@@ -2942,7 +2938,7 @@ impl<'ctx> Parser<'ctx> {
 			TypeExpression::Path(segs)
 				if segs.len() == 1 && segs[0].type_args.is_empty() =>
 			{
-				Some(segs[0].ident.clone())
+				Some(segs[0].ident)
 			}
 			_ => None,
 		};
@@ -2958,7 +2954,7 @@ impl<'ctx> Parser<'ctx> {
 		};
 
 		let span = TextSpan::new(
-			name.clone().map(|n| n.span).unwrap_or(ty.span).start,
+			name.map(|n| n.span).unwrap_or(ty.span).start,
 			ty.span.end,
 		);
 		Ok(Spanned {
@@ -2980,26 +2976,26 @@ impl<'ctx> Parser<'ctx> {
 		}
 		.parse(self)?;
 
-		if let Some(_) = self.lexer.next_if(Token::MinusRightArrow) {
+		if self.lexer.next_if(Token::MinusRightArrow).is_some() {
 			let result = Box::new(Parser::parse_type_expression(self)?);
 			let span = TextSpan::new(func_keyword.span.start, result.span.end);
-			return Ok(Spanned {
+			Ok(Spanned {
 				inner: TypeExpression::Function {
 					params: params.inner,
 					result: Some(result),
 				},
 				span,
-			});
+			})
 		} else {
 			let span = TextSpan::new(func_keyword.span.start, params.span.end);
-			return Ok(Spanned {
+			Ok(Spanned {
 				inner: TypeExpression::Function {
 					params: params.inner,
 					result: None,
 				},
 				span,
-			});
-		};
+			})
+		}
 	}
 
 	fn nud_lookup(
@@ -3175,7 +3171,7 @@ impl<'ctx> Parser<'ctx> {
 		limit_bp: BindingPower,
 	) -> Result<Spanned<Expression>, ()> {
 		let token = self.lexer.peek();
-		let nud_handler = match self.nud_lookup(token.clone()) {
+		let nud_handler = match self.nud_lookup(token) {
 			Some((nud_handler, _)) => nud_handler,
 			None => return Err(()),
 		};
@@ -3588,7 +3584,7 @@ impl<'ctx> Parser<'ctx> {
 		};
 		let value = parser.parse_expression(BindingPower::Default).ok();
 
-		let span = match (label.clone(), &value) {
+		let span = match (label, &value) {
 			(_, Some(value)) => {
 				TextSpan::new(break_keyword.span.start, value.span.end)
 			}
@@ -3623,7 +3619,7 @@ impl<'ctx> Parser<'ctx> {
 			None => None,
 		};
 
-		let span = match label.clone() {
+		let span = match label {
 			Some(label) => {
 				TextSpan::new(continue_keyword.span.start, label.span.end)
 			}
@@ -4395,7 +4391,7 @@ impl<'ctx> Parser<'ctx> {
 								inner: name_symbol,
 								span: name_token.span,
 							},
-							alias: alias.clone(),
+							alias,
 						},
 						span,
 					})
@@ -4435,17 +4431,18 @@ impl<'ctx> Parser<'ctx> {
 					let name_token = parser.next_expect(Token::Identifier)?;
 					let name_symbol = parser.intern_identifier(name_token.span);
 
-					let (value, span) = if let Some(_) =
-						parser.lexer.next_if(Token::Eq)
-					{
-						let expr =
-							parser.parse_expression(BindingPower::Default)?;
-						let span =
-							TextSpan::new(name_token.span.start, expr.span.end);
-						(Some(Box::new(expr)), span)
-					} else {
-						(None, name_token.span)
-					};
+					let (value, span) =
+						if parser.lexer.next_if(Token::Eq).is_some() {
+							let expr = parser
+								.parse_expression(BindingPower::Default)?;
+							let span = TextSpan::new(
+								name_token.span.start,
+								expr.span.end,
+							);
+							(Some(Box::new(expr)), span)
+						} else {
+							(None, name_token.span)
+						};
 
 					Ok(Spanned {
 						inner: EnumVariant {
@@ -4564,7 +4561,7 @@ impl<'ctx> Parser<'ctx> {
 							parser,
 						)?)))
 					})
-					.unwrap_or_else(|_| None);
+					.unwrap_or(None);
 				let block = Parser::parse_block_expression(parser)?;
 				let method_span = TextSpan::new(fn_span.start, block.span.end);
 				Ok(Spanned {
@@ -4608,49 +4605,46 @@ impl<'ctx> Parser<'ctx> {
 		};
 
 		let first_ty = Box::new(parser.parse_type_expression()?);
-		match parser.peek_keyword() {
-			Some(Keyword::For) => {
-				parser.lexer.next(); // consume `for`
-				let target = Box::new(parser.parse_type_expression()?);
+		if let Some(Keyword::For) = parser.peek_keyword() {
+			parser.lexer.next(); // consume `for`
+			let target = Box::new(parser.parse_type_expression()?);
 
-				let trait_name = match first_ty.inner {
-					TypeExpression::Path(segments) => segments,
-					_ => {
-						parser.ast.diagnostics.push(
-							Diagnostic::error()
-								.with_message("expected a trait name")
-								.with_label(Label::primary(
-									parser.ast.file_id,
-									first_ty.span,
-								)),
-						);
-						return Err(());
-					}
-				};
-
-				let items = SeparatedGroup {
-					open_token: Token::OpenBrace,
-					close_token: Token::CloseBrace,
-					separator_token: Token::SemiColon,
-					item_handler: Parser::parse_impl_member,
-					should_warn_missing_separator: Some(|item: &ImplItem| {
-						!item.is_block_like()
-					}),
+			let trait_name = match first_ty.inner {
+				TypeExpression::Path(segments) => segments,
+				_ => {
+					parser.ast.diagnostics.push(
+						Diagnostic::error()
+							.with_message("expected a trait name")
+							.with_label(Label::primary(
+								parser.ast.file_id,
+								first_ty.span,
+							)),
+					);
+					return Err(());
 				}
-				.parse(parser)?;
+			};
 
-				let span = TextSpan::new(impl_span.start, items.span.end);
-				return Ok(Spanned {
-					inner: Item::ImplTrait {
-						id: parser.id_generator.generate(),
-						items: items.inner,
-						target,
-						trait_name,
-					},
-					span,
-				});
+			let items = SeparatedGroup {
+				open_token: Token::OpenBrace,
+				close_token: Token::CloseBrace,
+				separator_token: Token::SemiColon,
+				item_handler: Parser::parse_impl_member,
+				should_warn_missing_separator: Some(|item: &ImplItem| {
+					!item.is_block_like()
+				}),
 			}
-			_ => {}
+			.parse(parser)?;
+
+			let span = TextSpan::new(impl_span.start, items.span.end);
+			return Ok(Spanned {
+				inner: Item::ImplTrait {
+					id: parser.id_generator.generate(),
+					items: items.inner,
+					target,
+					trait_name,
+				},
+				span,
+			});
 		};
 
 		let items = SeparatedGroup {
@@ -5311,7 +5305,7 @@ impl<'ctx> Parser<'ctx> {
 	) -> Result<Spanned<Item>, ()> {
 		let item_attrs = Parser::parse_attributes(parser).unwrap_or_default();
 		let token = parser.lexer.peek();
-		match parser.get_item_handler(token.clone()) {
+		match parser.get_item_handler(token) {
 			Ok(handler) => {
 				let mut item = handler(parser)?;
 				item.inner.set_attributes(item_attrs);

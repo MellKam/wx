@@ -428,9 +428,9 @@ impl Builder {
 		*self.signatures.entry(signature).or_insert(next)
 	}
 
-	pub fn build<'interner>(
+	pub fn build(
 		mir: &mir::MIR,
-		interner: &'interner ast::StringInterner,
+		interner: &ast::StringInterner,
 	) -> Result<WasmModule, ()> {
 		// Layout static data segment: collect live entries from all functions,
 		// sort largest-align-first for minimal padding, then lay out bytes.
@@ -451,9 +451,8 @@ impl Builder {
 			let entry = &mir.static_entries[idx as usize];
 			let current = segment_bytes.len() as u32;
 			let aligned = current.next_multiple_of(entry.align);
-			segment_bytes.extend(
-				std::iter::repeat(0).take((aligned - current) as usize),
-			);
+			segment_bytes
+				.extend(std::iter::repeat_n(0, (aligned - current) as usize));
 			entry_offsets.insert(idx, segment_bytes.len() as u32);
 			segment_bytes.extend_from_slice(&entry.bytes);
 		}
@@ -1068,7 +1067,7 @@ impl Builder {
 		use crate::opt::scheduler::BlockType;
 		match ty {
 			BlockType::Empty => sink.push(0x40),
-			BlockType::Value(vt) => ValueType::from(vt).encode(sink),
+			BlockType::Value(vt) => vt.encode(sink),
 		}
 	}
 }

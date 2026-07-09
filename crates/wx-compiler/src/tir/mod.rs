@@ -1452,14 +1452,14 @@ impl<'a> TypeFormatter<'a> {
 			Type::Char => "char",
 			Type::Namespace { .. } => "module",
 			Type::Memory { .. } => "memory",
-			Type::Unit { .. } => "unit",
+			Type::Unit => "unit",
 			Type::Array { .. } => "array",
 			Type::Slice { .. } => "slice",
 			Type::Pointer { .. } => "pointer",
 			Type::Tuple { .. } => "tuple",
-			Type::Error { .. } => "{unknown}",
+			Type::Error => "{unknown}",
 			Type::Infer => "_",
-			Type::Never { .. } => "never",
+			Type::Never => "never",
 			Type::AssocTypeProjection { .. } | Type::AssociatedType { .. } => {
 				"type"
 			}

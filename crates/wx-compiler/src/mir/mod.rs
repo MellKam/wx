@@ -512,16 +512,9 @@ impl MIR {
 			if func.body.is_some()
 				&& func.total_type_param_count() == 0
 				&& !tir.is_import_namespace(func.namespace)
-				&& !func
-					.attributes
-					.iter()
-					.any(|attr| *attr == ItemAttribute::Intrinsic)
+				&& !func.attributes.contains(&ItemAttribute::Intrinsic)
 			{
-				if func
-					.attributes
-					.iter()
-					.any(|a| *a == tir::ItemAttribute::Inline)
-				{
+				if func.attributes.contains(&tir::ItemAttribute::Inline) {
 					inline_functions.insert(func.id);
 				}
 				builder.current_function_id = Some(func.id);
@@ -561,10 +554,8 @@ impl MIR {
 			for (orig_id, subst, mono_id) in pending {
 				let tir_idx = tir.expect_function_index(orig_id);
 				let tir_func = &tir.functions[tir_idx as usize];
-				let is_inline = tir_func
-					.attributes
-					.iter()
-					.any(|a| *a == tir::ItemAttribute::Inline);
+				let is_inline =
+					tir_func.attributes.contains(&tir::ItemAttribute::Inline);
 
 				builder.current_substitutions = subst;
 				builder.current_function_id = Some(mono_id);
@@ -660,8 +651,7 @@ impl MIR {
 							internal_name,
 						} => ExportItem::Function {
 							id: *id,
-							name: external_name
-								.clone()
+							name: (*external_name)
 								.map(|n| n.inner)
 								.unwrap_or(internal_name.inner),
 						},
@@ -671,8 +661,7 @@ impl MIR {
 							internal_name,
 						} => ExportItem::Global {
 							id: *id,
-							name: external_name
-								.clone()
+							name: (*external_name)
 								.map(|n| n.inner)
 								.unwrap_or(internal_name.inner),
 						},
@@ -682,8 +671,7 @@ impl MIR {
 							internal_name,
 						} => ExportItem::Memory {
 							id: *id,
-							name: external_name
-								.clone()
+							name: (*external_name)
 								.map(|n| n.inner)
 								.unwrap_or(internal_name.inner),
 						},
@@ -921,7 +909,7 @@ impl<'tir> Builder<'tir> {
 			.enumerate()
 			.map(|(decl, ty)| (decl as u32, self.mir_type_layout(ty)))
 			.collect();
-		sorted.sort_by(|(_, a), (_, b)| b.align.cmp(&a.align));
+		sorted.sort_by_key(|(_, b)| std::cmp::Reverse(b.align));
 
 		// Single pass: total layout, per-field byte offsets, and ordering maps.
 		let mut layout = Layout { size: 0, align: 1 };
@@ -1260,7 +1248,7 @@ impl<'tir> Builder<'tir> {
 			.iter()
 			.filter(|g| {
 				g.mut_span.is_some()
-					&& g.value.as_ref().map_or(false, |body| {
+					&& g.value.as_ref().is_some_and(|body| {
 						!matches!(
 							body.block.kind,
 							tir::ExprKind::Int { .. }
@@ -1871,25 +1859,22 @@ impl<'tir> Builder<'tir> {
 			tir::ExprKind::Call { callee, arguments } => {
 				let callee =
 					Box::new(self.lower_expression(func_ctx, callee, sink));
-				match callee.kind {
-					ExprKind::Function { id } => {
-						let func_index = self.tir.expect_function_index(id);
-						let func = &self.tir.functions[func_index as usize];
-						if func.attributes.iter().any(|attr| match attr {
-							tir::ItemAttribute::Intrinsic => true,
-							_ => false,
-						}) {
-							return self.lower_intrinsic(
-								func_ctx,
-								func.name.inner,
-								expr.ty,
-								&[],
-								arguments,
-								sink,
-							);
-						}
+				if let ExprKind::Function { id } = callee.kind {
+					let func_index = self.tir.expect_function_index(id);
+					let func = &self.tir.functions[func_index as usize];
+					if func.attributes.iter().any(|attr| match attr {
+						tir::ItemAttribute::Intrinsic => true,
+						_ => false,
+					}) {
+						return self.lower_intrinsic(
+							func_ctx,
+							func.name.inner,
+							expr.ty,
+							&[],
+							arguments,
+							sink,
+						);
 					}
-					_ => {}
 				};
 				let arguments = arguments
 					.iter()
@@ -1927,43 +1912,37 @@ impl<'tir> Builder<'tir> {
 						let const_idx =
 							self.tir.expect_const_index(*id) as usize;
 						let result_ty = self.lower_type_index(expr.ty);
-						match &self.tir.types[namespace.inner.as_usize()] {
-							tir::Type::Memory { id, .. } => {
-								let const_name_sym =
-									self.tir.constants[const_idx].name.inner;
-								let const_name = self
-									.interner
-									.resolve(const_name_sym)
-									.unwrap();
-								match const_name {
-									"DATA_END" => {
-										return Expression {
-											kind: ExprKind::MemoryOffset {
-												memory: *id,
-											},
-											ty: result_ty,
-										};
-									}
-									"MEMORY_INDEX" => {
-										return Expression {
-											kind: ExprKind::MemoryIndex {
-												memory: *id,
-											},
-											ty: result_ty,
-										};
-									}
-									_ => unreachable!(),
+						if let tir::Type::Memory { id, .. } =
+							&self.tir.types[namespace.inner.as_usize()]
+						{
+							let const_name_sym =
+								self.tir.constants[const_idx].name.inner;
+							let const_name =
+								self.interner.resolve(const_name_sym).unwrap();
+							match const_name {
+								"DATA_END" => {
+									return Expression {
+										kind: ExprKind::MemoryOffset {
+											memory: *id,
+										},
+										ty: result_ty,
+									};
 								}
+								"MEMORY_INDEX" => {
+									return Expression {
+										kind: ExprKind::MemoryIndex {
+											memory: *id,
+										},
+										ty: result_ty,
+									};
+								}
+								_ => unreachable!(),
 							}
-							_ => {}
 						};
 
 						match self.tir.constants[const_idx].const_value {
 							Some(const_value) => {
-								return Self::lower_const_value(
-									const_value,
-									result_ty,
-								);
+								Self::lower_const_value(const_value, result_ty)
 							}
 							None => unreachable!(),
 						}
@@ -3057,7 +3036,7 @@ impl<'tir> Builder<'tir> {
 				let aggregate_index =
 					self.ensure_aggregate_for_struct(struct_index, &args);
 				let decl_index = self.tir.structs[struct_index as usize].lookup
-					[&member.inner] as usize;
+					[&member.inner];
 				let phys_index = self.aggregates[aggregate_index as usize]
 					.decl_to_phys[decl_index] as usize;
 				let field_offset = self.aggregates[aggregate_index as usize]
@@ -3109,7 +3088,7 @@ impl<'tir> Builder<'tir> {
 				let aggregate_index =
 					self.ensure_aggregate_for_struct(struct_index, &args);
 				let decl_index = self.tir.structs[struct_index as usize].lookup
-					[&member.inner] as usize;
+					[&member.inner];
 				let phys_index = self.aggregates[aggregate_index as usize]
 					.decl_to_phys[decl_index] as usize;
 				let tir::ExprKind::Local {
@@ -3227,7 +3206,7 @@ impl<'tir> Builder<'tir> {
 				let aggregate_index =
 					self.ensure_aggregate_for_struct(struct_index, &args);
 				let decl_index = self.tir.structs[struct_index as usize].lookup
-					[&member.inner] as usize;
+					[&member.inner];
 				let phys_index = self.aggregates[aggregate_index as usize]
 					.decl_to_phys[decl_index] as usize;
 				let tir::ExprKind::Local {
@@ -3265,7 +3244,7 @@ fn rewrite_body(
 ) -> Expression {
 	let rw = |e: Expression| rewrite_body(e, scope_offset, wrapper_scope);
 	let rw_box = |e: Box<Expression>| Box::new(rw(*e));
-	let rw_opt = |e: Option<Box<Expression>>| e.map(|b| rw_box(b));
+	let rw_opt = |e: Option<Box<Expression>>| e.map(&rw_box);
 	let rw_args = |es: Box<[Expression]>| {
 		es.into_vec().into_iter().map(rw).collect::<Box<[_]>>()
 	};
