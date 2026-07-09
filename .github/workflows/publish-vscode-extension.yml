@@ -57,9 +57,9 @@ jobs:
         run: |
           mkdir -p vscode/bin
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp crates/wx-lsp/target/${{ matrix.rust-target }}/release/wx-lsp.exe vscode/bin/wx-lsp.exe
+            cp target/${{ matrix.rust-target }}/release/wx-lsp.exe vscode/bin/wx-lsp.exe
           else
-            cp crates/wx-lsp/target/${{ matrix.rust-target }}/release/wx-lsp vscode/bin/wx-lsp
+            cp target/${{ matrix.rust-target }}/release/wx-lsp vscode/bin/wx-lsp
           fi
 
       - name: Install Dependencies
