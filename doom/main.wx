@@ -1,23 +1,6 @@
 use std::*;
 
-module boo;
-
 memory heap: Memory where { Size = u32 } { min_pages: 1 };
-
-struct Layout<M: Memory> {
-    size: M::Size,
-    align: M::Size,
-}
-
-impl<M: Memory> Layout<M> {
-    fn of<T>() -> Self {
-        Self::{ size: size_of::<T>(), align: align_of::<T>() }
-    }
-
-    fn array<T>(count: M::Size) -> Self {
-        Self::{ align: align_of::<T>() }
-    }
-}
 
 trait Allocator {
     type M: Memory;
@@ -70,7 +53,7 @@ impl Allocator for BumpAllocator<heap> {
 }
 
 fn main() {
-    local bump: BumpAllocator<heap> = unreachable;
+    local bump: *mut BumpAllocator<heap> = unreachable;
     local ptr = bump.alloc(Layout::{ size: 4, align: 1 });
 }
 

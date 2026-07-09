@@ -2710,7 +2710,7 @@ impl<'ast> Builder<'ast, '_> {
 							resolve_context,
 							kind,
 							&resolved_args,
-							type_expr.span,
+							name.span,
 						)
 					}
 					_ => {
@@ -2819,7 +2819,7 @@ impl<'ast> Builder<'ast, '_> {
 				resolve_context,
 				symbol_kind,
 				&resolved_args,
-				span,
+				last.ident.span,
 			);
 		}
 
@@ -2901,7 +2901,7 @@ impl<'ast> Builder<'ast, '_> {
 			resolve_context,
 			symbol_kind,
 			&resolved_args,
-			span,
+			last.ident.span,
 		)
 	}
 

@@ -1,8 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::panic;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
 
 use codespan_reporting::diagnostic::{
 	Diagnostic as CodeDiagnostic, Label, LabelStyle, Severity,
@@ -10,7 +9,7 @@ use codespan_reporting::diagnostic::{
 use codespan_reporting::files::Files as _;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::Ansi;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, oneshot};
 use tower_lsp_server::jsonrpc::{Error as JsonRpcError, Result};
 use tower_lsp_server::ls_types::{
 	CompletionOptions, CompletionParams, CompletionResponse, Diagnostic,
@@ -161,14 +160,589 @@ impl FileSource for OverlayFileSource<'_> {
 	}
 }
 
-pub struct Backend {
-	client: Client,
-	state: Arc<Mutex<ServerState>>,
+/// One state-mutating or state-reading operation dispatched to the single
+/// task that owns `ServerState` (see [`run_actor`]). Query variants carry a
+/// `oneshot::Sender` for the reply; notification variants carry none, since
+/// their handlers return to the client immediately without waiting for the
+/// corresponding recompute/publish to happen.
+enum Command {
+	SetWorkspaceFolders(Vec<PathBuf>),
+	DidOpen {
+		path: PathBuf,
+		text: String,
+		version: i32,
+	},
+	DidChange {
+		path: PathBuf,
+		text: String,
+		version: i32,
+	},
+	DidSave {
+		path: PathBuf,
+	},
+	DidClose {
+		path: PathBuf,
+	},
+	Hover(HoverParams, oneshot::Sender<Option<Hover>>),
+	GotoDefinition(
+		GotoDefinitionParams,
+		oneshot::Sender<Option<GotoDefinitionResponse>>,
+	),
+	References(ReferenceParams, oneshot::Sender<Option<Vec<Location>>>),
+	Rename(RenameParams, oneshot::Sender<Option<WorkspaceEdit>>),
+	Formatting(
+		DocumentFormattingParams,
+		oneshot::Sender<Option<Vec<TextEdit>>>,
+	),
+	SignatureHelp(SignatureHelpParams, oneshot::Sender<Option<SignatureHelp>>),
+	SemanticTokensFull(
+		SemanticTokensParams,
+		oneshot::Sender<Option<SemanticTokensResult>>,
+	),
+	Completion(
+		CompletionParams,
+		oneshot::Sender<Option<CompletionResponse>>,
+	),
+	FullDiagnostic(Uri, usize, oneshot::Sender<String>),
 }
 
-/// Rebuild TIR this long after the last edit to a file, so completion/hover/etc.
-/// stay close to the live buffer without recompiling on every keystroke.
-const REBUILD_DEBOUNCE_MS: u64 = 250;
+/// Cheap-to-clone handle to the actor task that owns `ServerState`. This
+/// replaces a shared `Arc<Mutex<ServerState>>`: instead of every LSP handler
+/// locking the same state and racing over who gets the lock next (see the
+/// note on `run_actor`), every handler just enqueues a `Command` and, for
+/// queries, awaits its reply — ordering is then whatever order `Command`s
+/// land in the channel, which is a single, unambiguous FIFO queue rather than
+/// a lock's acquisition order.
+#[derive(Clone)]
+struct StateHandle(mpsc::UnboundedSender<Command>);
+
+impl StateHandle {
+	fn spawn(client: Client) -> Self {
+		let (tx, rx) = mpsc::unbounded_channel();
+		task::spawn(run_actor(rx, client));
+		StateHandle(tx)
+	}
+
+	/// Enqueues a state-mutating command without waiting for it to be
+	/// processed. Never blocks: notification handlers (`did_open`,
+	/// `did_change`, ...) must return to the client immediately.
+	fn notify(&self, cmd: Command) {
+		// The receiver only goes away if the actor task itself panicked, in
+		// which case there's nothing a notification handler could do about
+		// it — silently drop rather than panicking the caller too.
+		let _ = self.0.send(cmd);
+	}
+
+	/// Enqueues a query command built from a fresh reply channel, then awaits
+	/// the reply. `None` only if the actor task is gone (panicked).
+	async fn query<T>(
+		&self,
+		build: impl FnOnce(oneshot::Sender<T>) -> Command,
+	) -> Option<T> {
+		let (tx, rx) = oneshot::channel();
+		self.0.send(build(tx)).ok()?;
+		rx.await.ok()
+	}
+}
+
+/// The single task that owns `ServerState` for the lifetime of the server —
+/// no other code ever touches it. Every LSP handler reaches it only through
+/// `Command`s sent over an ordered channel, so document edits are always
+/// applied in the exact order they were enqueued, with no possibility of two
+/// concurrent handlers racing to write `open_documents` out of order (the
+/// hazard a shared `Arc<Mutex<ServerState>>` had: `tower-lsp-server` runs
+/// notification futures concurrently, so two overlapping `did_change` calls
+/// racing to *acquire* the lock could apply their edits in either order,
+/// independent of which edit the client actually sent first).
+async fn run_actor(mut rx: mpsc::UnboundedReceiver<Command>, client: Client) {
+	let mut state = ServerState::default();
+	// Commands already pulled out of `rx` but not yet processed — draining
+	// into this lets one iteration look ahead at what's already queued (see
+	// the `DidChange` coalescing below) without losing anything.
+	let mut pending: VecDeque<Command> = VecDeque::new();
+	loop {
+		let cmd = match pending.pop_front() {
+			Some(cmd) => cmd,
+			None => match rx.recv().await {
+				Some(cmd) => cmd,
+				None => return,
+			},
+		};
+		while let Ok(cmd) = rx.try_recv() {
+			pending.push_back(cmd);
+		}
+		handle_command(cmd, &pending, &mut state, &client).await;
+	}
+}
+
+async fn handle_command(
+	cmd: Command,
+	pending: &VecDeque<Command>,
+	state: &mut ServerState,
+	client: &Client,
+) {
+	match cmd {
+		Command::SetWorkspaceFolders(folders) => {
+			state.workspace_folders = folders;
+		}
+		Command::DidOpen {
+			path,
+			text,
+			version,
+		} => {
+			state.open_documents.insert(
+				path.clone(),
+				OpenDocument {
+					text,
+					lsp_version: version,
+				},
+			);
+			let mut logs = Vec::new();
+			let publications = compute_refresh(state, &path, &mut logs);
+			flush_logs(client, logs).await;
+			publish_diagnostics(client, publications).await;
+		}
+		Command::DidChange {
+			path,
+			text,
+			version,
+		} => {
+			state.open_documents.insert(
+				path.clone(),
+				OpenDocument {
+					text,
+					lsp_version: version,
+				},
+			);
+			// Skip the recompute if a newer edit to this same file is
+			// already waiting right behind this one — it'll trigger its own
+			// recompute once it's processed, so this one would just be
+			// wasted work superseded before it could ever be published.
+			let superseded = pending.iter().any(
+				|c| matches!(c, Command::DidChange { path: p, .. } if *p == path),
+			);
+			if superseded {
+				return;
+			}
+			let mut logs = Vec::new();
+			let publications = compute_refresh(state, &path, &mut logs);
+			flush_logs(client, logs).await;
+			publish_diagnostics(client, publications).await;
+		}
+		Command::DidSave { path } => {
+			let mut logs = Vec::new();
+			let publications = compute_refresh(state, &path, &mut logs);
+			flush_logs(client, logs).await;
+			publish_diagnostics(client, publications).await;
+		}
+		Command::DidClose { path } => {
+			state.open_documents.remove(&path);
+			let mut logs = Vec::new();
+			let publications = compute_refresh(state, &path, &mut logs);
+			flush_logs(client, logs).await;
+			publish_diagnostics(client, publications).await;
+		}
+		Command::Hover(params, reply) => {
+			let result = (|| {
+				let (compiled, file_id) = resolve_uri(
+					state,
+					&params.text_document_position_params.text_document.uri,
+				)?;
+				let offset = position_to_offset(
+					&compiled.graph.files,
+					file_id,
+					params.text_document_position_params.position,
+				)?;
+				let info =
+					compiled.symbol_index.find_at_position(file_id, offset)?;
+				let text = symbol_hover_text(
+					&compiled.tir,
+					&compiled.graph.interner,
+					&info.kind,
+				)?;
+				let range = span_to_range(&compiled.graph.files, info.source)?;
+				Some(Hover {
+					contents: HoverContents::Markup(MarkupContent {
+						kind: MarkupKind::Markdown,
+						value: format!("```wx\n{text}\n```"),
+					}),
+					range: Some(range),
+				})
+			})();
+			let _ = reply.send(result);
+		}
+		Command::GotoDefinition(params, reply) => {
+			let result = (|| {
+				let (compiled, file_id) = resolve_uri(
+					state,
+					&params.text_document_position_params.text_document.uri,
+				)?;
+				let offset = position_to_offset(
+					&compiled.graph.files,
+					file_id,
+					params.text_document_position_params.position,
+				)?;
+				let info =
+					compiled.symbol_index.find_at_position(file_id, offset)?;
+				let def = compiled
+					.symbol_index
+					.definitions
+					.iter()
+					.find(|e| e.kind == info.kind)
+					.map(|e| e.source)?;
+				let uri = file_id_to_uri(compiled, def.file_id)?;
+				let range = span_to_range(&compiled.graph.files, def)?;
+				Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
+			})();
+			let _ = reply.send(result);
+		}
+		Command::References(params, reply) => {
+			let result = (|| {
+				let (compiled, file_id) = resolve_uri(
+					state,
+					&params.text_document_position.text_document.uri,
+				)?;
+				let offset = position_to_offset(
+					&compiled.graph.files,
+					file_id,
+					params.text_document_position.position,
+				)?;
+				let info =
+					compiled.symbol_index.find_at_position(file_id, offset)?;
+				let locations = compiled
+					.symbol_index
+					.references
+					.iter()
+					.filter(|e| e.kind == info.kind)
+					.chain(
+						params
+							.context
+							.include_declaration
+							.then(|| {
+								compiled
+									.symbol_index
+									.definitions
+									.iter()
+									.filter(|d| d.kind == info.kind)
+							})
+							.into_iter()
+							.flatten(),
+					)
+					.filter_map(|entry| {
+						let uri =
+							file_id_to_uri(compiled, entry.source.file_id)?;
+						let range =
+							span_to_range(&compiled.graph.files, entry.source)?;
+						Some(Location { uri, range })
+					})
+					.collect::<Vec<_>>();
+				match locations.len() {
+					0 => None,
+					_ => Some(locations),
+				}
+			})();
+			let _ = reply.send(result);
+		}
+		Command::Rename(params, reply) => {
+			let result = (|| {
+				let (compiled, file_id) = resolve_uri(
+					state,
+					&params.text_document_position.text_document.uri,
+				)?;
+				let offset = position_to_offset(
+					&compiled.graph.files,
+					file_id,
+					params.text_document_position.position,
+				)?;
+				let info =
+					compiled.symbol_index.find_at_position(file_id, offset)?;
+				let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
+				compiled
+					.symbol_index
+					.references
+					.iter()
+					.chain(compiled.symbol_index.definitions.iter())
+					.filter(|e| e.kind == info.kind)
+					.filter_map(|entry| {
+						let uri =
+							file_id_to_uri(compiled, entry.source.file_id)?;
+						let range =
+							span_to_range(&compiled.graph.files, entry.source)?;
+						Some((uri, range))
+					})
+					.for_each(|(uri, range)| {
+						changes.entry(uri).or_default().push(TextEdit {
+							range,
+							new_text: params.new_name.clone(),
+						});
+					});
+				if changes.is_empty() {
+					return None;
+				}
+				Some(WorkspaceEdit {
+					changes: Some(changes),
+					..Default::default()
+				})
+			})();
+			let _ = reply.send(result);
+		}
+		Command::Formatting(params, reply) => {
+			let result = async {
+				let path = uri_to_path(&params.text_document.uri)?;
+				let root = discover_crate_root(
+					&state.open_documents,
+					&state.workspace_folders,
+					&path,
+				)?;
+
+				// Always reparse fresh from the live buffer rather than
+				// going through `cached`: format-on-save fires before
+				// `didSave`, so `cached` would still reflect the previous
+				// save. Parsing is cheap enough (~1ms on typical files) that
+				// there's no need to cache it across calls.
+				let mut logs = Vec::new();
+				let parse_result = parse_root(state, &root, &mut logs);
+				flush_logs(client, logs).await;
+				let graph = parse_result.ok()?;
+				let module = graph
+					.crates
+					.iter()
+					.flat_map(|cg| cg.modules.iter())
+					.find(|m| Path::new(&m.file_path) == path.as_path())?;
+				let has_errors = module.ast.diagnostics.iter().any(|d| {
+					matches!(
+						d.severity,
+						codespan_reporting::diagnostic::Severity::Error
+							| codespan_reporting::diagnostic::Severity::Bug
+					)
+				});
+				if has_errors {
+					return None;
+				}
+				let file = graph.files.get(module.file_id).ok()?;
+				let source = file.source.as_str();
+				let config = wx_fmt::RendererConfig {
+					indent_width: params.options.tab_size as u8,
+					..Default::default()
+				};
+				let fmt_start = web_time::Instant::now();
+				let formatted =
+					panic::catch_unwind(panic::AssertUnwindSafe(|| {
+						wx_fmt::format(
+							&module.ast,
+							&graph.interner,
+							source,
+							config,
+						)
+					}))
+					.ok()?;
+				client
+					.log_message(
+						MessageType::LOG,
+						format!("formatting took {:?}", fmt_start.elapsed()),
+					)
+					.await;
+				let end = byte_to_position(
+					&graph.files,
+					module.file_id,
+					source.len(),
+				)?;
+				Some(vec![TextEdit {
+					range: Range {
+						start: Position::default(),
+						end,
+					},
+					new_text: formatted,
+				}])
+			}
+			.await;
+			let _ = reply.send(result);
+		}
+		Command::SignatureHelp(params, reply) => {
+			let result = (|| {
+				let uri =
+					&params.text_document_position_params.text_document.uri;
+				let (compiled, file_id) = resolve_uri(state, uri)?;
+				let position = params.text_document_position_params.position;
+
+				let (source, offset) = resolve_source_and_offset(
+					state, compiled, uri, file_id, position,
+				)?;
+
+				let call = find_active_call(source, offset)?;
+				let info = compiled
+					.symbol_index
+					.find_at_position(file_id, call.func_name_start as u32)?;
+				let SymbolKind::Function(def_id) = &info.kind else {
+					return None;
+				};
+				let fi = compiled.tir.function_index(*def_id)? as usize;
+				let func = &compiled.tir.functions[fi];
+				let fmt = compiled.tir.formatter(&compiled.graph.interner);
+				let interner = &compiled.graph.interner;
+
+				let name = interner.resolve(func.name.inner).unwrap_or("?");
+				let mut label = format!("fn {name}(");
+				let mut param_infos: Vec<ParameterInformation> = Vec::new();
+				// If the first parameter is named `self`, treat this as a
+				// method: show `self` in the signature label but do not
+				// include it in the interactive `parameters` list so editors
+				// won't tab into it.
+				let is_method = func
+					.params
+					.get(0)
+					.map(|p| {
+						interner
+							.resolve(p.name.inner)
+							.map(|s| s == "self")
+							.unwrap_or(false)
+					})
+					.unwrap_or(false);
+				let start_idx = if is_method { 1 } else { 0 };
+				for (i, param) in func.params.iter().enumerate() {
+					if i > 0 {
+						label.push_str(", ");
+					}
+					let param_start = label.len() as u32;
+					let pname =
+						interner.resolve(param.name.inner).unwrap_or("_");
+					label.push_str(pname);
+					label.push_str(": ");
+					label.push_str(&fmt.display_type(param.ty.inner).unwrap());
+					let param_end = label.len() as u32;
+					if i >= start_idx {
+						param_infos.push(ParameterInformation {
+							label: ParameterLabel::LabelOffsets([
+								param_start,
+								param_end,
+							]),
+							documentation: None,
+						});
+					}
+				}
+				label.push_str(") -> ");
+				match &func.result {
+					Some(r) => {
+						label.push_str(&fmt.display_type(r.inner).unwrap())
+					}
+					None => label.push_str("()"),
+				}
+
+				Some(SignatureHelp {
+					signatures: vec![SignatureInformation {
+						label,
+						documentation: None,
+						parameters: Some(param_infos),
+						active_parameter: Some(call.active_param as u32),
+					}],
+					active_signature: Some(0),
+					active_parameter: Some(call.active_param as u32),
+				})
+			})();
+			let _ = reply.send(result);
+		}
+		Command::SemanticTokensFull(params, reply) => {
+			let result = (|| {
+				let (compiled, file_id) =
+					resolve_uri(state, &params.text_document.uri)?;
+				let files = &compiled.graph.files;
+
+				let mut data: Vec<SemanticToken> = Vec::new();
+				let mut prev_line = 0u32;
+				let mut prev_char = 0u32;
+
+				let mut entries: Vec<&symbol_index::SpanInfo> = compiled
+					.symbol_index
+					.definitions
+					.iter()
+					.chain(compiled.symbol_index.references.iter())
+					.filter(|e| e.source.file_id == file_id)
+					.collect();
+				entries.sort_by_key(|e| e.source.span.start);
+
+				for entry in entries {
+					let Some(token_type) =
+						symbol_kind_to_token_type(&entry.kind)
+					else {
+						continue;
+					};
+					let Some(pos) = byte_to_position(
+						files,
+						file_id,
+						entry.source.span.start as usize,
+					) else {
+						continue;
+					};
+					let length =
+						entry.source.span.end - entry.source.span.start;
+					let delta_line = pos.line - prev_line;
+					let delta_start = if delta_line == 0 {
+						pos.character - prev_char
+					} else {
+						pos.character
+					};
+					data.push(SemanticToken {
+						delta_line,
+						delta_start,
+						length,
+						token_type: token_type as u32,
+						token_modifiers_bitset: 0,
+					});
+					prev_line = pos.line;
+					prev_char = pos.character;
+				}
+
+				Some(SemanticTokensResult::Tokens(
+					tower_lsp_server::ls_types::SemanticTokens {
+						result_id: None,
+						data,
+					},
+				))
+			})();
+			let _ = reply.send(result);
+		}
+		Command::Completion(params, reply) => {
+			let result = async {
+				let uri = &params.text_document_position.text_document.uri;
+				let (compiled, file_id) = resolve_uri(state, uri)?;
+				let position = params.text_document_position.position;
+
+				let (source, offset) = resolve_source_and_offset(
+					state, compiled, uri, file_id, position,
+				)?;
+				let completion_start = web_time::Instant::now();
+				let items = completion::completion_items(
+					&compiled.tir,
+					&compiled.graph.interner,
+					&compiled.symbol_index,
+					file_id,
+					source,
+					offset,
+				);
+				client
+					.log_message(
+						MessageType::LOG,
+						format!(
+							"completion took {:?}",
+							completion_start.elapsed()
+						),
+					)
+					.await;
+				Some(CompletionResponse::Array(items))
+			}
+			.await;
+			let _ = reply.send(result);
+		}
+		Command::FullDiagnostic(uri, index, reply) => {
+			let _ = reply.send(render_full_diagnostic(state, &uri, index));
+		}
+	}
+}
+
+pub struct Backend {
+	client: Client,
+	state: StateHandle,
+}
 
 impl LanguageServer for Backend {
 	async fn initialize(
@@ -184,7 +758,8 @@ impl LanguageServer for Backend {
 			.flatten()
 			.filter_map(|folder| uri_to_path(&folder.uri))
 			.collect();
-		self.state.lock().await.workspace_folders = workspace_folders;
+		self.state
+			.notify(Command::SetWorkspaceFolders(workspace_folders));
 		Ok(InitializeResult {
 			capabilities: ServerCapabilities {
 				text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -245,22 +820,14 @@ impl LanguageServer for Backend {
 	}
 
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		if let Some(path) = uri_to_path(&params.text_document.uri) {
-			let mut logs = Vec::new();
-			let publications = {
-				let mut state = self.state.lock().await;
-				state.open_documents.insert(
-					path.clone(),
-					OpenDocument {
-						text: params.text_document.text,
-						lsp_version: params.text_document.version,
-					},
-				);
-				compute_refresh(&mut state, &path, &mut logs)
-			};
-			flush_logs(&self.client, logs).await;
-			self.publish_all(publications).await;
-		}
+		let Some(path) = uri_to_path(&params.text_document.uri) else {
+			return;
+		};
+		self.state.notify(Command::DidOpen {
+			path,
+			text: params.text_document.text,
+			version: params.text_document.version,
+		});
 	}
 
 	async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -270,485 +837,114 @@ impl LanguageServer for Backend {
 		let Some(change) = params.content_changes.into_iter().last() else {
 			return;
 		};
-		let version = params.text_document.version;
-		{
-			let mut state = self.state.lock().await;
-			state.open_documents.insert(
-				path.clone(),
-				OpenDocument {
-					text: change.text,
-					lsp_version: version,
-				},
-			);
-		}
-
-		// Debounced rebuild: wait for a quiet period, then refresh only if no
-		// newer edit to this file has landed in the meantime (`lsp_version`
-		// already carries that generation number, so no separate counter is
-		// needed — a superseded task just no-ops and lets the newer one win).
-		let client = self.client.clone();
-		let state = Arc::clone(&self.state);
-		task::spawn(async move {
-			task::sleep(REBUILD_DEBOUNCE_MS).await;
-			let mut logs = Vec::new();
-			let publications = {
-				let mut state = state.lock().await;
-				if !is_current_version(&state, &path, version) {
-					return;
-				}
-				compute_refresh(&mut state, &path, &mut logs)
-			};
-			flush_logs(&client, logs).await;
-			publish_diagnostics(&client, publications).await;
+		self.state.notify(Command::DidChange {
+			path,
+			text: change.text,
+			version: params.text_document.version,
 		});
 	}
 
 	async fn did_save(&self, params: DidSaveTextDocumentParams) {
-		if let Some(path) = uri_to_path(&params.text_document.uri) {
-			let mut logs = Vec::new();
-			let publications = {
-				let mut state = self.state.lock().await;
-				compute_refresh(&mut state, &path, &mut logs)
-			};
-			flush_logs(&self.client, logs).await;
-			self.publish_all(publications).await;
-		}
+		let Some(path) = uri_to_path(&params.text_document.uri) else {
+			return;
+		};
+		self.state.notify(Command::DidSave { path });
 	}
 
 	async fn did_close(&self, params: DidCloseTextDocumentParams) {
-		if let Some(path) = uri_to_path(&params.text_document.uri) {
-			let mut logs = Vec::new();
-			let publications = {
-				let mut state = self.state.lock().await;
-				state.open_documents.remove(&path);
-				compute_refresh(&mut state, &path, &mut logs)
-			};
-			flush_logs(&self.client, logs).await;
-			self.publish_all(publications).await;
-		}
+		let Some(path) = uri_to_path(&params.text_document.uri) else {
+			return;
+		};
+		self.state.notify(Command::DidClose { path });
 	}
 
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-		let state = self.state.lock().await;
-		Ok((|| {
-			let (compiled, file_id) = resolve_uri(
-				&state,
-				&params.text_document_position_params.text_document.uri,
-			)?;
-			let offset = position_to_offset(
-				&compiled.graph.files,
-				file_id,
-				params.text_document_position_params.position,
-			)?;
-			let info =
-				compiled.symbol_index.find_at_position(file_id, offset)?;
-			let text = symbol_hover_text(
-				&compiled.tir,
-				&compiled.graph.interner,
-				&info.kind,
-			)?;
-			let range = span_to_range(&compiled.graph.files, info.source)?;
-			Some(Hover {
-				contents: HoverContents::Markup(MarkupContent {
-					kind: MarkupKind::Markdown,
-					value: format!("```wx\n{text}\n```"),
-				}),
-				range: Some(range),
-			})
-		})())
+		Ok(self
+			.state
+			.query(|reply| Command::Hover(params, reply))
+			.await
+			.flatten())
 	}
 
 	async fn goto_definition(
 		&self,
 		params: GotoDefinitionParams,
 	) -> Result<Option<GotoDefinitionResponse>> {
-		let state = self.state.lock().await;
-		Ok((|| {
-			let (compiled, file_id) = resolve_uri(
-				&state,
-				&params.text_document_position_params.text_document.uri,
-			)?;
-			let offset = position_to_offset(
-				&compiled.graph.files,
-				file_id,
-				params.text_document_position_params.position,
-			)?;
-			let info =
-				compiled.symbol_index.find_at_position(file_id, offset)?;
-			let def = compiled
-				.symbol_index
-				.definitions
-				.iter()
-				.find(|e| e.kind == info.kind)
-				.map(|e| e.source)?;
-			let uri = file_id_to_uri(compiled, def.file_id)?;
-			let range = span_to_range(&compiled.graph.files, def)?;
-			Some(GotoDefinitionResponse::Scalar(Location { uri, range }))
-		})())
+		Ok(self
+			.state
+			.query(|reply| Command::GotoDefinition(params, reply))
+			.await
+			.flatten())
 	}
 
 	async fn references(
 		&self,
 		params: ReferenceParams,
 	) -> Result<Option<Vec<Location>>> {
-		let state = self.state.lock().await;
-		Ok((|| {
-			let (compiled, file_id) = resolve_uri(
-				&state,
-				&params.text_document_position.text_document.uri,
-			)?;
-			let offset = position_to_offset(
-				&compiled.graph.files,
-				file_id,
-				params.text_document_position.position,
-			)?;
-			let info =
-				compiled.symbol_index.find_at_position(file_id, offset)?;
-			let locations = compiled
-				.symbol_index
-				.references
-				.iter()
-				.filter(|e| e.kind == info.kind)
-				.chain(
-					params
-						.context
-						.include_declaration
-						.then(|| {
-							compiled
-								.symbol_index
-								.definitions
-								.iter()
-								.filter(|d| d.kind == info.kind)
-						})
-						.into_iter()
-						.flatten(),
-				)
-				.filter_map(|entry| {
-					let uri = file_id_to_uri(compiled, entry.source.file_id)?;
-					let range =
-						span_to_range(&compiled.graph.files, entry.source)?;
-					Some(Location { uri, range })
-				})
-				.collect::<Vec<_>>();
-			match locations.len() {
-				0 => None,
-				_ => Some(locations),
-			}
-		})())
+		Ok(self
+			.state
+			.query(|reply| Command::References(params, reply))
+			.await
+			.flatten())
 	}
 
 	async fn rename(
 		&self,
 		params: RenameParams,
 	) -> Result<Option<WorkspaceEdit>> {
-		let state = self.state.lock().await;
-		Ok((|| {
-			let (compiled, file_id) = resolve_uri(
-				&state,
-				&params.text_document_position.text_document.uri,
-			)?;
-			let offset = position_to_offset(
-				&compiled.graph.files,
-				file_id,
-				params.text_document_position.position,
-			)?;
-			let info =
-				compiled.symbol_index.find_at_position(file_id, offset)?;
-			let mut changes: HashMap<Uri, Vec<TextEdit>> = HashMap::new();
-			compiled
-				.symbol_index
-				.references
-				.iter()
-				.chain(compiled.symbol_index.definitions.iter())
-				.filter(|e| e.kind == info.kind)
-				.filter_map(|entry| {
-					let uri = file_id_to_uri(compiled, entry.source.file_id)?;
-					let range =
-						span_to_range(&compiled.graph.files, entry.source)?;
-					Some((uri, range))
-				})
-				.for_each(|(uri, range)| {
-					changes.entry(uri).or_default().push(TextEdit {
-						range,
-						new_text: params.new_name.clone(),
-					});
-				});
-			if changes.is_empty() {
-				return None;
-			}
-			Some(WorkspaceEdit {
-				changes: Some(changes),
-				..Default::default()
-			})
-		})())
+		Ok(self
+			.state
+			.query(|reply| Command::Rename(params, reply))
+			.await
+			.flatten())
 	}
 
 	async fn formatting(
 		&self,
 		params: DocumentFormattingParams,
 	) -> Result<Option<Vec<TextEdit>>> {
-		let state = self.state.lock().await;
-		let Some(path) = uri_to_path(&params.text_document.uri) else {
-			return Ok(None);
-		};
-		let Some(root) = discover_crate_root(
-			&state.open_documents,
-			&state.workspace_folders,
-			&path,
-		) else {
-			return Ok(None);
-		};
-
-		// Always reparse fresh from the live buffer rather than going through
-		// `cached`: format-on-save fires before `didSave`, so `cached` would
-		// still reflect the previous save. Parsing is cheap enough (~1ms on
-		// typical files) that there's no need to cache it across calls.
-		let mut logs = Vec::new();
-		let parse_result = parse_root(&state, &root, &mut logs);
-		flush_logs(&self.client, logs).await;
-		let Ok(graph) = parse_result else {
-			return Ok(None);
-		};
-		let Some(module) = graph
-			.crates
-			.iter()
-			.flat_map(|cg| cg.modules.iter())
-			.find(|m| Path::new(&m.file_path) == path.as_path())
-		else {
-			return Ok(None);
-		};
-		let has_errors = module.ast.diagnostics.iter().any(|d| {
-			matches!(
-				d.severity,
-				codespan_reporting::diagnostic::Severity::Error
-					| codespan_reporting::diagnostic::Severity::Bug
-			)
-		});
-		if has_errors {
-			return Ok(None);
-		}
-		let Ok(file) = graph.files.get(module.file_id) else {
-			return Ok(None);
-		};
-		let source = file.source.as_str();
-		let config = wx_fmt::RendererConfig {
-			indent_width: params.options.tab_size as u8,
-			..Default::default()
-		};
-		let fmt_start = web_time::Instant::now();
-		let Ok(formatted) =
-			panic::catch_unwind(panic::AssertUnwindSafe(|| {
-				wx_fmt::format(&module.ast, &graph.interner, source, config)
-			}))
-		else {
-			return Ok(None);
-		};
-		self.client
-			.log_message(
-				MessageType::LOG,
-				format!("formatting took {:?}", fmt_start.elapsed()),
-			)
-			.await;
-		let Some(end) =
-			byte_to_position(&graph.files, module.file_id, source.len())
-		else {
-			return Ok(None);
-		};
-		Ok(Some(vec![TextEdit {
-			range: Range {
-				start: Position::default(),
-				end,
-			},
-			new_text: formatted,
-		}]))
+		Ok(self
+			.state
+			.query(|reply| Command::Formatting(params, reply))
+			.await
+			.flatten())
 	}
 
 	async fn signature_help(
 		&self,
 		params: SignatureHelpParams,
 	) -> Result<Option<SignatureHelp>> {
-		let state = self.state.lock().await;
-		Ok((|| {
-			let uri = &params.text_document_position_params.text_document.uri;
-			let (compiled, file_id) = resolve_uri(&state, uri)?;
-			let position = params.text_document_position_params.position;
-
-			let (source, offset) = resolve_source_and_offset(
-				&state, compiled, uri, file_id, position,
-			)?;
-
-			let call = find_active_call(source, offset)?;
-			let info = compiled
-				.symbol_index
-				.find_at_position(file_id, call.func_name_start as u32)?;
-			let SymbolKind::Function(def_id) = &info.kind else {
-				return None;
-			};
-			let fi = compiled.tir.function_index(*def_id)? as usize;
-			let func = &compiled.tir.functions[fi];
-			let fmt = compiled.tir.formatter(&compiled.graph.interner);
-			let interner = &compiled.graph.interner;
-
-			let name = interner.resolve(func.name.inner).unwrap_or("?");
-			let mut label = format!("fn {name}(");
-			let mut param_infos: Vec<ParameterInformation> = Vec::new();
-			// If the first parameter is named `self`, treat this as a
-			// method: show `self` in the signature label but do not
-			// include it in the interactive `parameters` list so editors
-			// won't tab into it.
-			let is_method = func
-				.params
-				.get(0)
-				.map(|p| {
-					interner
-						.resolve(p.name.inner)
-						.map(|s| s == "self")
-						.unwrap_or(false)
-				})
-				.unwrap_or(false);
-			let start_idx = if is_method { 1 } else { 0 };
-			for (i, param) in func.params.iter().enumerate() {
-				if i > 0 {
-					label.push_str(", ");
-				}
-				let param_start = label.len() as u32;
-				let pname = interner.resolve(param.name.inner).unwrap_or("_");
-				label.push_str(pname);
-				label.push_str(": ");
-				label.push_str(&fmt.display_type(param.ty.inner).unwrap());
-				let param_end = label.len() as u32;
-				if i >= start_idx {
-					param_infos.push(ParameterInformation {
-						label: ParameterLabel::LabelOffsets([
-							param_start,
-							param_end,
-						]),
-						documentation: None,
-					});
-				}
-			}
-			label.push_str(") -> ");
-			match &func.result {
-				Some(r) => label.push_str(&fmt.display_type(r.inner).unwrap()),
-				None => label.push_str("()"),
-			}
-
-			Some(SignatureHelp {
-				signatures: vec![SignatureInformation {
-					label,
-					documentation: None,
-					parameters: Some(param_infos),
-					active_parameter: Some(call.active_param as u32),
-				}],
-				active_signature: Some(0),
-				active_parameter: Some(call.active_param as u32),
-			})
-		})())
+		Ok(self
+			.state
+			.query(|reply| Command::SignatureHelp(params, reply))
+			.await
+			.flatten())
 	}
 
 	async fn semantic_tokens_full(
 		&self,
 		params: SemanticTokensParams,
 	) -> Result<Option<SemanticTokensResult>> {
-		let state = self.state.lock().await;
-		let Some((compiled, file_id)) =
-			resolve_uri(&state, &params.text_document.uri)
-		else {
-			return Ok(None);
-		};
-		let files = &compiled.graph.files;
-
-		let mut data: Vec<SemanticToken> = Vec::new();
-		let mut prev_line = 0u32;
-		let mut prev_char = 0u32;
-
-		let mut entries: Vec<&symbol_index::SpanInfo> = compiled
-			.symbol_index
-			.definitions
-			.iter()
-			.chain(compiled.symbol_index.references.iter())
-			.filter(|e| e.source.file_id == file_id)
-			.collect();
-		entries.sort_by_key(|e| e.source.span.start);
-
-		for entry in entries {
-			let Some(token_type) = symbol_kind_to_token_type(&entry.kind)
-			else {
-				continue;
-			};
-			let Some(pos) = byte_to_position(
-				files,
-				file_id,
-				entry.source.span.start as usize,
-			) else {
-				continue;
-			};
-			let length = entry.source.span.end - entry.source.span.start;
-			let delta_line = pos.line - prev_line;
-			let delta_start = if delta_line == 0 {
-				pos.character - prev_char
-			} else {
-				pos.character
-			};
-			data.push(SemanticToken {
-				delta_line,
-				delta_start,
-				length,
-				token_type: token_type as u32,
-				token_modifiers_bitset: 0,
-			});
-			prev_line = pos.line;
-			prev_char = pos.character;
-		}
-
-		Ok(Some(SemanticTokensResult::Tokens(
-			tower_lsp_server::ls_types::SemanticTokens {
-				result_id: None,
-				data,
-			},
-		)))
+		Ok(self
+			.state
+			.query(|reply| Command::SemanticTokensFull(params, reply))
+			.await
+			.flatten())
 	}
 
 	async fn completion(
 		&self,
 		params: CompletionParams,
 	) -> Result<Option<CompletionResponse>> {
-		let state = self.state.lock().await;
-		let uri = &params.text_document_position.text_document.uri;
-		let Some((compiled, file_id)) = resolve_uri(&state, uri) else {
-			return Ok(None);
-		};
-		let position = params.text_document_position.position;
-
-		let Some((source, offset)) =
-			resolve_source_and_offset(&state, compiled, uri, file_id, position)
-		else {
-			return Ok(None);
-		};
-		let completion_start = web_time::Instant::now();
-		let items = completion::completion_items(
-			&compiled.tir,
-			&compiled.graph.interner,
-			&compiled.symbol_index,
-			file_id,
-			source,
-			offset,
-		);
-		self.client
-			.log_message(
-				MessageType::LOG,
-				format!("completion took {:?}", completion_start.elapsed()),
-			)
-			.await;
-		Ok(Some(CompletionResponse::Array(items)))
+		Ok(self
+			.state
+			.query(|reply| Command::Completion(params, reply))
+			.await
+			.flatten())
 	}
 }
 
 impl Backend {
-	async fn publish_all(&self, publications: Vec<(PathBuf, Vec<Diagnostic>)>) {
-		publish_diagnostics(&self.client, publications).await;
-	}
-
 	async fn virtual_file_content(
 		&self,
 		params: VirtualFileContentParams,
@@ -788,8 +984,13 @@ impl Backend {
 		let uri = Uri::from_str(&params.uri).map_err(|_| {
 			JsonRpcError::invalid_params(format!("bad uri: {}", params.uri))
 		})?;
-		let state = self.state.lock().await;
-		Ok(render_full_diagnostic(&state, &uri, params.index))
+		Ok(self
+			.state
+			.query(|reply| Command::FullDiagnostic(uri, params.index, reply))
+			.await
+			.unwrap_or_else(|| {
+				"wx-lsp internal error: state actor unavailable".to_string()
+			}))
 	}
 }
 
@@ -860,8 +1061,8 @@ fn render_full_diagnostic(
 pub fn build_service() -> (LspService<Backend>, tower_lsp_server::ClientSocket)
 {
 	LspService::build(|client| Backend {
+		state: StateHandle::spawn(client.clone()),
 		client,
-		state: Arc::new(Mutex::new(ServerState::default())),
 	})
 	.custom_method("wx/virtualFileContent", Backend::virtual_file_content)
 	.custom_method("wx/fullDiagnostic", Backend::full_diagnostic)
@@ -870,19 +1071,6 @@ pub fn build_service() -> (LspService<Backend>, tower_lsp_server::ClientSocket)
 
 // ── State management
 // ──────────────────────────────────────────────────────────
-
-/// Whether `path`'s open buffer is still at `version` — i.e. no newer edit
-/// has landed since a debounced rebuild for that edit was scheduled.
-pub(crate) fn is_current_version(
-	state: &ServerState,
-	path: &Path,
-	version: i32,
-) -> bool {
-	state
-		.open_documents
-		.get(path)
-		.is_some_and(|doc| doc.lsp_version == version)
-}
 
 async fn publish_diagnostics(
 	client: &Client,

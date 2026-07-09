@@ -49,6 +49,23 @@ pub trait Memory {
     }
 }
 
+pub struct Layout<M: Memory> {
+    pub size: M::Size,
+    pub align: M::Size,
+}
+
+impl<M: Memory> Layout<M> {
+    #[inline]
+    pub fn of<T>() -> Self {
+        Self::{ size: size_of::<T>(), align: align_of::<T>() }
+    }
+
+    #[inline]
+    pub fn array<T>(count: M::Size) -> Self {
+        Self::{ align: align_of::<T>(), size: size_of::<T>() * count }
+    }
+}
+
 pub module ptr {
     #[inline]
     pub fn null<M: Memory, T>() -> M::*T {

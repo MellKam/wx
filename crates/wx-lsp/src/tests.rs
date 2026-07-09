@@ -10,10 +10,98 @@ use wx_compiler::vfs::FileId;
 use crate::completion::{completion_items, find_enclosing_function};
 use crate::symbol_index::SymbolKind;
 use crate::{
-	CompiledRoot, OpenDocument, ServerState, analyze_root, compute_refresh,
-	diagnostic_publish_paths, discover_crate_root, find_active_call,
-	is_current_version, owning_root,
+	Backend, CompiledRoot, OpenDocument, ServerState, analyze_root,
+	build_service, compute_refresh, diagnostic_publish_paths,
+	discover_crate_root, find_active_call, owning_root,
 };
+use tower_lsp_server::LanguageServer as _;
+
+/// Exercises `Backend` through its real `LanguageServer` trait methods
+/// (rather than the `ServerState` free functions the other tests in this
+/// file use), which is the only way to touch the actor/channel plumbing in
+/// `run_actor`/`Command` that replaced the old `Arc<Mutex<ServerState>>`.
+/// Asserts two things that plumbing must get right: a `hover` query queued
+/// after a `did_change` observes that edit's text (not a stale one racing
+/// ahead of it — the ordering bug this actor design closes), and it
+/// completes promptly rather than deadlocking.
+#[tokio::test]
+async fn hover_after_did_change_observes_latest_edit_through_backend() {
+	use std::time::Instant;
+	use tower_lsp_server::ls_types::*;
+
+	let (service, socket) = build_service();
+	let backend: &Backend = service.inner();
+	// The actor's `Client::log_message`/`publish_diagnostics` calls send into
+	// `ClientSocket`'s internal channel; nothing reads it back out unless we
+	// drain it here (in a real server, `tower_lsp_server::Server::serve`
+	// forwards it to the transport), so without this those calls would block
+	// forever waiting for room in that channel.
+	tokio::spawn(async move {
+		use futures::stream::StreamExt;
+		let (mut requests, _responses) = socket.split();
+		while requests.next().await.is_some() {}
+	});
+
+	let uri: Uri = Uri::from_str("file:///tmp/probe/main.wx").unwrap();
+	backend
+		.did_open(DidOpenTextDocumentParams {
+			text_document: TextDocumentItem {
+				uri: uri.clone(),
+				language_id: "wx".into(),
+				version: 1,
+				text:
+					"fn add(a: i32, b: i32) -> i32 { a + b }\nexport { add }\n"
+						.into(),
+			},
+		})
+		.await;
+
+	backend
+		.did_change(DidChangeTextDocumentParams {
+			text_document: VersionedTextDocumentIdentifier {
+				uri: uri.clone(),
+				version: 2,
+			},
+			content_changes: vec![TextDocumentContentChangeEvent {
+				range: None,
+				range_length: None,
+				text:
+					"fn add(x: i64, y: i64) -> i64 { x + y }\nexport { add }\n"
+						.into(),
+			}],
+		})
+		.await;
+
+	let start = Instant::now();
+	let result = backend
+		.hover(HoverParams {
+			text_document_position_params: TextDocumentPositionParams {
+				text_document: TextDocumentIdentifier { uri: uri.clone() },
+				position: Position {
+					line: 0,
+					character: 4,
+				},
+			},
+			work_done_progress_params: Default::default(),
+		})
+		.await
+		.expect("hover should not error");
+	assert!(
+		start.elapsed().as_secs() < 5,
+		"hover took suspiciously long — the actor may be deadlocked"
+	);
+
+	let HoverContents::Markup(markup) =
+		result.expect("hover should resolve `add`").contents
+	else {
+		panic!("expected markup hover contents");
+	};
+	assert!(
+		markup.value.contains("x: i64, y: i64"),
+		"hover should reflect the `did_change` edit (i64 params), got: {}",
+		markup.value
+	);
+}
 
 /// Resolves the `FileId` for a given file path from a compiled root.
 fn file_id_for(compiled: &CompiledRoot, path: &Path) -> FileId {
@@ -36,32 +124,6 @@ fn open_document(text: &str) -> OpenDocument {
 		text: text.to_string(),
 		lsp_version: COUNTER.fetch_add(1, Ordering::Relaxed),
 	}
-}
-
-#[test]
-fn is_current_version_detects_superseded_edits() {
-	let root = PathBuf::from("/test/main.wx");
-	let mut state = ServerState::default();
-	state.open_documents.insert(
-		root.clone(),
-		OpenDocument {
-			text: "fn test() {}".to_string(),
-			lsp_version: 1,
-		},
-	);
-	assert!(is_current_version(&state, &root, 1));
-
-	// A newer edit lands (bumping the version) before a debounced rebuild
-	// scheduled for the older version gets a chance to run.
-	state.open_documents.insert(
-		root.clone(),
-		OpenDocument {
-			text: "fn test() { local x = 1; }".to_string(),
-			lsp_version: 2,
-		},
-	);
-	assert!(!is_current_version(&state, &root, 1));
-	assert!(is_current_version(&state, &root, 2));
 }
 
 #[test]
@@ -714,13 +776,14 @@ fn enum_type_used_as_return_type_resolves_to_its_definition() {
 	let file_id = file_id_for(&compiled, &root);
 
 	// Offset of `Status` in `-> Status`, not the `Status::Ok` namespace access.
-	let return_type_offset =
-		source.find("-> Status").unwrap() + "-> ".len();
+	let return_type_offset = source.find("-> Status").unwrap() + "-> ".len();
 
 	let found = compiled
 		.symbol_index
 		.find_at_position(file_id, return_type_offset as u32)
-		.unwrap_or_else(|| panic!("expected a symbol at the return type position"));
+		.unwrap_or_else(|| {
+			panic!("expected a symbol at the return type position")
+		});
 
 	assert!(
 		matches!(found.kind, SymbolKind::Enum(_)),
@@ -734,7 +797,8 @@ fn enum_type_used_as_return_type_resolves_to_its_definition() {
 		.find(|d| d.kind == found.kind)
 		.expect("expected a matching enum definition entry");
 	assert_eq!(
-		&source[definition.source.span.start as usize..definition.source.span.end as usize],
+		&source[definition.source.span.start as usize
+			..definition.source.span.end as usize],
 		"Status",
 		"go-to-definition should land on the `enum Status` name"
 	);

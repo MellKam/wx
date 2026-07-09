@@ -1,5 +1,6 @@
 {
 	"[typescript]": {
 		"editor.defaultFormatter": "esbenp.prettier-vscode"
-	}
+	},
+	"rust-analyzer.linkedProjects": ["crates/wx-lsp-wasm/Cargo.toml"]
 }

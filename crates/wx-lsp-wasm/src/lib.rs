@@ -15,7 +15,6 @@
 
 use std::cell::RefCell;
 use std::pin::Pin;
-use std::rc::Rc;
 
 use futures::sink::{Sink, SinkExt};
 use futures::stream::{Stream, StreamExt};
@@ -53,8 +52,13 @@ fn init_panic_hook() {
 
 #[wasm_bindgen]
 pub struct WxLanguageServer {
-	service: Rc<RefCell<tower_lsp_server::LspService<Backend>>>,
-	response_sink: Rc<RefCell<BoxedResponseSink>>,
+	// `#[wasm_bindgen]` already wraps this whole struct in its own
+	// `Rc<WasmRefCell<Self>>` at the ABI boundary (its `&self` methods, async
+	// ones included, get a `RcRef` anchor that keeps that `Rc` alive for the
+	// call) — these `RefCell`s only need to provide interior mutability
+	// through that shared `&self`, not their own separate ownership.
+	service: RefCell<tower_lsp_server::LspService<Backend>>,
+	response_sink: RefCell<BoxedResponseSink>,
 }
 
 #[wasm_bindgen]
@@ -76,14 +80,16 @@ impl WxLanguageServer {
 
 		task::spawn(async move {
 			while let Some(req) = request_stream.next().await {
-				let json = serde_json::to_string(&req).expect("`Request` always serializes");
-				let _ = on_message.call1(&JsValue::NULL, &JsValue::from_str(&json));
+				let json = serde_json::to_string(&req)
+					.expect("`Request` always serializes");
+				let _ =
+					on_message.call1(&JsValue::NULL, &JsValue::from_str(&json));
 			}
 		});
 
 		WxLanguageServer {
-			service: Rc::new(RefCell::new(service)),
-			response_sink: Rc::new(RefCell::new(response_sink)),
+			service: RefCell::new(service),
+			response_sink: RefCell::new(response_sink),
 		}
 	}
 
@@ -94,7 +100,10 @@ impl WxLanguageServer {
 	///
 	/// Returns the JSON-encoded JSON-RPC response for a request, or `null`
 	/// for notifications and client responses.
-	pub async fn handle_message(&self, message: String) -> Result<JsValue, JsValue> {
+	pub async fn handle_message(
+		&self,
+		message: String,
+	) -> Result<JsValue, JsValue> {
 		let incoming: IncomingMessage = serde_json::from_str(&message)
 			.map_err(|err| JsValue::from_str(&err.to_string()))?;
 
@@ -111,8 +120,9 @@ impl WxLanguageServer {
 					.map_err(|err| JsValue::from_str(&err.to_string()))?;
 				match response {
 					Some(response) => {
-						let json = serde_json::to_string(&response)
-							.map_err(|err| JsValue::from_str(&err.to_string()))?;
+						let json = serde_json::to_string(&response).map_err(
+							|err| JsValue::from_str(&err.to_string()),
+						)?;
 						Ok(JsValue::from_str(&json))
 					}
 					None => Ok(JsValue::NULL),

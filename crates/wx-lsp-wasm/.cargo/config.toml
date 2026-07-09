@@ -1,0 +1,8 @@
+# This crate is genuinely wasm32-only (see the comment on `exclude` in the
+# root Cargo.toml and on `[package]` in this crate's Cargo.toml). Cargo's
+# config discovery walks up from the invocation directory, so this only
+# takes effect when building/checking this crate directly (e.g. rust-analyzer
+# via `rust-analyzer.linkedProjects`, or `wasm-pack`/`cargo build` run from
+# inside this directory) — it has no effect on the root workspace build.
+[build]
+target = "wasm32-unknown-unknown"
