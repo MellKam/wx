@@ -1825,10 +1825,9 @@ impl<'mir> Builder<'mir> {
 		if let DataNodeKind::Mul { left, right, ty } = *kind {
 			let (x, c) = if let Some(c) = self.unwrap_int(right) {
 				(left, c)
-			} else if let Some(c) = self.unwrap_int(left) {
-				(right, c)
 			} else {
-				return None;
+				let c = self.unwrap_int(left)?;
+				(right, c)
 			};
 			// c > 1: c == 1 is already handled by identity rules.
 			if c > 1 && c & (c - 1) == 0 {
