@@ -1,15 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# `wx-lsp-wasm` uses `Rc<RefCell<...>>` and non-`Send` futures (fine for
-# wasm32's single-threaded model), so it can only ever type-check when
-# actually compiled for `wasm32-unknown-unknown` — not a Cargo-features
-# issue, just genuinely invalid on the host target. A plain
-# `cargo check`/`build --workspace` (no `--target`) builds every member for
-# the host triple, so it's excluded here; build/check it explicitly with
-# `--target wasm32-unknown-unknown` (what `wasm-pack` does) instead.
+# `wx-lsp-wasm` holds `js_sys`/wasm-bindgen values (e.g. `js_sys::Function`),
+# which are deliberately `!Send` — so it can only build for a single-threaded
+# target. A plain `cargo check`/`build --workspace` (no `--target`) builds
+# every member for the host triple, which this crate can't satisfy; excluded
+# here, build/check it explicitly with `--target wasm32-unknown-unknown`
+# (what `wasm-pack` does) instead.
 exclude = ["crates/wx-lsp-wasm"]
-package.repository = "https://github.com/MellKam/wx"
 package.license = "MIT"
 package.edition = "2024"
 # Found the minimum version with https://github.com/foresterre/cargo-msrv

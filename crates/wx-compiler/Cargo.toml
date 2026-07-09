@@ -1,11 +1,11 @@
 [package]
 name = "wx-compiler"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-repository.workspace = true
+repository = "https://github.com/MellKam/wx/tree/main/crates/wx-compiler"
 
 [lib]
 

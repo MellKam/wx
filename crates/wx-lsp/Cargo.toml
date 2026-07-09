@@ -1,11 +1,11 @@
 [package]
 name = "wx-lsp"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-repository.workspace = true
+repository = "https://github.com/MellKam/wx/tree/main/crates/wx-lsp"
 
 [dependencies]
 # Runtime feature (`runtime-tokio` vs `runtime-agnostic`) selected per-target
@@ -34,7 +34,9 @@ web-time = "1.1.0"
 # writes as a side effect of the next stdin read, so notifications sit
 # unflushed until the client happens to send something else. `runtime-tokio`
 # flushes inline with each write.
-tower-lsp-server = { version = "0.23.0", default-features = false, features = ["runtime-tokio"] }
+tower-lsp-server = { version = "0.23.0", default-features = false, features = [
+    "runtime-tokio",
+] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -42,7 +44,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
 # needs *some* runtime feature enabled to compile at all. `runtime-tokio`
 # needs tokio's multi-thread runtime, which wasm32 doesn't support, so this
 # is the only option here.
-tower-lsp-server = { version = "0.23.0", default-features = false, features = ["runtime-agnostic"] }
+tower-lsp-server = { version = "0.23.0", default-features = false, features = [
+    "runtime-agnostic",
+] }
 wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]

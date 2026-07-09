@@ -3,6 +3,10 @@ name: Publish CLI
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    # Runs the build/package steps only, without uploading release assets or
+    # publishing to npm — use this to validate the cross-platform build
+    # matrix before cutting a real release.
 
 permissions:
   contents: write
@@ -68,6 +72,7 @@ jobs:
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
 
       - name: Upload Release Asset
+        if: github.event_name == 'release'
         run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.package.outputs.archive }}" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,6 +84,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish Platform Package
+        if: github.event_name == 'release'
         working-directory: cli/npm/${{ matrix.npm-pkg }}
         run: npm publish --access public
         env:
@@ -87,6 +93,7 @@ jobs:
   publish-main:
     name: Publish @wx-lang/cli
     needs: build
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

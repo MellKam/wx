@@ -2222,7 +2222,7 @@ dependencies = [
 
 [[package]]
 name = "wx-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "clap",
  "codespan-reporting",
@@ -2233,7 +2233,7 @@ dependencies = [
 
 [[package]]
 name = "wx-compiler"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "codespan-reporting",
  "indoc",
@@ -2261,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "wx-fmt"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "indoc",
  "string-interner",
@@ -2270,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "wx-lsp"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "codespan-reporting",
  "futures",
