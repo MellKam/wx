@@ -83,10 +83,22 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
+      # Idempotent: if a previous run already published this exact
+      # name@version (e.g. a retry after a later step failed), skip instead
+      # of failing the whole job on npm's "cannot publish over previously
+      # published version" error.
       - name: Publish Platform Package
         if: github.event_name == 'release'
         working-directory: cli/npm/${{ matrix.npm-pkg }}
-        run: npm publish --access public
+        shell: bash
+        run: |
+          pkg_name=$(node -p "require('./package.json').name")
+          pkg_version=$(node -p "require('./package.json').version")
+          if npm view "$pkg_name@$pkg_version" version >/dev/null 2>&1; then
+            echo "$pkg_name@$pkg_version already published, skipping"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
