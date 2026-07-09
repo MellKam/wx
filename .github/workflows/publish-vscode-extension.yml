@@ -70,7 +70,10 @@ jobs:
 
       - name: Package VS Code Extension
         working-directory: ./vscode
-        run: npx @vscode/vsce package --target ${{ matrix.vscode-target }} --out wx-vscode-${{ matrix.vscode-target }}.vsix
+        # --no-dependencies: the extension is bundled via tsdown, so vsce's
+        # npm-based node_modules dependency check is both unnecessary and
+        # broken under pnpm's symlinked node_modules layout.
+        run: npx @vscode/vsce package --no-dependencies --target ${{ matrix.vscode-target }} --out wx-vscode-${{ matrix.vscode-target }}.vsix
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v7
