@@ -1,1 +1,1 @@
-# WX Language Server
+# WX Language Support

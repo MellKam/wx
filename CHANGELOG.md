@@ -29,6 +29,6 @@ Still early: expect rough edges and breaking changes before 1.0.
   prebuilt native binaries via `@wx-lang/cli` on npm (Linux, macOS
   x64/arm64, Windows).
 - Language Server: diagnostics, completions, and formatting, packaged as
-  the "WX Language Server" VS Code extension (see
+  the "WX Language Support" VS Code extension (see
   [vscode/CHANGELOG.md](vscode/CHANGELOG.md) for extension-specific
   changes).

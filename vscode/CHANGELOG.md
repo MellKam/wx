@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the WX Language Server VS Code extension will be
+All notable changes to the WX Language Support VS Code extension will be
 documented in this file. For changes to the WX language and compiler
 itself, see the [root changelog](../CHANGELOG.md).
 
