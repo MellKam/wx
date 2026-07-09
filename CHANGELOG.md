@@ -32,4 +32,3 @@ Still early: expect rough edges and breaking changes before 1.0.
   the "WX Language Server" VS Code extension (see
   [vscode/CHANGELOG.md](vscode/CHANGELOG.md) for extension-specific
   changes).
-- Browser playground at [wx-lang.deno.dev](https://wx-lang.deno.dev/).
