@@ -11,7 +11,7 @@ env:
 
 jobs:
   test:
-    name: Test wx-compiler
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -26,5 +26,12 @@ jobs:
           workspaces: |
             . -> target
 
+      # Catches build breaks in wx-cli/wx-fmt/wx-lsp/wx-compiler-wasm that
+      # `cargo test -p wx-compiler` alone would miss until release time.
+      # wx-lsp-wasm is excluded from the workspace (wasm32-only) and isn't
+      # covered here.
+      - name: Build
+        run: cargo build --workspace
+
       - name: Test
-        run: cargo test -p wx-compiler --lib
+        run: cargo test --workspace
