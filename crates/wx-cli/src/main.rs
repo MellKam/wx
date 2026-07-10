@@ -178,7 +178,7 @@ fn load_compilation(file_path: &str) -> vfs::CompilationGraph {
 	}
 }
 
-//// Emits every diagnostic in `diagnostics` to stderr in the given format.
+/// Emits every diagnostic in `diagnostics` to stderr in the given format.
 /// Does not inspect severity — call `abort_if_errors` separately, after all
 /// diagnostics across every stage have been emitted.
 fn emit_diagnostics(
