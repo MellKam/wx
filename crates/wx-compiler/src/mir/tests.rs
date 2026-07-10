@@ -35,20 +35,21 @@ impl TestCase {
 
 // Minimal inline definitions shared across tests that need them.
 
-/// ASCII helper and the char methods needed by tests that call
-/// `to_ascii_uppercase` / `to_ascii_lowercase`.
+/// ASCII helper and char methods, purpose-named to avoid colliding with
+/// `std/lib.wx`'s own `impl char { fn is_ascii_lowercase / to_ascii_uppercase }`
+/// (a real collision would now correctly be flagged as a duplicate impl).
 const CHAR_ASCII_METHODS: &str = indoc! {"
     const ASCII_CASE_MASK: u8 = 0b0010_0000;
 
     impl char {
         #[inline]
-        pub fn is_ascii_lowercase(self) -> bool {
+        pub fn is_test_lowercase(self) -> bool {
             self >= 'a' && self <= 'z'
         }
 
         #[inline]
-        pub fn to_ascii_uppercase(self) -> char {
-            if self.is_ascii_lowercase() {
+        pub fn to_test_uppercase(self) -> char {
+            if self.is_test_lowercase() {
                 ((self as u8) ^ ASCII_CASE_MASK) as char
             } else {
                 self
@@ -249,7 +250,7 @@ fn test_struct_method_call() {
 		"{CHAR_ASCII_METHODS}\n{}",
 		indoc! {"
         fn to_upper(c: char) -> char {
-            c.to_ascii_uppercase()
+            c.to_test_uppercase()
         }
 
         export { to_upper }
@@ -266,7 +267,7 @@ fn test_inline_method_is_substituted() {
 		"{CHAR_ASCII_METHODS}\n{}",
 		indoc! {"
         fn to_upper(c: char) -> char {
-            c.to_ascii_uppercase()
+            c.to_test_uppercase()
         }
 
         export { to_upper }
@@ -1123,18 +1124,20 @@ fn test_size_of_generic_monomorphizes() {
 }
 
 #[test]
-fn test_generic_impl_slice_len_method_lowers_correctly() {
+fn test_generic_impl_slice_count_method_lowers_correctly() {
+	// Uses `count`, not `len`, to avoid colliding with the stdlib's own
+	// `impl<M: Memory, T> M::[]T { fn len(...) }`.
 	let case = TestCase::new(indoc! {"
         memory heap: Memory where { Size = u32 };
 
         impl<M: Memory, T> M::[]T {
-            pub fn len(self) -> M::Size {
+            pub fn count(self) -> M::Size {
                 slice_len(self)
             }
         }
 
         pub fn get_len(s: heap::[]u8) -> u32 {
-            s.len()
+            s.count()
         }
 
         export { get_len }

@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/tir/tests.rs
+assertion_line: 1405
 expression: case.tir
 ---
 types:
@@ -607,10 +608,11 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 7
-        name_span:
-          start: 104
-          end: 105
+      - name:
+          inner: 7
+          span:
+            start: 104
+            end: 105
         bounds:
           traits:
             - trait_index: 0
@@ -679,10 +681,11 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 7
-        name_span:
-          start: 179
-          end: 180
+      - name:
+          inner: 7
+          span:
+            start: 179
+            end: 180
         bounds:
           traits:
             - trait_index: 0
@@ -736,10 +739,11 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 7
-        name_span:
-          start: 236
-          end: 237
+      - name:
+          inner: 7
+          span:
+            start: 236
+            end: 237
         bounds:
           traits:
             - trait_index: 0
@@ -754,10 +758,11 @@ functions:
             span:
               start: 268
               end: 269
-      - name: 14
-        name_span:
-          start: 247
-          end: 248
+      - name:
+          inner: 14
+          span:
+            start: 247
+            end: 248
         bounds:
           traits: []
           typeset: ~
@@ -805,10 +810,11 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 7
-        name_span:
-          start: 303
-          end: 304
+      - name:
+          inner: 7
+          span:
+            start: 303
+            end: 304
         bounds:
           traits:
             - trait_index: 0
@@ -823,10 +829,11 @@ functions:
             span:
               start: 335
               end: 336
-      - name: 14
-        name_span:
-          start: 314
-          end: 315
+      - name:
+          inner: 14
+          span:
+            start: 314
+            end: 315
         bounds:
           traits: []
           typeset: ~
@@ -878,10 +885,11 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 7
-        name_span:
-          start: 375
-          end: 376
+      - name:
+          inner: 7
+          span:
+            start: 375
+            end: 376
         bounds:
           traits:
             - trait_index: 0
@@ -900,10 +908,11 @@ functions:
             span:
               start: 419
               end: 420
-      - name: 14
-        name_span:
-          start: 386
-          end: 387
+      - name:
+          inner: 14
+          span:
+            start: 386
+            end: 387
         bounds:
           traits: []
           typeset: ~
@@ -962,18 +971,20 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 14
-        name_span:
-          start: 451
-          end: 452
+      - name:
+          inner: 14
+          span:
+            start: 451
+            end: 452
         bounds:
           traits: []
           typeset: ~
         accesses: []
-      - name: 7
-        name_span:
-          start: 454
-          end: 455
+      - name:
+          inner: 7
+          span:
+            start: 454
+            end: 455
         bounds:
           traits:
             - trait_index: 0
@@ -1032,18 +1043,20 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 14
-        name_span:
-          start: 504
-          end: 505
+      - name:
+          inner: 14
+          span:
+            start: 504
+            end: 505
         bounds:
           traits: []
           typeset: ~
         accesses: []
-      - name: 7
-        name_span:
-          start: 507
-          end: 508
+      - name:
+          inner: 7
+          span:
+            start: 507
+            end: 508
         bounds:
           traits:
             - trait_index: 0
@@ -1086,10 +1099,11 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 7
-        name_span:
-          start: 560
-          end: 561
+      - name:
+          inner: 7
+          span:
+            start: 560
+            end: 561
         bounds:
           traits:
             - trait_index: 0
@@ -1157,10 +1171,11 @@ functions:
     parent: ~
     pub_span: ~
     type_params:
-      - name: 11
-        name_span:
-          start: 645
-          end: 649
+      - name:
+          inner: 11
+          span:
+            start: 645
+            end: 649
         bounds:
           traits: []
           typeset: 1
@@ -1177,10 +1192,11 @@ functions:
             span:
               start: 795
               end: 799
-      - name: 27
-        name_span:
-          start: 668
-          end: 674
+      - name:
+          inner: 27
+          span:
+            start: 668
+            end: 674
         bounds:
           traits:
             - trait_index: 0
@@ -1193,10 +1209,11 @@ functions:
             span:
               start: 777
               end: 783
-      - name: 28
-        name_span:
-          start: 710
-          end: 716
+      - name:
+          inner: 28
+          span:
+            start: 710
+            end: 716
         bounds:
           traits:
             - trait_index: 0
@@ -1369,10 +1386,11 @@ functions:
       start: 1773
       end: 1776
     type_params:
-      - name: 7
-        name_span:
-          start: 1785
-          end: 1786
+      - name:
+          inner: 7
+          span:
+            start: 1785
+            end: 1786
         bounds:
           traits:
             - trait_index: 0
@@ -1383,10 +1401,11 @@ functions:
             span:
               start: 1804
               end: 1805
-      - name: 14
-        name_span:
-          start: 1796
-          end: 1797
+      - name:
+          inner: 14
+          span:
+            start: 1796
+            end: 1797
         bounds:
           traits: []
           typeset: ~
@@ -1450,10 +1469,11 @@ functions:
       start: 1852
       end: 1855
     type_params:
-      - name: 7
-        name_span:
-          start: 1868
-          end: 1869
+      - name:
+          inner: 7
+          span:
+            start: 1868
+            end: 1869
         bounds:
           traits:
             - trait_index: 0
@@ -1464,10 +1484,11 @@ functions:
             span:
               start: 1887
               end: 1888
-      - name: 14
-        name_span:
-          start: 1879
-          end: 1880
+      - name:
+          inner: 14
+          span:
+            start: 1879
+            end: 1880
         bounds:
           traits: []
           typeset: ~
@@ -1531,10 +1552,11 @@ functions:
       start: 1939
       end: 1942
     type_params:
-      - name: 7
-        name_span:
-          start: 1954
-          end: 1955
+      - name:
+          inner: 7
+          span:
+            start: 1954
+            end: 1955
         bounds:
           traits:
             - trait_index: 0
@@ -1549,10 +1571,11 @@ functions:
             span:
               start: 2005
               end: 2006
-      - name: 14
-        name_span:
-          start: 1965
-          end: 1966
+      - name:
+          inner: 14
+          span:
+            start: 1965
+            end: 1966
         bounds:
           traits: []
           typeset: ~
@@ -1660,10 +1683,11 @@ functions:
       start: 2043
       end: 2046
     type_params:
-      - name: 7
-        name_span:
-          start: 2059
-          end: 2060
+      - name:
+          inner: 7
+          span:
+            start: 2059
+            end: 2060
         bounds:
           traits:
             - trait_index: 0
@@ -1678,10 +1702,11 @@ functions:
             span:
               start: 2088
               end: 2089
-      - name: 14
-        name_span:
-          start: 2070
-          end: 2071
+      - name:
+          inner: 14
+          span:
+            start: 2070
+            end: 2071
         bounds:
           traits: []
           typeset: ~
@@ -1773,10 +1798,11 @@ functions:
       start: 2142
       end: 2145
     type_params:
-      - name: 7
-        name_span:
-          start: 2153
-          end: 2154
+      - name:
+          inner: 7
+          span:
+            start: 2153
+            end: 2154
         bounds:
           traits:
             - trait_index: 0
@@ -1803,10 +1829,11 @@ functions:
             span:
               start: 2253
               end: 2254
-      - name: 14
-        name_span:
-          start: 2164
-          end: 2165
+      - name:
+          inner: 14
+          span:
+            start: 2164
+            end: 2165
         bounds:
           traits: []
           typeset: ~
@@ -1970,10 +1997,11 @@ functions:
       start: 2289
       end: 2292
     type_params:
-      - name: 7
-        name_span:
-          start: 2300
-          end: 2301
+      - name:
+          inner: 7
+          span:
+            start: 2300
+            end: 2301
         bounds:
           traits:
             - trait_index: 0
@@ -2000,10 +2028,11 @@ functions:
             span:
               start: 2400
               end: 2401
-      - name: 14
-        name_span:
-          start: 2311
-          end: 2312
+      - name:
+          inner: 14
+          span:
+            start: 2311
+            end: 2312
         bounds:
           traits: []
           typeset: ~
@@ -2167,10 +2196,11 @@ functions:
       start: 2436
       end: 2439
     type_params:
-      - name: 7
-        name_span:
-          start: 2451
-          end: 2452
+      - name:
+          inner: 7
+          span:
+            start: 2451
+            end: 2452
         bounds:
           traits:
             - trait_index: 0
@@ -2197,10 +2227,11 @@ functions:
             span:
               start: 2559
               end: 2560
-      - name: 14
-        name_span:
-          start: 2462
-          end: 2463
+      - name:
+          inner: 14
+          span:
+            start: 2462
+            end: 2463
         bounds:
           traits: []
           typeset: ~
@@ -2364,10 +2395,11 @@ functions:
       start: 2595
       end: 2598
     type_params:
-      - name: 7
-        name_span:
-          start: 2610
-          end: 2611
+      - name:
+          inner: 7
+          span:
+            start: 2610
+            end: 2611
         bounds:
           traits:
             - trait_index: 0
@@ -2394,10 +2426,11 @@ functions:
             span:
               start: 2718
               end: 2719
-      - name: 14
-        name_span:
-          start: 2621
-          end: 2622
+      - name:
+          inner: 14
+          span:
+            start: 2621
+            end: 2622
         bounds:
           traits: []
           typeset: ~
@@ -2828,10 +2861,11 @@ functions:
       start: 1503
       end: 1506
     type_params:
-      - name: 14
-        name_span:
-          start: 1513
-          end: 1514
+      - name:
+          inner: 14
+          span:
+            start: 1513
+            end: 1514
         bounds:
           traits: []
           typeset: ~
@@ -2924,10 +2958,11 @@ functions:
       start: 1616
       end: 1619
     type_params:
-      - name: 14
-        name_span:
-          start: 1629
-          end: 1630
+      - name:
+          inner: 14
+          span:
+            start: 1629
+            end: 1630
         bounds:
           traits: []
           typeset: ~
@@ -3243,12 +3278,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 2954
       end: 2957
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 118
     name:
@@ -3420,12 +3456,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 3137
       end: 3140
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 118
     name:
@@ -3597,12 +3634,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 3320
       end: 3323
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -3697,12 +3735,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 3407
       end: 3410
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -3846,12 +3885,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 3509
       end: 3512
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -3995,12 +4035,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 3611
       end: 3614
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -4230,12 +4271,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 3747
       end: 3750
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -4375,12 +4417,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 3845
       end: 3848
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -4700,12 +4743,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 4038
       end: 4041
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -4980,12 +5024,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 4240
       end: 4243
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -5125,12 +5170,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 4353
       end: 4356
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -5450,12 +5496,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 4542
       end: 4545
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -5865,12 +5912,13 @@ functions:
     file_id: 0
     namespace: 0
     parent:
-      Impl: 17
+      GenericImpl: 2
     pub_span:
       start: 4777
       end: 4780
     type_params: []
-    type_param_parent: ~
+    type_param_parent:
+      ImplBlock: 2
     inherited_type_param_count: 0
     signature_index: 119
     name:
@@ -6179,10 +6227,11 @@ structs:
         start: 1387
         end: 1393
     type_params:
-      - name: 7
-        name_span:
-          start: 1394
-          end: 1395
+      - name:
+          inner: 7
+          span:
+            start: 1394
+            end: 1395
         bounds:
           traits:
             - trait_index: 0
@@ -6312,34 +6361,6 @@ structs:
         span:
           start: 87
           end: 90
-impl_members:
-  17:
-    66:
-      Method: 27
-    67:
-      Method: 31
-    68:
-      Method: 28
-    69:
-      Method: 30
-    70:
-      Method: 29
-    71:
-      Method: 32
-    72:
-      Method: 33
-    73:
-      Method: 34
-    74:
-      Method: 35
-    75:
-      Method: 36
-    76:
-      Method: 37
-    77:
-      Method: 38
-    78:
-      Method: 39
 traits:
   - id: 21
     file_id: 0
@@ -6350,10 +6371,11 @@ traits:
         start: 1087
         end: 1093
     self_type_param:
-      name: 45
-      name_span:
-        start: 1087
-        end: 1093
+      name:
+        inner: 45
+        span:
+          start: 1087
+          end: 1093
       bounds:
         traits:
           - trait_index: 0
@@ -6376,23 +6398,19 @@ traits:
           span:
             start: 1240
             end: 1244
-    supertraits: []
     members:
       11:
         AssociatedType:
           ty: 21
       43:
-        AssociatedConst:
-          id: 17
-          ty: 10
+        AssociatedConst: 2
       44:
-        AssociatedConst:
-          id: 18
-          ty: 23
+        AssociatedConst: 3
       47:
         Method: 21
       49:
         Method: 22
+    supertraits: []
 trait_impls: []
 trait_impl_lookup: {}
 type_trait_impls: {}

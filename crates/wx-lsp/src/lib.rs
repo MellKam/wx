@@ -1544,7 +1544,7 @@ fn push_type_params(
 		if i > 0 {
 			s.push_str(", ");
 		}
-		s.push_str(interner.resolve(tp.name).unwrap_or("?"));
+		s.push_str(interner.resolve(tp.name.inner).unwrap_or("?"));
 		let has_bounds =
 			!tp.bounds.traits.is_empty() || tp.bounds.typeset.is_some();
 		if has_bounds {
@@ -1712,7 +1712,7 @@ fn symbol_hover_text(
 					tir.structs[si].type_params.get(param_index)?
 				}
 				TypeParamOwner::ImplBlock(block_idx) => tir
-					.generic_impl_list
+					.impl_block_list
 					.get(*block_idx as usize)?
 					.type_params
 					.get(param_index)?,
@@ -1725,7 +1725,7 @@ fn symbol_hover_text(
 					tir.type_aliases[ai].type_params.get(param_index)?
 				}
 			};
-			let name = interner.resolve(tp.name).unwrap_or("?");
+			let name = interner.resolve(tp.name.inner).unwrap();
 			let bounds_str = fmt.display_bounds(&tp.bounds).unwrap_or_default();
 			if bounds_str.is_empty() {
 				Some(name.to_string())

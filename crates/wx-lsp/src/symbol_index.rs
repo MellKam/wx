@@ -183,7 +183,7 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 				param_index: param_index as u32,
 			};
 			index.definitions.push(SpanInfo {
-				source: SourceSpan::new(file_id, tp.name_span),
+				source: SourceSpan::new(file_id, tp.name.span),
 				kind: kind.clone(),
 			});
 			for access in &tp.accesses {
@@ -278,7 +278,7 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 				param_index: param_index as u32,
 			};
 			index.definitions.push(SpanInfo {
-				source: SourceSpan::new(struct_.file_id, tp.name_span),
+				source: SourceSpan::new(struct_.file_id, tp.name.span),
 				kind: kind.clone(),
 			});
 			for access in &tp.accesses {
@@ -494,14 +494,14 @@ pub fn build_symbol_index(tir: &TIR, interner: &StringInterner) -> SymbolIndex {
 		}
 	}
 
-	for (block_idx, block) in tir.generic_impl_list.iter().enumerate() {
+	for (block_idx, block) in tir.impl_block_list.iter().enumerate() {
 		for (param_index, tp) in block.type_params.iter().enumerate() {
 			let kind = SymbolKind::TypeParam {
 				owner: TypeParamOwner::ImplBlock(block_idx as u32),
 				param_index: param_index as u32,
 			};
 			index.definitions.push(SpanInfo {
-				source: SourceSpan::new(block.file_id, tp.name_span),
+				source: SourceSpan::new(block.file_id, tp.name.span),
 				kind: kind.clone(),
 			});
 			for access in &tp.accesses {

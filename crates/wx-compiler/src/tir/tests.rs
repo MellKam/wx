@@ -418,11 +418,17 @@ fn test_import_without_alias_reports_error_but_recovers() {
 
         export { main }
     "});
-	assert!(has_error_code(&case.tir, DiagnosticCode::MissingImportAlias));
+	assert!(has_error_code(
+		&case.tir,
+		DiagnosticCode::MissingImportAlias
+	));
 	// Recovery: the missing alias falls back to the module string as the
 	// namespace name, so the call site below still resolves instead of
 	// cascading into an unrelated "undeclared identifier" error.
-	assert!(!has_error_code(&case.tir, DiagnosticCode::UndeclaredIdentifier));
+	assert!(!has_error_code(
+		&case.tir,
+		DiagnosticCode::UndeclaredIdentifier
+	));
 }
 
 #[test]
@@ -1464,8 +1470,8 @@ fn test_stdlib_method_callable() {
 	);
 }
 
-/// impl methods and associated functions are registered in `impl_members` under
-/// the correct type key with the correct `ImplEntry` variant.
+/// impl methods and associated functions are registered in the impl block's
+/// `members` under the correct `ImplEntry` variant.
 #[test]
 fn test_impl_members_registered() {
 	let case = TestCase::new(indoc! {"
@@ -1495,11 +1501,13 @@ fn test_impl_members_registered() {
 			.collect::<Vec<_>>()
 	);
 
-	let members = case
+	let members = &case
 		.tir
-		.impl_members
-		.get(&TypeIndex::I32)
-		.expect("impl_members should have an entry for i32");
+		.impl_block_list
+		.iter()
+		.find(|b| b.target == TypeIndex::I32)
+		.expect("impl_block_list should have an entry for i32")
+		.members;
 
 	let abs_sym = case
 		.graph
@@ -1513,12 +1521,10 @@ fn test_impl_members_registered() {
 		.expect("symbol `from_bool` not interned");
 
 	// `abs` takes `self` → Method; `from_bool` has no receiver → AssociatedFn
-	let abs_entry = members
-		.get(&abs_sym)
-		.expect("`abs` missing from impl_members");
+	let abs_entry = members.get(&abs_sym).expect("`abs` missing from members");
 	let from_bool_entry = members
 		.get(&from_bool_sym)
-		.expect("`from_bool` missing from impl_members");
+		.expect("`from_bool` missing from members");
 
 	assert!(
 		matches!(abs_entry, ImplEntry::Method(_)),
@@ -1964,15 +1970,178 @@ fn test_impl_trait_for_type_registers_trait_impl() {
 		"`draw` should be ImplEntry::Method in TraitImpl.members"
 	);
 
-	// draw method also appears in impl_members for Point (for dispatch)
-	let impl_members = case
-		.tir
-		.impl_members
-		.get(&point_type)
-		.expect("impl_members should have an entry for Point");
+	// `impl_block_list` is for inherent impls only — trait-provided methods
+	// (like `draw`, from the `Drawable` impl above) are resolved on demand
+	// from `trait_impls`/`type_trait_impls` instead (see
+	// `Builder::resolve_impl_member`), so they must never leak into an
+	// inherent impl block's `members` for `Point`.
 	assert!(
-		matches!(impl_members.get(&draw_sym), Some(ImplEntry::Method(_))),
-		"`draw` should also be in impl_members for method dispatch"
+		case.tir
+			.impl_block_list
+			.iter()
+			.filter(|b| b.target == point_type)
+			.all(|b| !b.members.contains_key(&draw_sym)),
+		"`draw` (a trait method) should not appear in any inherent impl block for Point"
+	);
+}
+
+// ── inherent vs. trait member dispatch
+// ───────────────────────────────────────
+
+#[test]
+fn test_inherent_method_wins_over_same_named_trait_method() {
+	// `Foo` has both an inherent `greet` and a trait-provided `greet` of the
+	// same name — the inherent one must win outright, with no ambiguity
+	// diagnostic, exactly like Rust's inherent-shadows-trait rule.
+	let case = TestCase::new(indoc! {"
+        trait Greeter {
+            fn greet(self) -> i32;
+        }
+
+        struct Foo {}
+
+        impl Foo {
+            pub fn greet(self) -> i32 { 1 }
+        }
+
+        impl Greeter for Foo {
+            fn greet(self) -> i32 { 2 }
+        }
+
+        fn use_it(f: Foo) -> i32 {
+            f.greet()
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"unexpected errors: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_single_applicable_trait_method_resolves_without_ambiguity() {
+	// Only one trait provides `foo` for `S` — resolution must succeed
+	// cleanly via the bodied trait default, with no ambiguity diagnostic.
+	let case = TestCase::new(indoc! {"
+        trait A {
+            fn foo(self) -> i32 { 1 }
+        }
+
+        struct S {}
+
+        impl A for S {}
+
+        fn use_it(s: S) -> i32 {
+            s.foo()
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"unexpected errors: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_two_trait_impls_with_colliding_method_name_is_ambiguous() {
+	// `S` implements both `A` and `B`, each providing a `foo` method —
+	// `s.foo()` cannot pick one without disambiguation.
+	let case = TestCase::new(indoc! {"
+        trait A {
+            fn foo(self) -> i32;
+        }
+
+        trait B {
+            fn foo(self) -> i32;
+        }
+
+        struct S {}
+
+        impl A for S {
+            fn foo(self) -> i32 { 1 }
+        }
+
+        impl B for S {
+            fn foo(self) -> i32 { 2 }
+        }
+
+        fn use_it(s: S) -> i32 {
+            s.foo()
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::AmbiguousTraitMember),
+		"expected an ambiguity diagnostic: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_ambiguity_between_explicit_override_and_bodied_default() {
+	// `A::foo` is a bodied default that `S` doesn't override; `B::foo` is
+	// explicitly provided by `S`. Both are still live candidates for
+	// `s.foo()` — an override in one trait doesn't remove the other trait
+	// from candidacy.
+	let case = TestCase::new(indoc! {"
+        trait A {
+            fn foo(self) -> i32 { 1 }
+        }
+
+        trait B {
+            fn foo(self) -> i32;
+        }
+
+        struct S {}
+
+        impl A for S {}
+
+        impl B for S {
+            fn foo(self) -> i32 { 2 }
+        }
+
+        fn use_it(s: S) -> i32 {
+            s.foo()
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::AmbiguousTraitMember),
+		"expected an ambiguity diagnostic: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
 	);
 }
 
@@ -2850,7 +3019,7 @@ fn test_generic_identity_resolves() {
 	let func = func.expect("function 'identity' not found in TIR");
 	assert_eq!(func.type_params.len(), 1, "expected one type param");
 	assert_eq!(
-		case.graph.interner.resolve(func.type_params[0].name),
+		case.graph.interner.resolve(func.type_params[0].name.inner),
 		Some("T")
 	);
 	assert!(
@@ -3186,7 +3355,7 @@ fn test_assoc_type_bare_name_suggests_self_prefix() {
 #[test]
 fn test_assoc_type_impl_registers_in_trait_impl() {
 	// `impl Container for Heap { type Elem = u32; }` — the impl must store
-	// a concrete type in both `TraitImpl::members` and `impl_members`.
+	// a concrete type in `TraitImpl::members`.
 	let case = TestCase::new(indoc! {"
         trait Bound {}
         impl Bound for u32 {}
@@ -7493,6 +7662,329 @@ fn test_true_false_are_keywords_not_shadowable() {
 	assert!(
 		has_error_code(&case.tir, DiagnosticCode::UnusedVariable),
 		"expected the shadowed `local true` to be reported as unused, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_generic_trait_impl_probe() {
+	let case = TestCase::new(indoc! {"
+        struct Box<T> { v: T }
+
+        trait Getter {
+            fn get(self) -> i32;
+        }
+
+        impl<T> Getter for Box<T> {
+            fn get(self) -> i32 { 1 }
+        }
+
+        fn use_it(b: Box<i32>) -> i32 {
+            b.get()
+        }
+
+        export { use_it }
+    "});
+	eprintln!(
+		"DIAGS: {:#?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| (&d.message, d.severity))
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_generic_inherent_impl_vs_trait_priority_probe() {
+	let case = TestCase::new(indoc! {"
+        struct Box<T> { v: T }
+
+        impl<T> Box<T> {
+            pub fn get(self) -> T { self.v }
+        }
+
+        trait Getter {
+            fn get(self) -> bool;
+        }
+
+        impl Getter for Box<i32> {
+            fn get(self) -> bool { true }
+        }
+
+        fn use_it(b: Box<i32>) -> i32 {
+            b.get()
+        }
+
+        export { use_it }
+    "});
+	eprintln!(
+		"DIAGS: {:#?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| (&d.message, d.severity))
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_type_param_ambiguous_bound_methods_reports_error() {
+	// Two bound traits on the same type param both declare `foo` — this goes
+	// through `resolve_impl_member`'s `Type::TypeParam` branch, which used to
+	// be a separate `find_map` (first-bound-wins, no ambiguity check) at each
+	// call site before it was unified into the same candidate-scanning logic
+	// as concrete types.
+	let case = TestCase::new(indoc! {"
+        trait A {
+            fn foo(self) -> i32;
+        }
+        trait B {
+            fn foo(self) -> i32;
+        }
+        fn use_it<T: A + B>(x: T) -> i32 {
+            x.foo()
+        }
+        export { }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::AmbiguousTraitMember),
+		"expected an ambiguity diagnostic: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_generic_inherent_impl_on_slice_beats_trait_no_ambiguity() {
+	// Same inherent-always-wins rule as the struct case, but on
+	// `ImplTarget::Slice` — confirms the fix generalizes past `Struct`. If
+	// this incorrectly picked `Counter::count` (-> bool) instead of the
+	// inherent `M::[]T::count` (-> u32), `use_it`'s return type would
+	// fail to check. Uses `count`, not `len`, to avoid colliding with the
+	// stdlib's own `impl<M: Memory, T> M::[]T { fn len(...) }`.
+	let case = TestCase::new(indoc! {"
+        memory heap: Memory where { Size = u32 };
+
+        trait Counter {
+            fn count(self) -> bool;
+        }
+
+        impl<M: Memory, T> M::[]T {
+            pub fn count(self) -> u32 { 0 }
+        }
+
+        impl Counter for heap::[]i32 {
+            fn count(self) -> bool { true }
+        }
+
+        fn use_it(s: heap::[]i32) -> u32 {
+            s.count()
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		!case
+			.tir
+			.diagnostics
+			.iter()
+			.any(|d| d.severity == Severity::Error),
+		"unexpected errors: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.filter(|d| d.severity == Severity::Error)
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_generic_inherent_impl_resolves_via_path_call_syntax() {
+	// Same generic inherent impl as the method-call case, but resolved
+	// through `Type::method(receiver)` path syntax (`resolve_namespace_member`)
+	// instead of `x.method()` — exercises the fix that threads the inferred
+	// `type_args` (`T = i32`) through that call site instead of hardcoding
+	// `Box::new([])`, which would leave `T` unresolved and fail to type check.
+	let case = TestCase::new(indoc! {"
+        struct Box<T> { v: T }
+
+        impl<T> Box<T> {
+            pub fn get(self) -> T { self.v }
+        }
+
+        fn use_it(b: Box<i32>) -> i32 {
+            Box::get(b)
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		case.tir.diagnostics.is_empty(),
+		"expected no diagnostics: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_concrete_and_generic_inherent_impl_collision_is_rejected() {
+	// `impl Box<i32> { fn get(...) -> bool }` (concrete) and
+	// `impl<T> Box<T> { fn get(...) -> T }` (generic) both provide `get` for
+	// `Box<i32>`. Concrete and generic inherent impls are no longer two
+	// separate registries (`impl_members` vs `generic_impl_list`) — they're
+	// both just `ImplBlock`s sharing the same `impl_block_dispatch` bucket,
+	// so `resolve_impl_member`'s candidate scan sees both and reports the
+	// conflict instead of one silently shadowing the other.
+	let case = TestCase::new(indoc! {"
+        struct Box<T> { v: T }
+
+        impl<T> Box<T> {
+            pub fn get(self) -> T { self.v }
+        }
+
+        impl Box<i32> {
+            pub fn get(self) -> bool { true }
+        }
+
+        fn use_it(b: Box<i32>) -> i32 {
+            b.get()
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+		"expected a duplicate-definition diagnostic about the colliding `get`s, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_two_generic_impl_blocks_with_colliding_method_name_is_rejected() {
+	// Two SEPARATE `impl<T> S<T> { .. }` blocks for the same struct, each
+	// providing `foo`, land in the same `impl_block_dispatch` bucket.
+	// Neither registration writes a single "winner" anymore — every block
+	// sharing the bucket is a candidate, and `resolve_impl_member` catches
+	// the conflict when both turn out to apply to the same receiver.
+	let case = TestCase::new(indoc! {"
+        struct S<T> { v: T }
+
+        impl<T> S<T> {
+            pub fn foo(self) -> i32 { 1 }
+        }
+
+        impl<T> S<T> {
+            pub fn foo(self) -> i32 { 2 }
+        }
+
+        fn use_it(s: S<i32>) -> i32 {
+            s.foo()
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+		"expected a duplicate-definition diagnostic about the colliding `foo`s, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_two_generic_impl_blocks_colliding_despite_differing_bounds_is_rejected()
+{
+	// Same collision as above, but the two blocks have DIFFERENT bounds on
+	// their otherwise-unconstrained type param (`impl<T: Marker> Y` vs
+	// `impl<T> Y`). Real rustc still rejects this as E0592 — a differing
+	// bound doesn't carve out non-overlapping applicability, since for any
+	// hypothetically valid `T` both impls could apply; Rust's coherence
+	// checker is deliberately bound-blind here (this is part of why full
+	// specialization is still unstable). The collision check must be
+	// bound-blind too, i.e. keyed only on `(ImplTarget, name)`.
+	let case = TestCase::new(indoc! {"
+        struct Y {}
+
+        trait Marker {}
+
+        impl<T: Marker> Y {
+            pub fn bar(self, x: T) -> i32 { 1 }
+        }
+
+        impl<T> Y {
+            pub fn bar(self, x: T) -> i32 { 2 }
+        }
+
+        fn use_it(y: Y, v: i32) -> i32 {
+            y.bar(v)
+        }
+
+        export { use_it }
+    "});
+	assert!(
+		has_error_code(&case.tir, DiagnosticCode::DuplicateDefinition),
+		"expected a duplicate-definition diagnostic about the colliding `bar`s, got: {:?}",
+		case.tir
+			.diagnostics
+			.iter()
+			.map(|d| &d.message)
+			.collect::<Vec<_>>()
+	);
+}
+
+#[test]
+fn test_trait_impl_resolution_uses_global_index_not_local_position() {
+	// `type_trait_impls[ty]` holds GLOBAL indices into `self.tir.trait_impls`
+	// (assigned in registration order across the whole file), not positions
+	// local to `ty`. `Unrelated`'s impl registers first (`trait_impls[0]`);
+	// `S`'s impl (the one we actually care about) registers second
+	// (`trait_impls[1]`), so `type_trait_impls[S] == [1]`. A regression here
+	// (e.g. using the loop position `0..impl_count` to index `trait_impls`
+	// directly instead of dereferencing through `type_trait_impls[S]` first)
+	// would look at `Unrelated`'s impl instead of `S`'s and wrongly report
+	// `S` as not having `foo`.
+	let case = TestCase::new(indoc! {"
+        trait Other {
+            fn bar(self) -> i32;
+        }
+        struct Unrelated {}
+        impl Other for Unrelated {
+            fn bar(self) -> i32 { 1 }
+        }
+
+        trait Foo {
+            fn foo(self) -> i32;
+        }
+        struct S {}
+        impl Foo for S {
+            fn foo(self) -> i32 { 2 }
+        }
+
+        fn use_it(s: S) -> i32 { s.foo() }
+        export { use_it }
+    "});
+	assert!(
+		!has_error_code(&case.tir, DiagnosticCode::MethodNotFound),
+		"expected `s.foo()` to resolve via `S`'s own impl, got: {:?}",
 		case.tir
 			.diagnostics
 			.iter()

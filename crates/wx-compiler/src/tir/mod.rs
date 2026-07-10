@@ -60,7 +60,7 @@ pub enum TypeParamOwner {
 	/// `Self` type parameter implicit in trait items (consts, assoc types).
 	Trait(TraitIndex),
 	/// Non-trait generic impl block: `impl<Params> Target { }`.
-	/// Value is the index into `TIR::generic_impl_list`.
+	/// Value is the index into `TIR::impl_block_list`.
 	ImplBlock(u32),
 	/// `type Alias<T> = ...;` — the alias's own type parameters.
 	TypeAlias(DefId),
@@ -81,10 +81,10 @@ pub enum TypeParamOwner {
 pub enum ItemParent {
 	/// Non-generic `impl Target { }` / `impl Trait for Target { }`. `Target`
 	/// is already fully resolved, so this points straight at its `TypeIndex`
-	/// — the same key used in `TIR::impl_members`.
+	/// — used for both inherent-impl and trait-impl members alike.
 	Impl(TypeIndex),
 	/// Generic `impl<Params> Target { }` / `impl<Params> Trait for Target { }`.
-	/// Index into `TIR::generic_impl_list`.
+	/// Index into `TIR::impl_block_list`.
 	GenericImpl(u32),
 	/// Trait item — a method/const declaration or default body, scoped to
 	/// the trait's implicit `Self`.
@@ -348,7 +348,6 @@ pub struct Trait {
 	/// The implicit `Self` type parameter owned by this trait. All trait
 	/// methods inherit it via `type_param_parent = TypeParamOwner::Trait(idx)`.
 	pub self_type_param: TypeParamInfo,
-	pub supertraits: Vec<TraitIndex>,
 	#[cfg_attr(
 		test,
 		serde(serialize_with = "crate::testing::serialize_sorted_map")
@@ -359,7 +358,7 @@ pub struct Trait {
 	/// Used to demand-resolve members before reading `members`.
 	#[cfg_attr(test, serde(skip))]
 	pub member_ids: Vec<ast::DefId>,
-	/// E.g. `trait Foo: Bar<Assoc = u32>` → {(Bar_idx, "Assoc") → u32}.
+	pub supertraits: Vec<TraitIndex>,
 	#[cfg_attr(test, serde(skip))]
 	pub supertrait_bindings: HashMap<(TraitIndex, SymbolU32), TypeIndex>,
 	#[cfg_attr(test, serde(skip))]
@@ -637,9 +636,9 @@ pub enum ExprKind {
 	Char {
 		value: char,
 	},
-	ObjectAccess {
+	FieldAccess {
 		object: Box<Expression>,
-		member: ast::Spanned<SymbolU32>,
+		field: ast::Spanned<SymbolU32>,
 	},
 
 	StructInit {
@@ -949,8 +948,7 @@ pub enum ResolvedMember {
 		type_args: Box<[TypeIndex]>,
 	},
 	Const {
-		id: ast::DefId,
-		ty: TypeIndex,
+		const_index: ConstIndex,
 	},
 	Global {
 		global_index: u32,
@@ -1058,17 +1056,18 @@ pub enum FileKind {
 	Module,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ImplEntry {
 	Method(FunctionIndex),
 	AssociatedFn(FunctionIndex),
-	/// Value computed from type layout during codegen.
-	AssociatedConst {
-		id: ast::DefId,
-		ty: TypeIndex,
-	},
+	/// The type is always `tir.constants[index].ty.inner` — never stored
+	/// separately. A memory-instantiated associated const (see
+	/// `Builder::seed_memory_trait_impl_with`) gets its own freshly pushed
+	/// `Constant` with the substituted type baked in, rather than sharing
+	/// the trait's template `Constant` with a divergent type here.
+	AssociatedConst(ConstIndex),
 	/// `ty` is `TypeParam` in trait declarations (a placeholder) and the
 	/// concrete type in impls.
 	AssociatedType {
@@ -1076,11 +1075,36 @@ pub enum ImplEntry {
 	},
 }
 
-/// One `impl<Params> Target { ... }` block, kept for generic method dispatch.
+impl ImplEntry {
+	pub fn def_span(self, tir: &TIR) -> SourceSpan {
+		match self {
+			ImplEntry::Method(func_index)
+			| ImplEntry::AssociatedFn(func_index) => {
+				let func = &tir.functions[func_index as usize];
+				SourceSpan::new(func.file_id, func.name.span)
+			}
+			ImplEntry::AssociatedConst(index) => {
+				let constant = &tir.constants[index as usize];
+				SourceSpan::new(constant.file_id, constant.name.span)
+			}
+			ImplEntry::AssociatedType { .. } => {
+				todo!(
+					"we need to store the def_id of type alias here so that we can point to the actaul definition place"
+				)
+			}
+		}
+	}
+}
+
+/// One `impl<Params> Target { ... }` block — inherent, not a trait impl.
 /// This is the canonical owner of the impl-level type parameters; member
 /// functions reference them via `TypeParamOwner::ImplBlock` rather than
-/// storing a copy.
-pub struct GenericImplBlock {
+/// storing a copy. `type_params` is empty for what used to be called a
+/// "concrete" impl (`impl Target { .. }`) — that's no longer a structurally
+/// different thing, just the degenerate (zero-parameter) case of the same
+/// shape, so a concrete and a generic inherent impl can be compared/detected
+/// as conflicting on equal footing instead of living in separate registries.
+pub struct ImplBlock {
 	/// Synthetic `DefId` used to demand-drive this block's `ensure_signature`.
 	pub id: ast::DefId,
 	pub file_id: FileId,
@@ -1090,29 +1114,65 @@ pub struct GenericImplBlock {
 	pub members: HashMap<SymbolU32, ImplEntry>,
 }
 
-/// Outer type constructor for generic impl target types.
-/// Used as part of the dispatch key so method lookup is O(1) rather than a
-/// linear scan over all generic impl blocks.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(debug_assertions, derive(Debug))]
-pub enum GenericImplTargetKind {
+pub enum ImplTarget {
+	U8,
+	I8,
+	U16,
+	I16,
+	U32,
+	I32,
+	U64,
+	I64,
+	F32,
+	F64,
+	Bool,
+	Char,
 	Slice,
 	Array,
 	Struct(u32),
+	Enum(u32),
+	Memory(DefId),
+	// TODO: should we add tuple and unit here?
 }
 
-impl GenericImplTargetKind {
-	/// Extracts the outer type constructor from `ty`, returning `None` for bare
-	/// type params, pointer types (impl on pointers is disallowed), or other
-	/// non-dispatchable types.
-	pub fn from_type(ty: &Type) -> Option<Self> {
+impl ImplTarget {
+	pub fn from_type(ty: &Type) -> Result<Self, ()> {
 		match ty {
-			Type::Slice { .. } => Some(Self::Slice),
-			Type::Array { .. } => Some(Self::Array),
+			Type::Slice { .. } => Ok(Self::Slice),
+			Type::Array { .. } => Ok(Self::Array),
 			Type::Struct { struct_index, .. } => {
-				Some(Self::Struct(*struct_index))
+				Ok(Self::Struct(*struct_index))
 			}
-			_ => None,
+			Type::Enum { enum_index } => Ok(Self::Enum(*enum_index)),
+			Type::Memory { id, .. } => Ok(Self::Memory(*id)),
+			Type::U8 => Ok(Self::U8),
+			Type::I8 => Ok(Self::I8),
+			Type::U16 => Ok(Self::U16),
+			Type::I16 => Ok(Self::I16),
+			Type::U32 => Ok(Self::U32),
+			Type::I32 => Ok(Self::I32),
+			Type::U64 => Ok(Self::U64),
+			Type::I64 => Ok(Self::I64),
+			Type::F32 => Ok(Self::F32),
+			Type::F64 => Ok(Self::F64),
+			Type::Bool => Ok(Self::Bool),
+			Type::Char => Ok(Self::Char),
+			Type::Error
+			| Type::Infer
+			| Type::Never
+			| Type::Integer
+			| Type::Float
+			| Type::Function { .. }
+			| Type::FunctionItem { .. }
+			| Type::Pointer { .. }
+			| Type::Namespace { .. }
+			| Type::TypeParam { .. }
+			| Type::AssociatedType { .. }
+			| Type::AssocTypeProjection { .. }
+			| Type::Unit
+			| Type::Tuple { .. } => Err(()),
 		}
 	}
 }
@@ -1161,17 +1221,15 @@ pub struct Bounds {
 #[cfg_attr(debug_assertions, derive(Debug))]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub struct TypeParamInfo {
-	pub name: SymbolU32,
-	pub name_span: ast::TextSpan,
+	pub name: Spanned<SymbolU32>,
 	pub bounds: Bounds,
 	pub accesses: Vec<SourceSpan>,
 }
 
 impl TypeParamInfo {
-	pub fn new(name: SymbolU32, name_span: ast::TextSpan) -> Self {
+	pub fn new(name: Spanned<SymbolU32>) -> Self {
 		Self {
 			name,
-			name_span,
 			bounds: Bounds::default(),
 			accesses: Vec::new(),
 		}
@@ -1333,6 +1391,7 @@ define_diagnostic_codes! {
 		NotConstEvaluatable => "E1057",
 		UnusedEnumVariant => "W1009",
 		MissingImportAlias => "E1058",
+		AmbiguousTraitMember => "E1059",
 	}
 }
 
@@ -1633,7 +1692,7 @@ impl<'a> TypeFormatter<'a> {
 							f.write_str(", ")?;
 						}
 						self.interner
-							.resolve(param_info.name)
+							.resolve(param_info.name.inner)
 							.ok_or(std::fmt::Error)
 							.and_then(|name| f.write_str(name))?;
 						let has_bounds = !param_info.bounds.traits.is_empty()
@@ -1666,27 +1725,30 @@ impl<'a> TypeFormatter<'a> {
 							[self.tir.expect_function_index(*def_id) as usize];
 						let own_idx = *param_index as usize
 							- func.inherited_type_param_count;
-						let symbol = func.type_params[own_idx].name;
+						let symbol = func.type_params[own_idx].name.inner;
 						self.interner.resolve(symbol).ok_or(std::fmt::Error)?
 					}
 					TypeParamOwner::Struct(def_id) => {
 						let symbol = self.tir.structs
 							[self.tir.expect_struct_index(*def_id) as usize]
 							.type_params[*param_index as usize]
-							.name;
+							.name
+							.inner;
 						self.interner.resolve(symbol).ok_or(std::fmt::Error)?
 					}
 					TypeParamOwner::Trait(trait_idx) => {
 						let symbol = self.tir.traits[*trait_idx as usize]
 							.self_type_param
-							.name;
+							.name
+							.inner;
 						self.interner.resolve(symbol).ok_or(std::fmt::Error)?
 					}
 					TypeParamOwner::ImplBlock(block_idx) => {
-						let symbol = self.tir.generic_impl_list
+						let symbol = self.tir.impl_block_list
 							[*block_idx as usize]
 							.type_params[*param_index as usize]
-							.name;
+							.name
+							.inner;
 						self.interner.resolve(symbol).ok_or(std::fmt::Error)?
 					}
 					TypeParamOwner::TypeAlias(def_id) => {
@@ -1695,7 +1757,8 @@ impl<'a> TypeFormatter<'a> {
 							.expect_type_alias_index(*def_id)
 							as usize]
 							.type_params[*param_index as usize]
-							.name;
+							.name
+							.inner;
 						self.interner.resolve(symbol).ok_or(std::fmt::Error)?
 					}
 				};
@@ -1822,18 +1885,22 @@ pub struct TIR {
 	)]
 	pub exports: HashMap<SymbolU32, ExportItem>,
 	pub structs: Vec<Struct>,
-	#[cfg_attr(
-		test,
-		serde(serialize_with = "crate::testing::serialize_sorted_nested_map")
-	)]
-	pub impl_members: HashMap<TypeIndex, HashMap<SymbolU32, ImplEntry>>,
+	/// Every inherent impl block — concrete (`impl Target { .. }`, empty
+	/// `type_params`) and generic (`impl<T> Target { .. }`) alike. See
+	/// `ImplBlock`.
 	#[cfg_attr(test, serde(skip))]
-	pub generic_impl_list: Vec<GenericImplBlock>,
-	/// Dispatch index: `(outer type constructor, member name) → block index`.
-	/// Populated during `ensure_signature`; enables O(1) generic method lookup.
+	pub impl_block_list: Vec<ImplBlock>,
+	/// Dispatch index: `(outer type constructor, member name) → every block
+	/// index that provides that name for that shape`. Coarse on purpose — a
+	/// struct with several separate concrete impls for different type
+	/// arguments (e.g. `impl Box<i32> { .. }` and `impl Box<bool> { .. }`)
+	/// legitimately share one entry here without conflicting; resolution
+	/// checks each candidate against the actual receiver
+	/// (`Builder::match_impl_block`) to find out which ones really apply,
+	/// and it's *that* per-receiver count — not this bucket's raw length —
+	/// that decides whether there's a genuine conflict.
 	#[cfg_attr(test, serde(skip))]
-	pub generic_impl_dispatch:
-		HashMap<(GenericImplTargetKind, SymbolU32), usize>,
+	pub impl_block_dispatch: HashMap<(ImplTarget, SymbolU32), Vec<u32>>,
 	pub traits: Vec<Trait>,
 	pub trait_impls: Vec<TraitImpl>,
 	#[cfg_attr(
@@ -2076,8 +2143,7 @@ impl TIR {
 	) -> &TypeParamInfo {
 		match owner {
 			TypeParamOwner::ImplBlock(block_idx) => {
-				&self.generic_impl_list[block_idx as usize].type_params
-					[abs_index]
+				&self.impl_block_list[block_idx as usize].type_params[abs_index]
 			}
 			TypeParamOwner::Function(id) => {
 				let func_idx = self.expect_function_index(id) as usize;
@@ -2111,7 +2177,7 @@ impl TIR {
 	) -> &mut TypeParamInfo {
 		match owner {
 			TypeParamOwner::ImplBlock(block_idx) => {
-				&mut self.generic_impl_list[block_idx as usize].type_params
+				&mut self.impl_block_list[block_idx as usize].type_params
 					[abs_index]
 			}
 			TypeParamOwner::Function(id) => {
@@ -2149,7 +2215,7 @@ impl TIR {
 		let func = &self.functions[func_index as usize];
 		let parent_params: &[TypeParamInfo] = match func.type_param_parent {
 			Some(TypeParamOwner::ImplBlock(block_idx)) => {
-				&self.generic_impl_list[block_idx as usize].type_params
+				&self.impl_block_list[block_idx as usize].type_params
 			}
 			Some(TypeParamOwner::Trait(trait_idx)) => std::slice::from_ref(
 				&self.traits[trait_idx as usize].self_type_param,

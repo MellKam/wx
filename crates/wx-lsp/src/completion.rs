@@ -340,7 +340,7 @@ pub fn completion_items(
 			items
 		}
 		CompletionContext::DotAccess { .. } => {
-			// TODO: resolve receiver type → impl_members + struct fields
+			// TODO: resolve receiver type → impl_block_list + struct fields
 			vec![]
 		}
 		CompletionContext::PathAccess { .. } => {

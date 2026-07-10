@@ -1,5 +1,6 @@
 ---
 source: crates/wx-compiler/src/mir/tests.rs
+assertion_line: 400
 expression: case.mir
 ---
 functions:
@@ -22,7 +23,7 @@ functions:
                   callee:
                     kind:
                       Function:
-                        id: 58
+                        id: 62
                     ty:
                       Function:
                         signature_index: 0
@@ -56,7 +57,7 @@ functions:
                   callee:
                     kind:
                       Function:
-                        id: 59
+                        id: 63
                     ty:
                       Function:
                         signature_index: 2
@@ -71,7 +72,7 @@ functions:
               ty: U64
       ty: U64
     static_data: []
-  - id: 58
+  - id: 62
     signature_index: 0
     scopes:
       - kind: Block
@@ -94,7 +95,7 @@ functions:
               ty: U32
       ty: U32
     static_data: []
-  - id: 59
+  - id: 63
     signature_index: 2
     scopes:
       - kind: Block

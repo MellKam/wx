@@ -794,14 +794,25 @@ impl<'tir> Builder<'tir> {
 				self.current_substitutions[*param_index as usize]
 			}
 			tir::Type::AssocTypeProjection {
-				base, assoc_name, ..
+				base,
+				assoc_name,
+				trait_index,
 			} => {
-				let (base, assoc_name) = (*base, *assoc_name);
+				let (base, assoc_name, trait_index) =
+					(*base, *assoc_name, *trait_index);
 				let concrete_base = self.resolve_tir_type(base);
+				// `trait_index` is already known (part of the projection
+				// itself), so go straight through `trait_impl_lookup` rather
+				// than `resolve_impl_member`'s ambiguity-scanning candidate
+				// search — no ambiguity is possible here.
 				self.tir
-					.impl_members
-					.get(&concrete_base)
-					.and_then(|m| m.get(&assoc_name))
+					.trait_impl_lookup
+					.get(&(concrete_base, trait_index))
+					.and_then(|&idx| {
+						self.tir.trait_impls[idx as usize]
+							.members
+							.get(&assoc_name)
+					})
 					.and_then(|e| {
 						if let tir::ImplEntry::AssociatedType { ty } = e {
 							Some(*ty)
@@ -1860,11 +1871,21 @@ impl<'tir> Builder<'tir> {
 					// type is now known, so dispatch directly to the impl.
 					let concrete_self = resolved[0];
 					let method_name = tir_func.name.inner;
-					let impl_func_idx = self
+					let trait_index = match tir_func.parent {
+						Some(tir::ItemParent::Trait(idx)) => idx,
+						_ => unreachable!(
+							"abstract trait method must be parented by its trait"
+						),
+					};
+					let trait_impl_idx = *self
 						.tir
-						.impl_members
-						.get(&concrete_self)
-						.and_then(|m| m.get(&method_name))
+						.trait_impl_lookup
+						.get(&(concrete_self, trait_index))
+						.expect("no impl found for abstract trait method");
+					let impl_func_idx = self.tir.trait_impls
+						[trait_impl_idx as usize]
+						.members
+						.get(&method_name)
 						.map(|entry| match entry {
 							tir::ImplEntry::Method(idx) => *idx,
 							_ => unreachable!(),
@@ -2000,7 +2021,10 @@ impl<'tir> Builder<'tir> {
 					)
 				}
 			}
-			tir::ExprKind::ObjectAccess { object, member } => {
+			tir::ExprKind::FieldAccess {
+				object,
+				field: member,
+			} => {
 				let (struct_index, args) =
 					match &self.tir.types[object.ty.as_usize()] {
 						tir::Type::Struct { struct_index, args } => {
@@ -3156,7 +3180,10 @@ impl<'tir> Builder<'tir> {
 				id: *id,
 				value: Box::new(self.lower_expression(func_ctx, right, sink)),
 			},
-			tir::ExprKind::ObjectAccess { object, member } => {
+			tir::ExprKind::FieldAccess {
+				object,
+				field: member,
+			} => {
 				let (struct_index, args) =
 					match &self.tir.types[object.ty.as_usize()] {
 						tir::Type::Struct { struct_index, args } => {
@@ -3274,7 +3301,10 @@ impl<'tir> Builder<'tir> {
 					memory,
 				}
 			}
-			tir::ExprKind::ObjectAccess { object, member } => {
+			tir::ExprKind::FieldAccess {
+				object,
+				field: member,
+			} => {
 				let (struct_index, args) =
 					match &self.tir.types[object.ty.as_usize()] {
 						tir::Type::Struct { struct_index, args } => {

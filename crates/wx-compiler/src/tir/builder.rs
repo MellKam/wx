@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use codespan_reporting::diagnostic::Severity;
+
 use crate::vfs::{CrateId, Files};
 use crate::{ast::MethodCallExpr, tir::*};
 
@@ -253,20 +255,21 @@ enum AstNodeRef<'ast> {
 	Function {
 		item: &'ast ast::Item,
 	},
-	ImplMethod {
-		impl_target: &'ast ast::Spanned<ast::TypeExpression>,
-		item: &'ast ast::ImplItem,
-	},
-	/// Resolves the impl block's type-param bounds and target type.
-	/// Must run before any `GenericImplMethod` in the same block.
-	GenericImplBlock {
+	/// Resolves the impl block's type-param bounds (empty for a concrete
+	/// `impl Target { .. }`) and target type. Must run before any
+	/// `ImplBlockMethod`/`ImplConst` in the same block. Used for both
+	/// concrete and generic inherent impl blocks alike — they're no longer
+	/// structurally different, just the zero-vs-nonzero-type-params case of
+	/// the same shape.
+	ImplBlockInit {
 		impl_type_params: &'ast [ast::TypeParam],
 		impl_target: &'ast ast::Spanned<ast::TypeExpression>,
 		block_index: u32,
 	},
-	GenericImplMethod {
-		/// Synthetic DefId of the `GenericImplBlock` entry; used to
-		/// demand-drive block initialization before processing this method.
+	/// A method inside an inherent impl block — concrete or generic alike.
+	ImplBlockMethod {
+		/// Synthetic DefId of the `ImplBlockInit` entry; used to demand-drive
+		/// block initialization before processing this method.
 		block_id: ast::DefId,
 		item: &'ast ast::ImplItem,
 		block_index: u32,
@@ -299,9 +302,15 @@ enum AstNodeRef<'ast> {
 	Const {
 		item: &'ast ast::Item,
 	},
+	/// A const inside an inherent impl block. Concrete-only for now — generic
+	/// impl blocks don't support consts yet (pre-existing limitation,
+	/// unrelated to concrete/generic unification).
 	ImplConst {
-		impl_target: &'ast ast::Spanned<ast::TypeExpression>,
+		/// Synthetic DefId of the `ImplBlockInit` entry; used to demand-drive
+		/// block initialization before processing this const.
+		block_id: ast::DefId,
 		item: &'ast ast::ImplItem,
+		block_index: u32,
 	},
 	/// Creates the `TraitImpl` entry when resolved.
 	ImplTraitBlock {
@@ -721,6 +730,22 @@ fn report_not_a_method(
 		))
 		.with_label(span.primary_label())
 		.with_note("use `::` to access associated items")
+}
+
+/// Result of resolving a member name (method, associated fn/const/type) on a
+/// concrete type against inherent impls and trait impls. See
+/// `Builder::resolve_impl_member`.
+///
+/// The `Box<[TypeIndex]>` on `Found` is the impl-block-level type
+/// substitution inferred for a generic inherent impl (e.g. `T = i32` for
+/// `impl<T> Box<T>` when resolving on `Box<i32>`) — empty for a concrete
+/// inherent impl block (no type params to solve for) and for trait impls /
+/// type-param bounds, which are already resolved against one fixed concrete
+/// type and never need one.
+enum MemberLookup {
+	Found(ImplEntry, Box<[TypeIndex]>),
+	Ambiguous,
+	NotFound,
 }
 
 fn report_undeclared_identifier(span: SourceSpan) -> Diagnostic<FileId> {
@@ -1368,9 +1393,8 @@ pub fn build(graph: &mut CompilationGraph) -> TIR {
 		module_decls: Vec::new(),
 		import_decls: Vec::new(),
 		enums: Vec::new(),
-		impl_members: HashMap::new(),
-		generic_impl_list: Vec::new(),
-		generic_impl_dispatch: HashMap::new(),
+		impl_block_list: Vec::new(),
+		impl_block_dispatch: HashMap::new(),
 		structs: Vec::new(),
 		memories: Vec::new(),
 		traits: Vec::new(),
@@ -2283,7 +2307,7 @@ impl<'ast> Builder<'ast, '_> {
 			// Search the owner's own type params first (innermost scope wins).
 			let own_params: &[TypeParamInfo] = match scope.owner {
 				TypeParamOwner::ImplBlock(block_idx) => {
-					&self.tir.generic_impl_list[block_idx as usize].type_params
+					&self.tir.impl_block_list[block_idx as usize].type_params
 				}
 				TypeParamOwner::Function(id) => {
 					self.tir.function_index(id).map_or(&[], |idx| {
@@ -2302,8 +2326,9 @@ impl<'ast> Builder<'ast, '_> {
 					})
 				}
 			};
-			if let Some(own_idx) =
-				own_params.iter().position(|p| p.name == identifier.inner)
+			if let Some(own_idx) = own_params
+				.iter()
+				.position(|p| p.name.inner == identifier.inner)
 			{
 				let owner = scope.owner;
 				let abs_index =
@@ -2328,7 +2353,7 @@ impl<'ast> Builder<'ast, '_> {
 							self.owner_type_params(parent_owner);
 						if let Some(i) = parent_params
 							.iter()
-							.position(|p| p.name == identifier.inner)
+							.position(|p| p.name.inner == identifier.inner)
 						{
 							// ImplBlock has no grandparent, so abs_index == i.
 							let abs_index = i as u32;
@@ -2426,7 +2451,7 @@ impl<'ast> Builder<'ast, '_> {
 	) -> Option<u32> {
 		let own_params: &[TypeParamInfo] = match scope.owner {
 			TypeParamOwner::ImplBlock(block_idx) => {
-				&self.tir.generic_impl_list[block_idx as usize].type_params
+				&self.tir.impl_block_list[block_idx as usize].type_params
 			}
 			TypeParamOwner::Function(id) => {
 				self.tir.function_index(id).map_or(&[], |idx| {
@@ -2444,7 +2469,9 @@ impl<'ast> Builder<'ast, '_> {
 				})
 			}
 		};
-		if let Some(own_idx) = own_params.iter().position(|p| p.name == name) {
+		if let Some(own_idx) =
+			own_params.iter().position(|p| p.name.inner == name)
+		{
 			return Some(
 				(self.inherited_type_param_count(scope.owner) + own_idx) as u32,
 			);
@@ -2458,7 +2485,7 @@ impl<'ast> Builder<'ast, '_> {
 					if let Some(i) = self
 						.owner_type_params(parent_owner)
 						.iter()
-						.position(|p| p.name == name)
+						.position(|p| p.name.inner == name)
 					{
 						return Some(i as u32);
 					}
@@ -2975,7 +3002,7 @@ impl<'ast> Builder<'ast, '_> {
 	fn owner_type_params(&self, owner: TypeParamOwner) -> &[TypeParamInfo] {
 		match owner {
 			TypeParamOwner::ImplBlock(block_idx) => {
-				&self.tir.generic_impl_list[block_idx as usize].type_params
+				&self.tir.impl_block_list[block_idx as usize].type_params
 			}
 			TypeParamOwner::Function(id) => {
 				let func_index = self.tir.expect_function_index(id);
@@ -3177,9 +3204,7 @@ impl<'ast> Builder<'ast, '_> {
 					type_params: signature
 						.type_params
 						.iter()
-						.map(|tp| {
-							TypeParamInfo::new(tp.name.inner, tp.name.span)
-						})
+						.map(|tp| TypeParamInfo::new(tp.name))
 						.collect(),
 					type_param_parent: None,
 					inherited_type_param_count: 0,
@@ -3267,9 +3292,7 @@ impl<'ast> Builder<'ast, '_> {
 					name: *name,
 					type_params: type_params
 						.iter()
-						.map(|tp| {
-							TypeParamInfo::new(tp.name.inner, tp.name.span)
-						})
+						.map(|tp| TypeParamInfo::new(tp.name))
 						.collect(),
 					self_type,
 					attributes,
@@ -3342,9 +3365,7 @@ impl<'ast> Builder<'ast, '_> {
 					name: *name,
 					type_params: type_params
 						.iter()
-						.map(|tp| {
-							TypeParamInfo::new(tp.name.inner, tp.name.span)
-						})
+						.map(|tp| TypeParamInfo::new(tp.name))
 						.collect(),
 					template: TypeIndex::ERROR,
 					accesses: Vec::new(),
@@ -3524,8 +3545,10 @@ impl<'ast> Builder<'ast, '_> {
 					namespace,
 					name: *name,
 					self_type_param: TypeParamInfo {
-						name: self_name_sym,
-						name_span: name.span,
+						name: Spanned {
+							inner: self_name_sym,
+							span: name.span,
+						},
 						bounds: Bounds {
 							traits: Box::new([TraitBound {
 								trait_index,
@@ -3563,87 +3586,71 @@ impl<'ast> Builder<'ast, '_> {
 				target,
 				items,
 			} => {
-				if type_params.is_empty() {
-					// Concrete impl — existing path.
-					for impl_item in items.iter() {
-						match &impl_item.inner.inner {
-							ast::ImplItem::Method { id, .. } => {
-								self.ast_nodes.push(AstEntry {
-									def_id: *id,
-									file_id,
-									namespace,
-									node: AstNodeRef::ImplMethod {
-										impl_target: target,
-										item: &impl_item.inner.inner,
-									},
-								});
-							}
-							ast::ImplItem::Const { id, .. } => {
+				// Every inherent impl block gets an `ImplBlock` entry now,
+				// concrete (`type_params` empty) or generic alike — allocate
+				// it, register a dedicated init entry (resolves bounds +
+				// target), then register each item referencing the block's
+				// AST id.
+				let block_index = self.tir.impl_block_list.len() as u32;
+				self.tir.impl_block_list.push(ImplBlock {
+					id: *impl_id,
+					file_id,
+					type_params: type_params
+						.iter()
+						.map(|tp| TypeParamInfo::new(tp.name))
+						.collect(),
+					target: TypeIndex::ERROR,
+					members: HashMap::new(),
+				});
+				self.ast_nodes.push(AstEntry {
+					def_id: *impl_id,
+					file_id,
+					namespace,
+					node: AstNodeRef::ImplBlockInit {
+						impl_type_params: type_params,
+						impl_target: target,
+						block_index,
+					},
+				});
+				for impl_item in items.iter() {
+					match &impl_item.inner.inner {
+						ast::ImplItem::Method { id, .. } => {
+							self.ast_nodes.push(AstEntry {
+								def_id: *id,
+								file_id,
+								namespace,
+								node: AstNodeRef::ImplBlockMethod {
+									block_id: *impl_id,
+									item: &impl_item.inner.inner,
+									block_index,
+								},
+							});
+						}
+						ast::ImplItem::Const { id, .. } => {
+							if type_params.is_empty() {
 								self.ast_nodes.push(AstEntry {
 									def_id: *id,
 									file_id,
 									namespace,
 									node: AstNodeRef::ImplConst {
-										impl_target: target,
-										item: &impl_item.inner.inner,
-									},
-								});
-							}
-							ast::ImplItem::AssociatedType { name, .. } => {
-								self.tir.diagnostics.push(
-									report_associated_type_in_inherent_impl(
-										SourceSpan::new(file_id, name.span),
-									),
-								);
-							}
-						}
-					}
-				} else {
-					// Generic impl — allocate the block with type params pre-populated,
-					// register a dedicated init entry (resolves bounds + target), then
-					// register each method referencing the block's AST id.
-					let block_index = self.tir.generic_impl_list.len() as u32;
-					self.tir.generic_impl_list.push(GenericImplBlock {
-						id: *impl_id,
-						file_id,
-						type_params: type_params
-							.iter()
-							.map(|tp| {
-								TypeParamInfo::new(tp.name.inner, tp.name.span)
-							})
-							.collect(),
-						target: TypeIndex::ERROR,
-						members: HashMap::new(),
-					});
-					self.ast_nodes.push(AstEntry {
-						def_id: *impl_id,
-						file_id,
-						namespace,
-						node: AstNodeRef::GenericImplBlock {
-							impl_type_params: type_params,
-							impl_target: target,
-							block_index,
-						},
-					});
-					for impl_item in items.iter() {
-						match &impl_item.inner.inner {
-							ast::ImplItem::Method { id, .. } => {
-								self.ast_nodes.push(AstEntry {
-									def_id: *id,
-									file_id,
-									namespace,
-									node: AstNodeRef::GenericImplMethod {
 										block_id: *impl_id,
 										item: &impl_item.inner.inner,
 										block_index,
 									},
 								});
 							}
-							ast::ImplItem::Const { .. }
-							| ast::ImplItem::AssociatedType { .. } => {
-								// TODO: support consts / associated types in
-								// generic impls
+							// else: TODO: support consts in generic impls
+						}
+						ast::ImplItem::AssociatedType { name, .. } => {
+							if type_params.is_empty() {
+								self.tir.diagnostics.push(
+									report_associated_type_in_inherent_impl(
+										SourceSpan::new(file_id, name.span),
+									),
+								);
 							}
+							// else: TODO: support/diagnose associated types in
+							// generic impls too
 						}
 					}
 				}
@@ -4144,8 +4151,13 @@ impl<'ast> Builder<'ast, '_> {
 				_ => {}
 			},
 			AstNodeRef::ImplConst {
-				impl_target, item, ..
+				block_id,
+				item,
+				block_index,
 			} => {
+				// Ensure the impl block's target is resolved first.
+				self.ensure_signature(block_id);
+
 				if let ast::ImplItem::Const {
 					id,
 					name,
@@ -4155,7 +4167,7 @@ impl<'ast> Builder<'ast, '_> {
 				} = item
 				{
 					let self_type =
-						self.resolve_type(resolve_context, None, impl_target);
+						self.tir.impl_block_list[block_index as usize].target;
 					let self_scope = GenericScope {
 						owner: TypeParamOwner::Function(*id),
 						self_type: Some(self_type),
@@ -4208,233 +4220,25 @@ impl<'ast> Builder<'ast, '_> {
 						self.tir
 							.item_lookup
 							.insert(*id, ItemIndex::Const(const_index));
-						self.tir
-							.impl_members
-							.entry(self_type)
-							.or_default()
+						self.tir.impl_block_list[block_index as usize]
+							.members
 							.insert(
 								name.inner,
-								ImplEntry::AssociatedConst {
-									id: *id,
-									ty: resolved_ty,
-								},
+								ImplEntry::AssociatedConst(const_index),
 							);
+						if let Ok(kind) = ImplTarget::from_type(
+							&self.tir.types[self_type.as_usize()],
+						) {
+							self.tir
+								.impl_block_dispatch
+								.entry((kind, name.inner))
+								.or_default()
+								.push(block_index);
+						}
 					}
 				}
 			}
-			AstNodeRef::ImplMethod {
-				impl_target, item, ..
-			} => {
-				let self_type =
-					self.resolve_type(resolve_context, None, impl_target);
-				let self_symbol = self.interner.get_or_intern("self");
-
-				// Process this specific method.
-				if let ast::ImplItem::Method {
-					id,
-					pub_span,
-					attributes,
-					signature,
-					..
-				} = item
-				{
-					let self_scope = GenericScope {
-						owner: TypeParamOwner::Function(*id),
-						self_type: Some(self_type),
-					};
-					let mut params: Vec<FunctionParam> =
-						Vec::with_capacity(signature.params.len());
-					for p in signature.params.iter() {
-						let is_self = p.inner.inner.name.inner == self_symbol;
-						let ty = match &p.inner.inner.ty {
-							Some(te) => {
-								let resolved = self.resolve_type(
-									resolve_context,
-									Some(self_scope),
-									te,
-								);
-								if is_self
-									&& !self
-										.is_valid_self_type(resolved, self_type)
-								{
-									self.tir.diagnostics.push(
-										report_invalid_self_type(
-											SourceSpan::new(
-												resolve_context.file_id,
-												te.span,
-											),
-											TypeFormatter::new(
-												&self.tir,
-												self.interner,
-											),
-											resolved,
-										),
-									);
-								}
-								Spanned {
-									inner: resolved,
-									span: te.span,
-								}
-							}
-							None => Spanned {
-								inner: if is_self {
-									self_type
-								} else {
-									TypeIndex::ERROR
-								},
-								span: p.inner.inner.name.span,
-							},
-						};
-						params.push(FunctionParam {
-							mut_span: p.inner.inner.mut_span,
-							name: p.inner.inner.name,
-							ty,
-						});
-					}
-					let params: Box<[FunctionParam]> =
-						params.into_boxed_slice();
-					let result = signature.result.as_ref().map(|r| Spanned {
-						inner: self.resolve_type(
-							resolve_context,
-							Some(self_scope),
-							r,
-						),
-						span: r.span,
-					});
-					let signature_index = self.intern_function(&params, result);
-					let func_attrs = self.resolve_attributes(attributes);
-					self.register_tagged_items(*id, &func_attrs);
-					let func_index = self.tir.functions.len() as u32;
-					let is_method = signature
-						.params
-						.first()
-						.map(|p| p.inner.inner.name.inner == self_symbol)
-						.unwrap_or(false);
-					self.tir.functions.push(Function {
-						id: *id,
-						file_id: resolve_context.file_id,
-						namespace: resolve_context.namespace,
-						parent: Some(ItemParent::Impl(self_type)),
-						body: None,
-						type_params: Box::new([]),
-						type_param_parent: None,
-						inherited_type_param_count: 0,
-						pub_span: *pub_span,
-						signature_index,
-						name: signature.name,
-						accesses: Vec::new(),
-						params,
-						result,
-						attributes: func_attrs,
-					});
-					self.tir
-						.item_lookup
-						.insert(*id, ItemIndex::Function(func_index));
-					let method_name_str = self
-						.interner
-						.resolve(signature.name.inner)
-						.unwrap_or("?")
-						.to_string();
-					let existing = self
-						.tir
-						.impl_members
-						.get(&self_type)
-						.and_then(|m| m.get(&signature.name.inner))
-						.cloned();
-					if let Some(
-						ImplEntry::Method(prev) | ImplEntry::AssociatedFn(prev),
-					) = existing
-					{
-						let prev_func = &self.tir.functions[prev as usize];
-						let first = SourceSpan::new(
-							prev_func.file_id,
-							prev_func.name.span,
-						);
-						let second = SourceSpan::new(
-							resolve_context.file_id,
-							signature.name.span,
-						);
-						self.tir.diagnostics.push(report_duplicate_definition(
-							DuplicateDefinitionDiagnostic {
-								name: &method_name_str,
-								namespace: SymbolNamespace::Value,
-								first_definition: first,
-								second_definition: second,
-							},
-						));
-					}
-					self.tir.impl_members.entry(self_type).or_default().insert(
-						signature.name.inner,
-						if is_method {
-							ImplEntry::Method(func_index)
-						} else {
-							ImplEntry::AssociatedFn(func_index)
-						},
-					);
-				}
-			}
-			AstNodeRef::GenericImplBlock {
-				impl_type_params,
-				impl_target,
-				block_index,
-			} => {
-				// Resolve bounds for the impl block's own type params.
-				self.resolve_type_param_bounds(
-					resolve_context,
-					TypeParamOwner::ImplBlock(block_index),
-					None,
-					impl_type_params,
-				);
-				// Resolve the target type.
-				let scope = GenericScope {
-					owner: TypeParamOwner::ImplBlock(block_index),
-					self_type: None,
-				};
-				let self_type = self.resolve_type(
-					resolve_context,
-					Some(scope),
-					impl_target,
-				);
-
-				let target = match &self.tir.types[self_type.as_usize()] {
-					Type::TypeParam { .. } => {
-						self.tir.diagnostics.push(
-                            Diagnostic::error()
-                                .with_code(DiagnosticCode::TypeMistmatch.code())
-                                .with_message("no nominal type found for inherent implementation")
-                                .with_label(Label::primary(
-                                    resolve_context.file_id,
-                                    impl_target.span,
-                                ))
-                                .with_note(
-                                    "either implement a trait on it or create a newtype to wrap it instead",
-                                ),
-                        );
-						TypeIndex::ERROR
-					}
-					Type::Pointer { .. } => {
-						self.tir.diagnostics.push(
-							Diagnostic::error()
-								.with_code(DiagnosticCode::TypeMistmatch.code())
-								.with_message(
-									"cannot implement methods directly on a pointer type",
-								)
-								.with_label(Label::primary(
-									resolve_context.file_id,
-									impl_target.span,
-								))
-								.with_note(
-									"use free functions in a `module` block instead",
-								),
-						);
-						TypeIndex::ERROR
-					}
-					_ => self_type,
-				};
-				self.tir.generic_impl_list[block_index as usize].target =
-					target;
-			}
-			AstNodeRef::GenericImplMethod {
+			AstNodeRef::ImplBlockMethod {
 				block_id,
 				item,
 				block_index,
@@ -4455,18 +4259,19 @@ impl<'ast> Builder<'ast, '_> {
 
 				// The impl block already has its bounds and target resolved.
 				let self_type =
-					self.tir.generic_impl_list[block_index as usize].target;
-				let impl_count = self.tir.generic_impl_list
+					self.tir.impl_block_list[block_index as usize].target;
+				let inherited_type_param_count = self.tir.impl_block_list
 					[block_index as usize]
 					.type_params
 					.len();
 
-				let func_attrs = self.resolve_attributes(attributes);
-				self.register_tagged_items(*id, &func_attrs);
+				let attributes = self.resolve_attributes(attributes);
+				self.register_tagged_items(*id, &attributes);
 				let func_index = self.tir.functions.len() as u32;
 
-				// Register the function with only its own (method-level) type params.
-				// Impl-level params are inherited via type_param_parent.
+				// Register the function with only its own (method-level) type
+				// params. Impl-level params (if any) are inherited via
+				// type_param_parent.
 				self.tir.functions.push(Function {
 					id: *id,
 					file_id: resolve_context.file_id,
@@ -4476,28 +4281,27 @@ impl<'ast> Builder<'ast, '_> {
 					type_params: signature
 						.type_params
 						.iter()
-						.map(|tp| {
-							TypeParamInfo::new(tp.name.inner, tp.name.span)
-						})
+						.map(|tp| TypeParamInfo::new(tp.name))
 						.collect(),
 					type_param_parent: Some(TypeParamOwner::ImplBlock(
 						block_index,
 					)),
-					inherited_type_param_count: impl_count,
+					inherited_type_param_count,
 					pub_span: *pub_span,
 					signature_index: TypeIndex::ERROR,
 					name: signature.name,
 					accesses: Vec::new(),
 					params: Box::new([]),
 					result: None,
-					attributes: func_attrs,
+					attributes,
 				});
 				self.tir
 					.item_lookup
 					.insert(*id, ItemIndex::Function(func_index));
 
 				// Resolve the function's own param bounds. resolve_type_identifier
-				// automatically walks up to ImplBlock when a name isn't found in own params.
+				// automatically walks up to ImplBlock when a name isn't found in
+				// own params.
 				self.resolve_type_param_bounds(
 					resolve_context,
 					TypeParamOwner::Function(*id),
@@ -4511,20 +4315,19 @@ impl<'ast> Builder<'ast, '_> {
 					.first()
 					.map(|p| p.inner.inner.name.inner == self_symbol)
 					.unwrap_or(false);
-				let all_scope = GenericScope {
-					owner: TypeParamOwner::Function(*id),
-					self_type: Some(self_type),
-				};
 
 				let mut params: Vec<FunctionParam> =
 					Vec::with_capacity(signature.params.len());
-				for p in signature.params.iter() {
-					let is_self = p.inner.inner.name.inner == self_symbol;
-					let ty = match &p.inner.inner.ty {
+				for param in signature.params.iter() {
+					let is_self = param.inner.inner.name.inner == self_symbol;
+					let ty = match &param.inner.inner.ty {
 						Some(te) => {
 							let resolved = self.resolve_type(
 								resolve_context,
-								Some(all_scope),
+								Some(GenericScope {
+									owner: TypeParamOwner::Function(*id),
+									self_type: Some(self_type),
+								}),
 								te,
 							);
 							if is_self
@@ -4555,24 +4358,28 @@ impl<'ast> Builder<'ast, '_> {
 							} else {
 								TypeIndex::ERROR
 							},
-							span: p.inner.inner.name.span,
+							span: param.inner.inner.name.span,
 						},
 					};
 					params.push(FunctionParam {
-						mut_span: p.inner.inner.mut_span,
-						name: p.inner.inner.name,
+						mut_span: param.inner.inner.mut_span,
+						name: param.inner.inner.name,
 						ty,
 					});
 				}
 				let params: Box<[FunctionParam]> = params.into_boxed_slice();
-				let result = signature.result.as_ref().map(|r| Spanned {
-					inner: self.resolve_type(
-						resolve_context,
-						Some(all_scope),
-						r,
-					),
-					span: r.span,
-				});
+				let result =
+					signature.result.as_deref().map(|result| Spanned {
+						inner: self.resolve_type(
+							resolve_context,
+							Some(GenericScope {
+								owner: TypeParamOwner::Function(*id),
+								self_type: Some(self_type),
+							}),
+							result,
+						),
+						span: result.span,
+					});
 				let signature_index = self.intern_function(&params, result);
 				let func = &mut self.tir.functions[func_index as usize];
 				func.params = params;
@@ -4584,12 +4391,18 @@ impl<'ast> Builder<'ast, '_> {
 				} else {
 					ImplEntry::AssociatedFn(func_index)
 				};
-				let method_name_str = self
-					.interner
-					.resolve(signature.name.inner)
-					.unwrap_or("?")
-					.to_string();
-				let existing = self.tir.generic_impl_list[block_index as usize]
+
+				// Within-block duplicate check: two methods of the same name
+				// in the SAME block. Collisions against a DIFFERENT block
+				// (e.g. two separate `impl Box<i32> { .. }` blocks, or a
+				// concrete impl colliding with a generic one) are no longer
+				// checked eagerly here — the dispatch bucket below can
+				// legitimately hold several non-conflicting blocks (e.g.
+				// `impl Box<i32>` and `impl Box<bool>` both provide `get`
+				// without conflicting), so only `resolve_impl_member`, which
+				// knows the actual receiver type, can tell whether two
+				// candidates in the same bucket truly conflict.
+				let existing = self.tir.impl_block_list[block_index as usize]
 					.members
 					.get(&signature.name.inner)
 					.cloned();
@@ -4606,26 +4419,73 @@ impl<'ast> Builder<'ast, '_> {
 					);
 					self.tir.diagnostics.push(report_duplicate_definition(
 						DuplicateDefinitionDiagnostic {
-							name: &method_name_str,
+							name: self
+								.interner
+								.resolve(signature.name.inner)
+								.unwrap(),
 							namespace: SymbolNamespace::Value,
 							first_definition: first,
 							second_definition: second,
 						},
 					));
 				}
-				self.tir.generic_impl_list[block_index as usize]
+				self.tir.impl_block_list[block_index as usize]
 					.members
 					.insert(signature.name.inner, entry);
+				if let Ok(kind) =
+					ImplTarget::from_type(&self.tir.types[self_type.as_usize()])
+				{
+					self.tir
+						.impl_block_dispatch
+						.entry((kind, signature.name.inner))
+						.or_default()
+						.push(block_index);
+				}
+			}
+			AstNodeRef::ImplBlockInit {
+				impl_type_params,
+				impl_target,
+				block_index,
+			} => {
+				self.resolve_type_param_bounds(
+					resolve_context,
+					TypeParamOwner::ImplBlock(block_index),
+					None,
+					impl_type_params,
+				);
+				let self_type = self.resolve_type(
+					resolve_context,
+					Some(GenericScope {
+						owner: TypeParamOwner::ImplBlock(block_index),
+						self_type: None,
+					}),
+					impl_target,
+				);
 
-				// Populate the O(1) dispatch index.
-				if let Some(kind) = GenericImplTargetKind::from_type(
+				let target = match ImplTarget::from_type(
 					&self.tir.types[self_type.as_usize()],
 				) {
-					self.tir.generic_impl_dispatch.insert(
-						(kind, signature.name.inner),
-						block_index as usize,
-					);
-				}
+					Ok(_) => self_type,
+					Err(_) => {
+						self.tir.diagnostics.push(
+							Diagnostic::error()
+								.with_code(DiagnosticCode::TypeMistmatch.code())
+								.with_message(format!(
+									"cannot define inherit `impl` for `{}`",
+									self.tir
+										.formatter(self.interner)
+										.display_type(self_type)
+										.unwrap()
+								))
+								.with_label(Label::primary(
+									resolve_context.file_id,
+									impl_target.span,
+								)),
+						);
+						TypeIndex::ERROR
+					}
+				};
+				self.tir.impl_block_list[block_index as usize].target = target;
 			}
 			AstNodeRef::Trait {
 				trait_index, item, ..
@@ -4781,9 +4641,7 @@ impl<'ast> Builder<'ast, '_> {
 						type_params: signature
 							.type_params
 							.iter()
-							.map(|tp| {
-								TypeParamInfo::new(tp.name.inner, tp.name.span)
-							})
+							.map(|tp| TypeParamInfo::new(tp.name))
 							.collect(),
 						type_param_parent: Some(TypeParamOwner::Trait(
 							trait_index,
@@ -4905,10 +4763,7 @@ impl<'ast> Builder<'ast, '_> {
 						.insert(*id, ItemIndex::Const(const_index));
 					self.tir.traits[trait_index as usize].members.insert(
 						name.inner,
-						ImplEntry::AssociatedConst {
-							id: *id,
-							ty: ty_idx,
-						},
+						ImplEntry::AssociatedConst(const_index),
 					);
 				}
 			}
@@ -5073,24 +4928,19 @@ impl<'ast> Builder<'ast, '_> {
 						kind: memory_kind,
 						id: *id,
 					});
-					self.seed_memory_trait_impl_with(
+					let members = self.seed_memory_trait_impl_with(
 						trait_index,
 						memory_type,
 						&bindings,
 					);
 
-					// Register the memory type as implementing its declared trait
-					// so that check_assoc_type_bounds can verify `type M: Memory`
-					// bindings on concrete impls (e.g. `impl Allocator for T { type M = heap; }`).
-					// Populate members from impl_members so conformance checking passes.
-					let impl_member_snapshot: HashMap<SymbolU32, ImplEntry> =
-						self.tir
-							.impl_members
-							.get(&memory_type)
-							.map(|m| {
-								m.iter().map(|(&k, v)| (k, v.clone())).collect()
-							})
-							.unwrap_or_default();
+					// Register the memory type as implementing its declared
+					// trait so that check_assoc_type_bounds can verify `type
+					// M: Memory` bindings on concrete impls (e.g. `impl
+					// Allocator for T { type M = heap; }`). This is an
+					// ordinary `TraitImpl` like any hand-written one — its
+					// members go through the same ambiguity-checked trait
+					// tier as everything else, no special-casing.
 					let trait_impl_index =
 						self.tir.trait_impls.len() as TraitImplIndex;
 					let synthetic_def_id = self.id_generator.generate();
@@ -5098,7 +4948,7 @@ impl<'ast> Builder<'ast, '_> {
 						id: synthetic_def_id,
 						trait_index,
 						target: memory_type,
-						members: impl_member_snapshot,
+						members,
 						span: name.span,
 						file_id: resolve_context.file_id,
 					});
@@ -5383,53 +5233,11 @@ impl<'ast> Builder<'ast, '_> {
 					.item_lookup
 					.insert(*block_id, ItemIndex::TraitImpl(trait_impl_index));
 
-				// Seed default (bodied) trait methods into impl_members so
-				// `self.method()` dispatch finds them without explicit overrides.
-				let trait_fn_ids =
-					self.tir.traits[trait_index as usize].member_ids.clone();
-				for &tid in &trait_fn_ids {
-					self.ensure_signature(tid);
-				}
-				let self_sym = self.interner.get_or_intern("self");
-				let mut default_members: Vec<(SymbolU32, ImplEntry)> =
-					Vec::new();
-				for &tid in &trait_fn_ids {
-					let fi = match self.tir.function_index(tid) {
-						Some(fi) => fi,
-						None => continue,
-					};
-					let node = match self.sig_state.get(&tid) {
-						Some(e) => &self.ast_nodes[e.node_idx].node,
-						None => continue,
-					};
-					if let AstNodeRef::TraitFunction { item, .. } = node
-						&& let ast::TraitItem::Function {
-							signature,
-							body: Some(_),
-							..
-						} = item
-					{
-						let is_method = signature
-							.params
-							.first()
-							.map(|p| p.inner.inner.name.inner == self_sym)
-							.unwrap_or(false);
-						let entry = if is_method {
-							ImplEntry::Method(fi)
-						} else {
-							ImplEntry::AssociatedFn(fi)
-						};
-						default_members.push((signature.name.inner, entry));
-					}
-				}
-				// `or_insert`: block DefId < child method DefIds (source order),
-				// so defaults land first; `ImplTraitMethod` overwrites with plain
-				// `insert` later in Phase 2, giving explicit overrides priority.
-				let slot =
-					self.tir.impl_members.entry(target_type).or_default();
-				for (sym, entry) in default_members {
-					slot.entry(sym).or_insert(entry);
-				}
+				// Trait-provided members (explicit overrides and bodied
+				// defaults) are resolved lazily and ambiguity-checked by
+				// `resolve_impl_member` — they are intentionally never
+				// written into `impl_block_list`, which is reserved for
+				// inherent impls only.
 			}
 			AstNodeRef::ImplTraitMethod {
 				parent_id, item, ..
@@ -5528,11 +5336,6 @@ impl<'ast> Builder<'ast, '_> {
 					self.tir
 						.item_lookup
 						.insert(*id, ItemIndex::Function(func_index));
-					self.tir
-						.impl_members
-						.entry(self_type)
-						.or_default()
-						.insert(signature.name.inner, entry.clone());
 					self.tir.trait_impls[trait_impl_index as usize]
 						.members
 						.insert(signature.name.inner, entry);
@@ -5610,15 +5413,7 @@ impl<'ast> Builder<'ast, '_> {
 						self.tir
 							.item_lookup
 							.insert(*id, ItemIndex::Const(const_index));
-						let entry = ImplEntry::AssociatedConst {
-							id: *id,
-							ty: resolved_ty,
-						};
-						self.tir
-							.impl_members
-							.entry(self_type)
-							.or_default()
-							.insert(name.inner, entry.clone());
+						let entry = ImplEntry::AssociatedConst(const_index);
 						self.tir.trait_impls[trait_impl_index as usize]
 							.members
 							.insert(name.inner, entry);
@@ -5705,11 +5500,6 @@ impl<'ast> Builder<'ast, '_> {
 						ty,
 					);
 					let entry = ImplEntry::AssociatedType { ty: concrete_ty };
-					self.tir
-						.impl_members
-						.entry(self_type)
-						.or_default()
-						.insert(name.inner, entry.clone());
 					self.tir.trait_impls[trait_impl_index as usize]
 						.members
 						.insert(name.inner, entry);
@@ -5796,28 +5586,6 @@ impl<'ast> Builder<'ast, '_> {
 				}
 				_ => unreachable!(),
 			},
-			AstNodeRef::ImplMethod {
-				item, impl_target, ..
-			} => {
-				let ast::ImplItem::Method {
-					id,
-					signature,
-					block,
-					..
-				} = item
-				else {
-					return;
-				};
-				let Some(fi) = self.tir.function_index(*id) else {
-					return;
-				};
-				let self_type = Some(self.resolve_type(
-					ResolveContext::new(file_id, namespace),
-					None,
-					impl_target,
-				));
-				(signature, block.as_ref(), fi, self_type)
-			}
 			AstNodeRef::ImplTraitMethod {
 				item, parent_id, ..
 			} => {
@@ -5839,7 +5607,7 @@ impl<'ast> Builder<'ast, '_> {
 					.map(|idx| self.tir.trait_impls[idx as usize].target);
 				(signature, block.as_ref(), fi, self_type)
 			}
-			AstNodeRef::GenericImplMethod {
+			AstNodeRef::ImplBlockMethod {
 				item, block_index, ..
 			} => {
 				let ast::ImplItem::Method {
@@ -5854,9 +5622,8 @@ impl<'ast> Builder<'ast, '_> {
 				let Some(fi) = self.tir.function_index(*id) else {
 					return;
 				};
-				let self_type = Some(
-					self.tir.generic_impl_list[block_index as usize].target,
-				);
+				let self_type =
+					Some(self.tir.impl_block_list[block_index as usize].target);
 				(signature, block.as_ref(), fi, self_type)
 			}
 			AstNodeRef::TraitFunction { item, .. } => {
@@ -6501,11 +6268,20 @@ impl<'ast> Builder<'ast, '_> {
 							})
 						}
 					}
+					// `trait_index` is already known here (it's part of the
+					// projection type itself), so go straight to that one
+					// impl instead of the ambiguity-scanning
+					// `resolve_impl_member` — there's nothing to
+					// disambiguate when the trait is already pinned down.
 					_ => self
 						.tir
-						.impl_members
-						.get(&substituted)
-						.and_then(|m| m.get(&assoc_name))
+						.trait_impl_lookup
+						.get(&(substituted, trait_index))
+						.and_then(|&idx| {
+							self.tir.trait_impls[idx as usize]
+								.members
+								.get(&assoc_name)
+						})
 						.and_then(|e| {
 							if let ImplEntry::AssociatedType { ty: concrete } =
 								e
@@ -6950,7 +6726,7 @@ impl<'ast> Builder<'ast, '_> {
 		// Assoc-type overrides from the parent supertrait declaration.
 		// E.g. Memory32's `Memory<Size=u32>` provides {"Size" → u32}.
 		bindings: &HashMap<SymbolU32, TypeIndex>,
-	) {
+	) -> HashMap<SymbolU32, ImplEntry> {
 		// Ensure all member signatures in this trait are resolved.
 		for did in self.tir.traits[trait_index as usize].member_ids.clone() {
 			self.ensure_signature(did);
@@ -6960,10 +6736,10 @@ impl<'ast> Builder<'ast, '_> {
 			[trait_index as usize]
 			.members
 			.iter()
-			.map(|(&sym, entry)| (sym, entry.clone()))
+			.map(|(&sym, entry)| (sym, *entry))
 			.collect();
-		let mut members: Vec<(SymbolU32, ImplEntry)> =
-			Vec::with_capacity(raw_members.len());
+		let mut members: HashMap<SymbolU32, ImplEntry> =
+			HashMap::with_capacity(raw_members.len());
 		for (sym, entry) in raw_members {
 			let processed = match entry {
 				ImplEntry::Method(fi) => {
@@ -6983,22 +6759,46 @@ impl<'ast> Builder<'ast, '_> {
 					let concrete = bindings.get(&sym).copied().unwrap_or(ty);
 					ImplEntry::AssociatedType { ty: concrete }
 				}
-				ImplEntry::AssociatedConst { id, ty } => {
-					// Substitute Self (TypeParam at param_index 0) with the concrete memory type.
-					let concrete_ty = self.substitute_type(ty, &[memory_type]);
-					ImplEntry::AssociatedConst {
-						id,
-						ty: concrete_ty,
-					}
+				ImplEntry::AssociatedConst(index) => {
+					// Fork a copy of the template `Constant` with Self
+					// (TypeParam at param_index 0) substituted for the
+					// concrete memory type. `Constant` can't just be
+					// `.clone()`d (its `value` field holds an
+					// un-Clone-able `Expression`), but nothing else
+					// actually changes here.
+					let original_ty =
+						self.tir.constants[index as usize].ty.inner;
+					let concrete_ty =
+						self.substitute_type(original_ty, &[memory_type]);
+					let c = &self.tir.constants[index as usize];
+					let new_id = self.id_generator.generate();
+					let new_constant = Constant {
+						id: new_id,
+						file_id: c.file_id,
+						namespace: c.namespace,
+						parent: c.parent,
+						pub_span: c.pub_span,
+						name: c.name,
+						ty: Spanned {
+							inner: concrete_ty,
+							span: c.ty.span,
+						},
+						value: None,
+						const_value: None,
+						accesses: Vec::new(),
+					};
+					let new_index = self.tir.constants.len() as ConstIndex;
+					self.tir.constants.push(new_constant);
+					self.tir
+						.item_lookup
+						.insert(new_id, ItemIndex::Const(new_index));
+					ImplEntry::AssociatedConst(new_index)
 				}
 				other => other,
 			};
-			members.push((sym, processed));
+			members.insert(sym, processed);
 		}
-		let slot = self.tir.impl_members.entry(memory_type).or_default();
-		for (sym, entry) in members {
-			slot.insert(sym, entry);
-		}
+		members
 	}
 
 	fn build_exports(
@@ -7873,10 +7673,10 @@ impl<'ast> Builder<'ast, '_> {
 		for ti in &self.tir.trait_impls {
 			let trait_ = &self.tir.traits[ti.trait_index as usize];
 
-			// `ti.members` = only what the impl block explicitly provided.
-			// `impl_members[target]` = full dispatch table including seeded
-			// defaults. We use `ti.members` intentionally: a default method
-			// must not satisfy an abstract (no-body) requirement.
+			// `ti.members` = only what the impl block explicitly provided
+			// (unlike `resolve_impl_member`, which also falls back to bodied
+			// trait defaults). We use `ti.members` intentionally here: a
+			// default method must not satisfy an abstract (no-body) requirement.
 			for (&sym, entry) in &trait_.members {
 				// `body.is_none()` distinguishes abstract from default methods.
 				// Requires Phase 3 to have populated bodies before this runs.
@@ -7884,7 +7684,7 @@ impl<'ast> Builder<'ast, '_> {
 					ImplEntry::Method(fi) => {
 						(self.tir.functions[*fi as usize].body.is_none(), "fn")
 					}
-					ImplEntry::AssociatedConst { .. } => (true, "const"),
+					ImplEntry::AssociatedConst(_) => (true, "const"),
 					ImplEntry::AssociatedType { .. } => (true, "type"),
 					_ => continue,
 				};
@@ -8011,7 +7811,7 @@ impl<'ast> Builder<'ast, '_> {
 
 			for param in function.type_params.iter() {
 				if param.accesses.is_empty() {
-					let name = self.interner.resolve(param.name).unwrap();
+					let name = self.interner.resolve(param.name.inner).unwrap();
 					self.tir.diagnostics.push(
 						Diagnostic::warning()
 							.with_code(type_param_code)
@@ -8021,7 +7821,7 @@ impl<'ast> Builder<'ast, '_> {
 							.with_label(
 								SourceSpan::new(
 									function.file_id,
-									param.name_span,
+									param.name.span,
 								)
 								.primary_label(),
 							)
@@ -8581,31 +8381,32 @@ impl<'ast> Builder<'ast, '_> {
 		}
 	}
 
-	/// O(1) lookup in the `generic_impl_dispatch` index, then type-arg
-	/// extraction via the existing `infer_type_args_from_types`.  Returns the
-	/// block index and the concrete substitution for each type param.
-	fn find_generic_impl(
-		&mut self,
+	/// Does `impl_block_list[block_idx]`'s target apply to `receiver_ty`, and
+	/// if so what's the substitution? `None` if it doesn't apply at all.
+	///
+	/// A block with no type params (what used to be a "concrete" impl) is
+	/// the degenerate case: no free variables to solve for, so applicability
+	/// is just asking whether the two concrete types are the same one —
+	/// `infer_type_args` can't be reused here, since with an empty
+	/// `type_args` slice it would have nothing to bind and silently treat
+	/// *any* receiver sharing the same outer shape as a match (its catch-all
+	/// arm is `_ => {}`, not a mismatch check — it's an extraction pass, not
+	/// a full unify-or-fail).
+	fn match_impl_block(
+		&self,
+		block_idx: usize,
 		receiver_ty: TypeIndex,
-		member_name: SymbolU32,
-	) -> Option<(usize, Box<[TypeIndex]>)> {
-		let outer_kind = GenericImplTargetKind::from_type(
-			&self.tir.types[receiver_ty.as_usize()],
-		)?;
-		let &block_idx = self
-			.tir
-			.generic_impl_dispatch
-			.get(&(outer_kind, member_name))?;
-		let (block_target, type_params_len) = {
-			let block = &self.tir.generic_impl_list[block_idx];
-			(block.target, block.type_params.len())
-		};
+	) -> Option<Box<[TypeIndex]>> {
+		let block = &self.tir.impl_block_list[block_idx];
+		if block.type_params.is_empty() {
+			return (block.target == receiver_ty).then(|| Box::new([]) as _);
+		}
 		let mut type_args: Vec<TypeIndex> =
-			vec![TypeIndex::INFER; type_params_len];
-		self.infer_type_args(&mut type_args, block_target, receiver_ty);
+			vec![TypeIndex::INFER; block.type_params.len()];
+		self.infer_type_args(&mut type_args, block.target, receiver_ty);
 		// Slots that couldn't be resolved from the receiver stay INFER so the
 		// call site can still fill them in from explicit type arguments or args.
-		Some((block_idx, type_args.into_boxed_slice()))
+		Some(type_args.into_boxed_slice())
 	}
 
 	fn build_object_access_expression(
@@ -8617,121 +8418,96 @@ impl<'ast> Builder<'ast, '_> {
 		expr_span: TextSpan,
 	) -> Result<Expression, ()> {
 		let object = self.build_expression(func_ctx, access_ctx, object)?;
-		let entry = match &self.tir.types[object.ty.as_usize()] {
-			Type::TypeParam { owner, param_index } => self
-				.tir
-				.type_param_info(*owner, *param_index as usize)
-				.bounds
-				.traits
-				.iter()
-				.find_map(|b| {
-					self.tir.traits[b.trait_index as usize]
-						.members
-						.get(&member.inner)
-						.cloned()
-				}),
-			_ => self
-				.tir
-				.impl_members
-				.get(&object.ty)
-				.and_then(|m| m.get(&member.inner))
-				.cloned(),
-		};
-		match entry {
-            Some(ImplEntry::AssociatedFn(_)) => {
-                // TODO: emit "this is an associated function, use Type::name()
-                // syntax" diagnostic
-            }
-            Some(ImplEntry::AssociatedConst { ty, .. }) => {
-                return Ok(Expression {
-                    kind: ExprKind::ObjectAccess {
-                        object: Box::new(object),
-                        member,
-                    },
-                    ty,
-                    span: expr_span,
-                });
-            }
-            // Methods are only callable via `obj.method()` — not accessible as values via
-            // dot syntax. Fall through to the struct-field lookup below.
-            // TODO: improve the error for `obj.method` (no parens) to say "did you mean to
-            // call this method with `()`?"
-            Some(ImplEntry::Method(_))
-            // Associated types are type-level constructs, not value members.
-            | Some(ImplEntry::AssociatedType { .. })
-            | None => {}
-        }
 
-		// Check struct fields
 		if let Type::Struct { struct_index, args } =
-			self.tir.types[object.ty.as_usize()].clone()
-		{
-			if let Some(&field_index) = self.tir.structs[struct_index as usize]
+			&self.tir.types[object.ty.as_usize()]
+			&& let Some(field_index) = self.tir.structs[*struct_index as usize]
 				.lookup
 				.get(&member.inner)
-			{
-				let raw_field_ty = self.tir.structs[struct_index as usize]
-					.fields[field_index]
-					.ty
-					.inner;
-				let field_ty = if args.is_empty() {
-					raw_field_ty
-				} else {
-					self.substitute_type(raw_field_ty, &args)
-				};
-				self.tir.structs[struct_index as usize].fields[field_index]
-					.accesses
-					.push(FieldAccess {
-						kind: FieldAccessKind::Read,
-						file_id: func_ctx.resolve_context.file_id,
-						span: member.span,
-					});
-				// Reuse object_ty / object_span so we can move object.kind in the match.
-				let object_ty = object.ty;
-				let object_span = object.span;
-				return match object.kind {
-					// Object lives in linear memory — chain into a Field place.
-					ExprKind::Load { place } => {
-						let memory = place.memory;
-						let mutable = place.mutable;
-						Ok(Expression {
-							kind: ExprKind::Load {
-								place: Box::new(Place {
-									kind: PlaceKind::Field {
-										object: place,
-										member,
-									},
-									ty: field_ty,
-									memory,
-									mutable,
-									span: expr_span,
-								}),
-							},
-							ty: field_ty,
-							span: expr_span,
-						})
-					}
-					// Object is a stack value — keep the existing ObjectAccess path.
-					object_kind => Ok(Expression {
-						kind: ExprKind::ObjectAccess {
-							object: Box::new(Expression {
-								kind: object_kind,
-								ty: object_ty,
-								span: object_span,
+				.copied()
+		{
+			let struct_index = *struct_index as usize;
+			let raw_field_ty =
+				self.tir.structs[struct_index].fields[field_index].ty.inner;
+			let field_ty = if args.is_empty() {
+				raw_field_ty
+			} else {
+				self.substitute_type(raw_field_ty, &args.clone())
+			};
+			self.tir.structs[struct_index].fields[field_index]
+				.accesses
+				.push(FieldAccess {
+					kind: FieldAccessKind::Read,
+					file_id: func_ctx.resolve_context.file_id,
+					span: member.span,
+				});
+			return match object.kind {
+				ExprKind::Load { place } => {
+					let memory = place.memory;
+					let mutable = place.mutable;
+					Ok(Expression {
+						kind: ExprKind::Load {
+							place: Box::new(Place {
+								kind: PlaceKind::Field {
+									object: place,
+									member,
+								},
+								ty: field_ty,
+								memory,
+								mutable,
+								span: expr_span,
 							}),
-							member,
 						},
 						ty: field_ty,
 						span: expr_span,
-					}),
-				};
-			}
+					})
+				}
+				_ => Ok(Expression {
+					kind: ExprKind::FieldAccess {
+						object: Box::new(object),
+						field: member,
+					},
+					ty: field_ty,
+					span: expr_span,
+				}),
+			};
 		}
 
-		self.tir.diagnostics.push(report_undeclared_identifier(
+		let entry = self.resolve_impl_member(
+			object.ty,
+			member.inner,
 			SourceSpan::new(func_ctx.resolve_context.file_id, member.span),
-		));
-		Err(())
+		);
+		match entry {
+			MemberLookup::Found(entry, _type_args) => match entry {
+				ImplEntry::AssociatedConst(_) => {
+					todo!(
+						"cannot access constant with field access, use namespace access instead"
+					)
+				}
+				ImplEntry::Method(_) => todo!(
+					"cannon take a pointer to method with field access, use namespace access instead"
+				),
+				ImplEntry::AssociatedFn(_) => todo!(
+					"cannon access accociated function with field access, use namespace access instead"
+				),
+				ImplEntry::AssociatedType { .. } => {
+					todo!(
+						"cannon access associated type with field access, use namespace access instead"
+					)
+				}
+			},
+			MemberLookup::NotFound => {
+				self.tir.diagnostics.push(report_undeclared_identifier(
+					SourceSpan::new(
+						func_ctx.resolve_context.file_id,
+						member.span,
+					),
+				));
+				Err(())
+			}
+			MemberLookup::Ambiguous => Err(()),
+		}
 	}
 
 	/// Build a TIR expression from a parsed `Path`.
@@ -9095,8 +8871,7 @@ impl<'ast> Builder<'ast, '_> {
 						));
 					}
 				}
-				let member_name =
-					self.interner.resolve(member.inner).unwrap_or("?");
+				let member_name = self.interner.resolve(member.inner).unwrap();
 				let type_name = TypeFormatter::new(&self.tir, self.interner)
 					.display_type(namespace_ty)
 					.unwrap_or_default();
@@ -9113,39 +8888,38 @@ impl<'ast> Builder<'ast, '_> {
 				);
 				Err(())
 			}
-			_ => {
-				match self
-					.tir
-					.impl_members
-					.get(&namespace_ty)
-					.and_then(|m| m.get(&member.inner))
-					.cloned()
-				{
-					Some(ImplEntry::AssociatedType { ty }) => Ok(ty),
-					_ => {
-						let member_name =
-							self.interner.resolve(member.inner).unwrap_or("?");
-						let type_name =
-							TypeFormatter::new(&self.tir, self.interner)
-								.display_type(namespace_ty)
-								.unwrap();
-						self.tir.diagnostics.push(
-							Diagnostic::error()
-								.with_code(
-									DiagnosticCode::UndeclaredType.code(),
-								)
-								.with_message(format!(
-									"no type named `{member_name}` found for type `{type_name}`",
-								))
-								.with_label(Label::primary(
-									resolve_context.file_id,
-									member.span,
-								)),
-						);
-						Err(())
-					}
+			_ => match self.resolve_impl_member(
+				namespace_ty,
+				member.inner,
+				SourceSpan::new(resolve_context.file_id, member.span),
+			) {
+				MemberLookup::Found(ImplEntry::AssociatedType { ty }, _) => {
+					Ok(ty)
 				}
-			}
+				MemberLookup::Ambiguous => Err(()),
+				_ => {
+					// TODO: we could improve the diagnostics here
+					// one case for MemberLookup::NotFound and another for Found with not correct kind
+					let member_name =
+						self.interner.resolve(member.inner).unwrap();
+					let type_name =
+						TypeFormatter::new(&self.tir, self.interner)
+							.display_type(namespace_ty)
+							.unwrap();
+					self.tir.diagnostics.push(
+						Diagnostic::error()
+							.with_code(DiagnosticCode::UndeclaredType.code())
+							.with_message(format!(
+								"no type named `{member_name}` found for type `{type_name}`",
+							))
+							.with_label(Label::primary(
+								resolve_context.file_id,
+								member.span,
+							)),
+					);
+					Err(())
+				}
+			},
 		}
 	}
 
@@ -9200,30 +8974,30 @@ impl<'ast> Builder<'ast, '_> {
 		namespace: Spanned<TypeIndex>,
 		member: Spanned<SymbolU32>,
 	) -> Result<ResolvedMember, ()> {
-		// impl_members take priority (associated consts and methods on any type).
-		match self
-			.tir
-			.impl_members
-			.get(&namespace.inner)
-			.and_then(|m| m.get(&member.inner))
-			.cloned()
-		{
-			Some(ImplEntry::AssociatedConst { id, ty }) => {
-				return Ok(ResolvedMember::Const { id, ty });
+		match self.resolve_impl_member(
+			namespace.inner,
+			member.inner,
+			SourceSpan::new(file_id, member.span),
+		) {
+			MemberLookup::Found(ImplEntry::AssociatedConst(index), _) => {
+				return Ok(ResolvedMember::Const { const_index: index });
 			}
-			Some(
+			MemberLookup::Found(
 				ImplEntry::Method(func_index)
 				| ImplEntry::AssociatedFn(func_index),
+				type_args,
 			) => {
 				return Ok(ResolvedMember::Function {
 					func_index,
-					type_args: Box::new([]),
+					type_args,
 				});
 			}
-			Some(ImplEntry::AssociatedType { .. }) | None => {}
+			MemberLookup::Found(ImplEntry::AssociatedType { .. }, _)
+			| MemberLookup::NotFound => {}
+			MemberLookup::Ambiguous => return Err(()),
 		}
 
-		match &self.tir.types[namespace.inner.as_usize()].clone() {
+		match &self.tir.types[namespace.inner.as_usize()] {
 			Type::Memory { .. } => {
 				self.tir.diagnostics.push(report_undeclared_identifier(
 					SourceSpan::new(file_id, member.span),
@@ -9280,24 +9054,6 @@ impl<'ast> Builder<'ast, '_> {
 				}
 			}
 			_ => {
-				// Check generic impl blocks before giving up.
-				if let Some((block_idx, type_args)) =
-					self.find_generic_impl(namespace.inner, member.inner)
-				{
-					if let Some(
-						ImplEntry::Method(func_index)
-						| ImplEntry::AssociatedFn(func_index),
-					) = self.tir.generic_impl_list[block_idx]
-						.members
-						.get(&member.inner)
-						.cloned()
-					{
-						return Ok(ResolvedMember::Function {
-							func_index,
-							type_args,
-						});
-					}
-				}
 				let member_name =
 					self.interner.resolve(member.inner).unwrap_or("?");
 				let type_name = TypeFormatter::new(&self.tir, self.interner)
@@ -9413,12 +9169,12 @@ impl<'ast> Builder<'ast, '_> {
 					span: expr_span,
 				})
 			}
-			ResolvedMember::Const { id, ty } => {
-				if let Some(ci) = self.tir.const_index(id) {
-					self.tir.constants[ci as usize]
-						.accesses
-						.push(SourceSpan::new(file_id, member_span));
-				}
+			ResolvedMember::Const { const_index } => {
+				self.tir.constants[const_index as usize]
+					.accesses
+					.push(SourceSpan::new(file_id, member_span));
+				let id = self.tir.constants[const_index as usize].id;
+				let ty = self.tir.constants[const_index as usize].ty.inner;
 				Ok(Expression {
 					kind: ExprKind::NamespaceAccess {
 						namespace,
@@ -10897,7 +10653,7 @@ impl<'ast> Builder<'ast, '_> {
 					span: expr.span,
 				})
 			}
-			ExprKind::ObjectAccess { ref object, .. } => {
+			ExprKind::FieldAccess { ref object, .. } => {
 				if !matches!(
 					object.kind,
 					ExprKind::Local { .. } | ExprKind::Global { .. }
@@ -11207,7 +10963,7 @@ impl<'ast> Builder<'ast, '_> {
 					span: expr.span,
 				})
 			}
-			ExprKind::ObjectAccess { ref object, .. } => {
+			ExprKind::FieldAccess { ref object, .. } => {
 				if !matches!(
 					object.kind,
 					ExprKind::Local { .. } | ExprKind::Global { .. }
@@ -11683,7 +11439,7 @@ impl<'ast> Builder<'ast, '_> {
 		let type_params: Vec<(SymbolU32, Option<TypesetIndex>)> = self
 			.tir
 			.function_type_params_iter(func_index)
-			.map(|tp| (tp.name, tp.bounds.typeset))
+			.map(|tp| (tp.name.inner, tp.bounds.typeset))
 			.collect();
 		for (i, (param_name, typeset_bound)) in
 			type_params.iter().copied().enumerate()
@@ -11780,19 +11536,17 @@ impl<'ast> Builder<'ast, '_> {
 		if self.contains_infer(substituted_result) {
 			for (i, &slot) in type_args.iter().enumerate() {
 				if slot == TypeIndex::INFER {
-					let param_name_sym = self
+					let name_symbol = self
 						.tir
 						.function_type_params_iter(func_index)
 						.nth(i)
 						.expect(
 							"type_args length must equal total_type_param_count",
 						)
-						.name;
-					let param_name = self
-						.interner
-						.resolve(param_name_sym)
-						.unwrap_or("?")
-						.to_string();
+						.name
+						.inner;
+					let param_name =
+						self.interner.resolve(name_symbol).unwrap();
 					self.tir.diagnostics.push(
 						Diagnostic::error()
 							.with_code(
@@ -11866,14 +11620,12 @@ impl<'ast> Builder<'ast, '_> {
 		if !had_error {
 			for (i, &slot) in type_args.iter().enumerate() {
 				if slot == TypeIndex::INFER {
-					let param_name_sym =
-						self.tir.functions[func_index as usize].type_params[i]
-							.name;
-					let param_name = self
-						.interner
-						.resolve(param_name_sym)
-						.unwrap_or("?")
-						.to_string();
+					let name_symbol = self.tir.functions[func_index as usize]
+						.type_params[i]
+						.name
+						.inner;
+					let param_name =
+						self.interner.resolve(name_symbol).unwrap();
 					self.tir.diagnostics.push(
 						Diagnostic::error()
 							.with_code(
@@ -12149,31 +11901,264 @@ impl<'ast> Builder<'ast, '_> {
 		})
 	}
 
-	/// Looks up `method_name` on `ty` in direct impl members or trait bounds (for type params).
-	fn try_method_entry(
-		&self,
+	/// Whether `entry` (an item pulled from a `Trait::members` table) has a
+	/// real, usable definition on its own — a bodied default method — as
+	/// opposed to being a bare declaration that only exists to record the
+	/// item's kind. Trait-level `Const`/`AssociatedType` entries are always
+	/// placeholders — traits cannot give them default values — so they never
+	/// act as a fallback default the way a bodied method can.
+	///
+	/// Checks the AST's `body: Option<...>` directly (via `sig_state`)
+	/// rather than `Function::body` — the latter is only populated once
+	/// Phase 3 has actually built that specific function, which is not
+	/// guaranteed yet at every call site that may reach here.
+	///
+	/// No `ensure_signature` call needed: this is only ever reached from
+	/// `resolve_impl_member`, which only runs while building expression
+	/// bodies (Phase 3) — and `TIR::build` runs Phase 2 to completion, for
+	/// every registered `DefId`, before Phase 3 starts for anything. So by
+	/// the time this can run, every signature — including this one — has
+	/// already been ensured.
+	fn entry_has_body(&self, entry: ImplEntry) -> bool {
+		match entry {
+			ImplEntry::Method(func_index)
+			| ImplEntry::AssociatedFn(func_index) => {
+				let def_id = self.tir.functions[func_index as usize].id;
+				match self.sig_state.get(&def_id) {
+					Some(e) => matches!(
+						&self.ast_nodes[e.node_idx].node,
+						AstNodeRef::TraitFunction {
+							item: ast::TraitItem::Function {
+								body: Some(_),
+								..
+							},
+							..
+						}
+					),
+					None => false,
+				}
+			}
+			ImplEntry::AssociatedConst(_)
+			| ImplEntry::AssociatedType { .. } => false,
+		}
+	}
+
+	/// Resolves `sym` on `ty` the way Rust resolves inherent-vs-trait items:
+	/// every inherent impl block on `ty` (concrete or generic, via
+	/// `impl_block_dispatch` + `match_impl_block`) always wins outright over
+	/// trait-provided members — exactly one matching inherent block resolves
+	/// cleanly, two or more is a `DuplicateDefinition` conflict. Only when
+	/// there's no inherent match at all does every trait impl (or, for a
+	/// type param, every bound trait) on `ty` that provides `sym` —
+	/// explicitly, or via a bodied trait default — become a candidate.
+	/// Exactly one candidate resolves cleanly; zero is "not found"; two or
+	/// more is a genuine ambiguity that needs disambiguation (no such syntax
+	/// exists yet, so callers currently just report it as an error).
+	fn resolve_impl_member(
+		&mut self,
 		ty: TypeIndex,
-		method_name: SymbolU32,
-	) -> Option<ImplEntry> {
+		member_symbol: SymbolU32,
+		member_span: SourceSpan,
+	) -> MemberLookup {
+		struct MemberCandidate {
+			trait_name: SymbolU32,
+			entry: ImplEntry,
+		}
+		let mut candidates: Vec<MemberCandidate> = Vec::new();
+
 		match &self.tir.types[ty.as_usize()] {
-			Type::TypeParam { owner, param_index } => self
-				.tir
-				.type_param_info(*owner, *param_index as usize)
-				.bounds
-				.traits
-				.iter()
-				.find_map(|b| {
-					self.tir.traits[b.trait_index as usize]
+			Type::TypeParam { owner, param_index } => {
+				for trait_index in self
+					.tir
+					.type_param_info(*owner, *param_index as usize)
+					.bounds
+					.traits
+					.iter()
+					.map(|bound| bound.trait_index)
+				{
+					let entry = match self.tir.traits[trait_index as usize]
 						.members
-						.get(&method_name)
+						.get(&member_symbol)
 						.cloned()
-				}),
-			_ => self
-				.tir
-				.impl_members
-				.get(&ty)
-				.and_then(|m| m.get(&method_name))
-				.cloned(),
+					{
+						Some(entry) => entry,
+						None => continue,
+					};
+					candidates.push(MemberCandidate {
+						trait_name: self.tir.traits[trait_index as usize]
+							.name
+							.inner,
+						entry,
+					});
+				}
+			}
+			_ => {
+				// Inherent impls (concrete or generic, no longer
+				// distinguished) always win outright over trait-provided
+				// members — checked here, before the trait scan below, not
+				// as a `NotFound` fallback after it, so a same-named trait
+				// member never wins the race by running first. Every block
+				// sharing the coarse `(kind, name)` bucket is a candidate;
+				// `match_impl_block` filters down to the ones that actually
+				// apply to `ty` (e.g. `impl Box<i32>` and `impl Box<bool>`
+				// share a bucket without conflicting — only the receiver
+				// decides which one(s) really match).
+				let kind =
+					ImplTarget::from_type(&self.tir.types[ty.as_usize()]);
+				let mut inherent_candidates: Vec<(
+					ImplEntry,
+					Box<[TypeIndex]>,
+				)> = Vec::new();
+				if let Ok(kind) = kind
+					&& let Some(block_indices) =
+						self.tir.impl_block_dispatch.get(&(kind, member_symbol))
+				{
+					for block_idx in block_indices.iter().copied() {
+						let Some(entry) = self.tir.impl_block_list
+							[block_idx as usize]
+							.members
+							.get(&member_symbol)
+							.copied()
+						else {
+							continue;
+						};
+						let Some(type_args) =
+							self.match_impl_block(block_idx as usize, ty)
+						else {
+							continue;
+						};
+						inherent_candidates.push((entry, type_args));
+					}
+				}
+				match inherent_candidates.len() {
+					0 => {}
+					1 => {
+						let (entry, type_args) =
+							inherent_candidates.pop().unwrap();
+						return MemberLookup::Found(entry, type_args);
+					}
+					_ => {
+						let member_name = self
+							.interner
+							.resolve(member_symbol)
+							.unwrap_or("?")
+							.to_string();
+						let mut diagnostic = Diagnostic {
+							severity: Severity::Error,
+							code: Some(
+								DiagnosticCode::DuplicateDefinition
+									.code()
+									.to_string(),
+							),
+							message: format!(
+								"the name `{member_name}` is defined multiple times"
+							),
+							labels: Vec::with_capacity(
+								inherent_candidates.len() + 1,
+							),
+							notes: Vec::new(),
+						};
+						diagnostic.labels.push(
+							member_span.primary_label().with_message(format!(
+								"multiple `{member_name}` found"
+							)),
+						);
+						for (idx, (entry, _)) in
+							inherent_candidates.iter().enumerate()
+						{
+							diagnostic.labels.push(
+								entry
+									.def_span(&self.tir)
+									.secondary_label()
+									.with_message(format!(
+										"candidate #{} defined here",
+										idx + 1
+									)),
+							);
+						}
+						self.tir.diagnostics.push(diagnostic);
+						return MemberLookup::Ambiguous;
+					}
+				}
+
+				for impl_index in self
+					.tir
+					.type_trait_impls
+					.get(&ty)
+					.map(|impls| impls.as_slice())
+					.unwrap_or_default()
+					.iter()
+					.copied()
+				{
+					let trait_index =
+						self.tir.trait_impls[impl_index as usize].trait_index;
+					let entry = match self.tir.trait_impls[impl_index as usize]
+						.members
+						.get(&member_symbol)
+						.cloned()
+					{
+						Some(entry) => Some(entry),
+						None => self.tir.traits[trait_index as usize]
+							.members
+							.get(&member_symbol)
+							.cloned()
+							.filter(|entry| self.entry_has_body(*entry)),
+					};
+					let Some(entry) = entry else { continue };
+					candidates.push(MemberCandidate {
+						trait_name: self.tir.traits[trait_index as usize]
+							.name
+							.inner,
+						entry,
+					});
+				}
+			}
+		};
+
+		match candidates.len() {
+			0 => MemberLookup::NotFound,
+			1 => MemberLookup::Found(
+				candidates.pop().unwrap().entry,
+				Box::new([]),
+			),
+			_ => {
+				let formatter = TypeFormatter::new(&self.tir, self.interner);
+				let mut diagnostic = Diagnostic {
+					severity: Severity::Error,
+					code: Some(
+						DiagnosticCode::AmbiguousTraitMember.code().to_string(),
+					),
+					message: "multiple applicable items in scope".to_string(),
+					labels: Vec::with_capacity(candidates.len() + 1),
+					notes: Vec::new(),
+				};
+				diagnostic.labels.push(
+					member_span.primary_label().with_message(format!(
+						"multiple `{}` found",
+						formatter.interner.resolve(member_symbol).unwrap()
+					)),
+				);
+				let type_name = formatter.display_type(ty).unwrap();
+				for (idx, candidate) in candidates.iter().enumerate() {
+					let trait_name = formatter
+						.interner
+						.resolve(candidate.trait_name)
+						.unwrap();
+					let message = format!(
+						"candidate #{} is defined in an impl of the trait `{trait_name}` for the type `{type_name}`",
+						idx + 1
+					);
+					diagnostic.labels.push(
+						candidate
+							.entry
+							.def_span(&self.tir)
+							.secondary_label()
+							.with_message(message),
+					);
+				}
+				self.tir.diagnostics.push(diagnostic);
+				MemberLookup::Ambiguous
+			}
 		}
 	}
 
@@ -12195,16 +12180,27 @@ impl<'ast> Builder<'ast, '_> {
 			_ => ty,
 		};
 
-		match self.try_method_entry(lookup_ty, method.inner) {
-			Some(ImplEntry::Method(func_index)) => {
-				let n = self.tir.functions[func_index as usize]
-					.total_type_param_count();
-				return Ok((
-					func_index,
-					vec![TypeIndex::INFER; n].into_boxed_slice(),
-				));
+		match self.resolve_impl_member(
+			lookup_ty,
+			method.inner,
+			SourceSpan::new(file_id, method.span),
+		) {
+			MemberLookup::Found(ImplEntry::Method(func_index), type_args) => {
+				// Non-empty `type_args` means this came from a generic
+				// inherent impl block and is already the substitution
+				// inferred from the receiver (e.g. `T = i32`); otherwise
+				// leave the function's own generics (if any) as `INFER`
+				// slots for the call site to resolve.
+				let type_args = if type_args.is_empty() {
+					let n = self.tir.functions[func_index as usize]
+						.total_type_param_count();
+					vec![TypeIndex::INFER; n].into_boxed_slice()
+				} else {
+					type_args
+				};
+				return Ok((func_index, type_args));
 			}
-			Some(_) => {
+			MemberLookup::Found(_, _) => {
 				self.tir.diagnostics.push(report_not_a_method(
 					SourceSpan::new(file_id, method.span),
 					TypeFormatter::new(&self.tir, self.interner),
@@ -12213,31 +12209,8 @@ impl<'ast> Builder<'ast, '_> {
 				));
 				return Err(());
 			}
-			None => {}
-		}
-
-		if let Some((block_idx, type_args)) =
-			self.find_generic_impl(lookup_ty, method.inner)
-		{
-			match self.tir.generic_impl_list[block_idx]
-				.members
-				.get(&method.inner)
-				.cloned()
-			{
-				Some(ImplEntry::Method(func_index)) => {
-					return Ok((func_index, type_args));
-				}
-				Some(_) => {
-					self.tir.diagnostics.push(report_not_a_method(
-						SourceSpan::new(file_id, method.span),
-						TypeFormatter::new(&self.tir, self.interner),
-						method.inner,
-						lookup_ty,
-					));
-					return Err(());
-				}
-				None => {}
-			}
+			MemberLookup::Ambiguous => return Err(()),
+			MemberLookup::NotFound => {}
 		}
 
 		self.tir.diagnostics.push(report_method_not_found(
