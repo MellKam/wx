@@ -10,6 +10,9 @@
 WX - Web Assembly Expressive Language
 </h1>
 
+> [!WARNING]
+> The project was moved from my personal repository to the [wxlanguage](https://github.com/wxlanguage) organization.
+
 WX is a Rust-inspired language that compiles directly to WebAssembly. It stays close to the WASM spec instead of hiding it, so the code you write maps predictably onto the module you get — no hidden runtime, no GC, no surprises.
 
 This project is part of my bachelor's thesis exploring what it takes to build a full WASM compiler from scratch. It's still early — expect rough edges.
